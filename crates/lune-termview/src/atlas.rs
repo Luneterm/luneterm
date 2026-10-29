@@ -313,6 +313,16 @@ impl AtlasCore {
         Ok(Some(entry))
     }
 
+    /// Wipes `page` at its current size: allocator, entries and staged uploads. Bumps its
+    /// generation. Used when the fonts change (stale keys, nothing to grow for).
+    pub fn reset(&mut self, page: Page) {
+        let p = &mut self.pages[page.index()];
+        p.alloc = new_alloc(p.size);
+        p.map.clear();
+        p.staging.clear();
+        p.generation += 1;
+    }
+
     /// Doubles `page` (capped at `max_dim`) and wipes it: allocator, entries and staged uploads.
     /// Bumps its generation; every entry previously returned for `page` is dead.
     pub fn reset_grow(&mut self, page: Page) {
@@ -675,6 +685,18 @@ mod tests {
         assert_eq!(core.staged(Page::Color).len(), 1);
         assert_eq!(core.staged(Page::Color)[0].data.len(), 4 * 4 * 4);
         assert_eq!(core.staged(Page::Mask)[0].data.len(), 4 * 4);
+    }
+
+    #[test]
+    fn reset_keeps_size_and_bumps_generation() {
+        let mut core = AtlasCore::new(64, 128);
+        let mut r = Fake::new(4, 4);
+        core.get(&mut r, key(1)).expect("room");
+        core.reset(Page::Mask);
+        assert_eq!(core.size(Page::Mask), 64);
+        assert_eq!(core.generation(Page::Mask), 1);
+        assert!(core.is_empty());
+        assert!(core.staged(Page::Mask).is_empty());
     }
 
     #[test]
