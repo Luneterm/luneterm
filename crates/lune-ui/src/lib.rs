@@ -13,6 +13,8 @@ pub mod blur;
 pub mod chrome;
 pub mod color;
 pub mod gpu;
+pub mod paint;
+pub mod text;
 
 use color::Rgba;
 

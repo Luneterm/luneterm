@@ -11,11 +11,9 @@ mod backdrop;
 mod dump;
 mod mock;
 mod overlays;
-mod paint;
 mod settings_view;
 mod state;
 mod terminal_view;
-mod text;
 mod theme;
 mod widgets;
 
@@ -32,10 +30,10 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
 use lune_ui::gpu::Gpu;
+use lune_ui::paint::{LAYER_COUNT, Painter, Rect};
+use lune_ui::text::TextCache;
 use lune_ui::{blur, gpu};
-use paint::{LAYER_COUNT, Painter, Rect};
 use state::{Effect, Hit, MenuKind, Modal, Page, Popup, State};
-use text::TextCache;
 
 /// Luneium context-menu glass: blur 30px, saturate 1.8, then acrylic on top.
 const BACKDROP_SATURATION: f32 = 1.8;
@@ -160,7 +158,17 @@ impl ApplicationHandler for App {
                 )
             })
             .collect();
-        let text = TextCache::new(window.scale_factor() as f32);
+        let text = TextCache::new(
+            window.scale_factor() as f32,
+            &[
+                include_bytes!("../assets/RobotoMonoNerdFontMono-Regular.ttf").as_slice(),
+                include_bytes!("../assets/RobotoMonoNerdFontMono-Bold.ttf"),
+                include_bytes!("../assets/RznSans-Regular.ttf"),
+                include_bytes!("../assets/RznSans-Medium.ttf"),
+            ],
+            theme::UI_FONT,
+            theme::MONO_FONT,
+        );
         // Test hook: open the "…" menu at start (exercises the blur path without clicking).
         if let Some(v) = std::env::var_os("GLASS_UI_OPEN_MENU") {
             if v == "colors" {

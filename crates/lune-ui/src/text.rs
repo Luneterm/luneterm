@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 
 use glyphon::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Weight, Wrap};
 
-use crate::theme::{MONO_FONT, Rgba, UI_FONT};
+use crate::color::Rgba;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Font {
@@ -99,33 +99,37 @@ impl Spec {
     }
 }
 
+#[derive(Debug)]
 struct Entry {
     buffer: Buffer,
     size: (f32, f32),
     last_used: u64,
 }
 
+#[derive(Debug)]
 pub struct TextCache {
     pub fonts: FontSystem,
+    ui_family: String,
+    mono_family: String,
     entries: HashMap<u64, Entry>,
     frame: u64,
     pub scale: f32,
 }
 
 impl TextCache {
-    pub fn new(scale: f32) -> Self {
+    /// `font_data` is loaded in order; `ui_family` and `mono_family` are the family names
+    /// that [`Font::Ui`] and [`Font::Mono`] resolve to. The caller supplies all of it; this
+    /// crate embeds no fonts.
+    pub fn new(scale: f32, font_data: &[&[u8]], ui_family: &str, mono_family: &str) -> Self {
         let mut fonts = FontSystem::new();
         let db = fonts.db_mut();
-        for data in [
-            include_bytes!("../assets/RobotoMonoNerdFontMono-Regular.ttf").as_slice(),
-            include_bytes!("../assets/RobotoMonoNerdFontMono-Bold.ttf"),
-            include_bytes!("../assets/RznSans-Regular.ttf"),
-            include_bytes!("../assets/RznSans-Medium.ttf"),
-        ] {
+        for data in font_data {
             db.load_font_data(data.to_vec());
         }
         Self {
             fonts,
+            ui_family: ui_family.to_owned(),
+            mono_family: mono_family.to_owned(),
             entries: HashMap::new(),
             frame: 0,
             scale,
@@ -165,8 +169,8 @@ impl TextCache {
         });
         let attrs = |st: &Style| {
             let family = match st.font {
-                Font::Ui => Family::Name(UI_FONT),
-                Font::Mono => Family::Name(MONO_FONT),
+                Font::Ui => Family::Name(&self.ui_family),
+                Font::Mono => Family::Name(&self.mono_family),
             };
             let [r, g, b, a] = st.color;
             Attrs::new()

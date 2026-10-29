@@ -349,7 +349,7 @@ pub enum Popup {
     },
     Combo {
         id: SettingId,
-        anchor: crate::paint::Rect,
+        anchor: lune_ui::paint::Rect,
     },
 }
 
@@ -414,9 +414,9 @@ pub struct State {
     pub modal: Option<Modal>,
     pub editing: Option<SettingId>,
     pub hover: Option<Hit>,
-    pub hits: Vec<(crate::paint::Rect, Hit)>,
+    pub hits: Vec<(lune_ui::paint::Rect, Hit)>,
     /// Terminal body rect and (cell width, line height), from the last frame.
-    pub term_body: crate::paint::Rect,
+    pub term_body: lune_ui::paint::Rect,
     pub cell: (f32, f32),
     /// Window is maximised (Windows caption shows "restore").
     pub maximized: bool,
@@ -454,7 +454,7 @@ impl State {
             editing: None,
             hover: None,
             hits: Vec::new(),
-            term_body: crate::paint::Rect::default(),
+            term_body: lune_ui::paint::Rect::default(),
             cell: (7.8, 17.0),
             maximized: false,
             popup_at: now,

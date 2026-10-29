@@ -1,9 +1,8 @@
 //! Immediate-mode painter: every frame the UI is described from state into per-layer geometry,
 //! text placements and hit regions. Clicks resolve against the previous frame's hit regions.
 
-use lune_ui::color::{Rgba, premul};
-use lune_ui::gpu::{LayerGeometry, Shape, StrokeVertex};
-
+use crate::color::{Rgba, premul};
+use crate::gpu::{LayerGeometry, Shape, StrokeVertex};
 use crate::text::{Spec, TextCache};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -129,6 +128,7 @@ impl Xform {
     }
 }
 
+#[derive(Debug)]
 pub struct Painter<'a, H> {
     pub s: f32,
     pub window: Rect,
@@ -140,7 +140,7 @@ pub struct Painter<'a, H> {
     pub hover: Option<H>,
     xform: Option<Xform>,
     /// Blurred-backdrop region requested by a glass menu (physical px).
-    pub backdrop: Option<lune_ui::blur::Backdrop>,
+    pub backdrop: Option<crate::blur::Backdrop>,
 }
 
 impl<'a, H: Copy + PartialEq> Painter<'a, H> {
@@ -188,7 +188,7 @@ impl<'a, H: Copy + PartialEq> Painter<'a, H> {
     /// Ask for the blurred scene inside `r` (drawn under this layer).
     pub fn backdrop(&mut self, r: Rect, radius: f32) {
         let k = self.xform.map_or(1.0, |x| x.scale);
-        self.backdrop = Some(lune_ui::blur::Backdrop {
+        self.backdrop = Some(crate::blur::Backdrop {
             rect: self.tr(r).phys(self.s),
             radius: radius * k * self.s,
             alpha: self.xform.map_or(1.0, |x| x.alpha),
