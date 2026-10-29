@@ -50,6 +50,9 @@ struct Renderer {
 struct App {
     renderer: Option<Renderer>,
     state: State,
+    last_title_click: Option<std::time::Instant>,
+    /// Borderless window edge under the mouse (Windows only).
+    resize_edge: Option<winit::window::ResizeDirection>,
 }
 
 fn main() {
@@ -57,6 +60,8 @@ fn main() {
     let mut app = App {
         renderer: None,
         state: State::new(),
+        last_title_click: None,
+        resize_edge: None,
     };
     event_loop.run_app(&mut app).expect("run app");
 }
@@ -86,15 +91,35 @@ impl ApplicationHandler for App {
                 .with_fullsize_content_view(true)
                 .with_title_hidden(true);
         }
+        #[cfg(target_os = "windows")]
+        {
+            // Borderless so the glass reaches the top edge; we draw the caption buttons. No
+            // redirection bitmap: wgpu presents through DirectComposition, which keeps alpha.
+            use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
+            attrs = attrs
+                .with_decorations(false)
+                .with_no_redirection_bitmap(true)
+                .with_undecorated_shadow(true)
+                .with_corner_preference(CornerPreference::Round)
+                .with_theme(Some(winit::window::Theme::Dark));
+        }
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
-        if !cfg!(target_os = "macos") {
+        if !cfg!(any(target_os = "macos", target_os = "windows")) {
             self.state.settings.glass = state::GlassStyle::Off;
         }
         apply_glass(&window, &self.state);
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
-            Box::new(event_loop.owned_display_handle()),
+        #[allow(unused_mut)]
+        let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
+            event_loop.owned_display_handle(),
         ));
+        #[cfg(target_os = "windows")]
+        {
+            // DX12 through a DirectComposition visual is the wgpu path that supports transparency.
+            desc.backends = wgpu::Backends::DX12;
+            desc.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+        }
+        let instance = wgpu::Instance::new(desc);
         let gpu = pollster::block_on(Gpu::new(window.clone(), &instance)).expect("gpu");
         eprintln!(
             "surface: {:?}, alpha {:?}, scale {}",
@@ -140,7 +165,10 @@ impl ApplicationHandler for App {
         let scale = window.scale_factor() as f32;
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => r.gpu.resize(size.width, size.height),
+            WindowEvent::Resized(size) => {
+                r.gpu.resize(size.width, size.height);
+                st.maximized = window.is_maximized();
+            }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 r.text.set_scale(scale_factor as f32);
             }
@@ -154,6 +182,21 @@ impl ApplicationHandler for App {
                     if let Some(sel) = &mut st.tabs[st.active].selection {
                         sel.1 = cell;
                     }
+                }
+                self.resize_edge = if cfg!(target_os = "windows") && !st.maximized {
+                    let size = window.inner_size();
+                    edge_at(
+                        st.mouse,
+                        size.width as f32 / scale,
+                        size.height as f32 / scale,
+                    )
+                } else {
+                    None
+                };
+                if let Some(edge) = self.resize_edge {
+                    window.set_cursor(CursorIcon::from(edge));
+                    window.request_redraw();
+                    return;
                 }
                 let on_link =
                     st.hover == Some(Hit::Body) && st.cmd && terminal_view::link_at(st).is_some();
@@ -189,6 +232,10 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
+                if let Some(edge) = self.resize_edge {
+                    let _ = window.drag_resize_window(edge);
+                    return;
+                }
                 let hit = st.hit_at(st.mouse);
                 if hit == Some(Hit::Body) {
                     if st.cmd
@@ -205,8 +252,22 @@ impl ApplicationHandler for App {
                     match st.click(hit) {
                         Effect::ApplyGlass => apply_glass(&window, st),
                         Effect::DragWindow => {
-                            let _ = window.drag_window();
+                            let now = std::time::Instant::now();
+                            let double = self.last_title_click.is_some_and(|t| {
+                                now.duration_since(t) < std::time::Duration::from_millis(400)
+                            });
+                            self.last_title_click = Some(now);
+                            if double && cfg!(target_os = "windows") {
+                                window.set_maximized(!window.is_maximized());
+                            } else {
+                                let _ = window.drag_window();
+                            }
                         }
+                        Effect::Caption(state::Caption::Minimize) => window.set_minimized(true),
+                        Effect::Caption(state::Caption::Maximize) => {
+                            window.set_maximized(!window.is_maximized());
+                        }
+                        Effect::Caption(state::Caption::Close) => event_loop.exit(),
                         Effect::None => {}
                     }
                 }
@@ -283,6 +344,24 @@ impl ApplicationHandler for App {
             r.gpu.window.request_redraw();
         }
     }
+}
+
+/// Which edge of a borderless window the mouse is on, for resizing.
+fn edge_at(p: (f32, f32), w: f32, h: f32) -> Option<winit::window::ResizeDirection> {
+    use winit::window::ResizeDirection as D;
+    const B: f32 = 6.0;
+    let (l, r, t, b) = (p.0 < B, p.0 >= w - B, p.1 < B, p.1 >= h - B);
+    Some(match (l, r, t, b) {
+        (true, _, true, _) => D::NorthWest,
+        (_, true, true, _) => D::NorthEast,
+        (true, _, _, true) => D::SouthWest,
+        (_, true, _, true) => D::SouthEast,
+        (true, ..) => D::West,
+        (_, true, ..) => D::East,
+        (_, _, true, _) => D::North,
+        (.., true) => D::South,
+        _ => return None,
+    })
 }
 
 fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {

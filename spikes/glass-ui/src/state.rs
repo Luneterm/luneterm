@@ -101,6 +101,13 @@ impl Settings {
     pub fn options(&self, id: SettingId) -> Vec<(String, bool)> {
         let v = |items: &[&str]| items.iter().map(|s| ((*s).to_owned(), true)).collect();
         match id {
+            // The two alternative styles are Liquid Glass on macOS and Mica / Mica Alt on Windows.
+            SettingId::GlassStyle if cfg!(target_os = "windows") => v(&[
+                "Lunegit (default) · Acrylic",
+                "Mica",
+                "Mica Alt",
+                "Off — solid dark",
+            ]),
             SettingId::GlassStyle => v(&[
                 "Lunegit (default)",
                 "Liquid Glass · clear",
@@ -268,12 +275,21 @@ pub enum DialogBtn {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Caption {
+    Minimize,
+    Maximize,
+    Close,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hit {
     /// Swallows clicks (modal backdrop, page background).
     Block,
     /// Clicking outside a popup closes it.
     Dismiss,
     TitleBand,
+    /// Window caption buttons (Windows draws its own; macOS has traffic lights).
+    Caption(Caption),
     Body,
     Tab(usize),
     TabClose(usize),
@@ -351,6 +367,7 @@ pub enum Effect {
     None,
     ApplyGlass,
     DragWindow,
+    Caption(Caption),
 }
 
 #[derive(Debug)]
@@ -375,6 +392,8 @@ pub struct State {
     /// Terminal body rect and (cell width, line height), from the last frame.
     pub term_body: crate::paint::Rect,
     pub cell: (f32, f32),
+    /// Window is maximised (Windows caption shows "restore").
+    pub maximized: bool,
 }
 
 impl State {
@@ -404,6 +423,7 @@ impl State {
             hits: Vec::new(),
             term_body: crate::paint::Rect::default(),
             cell: (7.8, 17.0),
+            maximized: false,
         }
     }
 
@@ -472,6 +492,7 @@ impl State {
             Hit::Block => self.editing = editing_before.filter(|_| self.modal.is_some()),
             Hit::Dismiss => self.popup = None,
             Hit::TitleBand => return Effect::DragWindow,
+            Hit::Caption(c) => return Effect::Caption(c),
             Hit::Body => {}
             Hit::Tab(i) => self.activate(i),
             Hit::TabClose(i) => self.request_close(vec![i]),
