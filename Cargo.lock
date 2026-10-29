@@ -927,6 +927,7 @@ dependencies = [
  "bytemuck",
  "cosmic-text",
  "etagere",
+ "fontdb",
  "lune-ui",
  "png",
  "pollster",

@@ -12,6 +12,7 @@ lune-ui.workspace = true
 wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 cosmic-text = "0.19"
+fontdb = { version = "0.23", default-features = false }
 etagere = "0.3"
 
 [dev-dependencies]
