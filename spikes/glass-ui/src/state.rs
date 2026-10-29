@@ -423,6 +423,9 @@ pub struct State {
     /// When the current popup opened, and a just-closed menu still fading out.
     pub popup_at: Instant,
     pub closing: Option<(Popup, Instant)>,
+    /// The frame clock: set once per frame (the wall clock in normal mode, a fixed instant in
+    /// frame dumps). All draw-time ages are measured against it.
+    pub now: Instant,
 }
 
 impl State {
@@ -456,7 +459,13 @@ impl State {
             maximized: false,
             popup_at: now,
             closing: None,
+            now,
         }
+    }
+
+    /// Seconds from `since` to the frame clock (0 if `since` is later).
+    pub fn age(&self, since: Instant) -> f32 {
+        self.now.saturating_duration_since(since).as_secs_f32()
     }
 
     pub fn open_popup(&mut self, popup: Popup) {
