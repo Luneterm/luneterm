@@ -47,7 +47,11 @@ fn groups(section: Section) -> Vec<Group> {
                     item(
                         GlassStyle,
                         "Glass style",
-                        "The material behind the window. Lunegit matches Lunegit's terminal exactly. Liquid Glass needs macOS 26 or later. Off uses a solid dark background, which is what Linux always gets.",
+                        if cfg!(target_os = "windows") {
+                            "The material behind the window. Lunegit uses Windows acrylic, like Lunegit's terminal. Mica and Mica Alt are the quieter Windows 11 materials. Off uses a solid dark background, which is what Linux always gets."
+                        } else {
+                            "The material behind the window. Lunegit matches Lunegit's terminal exactly. Liquid Glass needs macOS 26 or later. Off uses a solid dark background, which is what Linux always gets."
+                        },
                         Combo,
                     ),
                     item(
@@ -55,6 +59,12 @@ fn groups(section: Section) -> Vec<Group> {
                         "Keep glass when the window is inactive",
                         "Lunegit switches to a solid background when its window loses focus. Turn this on to keep the glass while you work in another app.",
                         Toggle,
+                    ),
+                    item(
+                        MenuBlur,
+                        "Menu blur",
+                        "How strongly context menus blur the content behind them.",
+                        Combo,
                     ),
                 ],
             },

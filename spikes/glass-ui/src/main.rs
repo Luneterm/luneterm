@@ -8,6 +8,7 @@
 #![allow(unreachable_pub)] // binary crate: `pub` marks items shared between its modules
 
 mod backdrop;
+mod blur;
 mod chrome;
 mod gpu;
 mod mock;
@@ -45,11 +46,17 @@ struct Renderer {
     atlas: TextAtlas,
     /// One text renderer per paint layer, so text interleaves correctly with shapes.
     layers: Vec<TextRenderer>,
+    /// Offscreen scene + blur for glass menus.
+    blur: blur::Blur,
+    dumped: bool,
 }
 
 struct App {
     renderer: Option<Renderer>,
     state: State,
+    last_title_click: Option<std::time::Instant>,
+    /// Borderless window edge under the mouse (Windows only).
+    resize_edge: Option<winit::window::ResizeDirection>,
 }
 
 fn main() {
@@ -57,6 +64,8 @@ fn main() {
     let mut app = App {
         renderer: None,
         state: State::new(),
+        last_title_click: None,
+        resize_edge: None,
     };
     event_loop.run_app(&mut app).expect("run app");
 }
@@ -86,15 +95,35 @@ impl ApplicationHandler for App {
                 .with_fullsize_content_view(true)
                 .with_title_hidden(true);
         }
+        #[cfg(target_os = "windows")]
+        {
+            // Borderless so the glass reaches the top edge; we draw the caption buttons. No
+            // redirection bitmap: wgpu presents through DirectComposition, which keeps alpha.
+            use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
+            attrs = attrs
+                .with_decorations(false)
+                .with_no_redirection_bitmap(true)
+                .with_undecorated_shadow(true)
+                .with_corner_preference(CornerPreference::Round)
+                .with_theme(Some(winit::window::Theme::Dark));
+        }
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
-        if !cfg!(target_os = "macos") {
+        if !cfg!(any(target_os = "macos", target_os = "windows")) {
             self.state.settings.glass = state::GlassStyle::Off;
         }
         apply_glass(&window, &self.state);
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
-            Box::new(event_loop.owned_display_handle()),
+        #[allow(unused_mut)]
+        let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
+            event_loop.owned_display_handle(),
         ));
+        #[cfg(target_os = "windows")]
+        {
+            // DX12 through a DirectComposition visual is the wgpu path that supports transparency.
+            desc.backends = wgpu::Backends::DX12;
+            desc.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+        }
+        let instance = wgpu::Instance::new(desc);
         let gpu = pollster::block_on(Gpu::new(window.clone(), &instance)).expect("gpu");
         eprintln!(
             "surface: {:?}, alpha {:?}, scale {}",
@@ -122,8 +151,21 @@ impl ApplicationHandler for App {
             })
             .collect();
         let text = TextCache::new(window.scale_factor() as f32);
+        // Test hook: open the "…" menu at start (exercises the blur path without clicking).
+        if let Some(v) = std::env::var_os("GLASS_UI_OPEN_MENU") {
+            if v == "colors" {
+                self.state.active = self.state.tabs.len() - 1;
+            }
+            self.state.open_popup(Popup::Menu {
+                kind: MenuKind::App,
+                at: (500.0, 120.0),
+            });
+        }
         window.request_redraw();
+        let blur = blur::Blur::new(&gpu.device, gpu.config.format);
         self.renderer = Some(Renderer {
+            blur,
+            dumped: false,
             gpu,
             text,
             swash: SwashCache::new(),
@@ -140,7 +182,10 @@ impl ApplicationHandler for App {
         let scale = window.scale_factor() as f32;
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => r.gpu.resize(size.width, size.height),
+            WindowEvent::Resized(size) => {
+                r.gpu.resize(size.width, size.height);
+                st.maximized = window.is_maximized();
+            }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 r.text.set_scale(scale_factor as f32);
             }
@@ -154,6 +199,21 @@ impl ApplicationHandler for App {
                     if let Some(sel) = &mut st.tabs[st.active].selection {
                         sel.1 = cell;
                     }
+                }
+                self.resize_edge = if cfg!(target_os = "windows") && !st.maximized {
+                    let size = window.inner_size();
+                    edge_at(
+                        st.mouse,
+                        size.width as f32 / scale,
+                        size.height as f32 / scale,
+                    )
+                } else {
+                    None
+                };
+                if let Some(edge) = self.resize_edge {
+                    window.set_cursor(CursorIcon::from(edge));
+                    window.request_redraw();
+                    return;
                 }
                 let on_link =
                     st.hover == Some(Hit::Body) && st.cmd && terminal_view::link_at(st).is_some();
@@ -189,6 +249,10 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
+                if let Some(edge) = self.resize_edge {
+                    let _ = window.drag_resize_window(edge);
+                    return;
+                }
                 let hit = st.hit_at(st.mouse);
                 if hit == Some(Hit::Body) {
                     if st.cmd
@@ -205,8 +269,22 @@ impl ApplicationHandler for App {
                     match st.click(hit) {
                         Effect::ApplyGlass => apply_glass(&window, st),
                         Effect::DragWindow => {
-                            let _ = window.drag_window();
+                            let now = std::time::Instant::now();
+                            let double = self.last_title_click.is_some_and(|t| {
+                                now.duration_since(t) < std::time::Duration::from_millis(400)
+                            });
+                            self.last_title_click = Some(now);
+                            if double && cfg!(target_os = "windows") {
+                                window.set_maximized(!window.is_maximized());
+                            } else {
+                                let _ = window.drag_window();
+                            }
                         }
+                        Effect::Caption(state::Caption::Minimize) => window.set_minimized(true),
+                        Effect::Caption(state::Caption::Maximize) => {
+                            window.set_maximized(!window.is_maximized());
+                        }
+                        Effect::Caption(state::Caption::Close) => event_loop.exit(),
                         Effect::None => {}
                     }
                 }
@@ -220,7 +298,7 @@ impl ApplicationHandler for App {
                     && st.popup.is_none()
                     && st.modal.is_none()
                 {
-                    st.popup = Some(Popup::Menu {
+                    st.open_popup(Popup::Menu {
                         kind: MenuKind::Tab(i),
                         at: st.mouse,
                     });
@@ -279,10 +357,28 @@ impl ApplicationHandler for App {
         let Some(r) = &self.renderer else { return };
         let st = &self.state;
         let fading = st.switched_at.elapsed().as_secs_f32() < terminal_view::SWITCH_FADE;
-        if fading || st.tabs.iter().any(|t| t.running) {
+        if fading || st.tabs.iter().any(|t| t.running) || overlays::popup_animating(st) {
             r.gpu.window.request_redraw();
         }
     }
+}
+
+/// Which edge of a borderless window the mouse is on, for resizing.
+fn edge_at(p: (f32, f32), w: f32, h: f32) -> Option<winit::window::ResizeDirection> {
+    use winit::window::ResizeDirection as D;
+    const B: f32 = 6.0;
+    let (l, r, t, b) = (p.0 < B, p.0 >= w - B, p.1 < B, p.1 >= h - B);
+    Some(match (l, r, t, b) {
+        (true, _, true, _) => D::NorthWest,
+        (_, true, true, _) => D::NorthEast,
+        (true, _, _, true) => D::SouthWest,
+        (_, true, _, true) => D::SouthEast,
+        (true, ..) => D::West,
+        (_, true, ..) => D::East,
+        (_, _, true, _) => D::North,
+        (.., true) => D::South,
+        _ => return None,
+    })
 }
 
 fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
@@ -298,7 +394,12 @@ fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
     settings_view::draw(&mut p, st);
     overlays::draw_popup(&mut p, st);
     overlays::draw_modal(&mut p, st);
-    let Painter { layers, hits, .. } = p;
+    let Painter {
+        layers,
+        hits,
+        backdrop,
+        ..
+    } = p;
     st.hits = hits;
     st.hover = st.hit_at(st.mouse);
 
@@ -318,7 +419,7 @@ fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
                 buffer,
                 left: t.x * s,
                 top: t.y * s,
-                scale: 1.0,
+                scale: t.scale,
                 bounds: TextBounds {
                     left: (c.x * s) as i32,
                     top: (c.y * s) as i32,
@@ -361,12 +462,19 @@ fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
     let geometry: Vec<gpu::LayerGeometry> = layers.into_iter().map(|l| l.geometry).collect();
     let uploaded = r.gpu.upload(&geometry, s);
     let view = frame.texture.create_view(&Default::default());
+    let size = (r.gpu.config.width, r.gpu.config.height);
+    let sigma = st.settings.menu_blur.sigma();
+    r.blur.prepare(&r.gpu.device, &r.gpu.queue, size, s, sigma);
     let mut encoder = r.gpu.device.create_command_encoder(&Default::default());
-    {
+    // Layers under popups go to an offscreen scene, so a glass menu can blur them.
+    const SCENE_LAYERS: usize = 2;
+    let pass_desc = |target: &wgpu::TextureView,
+                     f: &mut dyn FnMut(&mut wgpu::RenderPass<'_>) -> Result<(), String>,
+                     encoder: &mut wgpu::CommandEncoder| {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("frame"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
+                view: target,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -379,15 +487,55 @@ fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        for (i, renderer) in r.layers.iter().enumerate() {
-            r.gpu.draw_below_text(&mut pass, &uploaded, i);
-            renderer
-                .render(&r.atlas, &r.viewport, &mut pass)
-                .map_err(|e| e.to_string())?;
-            r.gpu.draw_above_text(&mut pass, &uploaded, i);
-        }
+        f(&mut pass)
+    };
+    let scene = r.blur.scene_view().ok_or("no scene target")?;
+    pass_desc(
+        scene,
+        &mut |pass| {
+            for i in 0..SCENE_LAYERS {
+                r.gpu.draw_below_text(pass, &uploaded, i);
+                r.layers[i]
+                    .render(&r.atlas, &r.viewport, pass)
+                    .map_err(|e| e.to_string())?;
+                r.gpu.draw_above_text(pass, &uploaded, i);
+            }
+            Ok(())
+        },
+        &mut encoder,
+    )?;
+    if let Some(b) = backdrop {
+        r.blur.set_backdrop(&r.gpu.queue, b);
+        r.blur.run(&mut encoder);
     }
+    pass_desc(
+        &view,
+        &mut |pass| {
+            r.blur.blit_scene(pass);
+            if backdrop.is_some() {
+                r.blur.draw_backdrop(pass);
+            }
+            for i in SCENE_LAYERS..r.layers.len() {
+                r.gpu.draw_below_text(pass, &uploaded, i);
+                r.layers[i]
+                    .render(&r.atlas, &r.viewport, pass)
+                    .map_err(|e| e.to_string())?;
+                r.gpu.draw_above_text(pass, &uploaded, i);
+            }
+            Ok(())
+        },
+        &mut encoder,
+    )?;
     r.gpu.queue.submit(Some(encoder.finish()));
+    // Debug: GLASS_UI_DUMP=<dir> writes the scene and blurred textures once a menu is fully open.
+    if backdrop.is_some_and(|b| b.alpha >= 0.999)
+        && let Some(dir) = std::env::var_os("GLASS_UI_DUMP")
+        && !r.dumped
+    {
+        r.dumped = true;
+        r.blur
+            .dump(&r.gpu.device, &r.gpu.queue, std::path::Path::new(&dir));
+    }
     r.gpu.window.pre_present_notify();
     r.gpu.queue.present(frame);
     r.atlas.trim();

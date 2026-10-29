@@ -15,8 +15,6 @@ pub const BORDER_SUBTLE: Rgba = [0xFF, 0xFF, 0xFF, 0x1A];
 pub const SELECTION: Rgba = [0x76, 0x7D, 0x85, 0x33];
 pub const ACCENT: Rgba = [0x76, 0x7D, 0x85, 0xFF];
 pub const CURSOR: Rgba = [0xCC, 0xCC, 0xCC, 0x80];
-pub const MENU_BG: Rgba = [0x1A, 0x1D, 0x21, 0xF8];
-pub const MENU_BORDER: Rgba = [0xFF, 0xFF, 0xFF, 0x3A];
 pub const DROPDOWN_BG: Rgba = [0x00, 0x00, 0x00, 0xF0];
 pub const DIALOG_BACKDROP: Rgba = [0x00, 0x00, 0x00, 0x80];
 pub const DIALOG_FOOTER: Rgba = [0x00, 0x00, 0x00, 0x24];
@@ -24,6 +22,16 @@ pub const DIALOG_FOOTER: Rgba = [0x00, 0x00, 0x00, 0x24];
 pub const INACTIVE_SOLID: Rgba = [0x33, 0x33, 0x33, 0xFF];
 /// Base under the glass layers when there is no OS glass (Linux).
 pub const OPAQUE_BASE: Rgba = [0x1F, 0x1F, 0x1F, 0xFF];
+
+// Luneium browser context-menu tokens (`tokens.css`, `ContextMenu.css`).
+pub const LUNEIUM_TEXT_PRIMARY: Rgba = [0xFF, 0xFF, 0xFF, 0xCC];
+pub const LUNEIUM_TEXT_TERTIARY: Rgba = [0xFF, 0xFF, 0xFF, 0x88];
+pub const LUNEIUM_TEXT_QUATERNARY: Rgba = [0xFF, 0xFF, 0xFF, 0x66];
+pub const LUNEIUM_POPUP_BORDER: Rgba = [0xFF, 0xFF, 0xFF, 0x3A];
+pub const LUNEIUM_ITEM_HOVER: Rgba = [0xFF, 0xFF, 0xFF, 0x16];
+pub const LUNEIUM_SEPARATOR: Rgba = [0xFF, 0xFF, 0xFF, 0x22];
+/// `linear-gradient(rgba(0,0,0,.45)) , rgba(165,165,165,.3)` flattened: alpha .615, grey 44.
+pub const LUNEIUM_MENU_GLASS: Rgba = [44, 44, 44, 157];
 
 pub const FONT_S: f32 = 11.0;
 pub const FONT_BASE: f32 = 13.0;
@@ -48,6 +56,9 @@ pub mod icon {
     pub const CHEVRON_DOWN: &str = "\u{eab4}";
     pub const ARROW_LEFT: &str = "\u{ea9b}";
     pub const CHECK: &str = "\u{eab2}";
+    pub const CHROME_MINIMIZE: &str = "\u{eaba}";
+    pub const CHROME_MAXIMIZE: &str = "\u{eab9}";
+    pub const CHROME_RESTORE: &str = "\u{eabb}";
 }
 
 #[derive(Debug)]

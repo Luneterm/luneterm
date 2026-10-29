@@ -26,7 +26,7 @@ impl GlassMode {
         }
     }
 
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "macos", target_os = "windows"), allow(dead_code))]
     pub fn is_glass(self) -> bool {
         self != Self::Opaque
     }
@@ -72,10 +72,31 @@ pub fn apply(window: &winit::window::Window, mode: GlassMode) -> Result<(), Stri
     result.map_err(|e| e.to_string())
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows 11 DWM system backdrops. Avalonia (Lunegit) builds its acrylic from the WinUI
+/// composition recipe (host backdrop → blur → saturation → luminosity/tint); DWM's acrylic is the
+/// system version of the same recipe.
+#[cfg(target_os = "windows")]
+pub fn apply(window: &winit::window::Window, mode: GlassMode) -> Result<(), String> {
+    use window_vibrancy::{
+        apply_acrylic, apply_mica, apply_tabbed, clear_acrylic, clear_mica, clear_tabbed,
+    };
+    // Clearing a backdrop that was never applied is harmless.
+    let _ = clear_acrylic(window);
+    let _ = clear_mica(window);
+    let _ = clear_tabbed(window);
+    let result = match mode {
+        GlassMode::Vibrancy | GlassMode::VibrancyLunegit => apply_acrylic(window, None),
+        GlassMode::LiquidClear => apply_mica(window, Some(true)),
+        GlassMode::LiquidRegular => apply_tabbed(window, Some(true)),
+        GlassMode::Opaque => Ok(()),
+    };
+    result.map_err(|e| e.to_string())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn apply(_window: &winit::window::Window, mode: GlassMode) -> Result<(), String> {
     if mode.is_glass() {
-        Err("glass is only implemented on macOS in this spike".into())
+        Err("no OS glass on this platform; Linux uses the opaque theme".into())
     } else {
         Ok(())
     }
