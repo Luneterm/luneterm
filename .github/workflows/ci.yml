@@ -21,6 +21,8 @@ jobs:
         run: scripts/check-lib-boundaries.sh
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # cargo test captures stdout; --nocapture puts the P6 adapter / P4 emoji probe lines in the log.
+      - run: cargo test -p lune-termview --test probe -- --nocapture
 
   # Windows build for testing on real hardware. M9 adds luneterm.exe here.
   windows-exe:
