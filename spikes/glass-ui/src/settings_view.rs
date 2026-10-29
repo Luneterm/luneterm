@@ -60,6 +60,12 @@ fn groups(section: Section) -> Vec<Group> {
                         "Lunegit switches to a solid background when its window loses focus. Turn this on to keep the glass while you work in another app.",
                         Toggle,
                     ),
+                    item(
+                        MenuBlur,
+                        "Menu blur",
+                        "How strongly context menus blur the content behind them.",
+                        Combo,
+                    ),
                 ],
             },
             Group {

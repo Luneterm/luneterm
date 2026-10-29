@@ -11,6 +11,7 @@ use crate::mock;
 pub enum SettingId {
     GlassStyle,
     KeepGlassInactive,
+    MenuBlur,
     Motion,
     Font,
     FontSize,
@@ -44,6 +45,24 @@ pub enum Motion {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlurLevel {
+    Low,
+    Medium,
+    High,
+}
+
+impl BlurLevel {
+    /// Gaussian sigma in logical px. Medium is the value approved on 2026-10-29.
+    pub fn sigma(self) -> f32 {
+        match self {
+            Self::Low => 4.0,
+            Self::Medium => 8.0,
+            Self::High => 14.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutlineAnim {
     Sweep,
     Comet,
@@ -55,6 +74,7 @@ pub enum OutlineAnim {
 pub struct Settings {
     pub glass: GlassStyle,
     pub keep_glass_inactive: bool,
+    pub menu_blur: BlurLevel,
     pub motion: Motion,
     pub font: usize,
     pub font_size: u32,
@@ -77,6 +97,7 @@ impl Default for Settings {
         Self {
             glass: GlassStyle::Lunegit,
             keep_glass_inactive: false,
+            menu_blur: BlurLevel::Medium,
             motion: Motion::Full,
             font: 0,
             font_size: 13,
@@ -115,6 +136,7 @@ impl Settings {
                 "Off — solid dark",
             ]),
             SettingId::Motion => v(&["Full", "Reduced", "None"]),
+            SettingId::MenuBlur => v(&["Low", "Medium (default)", "High"]),
             SettingId::Font => vec![
                 ("RobotoMono Nerd Font Mono".into(), true),
                 ("RznMono (coming soon)".into(), false),
@@ -132,6 +154,7 @@ impl Settings {
         match id {
             SettingId::GlassStyle => self.glass as usize,
             SettingId::Motion => self.motion as usize,
+            SettingId::MenuBlur => self.menu_blur as usize,
             SettingId::Font => self.font,
             SettingId::Palette => self.palette,
             SettingId::OutlineStyle => self.outline as usize,
@@ -141,6 +164,9 @@ impl Settings {
 
     pub fn choose(&mut self, id: SettingId, i: usize) {
         match id {
+            SettingId::MenuBlur => {
+                self.menu_blur = [BlurLevel::Low, BlurLevel::Medium, BlurLevel::High][i.min(2)];
+            }
             SettingId::GlassStyle => {
                 self.glass = [
                     GlassStyle::Lunegit,
@@ -394,6 +420,9 @@ pub struct State {
     pub cell: (f32, f32),
     /// Window is maximised (Windows caption shows "restore").
     pub maximized: bool,
+    /// When the current popup opened, and a just-closed menu still fading out.
+    pub popup_at: Instant,
+    pub closing: Option<(Popup, Instant)>,
 }
 
 impl State {
@@ -404,6 +433,7 @@ impl State {
                 Tab::new("zsh", mock::Kind::Shell, false),
                 Tab::new("cargo build", mock::Kind::Build, true),
                 Tab::new("claude", mock::Kind::Agent, false),
+                Tab::new("colors", mock::Kind::Colors, false),
             ],
             active: 0,
             switched_at: now,
@@ -424,7 +454,26 @@ impl State {
             term_body: crate::paint::Rect::default(),
             cell: (7.8, 17.0),
             maximized: false,
+            popup_at: now,
+            closing: None,
         }
+    }
+
+    pub fn open_popup(&mut self, popup: Popup) {
+        self.popup = Some(popup);
+        self.popup_at = Instant::now();
+        self.closing = None;
+    }
+
+    /// Closes the popup; menus keep fading out for a moment. Returns whether one was open.
+    pub fn close_popup(&mut self) -> bool {
+        let Some(popup) = self.popup.take() else {
+            return false;
+        };
+        if matches!(popup, Popup::Menu { .. }) {
+            self.closing = Some((popup, Instant::now()));
+        }
+        true
     }
 
     pub fn hit_at(&self, p: (f32, f32)) -> Option<Hit> {
@@ -485,12 +534,14 @@ impl State {
         let editing_before = self.editing;
         self.editing = None;
         let Some(hit) = hit else {
-            self.popup = None;
+            self.close_popup();
             return Effect::None;
         };
         match hit {
             Hit::Block => self.editing = editing_before.filter(|_| self.modal.is_some()),
-            Hit::Dismiss => self.popup = None,
+            Hit::Dismiss => {
+                self.close_popup();
+            }
             Hit::TitleBand => return Effect::DragWindow,
             Hit::Caption(c) => return Effect::Caption(c),
             Hit::Body => {}
@@ -498,13 +549,13 @@ impl State {
             Hit::TabClose(i) => self.request_close(vec![i]),
             Hit::NewTab => self.new_tab(),
             Hit::More => {
-                self.popup = Some(Popup::Menu {
+                self.open_popup(Popup::Menu {
                     kind: MenuKind::App,
                     at: self.mouse,
                 });
             }
             Hit::Menu(cmd) => {
-                self.popup = None;
+                self.close_popup();
                 return self.menu(cmd);
             }
             Hit::Nav(section) => {
@@ -526,10 +577,10 @@ impl State {
                     .find(|(_, h)| *h == Hit::Combo(id))
                     .map(|(r, _)| *r)
                     .unwrap_or_default();
-                self.popup = Some(Popup::Combo { id, anchor });
+                self.open_popup(Popup::Combo { id, anchor });
             }
             Hit::ComboItem(id, i) => {
-                self.popup = None;
+                self.close_popup();
                 if self.settings.options(id).get(i).is_some_and(|o| o.1) {
                     self.settings.choose(id, i);
                     if id == SettingId::GlassStyle {
@@ -637,10 +688,7 @@ impl State {
 
     /// Esc: closes the innermost thing that is open.
     pub fn escape(&mut self) {
-        if self.popup.take().is_some()
-            || self.modal.take().is_some()
-            || self.editing.take().is_some()
-        {
+        if self.close_popup() || self.modal.take().is_some() || self.editing.take().is_some() {
             return;
         }
         self.page = Page::Terminal;

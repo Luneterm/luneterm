@@ -8,6 +8,7 @@
 #![allow(unreachable_pub)] // binary crate: `pub` marks items shared between its modules
 
 mod backdrop;
+mod blur;
 mod chrome;
 mod gpu;
 mod mock;
@@ -45,6 +46,9 @@ struct Renderer {
     atlas: TextAtlas,
     /// One text renderer per paint layer, so text interleaves correctly with shapes.
     layers: Vec<TextRenderer>,
+    /// Offscreen scene + blur for glass menus.
+    blur: blur::Blur,
+    dumped: bool,
 }
 
 struct App {
@@ -147,8 +151,21 @@ impl ApplicationHandler for App {
             })
             .collect();
         let text = TextCache::new(window.scale_factor() as f32);
+        // Test hook: open the "…" menu at start (exercises the blur path without clicking).
+        if let Some(v) = std::env::var_os("GLASS_UI_OPEN_MENU") {
+            if v == "colors" {
+                self.state.active = self.state.tabs.len() - 1;
+            }
+            self.state.open_popup(Popup::Menu {
+                kind: MenuKind::App,
+                at: (500.0, 120.0),
+            });
+        }
         window.request_redraw();
+        let blur = blur::Blur::new(&gpu.device, gpu.config.format);
         self.renderer = Some(Renderer {
+            blur,
+            dumped: false,
             gpu,
             text,
             swash: SwashCache::new(),
@@ -281,7 +298,7 @@ impl ApplicationHandler for App {
                     && st.popup.is_none()
                     && st.modal.is_none()
                 {
-                    st.popup = Some(Popup::Menu {
+                    st.open_popup(Popup::Menu {
                         kind: MenuKind::Tab(i),
                         at: st.mouse,
                     });
@@ -340,7 +357,7 @@ impl ApplicationHandler for App {
         let Some(r) = &self.renderer else { return };
         let st = &self.state;
         let fading = st.switched_at.elapsed().as_secs_f32() < terminal_view::SWITCH_FADE;
-        if fading || st.tabs.iter().any(|t| t.running) {
+        if fading || st.tabs.iter().any(|t| t.running) || overlays::popup_animating(st) {
             r.gpu.window.request_redraw();
         }
     }
@@ -377,7 +394,12 @@ fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
     settings_view::draw(&mut p, st);
     overlays::draw_popup(&mut p, st);
     overlays::draw_modal(&mut p, st);
-    let Painter { layers, hits, .. } = p;
+    let Painter {
+        layers,
+        hits,
+        backdrop,
+        ..
+    } = p;
     st.hits = hits;
     st.hover = st.hit_at(st.mouse);
 
@@ -397,7 +419,7 @@ fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
                 buffer,
                 left: t.x * s,
                 top: t.y * s,
-                scale: 1.0,
+                scale: t.scale,
                 bounds: TextBounds {
                     left: (c.x * s) as i32,
                     top: (c.y * s) as i32,
@@ -440,12 +462,19 @@ fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
     let geometry: Vec<gpu::LayerGeometry> = layers.into_iter().map(|l| l.geometry).collect();
     let uploaded = r.gpu.upload(&geometry, s);
     let view = frame.texture.create_view(&Default::default());
+    let size = (r.gpu.config.width, r.gpu.config.height);
+    let sigma = st.settings.menu_blur.sigma();
+    r.blur.prepare(&r.gpu.device, &r.gpu.queue, size, s, sigma);
     let mut encoder = r.gpu.device.create_command_encoder(&Default::default());
-    {
+    // Layers under popups go to an offscreen scene, so a glass menu can blur them.
+    const SCENE_LAYERS: usize = 2;
+    let pass_desc = |target: &wgpu::TextureView,
+                     f: &mut dyn FnMut(&mut wgpu::RenderPass<'_>) -> Result<(), String>,
+                     encoder: &mut wgpu::CommandEncoder| {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("frame"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
+                view: target,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -458,15 +487,55 @@ fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        for (i, renderer) in r.layers.iter().enumerate() {
-            r.gpu.draw_below_text(&mut pass, &uploaded, i);
-            renderer
-                .render(&r.atlas, &r.viewport, &mut pass)
-                .map_err(|e| e.to_string())?;
-            r.gpu.draw_above_text(&mut pass, &uploaded, i);
-        }
+        f(&mut pass)
+    };
+    let scene = r.blur.scene_view().ok_or("no scene target")?;
+    pass_desc(
+        scene,
+        &mut |pass| {
+            for i in 0..SCENE_LAYERS {
+                r.gpu.draw_below_text(pass, &uploaded, i);
+                r.layers[i]
+                    .render(&r.atlas, &r.viewport, pass)
+                    .map_err(|e| e.to_string())?;
+                r.gpu.draw_above_text(pass, &uploaded, i);
+            }
+            Ok(())
+        },
+        &mut encoder,
+    )?;
+    if let Some(b) = backdrop {
+        r.blur.set_backdrop(&r.gpu.queue, b);
+        r.blur.run(&mut encoder);
     }
+    pass_desc(
+        &view,
+        &mut |pass| {
+            r.blur.blit_scene(pass);
+            if backdrop.is_some() {
+                r.blur.draw_backdrop(pass);
+            }
+            for i in SCENE_LAYERS..r.layers.len() {
+                r.gpu.draw_below_text(pass, &uploaded, i);
+                r.layers[i]
+                    .render(&r.atlas, &r.viewport, pass)
+                    .map_err(|e| e.to_string())?;
+                r.gpu.draw_above_text(pass, &uploaded, i);
+            }
+            Ok(())
+        },
+        &mut encoder,
+    )?;
     r.gpu.queue.submit(Some(encoder.finish()));
+    // Debug: GLASS_UI_DUMP=<dir> writes the scene and blurred textures once a menu is fully open.
+    if backdrop.is_some_and(|b| b.alpha >= 0.999)
+        && let Some(dir) = std::env::var_os("GLASS_UI_DUMP")
+        && !r.dumped
+    {
+        r.dumped = true;
+        r.blur
+            .dump(&r.gpu.device, &r.gpu.queue, std::path::Path::new(&dir));
+    }
     r.gpu.window.pre_present_notify();
     r.gpu.queue.present(frame);
     r.atlas.trim();

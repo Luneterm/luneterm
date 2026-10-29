@@ -49,6 +49,8 @@ pub enum Kind {
     Shell,
     Build,
     Agent,
+    /// Dense random coloured text, for judging the menu blur.
+    Colors,
 }
 
 struct Builder {
@@ -209,6 +211,45 @@ pub fn screen(kind: Kind) -> Screen {
                 .nl();
             s.b("    Building ", CYAN)
                 .t("[=====================>     ] 187/214: wgpu-core, naga");
+        }
+        Kind::Colors => {
+            const WORDS: [&str; 24] = [
+                "lune", "glass", "acrylic", "blur", "xterm", "cursor", "palette", "render",
+                "shader", "wgpu", "tab", "chrome", "noise", "tint", "frost", "vibrancy", "menu",
+                "terminal", "rust", "glyph", "atlas", "comet", "sweep", "breath",
+            ];
+            const INKS: [Ink; 14] = [
+                RED,
+                GREEN,
+                YELLOW,
+                BLUE,
+                MAGENTA,
+                CYAN,
+                WHITE,
+                FG,
+                Ink::Ansi(9),
+                Ink::Ansi(10),
+                Ink::Ansi(11),
+                Ink::Ansi(12),
+                Ink::Ansi(13),
+                Ink::Ansi(14),
+            ];
+            // Deterministic LCG, so the screen is the same every run.
+            let mut seed: u32 = 0x2545_F491;
+            let mut next = move || {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 8) as usize
+            };
+            for _ in 0..60 {
+                let mut width = 0;
+                while width < 160 {
+                    let word = WORDS[next() % WORDS.len()];
+                    let ink = INKS[next() % INKS.len()];
+                    s.push(word, ink, next() % 3 == 0).t(" ");
+                    width += word.len() + 1;
+                }
+                s.nl();
+            }
         }
         Kind::Agent => {
             const INNER: usize = 50;

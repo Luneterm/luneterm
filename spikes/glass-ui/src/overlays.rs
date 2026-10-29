@@ -69,12 +69,58 @@ fn entries(kind: MenuKind, active: usize) -> Vec<Entry> {
     v
 }
 
+/// Luneium's menu motion (`Popup.css`): in 0.18 s ease-out from 4 px lower at 97 %; out 0.12 s
+/// ease-in to 2 px lower at 98 %. Both about the top-left corner.
+const MENU_IN: f32 = 0.18;
+const MENU_OUT: f32 = 0.12;
+
+/// CSS `cubic-bezier(x1, y1, x2, y2)` at time `t`.
+fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    let coord = |a: f32, b: f32, u: f32| {
+        3.0 * a * u * (1.0 - u).powi(2) + 3.0 * b * u * u * (1.0 - u) + u.powi(3)
+    };
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if coord(x1, x2, mid) < t {
+            lo = mid
+        } else {
+            hi = mid
+        }
+    }
+    coord(y1, y2, (lo + hi) / 2.0)
+}
+
+pub fn popup_animating(st: &State) -> bool {
+    let opening = matches!(st.popup, Some(Popup::Menu { .. }))
+        && st.popup_at.elapsed().as_secs_f32() < MENU_IN;
+    let closing = st
+        .closing
+        .is_some_and(|(_, t)| t.elapsed().as_secs_f32() < MENU_OUT);
+    opening || closing
+}
+
 pub fn draw_popup(p: &mut P<'_>, st: &State) {
-    let Some(popup) = st.popup else { return };
     p.on(LayerId::Popup);
+    if st.popup.is_none()
+        && let Some((Popup::Menu { kind, at }, t0)) = st.closing
+    {
+        let t = t0.elapsed().as_secs_f32() / MENU_OUT;
+        if t < 1.0 {
+            let e = cubic_bezier(0.42, 0.0, 1.0, 1.0, t);
+            let xf = (1.0 - e, 2.0 * e, 1.0 - 0.02 * e);
+            menu(p, st, kind, at, xf, false);
+        }
+    }
+    let Some(popup) = st.popup else { return };
     p.hit(p.window, Hit::Dismiss);
     match popup {
-        Popup::Menu { kind, at } => menu(p, st, kind, at),
+        Popup::Menu { kind, at } => {
+            let t = st.popup_at.elapsed().as_secs_f32() / MENU_IN;
+            let e = cubic_bezier(0.215, 0.61, 0.355, 1.0, t);
+            menu(p, st, kind, at, (e, 4.0 * (1.0 - e), 0.97 + 0.03 * e), true);
+        }
         Popup::Combo { id, anchor } => {
             let options = st.settings.options(id);
             let selected = st.settings.selected(id);
@@ -115,21 +161,39 @@ pub fn draw_popup(p: &mut P<'_>, st: &State) {
     }
 }
 
-fn menu(p: &mut P<'_>, st: &State, kind: MenuKind, at: (f32, f32)) {
+/// Luneium's glass context menu (`ContextMenu.css`, `Popup.css`): the content under it blurred
+/// (30 px, saturate 1.8), black 45 % over grey 165 @ 30 %, radius 9, inset 1 px ring, 6 px padding,
+/// 28 px rows with radius 4, 12 px labels, 14 px icon slot, 11 px hints.
+fn menu(
+    p: &mut P<'_>,
+    st: &State,
+    kind: MenuKind,
+    at: (f32, f32),
+    anim: (f32, f32, f32),
+    interactive: bool,
+) {
+    const PAD: f32 = 6.0;
+    const ROW: f32 = 28.0;
+    const SEP: f32 = 11.0;
+    const RADIUS: f32 = 9.0;
     let entries = entries(kind, st.active);
-    let item_h = 30.0;
-    let sep_h = 9.0;
-    let mut w: f32 = 200.0;
-    let mut h = 12.0;
+    let label_style = Style::ui(12.0, LUNEIUM_TEXT_PRIMARY);
+    let hint_style = Style::ui(FONT_S, LUNEIUM_TEXT_QUATERNARY);
+    let mut w: f32 = 190.0;
+    let mut h = 2.0 * PAD;
     for e in &entries {
         match e {
             Entry::Item { text, shortcut, .. } => {
-                let tw = p.measure(&label(text, FG_PRIMARY)).0;
-                let sw = p.measure(&label(shortcut, FG_TERTIARY)).0;
-                w = w.max(36.0 + tw + 32.0 + sw + 12.0);
-                h += item_h;
+                let tw = p.measure(&Spec::plain(*text, label_style)).0;
+                let sw = if shortcut.is_empty() {
+                    0.0
+                } else {
+                    16.0 + p.measure(&Spec::plain(*shortcut, hint_style)).0
+                };
+                w = w.max(2.0 * PAD + 8.0 + 14.0 + 8.0 + tw + sw + 8.0);
+                h += ROW;
             }
-            Entry::Separator => h += sep_h,
+            Entry::Separator => h += SEP,
         }
     }
     let x = at.0.min(p.window.w - w - 8.0).max(8.0);
@@ -139,8 +203,17 @@ fn menu(p: &mut P<'_>, st: &State, kind: MenuKind, at: (f32, f32)) {
         at.1
     };
     let panel = Rect::new(x, y, w, h);
-    widgets::popup_panel(p, panel, MENU_BG, MENU_BORDER);
-    let mut cy = panel.y + 6.0;
+    let (alpha, dy, scale) = anim;
+    p.set_xform(Some(crate::paint::Xform {
+        origin: (panel.x, panel.y),
+        scale,
+        dy,
+        alpha,
+    }));
+    p.backdrop(panel, RADIUS);
+    p.fill(panel, RADIUS, LUNEIUM_MENU_GLASS);
+    p.ring(panel, RADIUS, 1.0, LUNEIUM_POPUP_BORDER, false);
+    let mut cy = panel.y + PAD;
     for e in &entries {
         match e {
             Entry::Item {
@@ -149,36 +222,46 @@ fn menu(p: &mut P<'_>, st: &State, kind: MenuKind, at: (f32, f32)) {
                 shortcut,
                 cmd,
             } => {
-                let r = Rect::new(panel.x + 6.0, cy, panel.w - 12.0, item_h);
+                let r = Rect::new(panel.x + PAD, cy, panel.w - 2.0 * PAD, ROW);
                 let hit = Hit::Menu(*cmd);
-                if p.hovered(hit) {
-                    p.fill(r, ITEM_RADIUS, SURFACE_HOVER);
+                if interactive && p.hovered(hit) {
+                    p.fill(r, 4.0, LUNEIUM_ITEM_HOVER);
                 }
+                let icon_slot = Rect::new(r.x + 8.0, r.y, 14.0, r.h);
                 if let Some(g) = glyph {
-                    p.text_centered(
-                        &icon(g, 14.0, FG_SECONDARY),
-                        Rect::new(r.x + 4.0, r.y, 20.0, r.h),
-                    );
+                    p.text_centered(&icon(g, 13.0, LUNEIUM_TEXT_TERTIARY), icon_slot);
                 }
-                p.text_in(&label(text, FG_PRIMARY), r, 32.0);
+                p.text_in(
+                    &Spec::plain(*text, label_style),
+                    Rect::new(icon_slot.right() + 8.0, r.y, 0.0, r.h),
+                    0.0,
+                );
                 if !shortcut.is_empty() {
-                    let spec = label(shortcut, FG_TERTIARY);
+                    let spec = Spec::plain(*shortcut, hint_style);
                     let sw = p.measure(&spec).0;
-                    p.text_in(&spec, Rect::new(r.right() - 10.0 - sw, r.y, sw, r.h), 0.0);
+                    p.text_in(&spec, Rect::new(r.right() - 8.0 - sw, r.y, sw, r.h), 0.0);
                 }
-                p.hit(r, hit);
-                cy += item_h;
+                if interactive {
+                    p.hit(r, hit);
+                }
+                cy += ROW;
             }
             Entry::Separator => {
                 p.fill(
-                    Rect::new(panel.x + 10.0, cy + 4.0, panel.w - 20.0, 1.0),
+                    Rect::new(
+                        panel.x + PAD + 2.0,
+                        cy + 5.0,
+                        panel.w - 2.0 * PAD - 4.0,
+                        1.0,
+                    ),
                     0.0,
-                    BORDER_SUBTLE,
+                    LUNEIUM_SEPARATOR,
                 );
-                cy += sep_h;
+                cy += SEP;
             }
         }
     }
+    p.set_xform(None);
 }
 
 /// Lunegit dialog: dim backdrop, 448 px acrylic card, 24 px padding, darker footer block.
