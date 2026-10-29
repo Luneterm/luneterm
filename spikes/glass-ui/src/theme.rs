@@ -3,63 +3,40 @@
 
 pub use lune_ui::color::{Rgba, over, premul, with_alpha};
 
-pub const FG_PRIMARY: Rgba = [0xFF, 0xFF, 0xFF, 0xCC];
-pub const FG_SECONDARY: Rgba = [0xFF, 0xFF, 0xFF, 0xAA];
-pub const FG_TERTIARY: Rgba = [0xFF, 0xFF, 0xFF, 0x88];
+pub use lune_ui::icon;
+use lune_ui::lunegit_dark::THEME;
+
+// Tokens the toolkit widgets read live in `lunegit_dark::THEME`; these names alias the fields
+// the app's own views also use.
+pub const FG_PRIMARY: Rgba = THEME.fg_primary;
+pub const FG_SECONDARY: Rgba = THEME.fg_secondary;
+pub const FG_TERTIARY: Rgba = THEME.fg_tertiary;
+pub const SURFACE_HOVER: Rgba = THEME.surface_hover;
+pub const SURFACE_SELECTED: Rgba = THEME.surface_selected;
+pub const BORDER: Rgba = THEME.border;
+pub const BORDER_SUBTLE: Rgba = THEME.border_subtle;
+pub const ACCENT: Rgba = THEME.accent;
+pub const FONT_S: f32 = THEME.font_s;
+pub const FONT_BASE: f32 = THEME.font_base;
+pub const FONT_M: f32 = THEME.font_m;
+pub const ITEM_RADIUS: f32 = THEME.item_radius;
+
+// App-only tokens.
 pub const FG_MUTED: Rgba = [0xB0, 0xB0, 0xB0, 0xFF];
-pub const SURFACE_INPUT: Rgba = [0xFF, 0xFF, 0xFF, 0x0A];
-pub const SURFACE_HOVER: Rgba = [0xFF, 0xFF, 0xFF, 0x10];
-pub const SURFACE_SELECTED: Rgba = [0xFF, 0xFF, 0xFF, 0x18];
-pub const BORDER: Rgba = [0xFF, 0xFF, 0xFF, 0x30];
-pub const BORDER_SUBTLE: Rgba = [0xFF, 0xFF, 0xFF, 0x1A];
 pub const SELECTION: Rgba = [0x76, 0x7D, 0x85, 0x33];
-pub const ACCENT: Rgba = [0x76, 0x7D, 0x85, 0xFF];
 pub const CURSOR: Rgba = [0xCC, 0xCC, 0xCC, 0x80];
-pub const DROPDOWN_BG: Rgba = [0x00, 0x00, 0x00, 0xF0];
-pub const DIALOG_BACKDROP: Rgba = [0x00, 0x00, 0x00, 0x80];
-pub const DIALOG_FOOTER: Rgba = [0x00, 0x00, 0x00, 0x24];
 /// Lunegit's window fallback (tint lightened 20%), shown while the window is inactive.
 pub const INACTIVE_SOLID: Rgba = [0x33, 0x33, 0x33, 0xFF];
 /// Base under the glass layers when there is no OS glass (Linux).
 pub const OPAQUE_BASE: Rgba = [0x1F, 0x1F, 0x1F, 0xFF];
-
-// Luneium browser context-menu tokens (`tokens.css`, `ContextMenu.css`).
-pub const LUNEIUM_TEXT_PRIMARY: Rgba = [0xFF, 0xFF, 0xFF, 0xCC];
-pub const LUNEIUM_TEXT_TERTIARY: Rgba = [0xFF, 0xFF, 0xFF, 0x88];
-pub const LUNEIUM_TEXT_QUATERNARY: Rgba = [0xFF, 0xFF, 0xFF, 0x66];
-pub const LUNEIUM_POPUP_BORDER: Rgba = [0xFF, 0xFF, 0xFF, 0x3A];
-pub const LUNEIUM_ITEM_HOVER: Rgba = [0xFF, 0xFF, 0xFF, 0x16];
-pub const LUNEIUM_SEPARATOR: Rgba = [0xFF, 0xFF, 0xFF, 0x22];
-/// `linear-gradient(rgba(0,0,0,.45)) , rgba(165,165,165,.3)` flattened: alpha .615, grey 44.
-pub const LUNEIUM_MENU_GLASS: Rgba = [44, 44, 44, 157];
-
-pub const FONT_S: f32 = 11.0;
-pub const FONT_BASE: f32 = 13.0;
-pub const FONT_M: f32 = 14.0;
 pub const FONT_L: f32 = 18.0;
-pub const ITEM_RADIUS: f32 = 6.0;
 
 pub const UI_FONT: &str = "RznSans";
 /// Lunegit's bundled terminal font. RznMono replaces it once it exists.
 pub const MONO_FONT: &str = "RobotoMono Nerd Font Mono";
 
-/// Codicons, as mapped into the Nerd Font (Lunegit uses the Codicons icon pack).
-pub mod icon {
-    pub const ADD: &str = "\u{ea60}";
-    pub const GEAR: &str = "\u{eb51}";
-    pub const ELLIPSIS: &str = "\u{ea7c}";
-    pub const CHROME_CLOSE: &str = "\u{eab8}";
-    pub const EDIT: &str = "\u{ea73}";
-    pub const COPY: &str = "\u{ebcc}";
-    pub const INFO: &str = "\u{ea74}";
-    pub const TERMINAL: &str = "\u{ea85}";
-    pub const CHEVRON_DOWN: &str = "\u{eab4}";
-    pub const ARROW_LEFT: &str = "\u{ea9b}";
-    pub const CHECK: &str = "\u{eab2}";
-    pub const CHROME_MINIMIZE: &str = "\u{eaba}";
-    pub const CHROME_MAXIMIZE: &str = "\u{eab9}";
-    pub const CHROME_RESTORE: &str = "\u{eabb}";
-}
+/// Codicon for the "Duplicate Tab" menu item (the toolkit has no app-specific glyphs).
+pub const ICON_TERMINAL: &str = "\u{ea85}";
 
 #[derive(Debug)]
 pub struct Palette {
@@ -160,3 +137,38 @@ pub const PALETTES: [Palette; 10] = [
         fg: 0xCCCCCC,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The aliases keep the literals they replaced when the tokens moved into the toolkit preset.
+    #[test]
+    fn aliases_keep_their_literal_values() {
+        assert_eq!(FG_PRIMARY, [0xFF, 0xFF, 0xFF, 0xCC]);
+        assert_eq!(FG_SECONDARY, [0xFF, 0xFF, 0xFF, 0xAA]);
+        assert_eq!(FG_TERTIARY, [0xFF, 0xFF, 0xFF, 0x88]);
+        assert_eq!(THEME.surface_input, [0xFF, 0xFF, 0xFF, 0x0A]);
+        assert_eq!(SURFACE_HOVER, [0xFF, 0xFF, 0xFF, 0x10]);
+        assert_eq!(SURFACE_SELECTED, [0xFF, 0xFF, 0xFF, 0x18]);
+        assert_eq!(BORDER, [0xFF, 0xFF, 0xFF, 0x30]);
+        assert_eq!(BORDER_SUBTLE, [0xFF, 0xFF, 0xFF, 0x1A]);
+        assert_eq!(ACCENT, [0x76, 0x7D, 0x85, 0xFF]);
+        assert_eq!(THEME.dropdown_bg, [0, 0, 0, 0xF0]);
+        assert_eq!(THEME.dialog_backdrop, [0, 0, 0, 0x80]);
+        assert_eq!(THEME.dialog_footer, [0, 0, 0, 0x24]);
+        assert_eq!(THEME.menu_text_primary, [0xFF, 0xFF, 0xFF, 0xCC]);
+        assert_eq!(THEME.menu_text_tertiary, [0xFF, 0xFF, 0xFF, 0x88]);
+        assert_eq!(THEME.menu_text_quaternary, [0xFF, 0xFF, 0xFF, 0x66]);
+        assert_eq!(THEME.menu_popup_border, [0xFF, 0xFF, 0xFF, 0x3A]);
+        assert_eq!(THEME.menu_item_hover, [0xFF, 0xFF, 0xFF, 0x16]);
+        assert_eq!(THEME.menu_separator, [0xFF, 0xFF, 0xFF, 0x22]);
+        assert_eq!(THEME.menu_glass, [44, 44, 44, 157]);
+        assert_eq!(THEME.accent_hover, [0x86, 0x8D, 0x95, 0xFF]);
+        assert_eq!(THEME.on_accent_text, [0xFF, 0xFF, 0xFF, 0xF0]);
+        assert_eq!(
+            (FONT_S, FONT_BASE, FONT_M, ITEM_RADIUS),
+            (11.0, 13.0, 14.0, 6.0)
+        );
+    }
+}

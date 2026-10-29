@@ -4,6 +4,7 @@
 use crate::color::{Rgba, premul};
 use crate::gpu::{LayerGeometry, Shape, StrokeVertex};
 use crate::text::{Spec, TextCache};
+use crate::theme::Theme;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Rect {
@@ -138,13 +139,21 @@ pub struct Painter<'a, H> {
     pub hits: Vec<(Rect, H)>,
     pub text: &'a mut TextCache,
     pub hover: Option<H>,
+    /// Tokens the toolkit widgets read.
+    pub theme: Theme,
     xform: Option<Xform>,
     /// Blurred-backdrop region requested by a glass menu (physical px).
     pub backdrop: Option<crate::blur::Backdrop>,
 }
 
 impl<'a, H: Copy + PartialEq> Painter<'a, H> {
-    pub fn new(s: f32, window: Rect, text: &'a mut TextCache, hover: Option<H>) -> Self {
+    pub fn new(
+        s: f32,
+        window: Rect,
+        text: &'a mut TextCache,
+        hover: Option<H>,
+        theme: Theme,
+    ) -> Self {
         Self {
             s,
             window,
@@ -154,6 +163,7 @@ impl<'a, H: Copy + PartialEq> Painter<'a, H> {
             hits: Vec::new(),
             text,
             hover,
+            theme,
             xform: None,
             backdrop: None,
         }
