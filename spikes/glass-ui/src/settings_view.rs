@@ -1,12 +1,12 @@
 //! Settings page. Copy and structure follow Lunegit's `TerminalSettingsView.axaml` and its
 //! `en.json` strings; Appearance adds Luneterm's glass options.
 
-use crate::paint::{LayerId, Rect};
 use crate::state::{Hit, Page, Popup, Section, SettingId, State};
 use crate::terminal_view::{self, glass};
-use crate::text::{Spec, Style};
 use crate::theme::*;
 use crate::widgets::{self, P, label};
+use lune_ui::paint::{LayerId, Rect};
+use lune_ui::text::{Spec, Style};
 
 enum Control {
     Toggle,

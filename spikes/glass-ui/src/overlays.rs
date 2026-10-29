@@ -1,11 +1,11 @@
 //! Popups (context menus, dropdowns) and modal dialogs.
 
-use crate::paint::{LayerId, Rect};
 use crate::state::{DialogBtn, Hit, MenuCmd, MenuKind, Modal, Popup, State};
 use crate::terminal_view::glass;
-use crate::text::{Spec, Style};
 use crate::theme::*;
 use crate::widgets::{self, P, icon, label};
+use lune_ui::paint::{LayerId, Rect};
+use lune_ui::text::{Spec, Style};
 
 enum Entry {
     Item {
@@ -203,7 +203,7 @@ fn menu(
     };
     let panel = Rect::new(x, y, w, h);
     let (alpha, dy, scale) = anim;
-    p.set_xform(Some(crate::paint::Xform {
+    p.set_xform(Some(lune_ui::paint::Xform {
         origin: (panel.x, panel.y),
         scale,
         dy,

@@ -936,6 +936,7 @@ name = "lune-ui"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "glyphon",
  "png",
  "wgpu",
  "winit",

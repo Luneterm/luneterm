@@ -4,11 +4,11 @@ use std::f32::consts::PI;
 
 use lune_ui::{chrome, lunegit_dark};
 
-use crate::paint::{LayerId, Rect, StrokeStyle, polyline_length};
 use crate::state::{Hit, OutlineAnim, State};
-use crate::text::{Spec, Style};
 use crate::theme::*;
 use crate::widgets::{P, icon};
+use lune_ui::paint::{LayerId, Rect, StrokeStyle, polyline_length};
+use lune_ui::text::{Spec, Style};
 
 pub const TITLE_BAND: f32 = 34.0;
 pub const CARD_MARGIN: f32 = 10.0;

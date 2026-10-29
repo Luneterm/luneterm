@@ -1,9 +1,9 @@
 //! Controls, styled after Lunegit's Fluent theme overrides (`DarkTheme.axaml`).
 
-use crate::paint::{Painter, Rect};
 use crate::state::Hit;
-use crate::text::{Spec, Style};
 use crate::theme::*;
+use lune_ui::paint::{Painter, Rect};
+use lune_ui::text::{Spec, Style};
 
 pub type P<'a> = Painter<'a, Hit>;
 
