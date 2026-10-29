@@ -9,6 +9,14 @@ license.workspace = true
 
 [dependencies]
 lune-ui.workspace = true
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+cosmic-text = "0.19"
+etagere = "0.3"
+
+[dev-dependencies]
+pollster = "0.4"
+png = "0.18"
 
 [lints]
 workspace = true

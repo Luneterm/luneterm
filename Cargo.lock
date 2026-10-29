@@ -924,7 +924,13 @@ version = "0.1.0"
 name = "lune-termview"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "cosmic-text",
+ "etagere",
  "lune-ui",
+ "png",
+ "pollster",
+ "wgpu",
 ]
 
 [[package]]
