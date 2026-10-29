@@ -63,6 +63,8 @@ fn shape_line(
                 glyph_id: g.glyph_id,
                 x: g.x + g.font_size * g.x_offset,
                 y: g.y - g.font_size * g.y_offset,
+                pen_x: g.x,
+                advance: g.w,
                 weight: g.font_weight,
                 italic: g.cache_key_flags.contains(CacheKeyFlags::FAKE_ITALIC),
             });
@@ -120,6 +122,11 @@ pub struct ShapedGlyph {
     pub glyph_id: u16,
     pub x: f32,
     pub y: f32,
+    /// The glyph's pen position (cosmic `LayoutGlyph.x`, logical px), before its own offset;
+    /// `x` is `pen_x` plus the offset.
+    pub pen_x: f32,
+    /// The glyph's advance (cosmic `LayoutGlyph.w`, logical px).
+    pub advance: f32,
     pub weight: Weight,
     /// Rasterize slanted (`CacheKeyFlags::FAKE_ITALIC`): italic was asked for and the face has
     /// no italic.
@@ -364,6 +371,27 @@ mod tests {
             assert_eq!(face_family(&r, g.font_id), r.mono);
         }
         assert!((s.advance - 7.8).abs() < 0.01, "{}", s.advance);
+    }
+
+    #[test]
+    fn marks_in_a_gdef_less_font_keep_a_full_advance() {
+        // the shipped mono face has no mark class: every mark advances like a letter. This pins
+        // the premise of D4 (iii); if it ever reads 0, the fit-on-base rule has nothing to fix.
+        // (HarfBuzz composes a + U+0301 into the font's single "a acute" glyph, so the cluster
+        // is [a acute, tilde]: two glyphs, not three.)
+        let mut r = rig();
+        let f = fonts(&r, false);
+        let mut sh = Shaper::new();
+        let s = sh
+            .shape(&mut r.fs, &f, "a\u{301}\u{303}", false, false)
+            .clone();
+        assert_eq!(s.glyphs.len(), 2, "{s:?}");
+        let (base, mark) = (s.glyphs[0], s.glyphs[1]);
+        assert!((base.advance - 7.8).abs() < 0.01, "{}", base.advance);
+        assert!((mark.advance - 7.8).abs() < 0.01, "{}", mark.advance);
+        assert_eq!(base.pen_x, 0.0);
+        assert!((mark.pen_x - 7.8).abs() < 0.01, "{}", mark.pen_x);
+        assert!((s.advance - 15.6).abs() < 0.02, "{}", s.advance);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use cosmic_text::{CacheKey, CacheKeyFlags, FontSystem, SwashCache};
 use lune_ui::color::Rgba;
 
 use crate::atlas::{AtlasCore, AtlasKey, CustomKey, Entry, Full, Page, SwashRaster};
-use crate::contain::{is_blank, next_cell_blank, place};
+use crate::contain::{base_advance, glyph_x, is_blank, next_cell_blank, place};
 use crate::custom_glyphs::has_custom_char;
 use crate::layout::{CellMetrics, GridLayout};
 use crate::model::{Attrs, Cell, Cursor, CursorShape, Grid, UnderlineStyle, ViewState};
@@ -490,10 +490,11 @@ fn build_row(
             let italic = cell.attrs.contains(Attrs::ITALIC);
             let shaped = shaper.shape(fs, ctx.fonts, text, bold, italic);
             if !shaped.glyphs.is_empty() {
-                let advance_px = shaped.advance * scale;
+                let advance_px = base_advance(&shaped.glyphs) * scale;
                 let next_blank = next_cell_blank(row, c);
                 let mut raster = SwashRaster { cache: swash, fs };
-                let key_of = |g: &ShapedGlyph, pl: &crate::contain::Placement| {
+                let key_of = |i: usize, pl: &crate::contain::Placement| {
+                    let g: &ShapedGlyph = &shaped.glyphs[i];
                     let rs = pl.raster_scale;
                     let flags = if g.italic {
                         CacheKeyFlags::FAKE_ITALIC
@@ -505,7 +506,7 @@ fn build_row(
                         g.glyph_id,
                         m.font_size * scale * rs,
                         (
-                            pl.origin_x + g.x * scale * rs,
+                            pl.origin_x + glyph_x(&shaped.glyphs, i) * scale * rs,
                             (pl.baseline_y as f32 + g.y * scale * rs).trunc(),
                         ),
                         g.weight,
@@ -518,7 +519,7 @@ fn build_row(
                 let pl0 = place(
                     cell_x, row_top, m, cell.width, advance_px, false, next_blank,
                 );
-                let (k0, _, _) = key_of(&shaped.glyphs[0], &pl0);
+                let (k0, _, _) = key_of(0, &pl0);
                 let is_color =
                     fetch(core, &mut raster, proto, k0)?.is_some_and(|e| e.page == Page::Color);
                 let pl = if is_color {
@@ -528,8 +529,8 @@ fn build_row(
                 };
                 let clip = pl.clip.map(|v| v as f32);
                 let color = premul(res.fg);
-                for g in shaped.glyphs.iter().take(MAX_GLYPHS_PER_CELL) {
-                    let (key, xi, yi) = key_of(g, &pl);
+                for i in 0..shaped.glyphs.len().min(MAX_GLYPHS_PER_CELL) {
+                    let (key, xi, yi) = key_of(i, &pl);
                     let Some(e) = fetch(core, &mut raster, proto, key)? else {
                         continue;
                     };
@@ -1124,6 +1125,62 @@ mod tests {
         assert_eq!(row.mask.len(), 1);
         assert_eq!(row.mask[0].rect, [16.0, 0.0, 16.0, 34.0]);
         assert_eq!(row.mask[0].clip, [16.0, 0.0, 32.0, 34.0]);
+    }
+
+    fn put_text(r: &mut Rig, row: usize, col: usize, text: &str) {
+        let mut c = Cell::default();
+        c.set_text(text);
+        assert!(r.grid.set(row, col, c));
+    }
+
+    #[test]
+    fn mark_stack_is_fitted_on_the_base_glyph() {
+        // row 0: plain "a"; row 1: "a" with four marks; non-blank neighbours, so no spill cell
+        let mut r = rig(3, 2);
+        for row in 0..2 {
+            put_text(&mut r, row, 0, "x");
+            put_text(&mut r, row, 2, "x");
+        }
+        // (the font composes a + U+0301 into its "a acute" glyph, so the base is U+00E1)
+        put_text(&mut r, 0, 1, "\u{e1}");
+        put_text(&mut r, 1, 1, "a\u{301}\u{303}\u{309}\u{323}");
+        r.update();
+        let plain = r.b.rows()[0].mask[1];
+        let stack = &r.b.rows()[1].mask;
+        // the first instance is the base: same size and place as the plain letter (no ScaleToFit)
+        assert_eq!(stack[1].uv[2..], plain.uv[2..], "{stack:?}");
+        assert_eq!(
+            stack[1].rect[1] - 34.0,
+            plain.rect[1],
+            "same height on its row"
+        );
+        assert_eq!(stack[1].rect[2..], plain.rect[2..]);
+        assert_eq!(stack[1].rect[0], plain.rect[0]);
+        // every glyph of the cell starts within a cell of its slot
+        let cell_x = 16.0;
+        for g in &stack[1..stack.len() - 1] {
+            assert!(
+                g.rect[0] >= cell_x - 16.0 && g.rect[0] <= cell_x + 16.0,
+                "{g:?}"
+            );
+        }
+        assert!(stack.len() >= 4, "marks are drawn: {stack:?}");
+    }
+
+    #[test]
+    fn mark_flood_keeps_the_base_at_full_size_and_is_bounded() {
+        let mut r = rig(3, 2);
+        put_text(&mut r, 0, 1, "\u{e1}");
+        put_text(&mut r, 1, 1, &format!("a{}", "\u{301}".repeat(200)));
+        r.update();
+        let plain = r.b.rows()[0].mask[0];
+        let flood = &r.b.rows()[1].mask;
+        assert!(flood.len() <= MAX_GLYPHS_PER_CELL, "{}", flood.len());
+        // the base is the plain letter, one row lower (row 1: y and clip move by one cell height)
+        assert_eq!(flood[0].uv[2..], plain.uv[2..]);
+        assert_eq!(flood[0].rect[2..], plain.rect[2..]);
+        assert_eq!(flood[0].rect[0], plain.rect[0]);
+        assert_eq!(flood[0].rect[1] - 34.0, plain.rect[1]);
     }
 
     #[test]

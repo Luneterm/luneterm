@@ -1088,6 +1088,31 @@ fn combining() {
     golden_scene("combining", 2.0, &mut combining_scene());
 }
 
+/// The 200-mark flood draws its base letter: ink inside the flood cell's slot (batch 1 measured
+/// none, because the whole cluster was shrunk to fit its summed advance).
+#[test]
+fn combining_flood_has_ink() {
+    let Some(mut cx) = ctx(test_fonts) else {
+        return;
+    };
+    let f = render(&mut cx, &mut combining_scene(), 2.0, TRANSPARENT);
+    let m = f.metrics;
+    let margin = (MARGIN * 2.0).round() as u32;
+    // the flood is the scene's 4th row (grid row 6), in the cell after the label and one "x"
+    let (col, row) = (LABEL_W as u32 + 1, 6);
+    let (x0, y0) = (margin + col * m.cell_w, margin + row * m.cell_h);
+    let mut ink = 0;
+    for y in y0..y0 + m.cell_h {
+        for x in x0..x0 + m.cell_w {
+            if px(&f.image, x, y)[3] > 0 {
+                ink += 1;
+            }
+        }
+    }
+    println!("flood cell: {ink} px with alpha > 0");
+    assert!(ink > 0, "the flood cell draws nothing");
+}
+
 #[test]
 fn box_drawing() {
     golden_scene("box_drawing", 2.0, &mut box_drawing_scene());
@@ -1143,6 +1168,7 @@ fn containment_no_spill() {
     let Some(mut cx) = ctx(system_fonts) else {
         return;
     };
+    let flood = format!("a{}", "\u{0301}".repeat(200));
     let clusters = [
         "你",
         "가",
@@ -1159,6 +1185,9 @@ fn containment_no_spill() {
         "\u{2588}",
         "\u{256D}",
         "\u{E0B0}",
+        // marks on a base (plan step 6b)
+        "a\u{0301}\u{0303}\u{0309}\u{0323}",
+        flood.as_str(),
     ];
     // present in the committed test fonts on every OS, so they must draw something
     let must_ink = [
@@ -1172,6 +1201,8 @@ fn containment_no_spill() {
         "\u{2588}",
         "\u{256D}",
         "\u{E0B0}",
+        "a\u{0301}\u{0303}\u{0309}\u{0323}",
+        flood.as_str(),
     ];
     let hidden = s().attr(Attrs::INVISIBLE);
     for scale in [1.0f32, 2.0] {
