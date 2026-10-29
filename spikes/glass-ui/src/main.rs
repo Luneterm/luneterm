@@ -82,6 +82,8 @@ impl ApplicationHandler for App {
         if self.renderer.is_some() {
             return;
         }
+        // `attrs` is only reassigned under the macOS/Windows cfg blocks below.
+        #[allow(unused_mut)]
         let mut attrs = Window::default_attributes()
             .with_title("Luneterm")
             .with_inner_size(LogicalSize::new(1040.0, 660.0))
