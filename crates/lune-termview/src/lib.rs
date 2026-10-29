@@ -4,19 +4,23 @@
 //! render pass). Glass, scrollbar and chrome are drawn by the app around the grid.
 
 pub mod atlas;
+pub mod build;
 pub mod contain;
 pub mod layout;
 pub mod model;
+pub mod render;
 pub mod text;
 pub mod theme;
 
 pub use atlas::{Atlas, AtlasCore, Entry, Full, Page, Raster, SwashRaster};
+pub use build::{Builder, DecoInst, GlyphInst, Overlay, RectInst, RowInstances};
 pub use contain::{Containment, Placement};
 pub use layout::{CellMetrics, GridLayout};
 pub use model::{
     Attrs, Cell, Color, Cursor, CursorShape, Grid, SelectionKind, SelectionRange, UnderlineStyle,
     ViewState,
 };
+pub use render::TermView;
 pub use text::{Shaped, ShapedGlyph, Shaper, TermFonts, cell_metrics};
 pub use theme::{Resolved, TermTheme, resolve};
 
