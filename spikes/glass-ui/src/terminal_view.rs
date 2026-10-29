@@ -76,7 +76,7 @@ pub fn draw(p: &mut P<'_>, st: &mut State) {
     let win = p.window;
     let g = glass(st);
     let card = card_rect(win);
-    let t = st.started.elapsed().as_secs_f32();
+    let t = st.age(st.started);
 
     // Glass layers: panel everywhere, card on top (each replaces what is below).
     p.acrylic(win, 0.0, g.panel, [0.0; 4], g.noise);
@@ -181,7 +181,7 @@ pub fn draw(p: &mut P<'_>, st: &mut State) {
     let fade = if s.motion == crate::state::Motion::None {
         1.0
     } else {
-        sine_ease_in_out(st.switched_at.elapsed().as_secs_f32() / SWITCH_FADE)
+        sine_ease_in_out(st.age(st.switched_at) / SWITCH_FADE)
     };
     let alpha = (fade * 255.0).round() as u8;
     let body = Rect::new(

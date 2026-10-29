@@ -92,12 +92,11 @@ fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, t: f32) -> f32 {
     coord(y1, y2, (lo + hi) / 2.0)
 }
 
-pub fn popup_animating(st: &State) -> bool {
-    let opening = matches!(st.popup, Some(Popup::Menu { .. }))
-        && st.popup_at.elapsed().as_secs_f32() < MENU_IN;
-    let closing = st
-        .closing
-        .is_some_and(|(_, t)| t.elapsed().as_secs_f32() < MENU_OUT);
+/// Whether a menu is still fading in or out at `now` (the wall clock; scheduling only).
+pub fn popup_animating(st: &State, now: std::time::Instant) -> bool {
+    let age = |t: std::time::Instant| now.saturating_duration_since(t).as_secs_f32();
+    let opening = matches!(st.popup, Some(Popup::Menu { .. })) && age(st.popup_at) < MENU_IN;
+    let closing = st.closing.is_some_and(|(_, t)| age(t) < MENU_OUT);
     opening || closing
 }
 
@@ -106,7 +105,7 @@ pub fn draw_popup(p: &mut P<'_>, st: &State) {
     if st.popup.is_none()
         && let Some((Popup::Menu { kind, at }, t0)) = st.closing
     {
-        let t = t0.elapsed().as_secs_f32() / MENU_OUT;
+        let t = st.age(t0) / MENU_OUT;
         if t < 1.0 {
             let e = cubic_bezier(0.42, 0.0, 1.0, 1.0, t);
             let xf = (1.0 - e, 2.0 * e, 1.0 - 0.02 * e);
@@ -117,7 +116,7 @@ pub fn draw_popup(p: &mut P<'_>, st: &State) {
     p.hit(p.window, Hit::Dismiss);
     match popup {
         Popup::Menu { kind, at } => {
-            let t = st.popup_at.elapsed().as_secs_f32() / MENU_IN;
+            let t = st.age(st.popup_at) / MENU_IN;
             let e = cubic_bezier(0.215, 0.61, 0.355, 1.0, t);
             menu(p, st, kind, at, (e, 4.0 * (1.0 - e), 0.97 + 0.03 * e), true);
         }

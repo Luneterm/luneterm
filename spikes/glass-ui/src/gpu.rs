@@ -298,12 +298,12 @@ impl Gpu {
         self.surface.configure(&self.device, &self.config);
     }
 
-    pub fn upload(&self, layers: &[LayerGeometry], scale: f32) -> Uploaded {
+    pub fn upload(&self, layers: &[LayerGeometry], size: (u32, u32), scale: f32) -> Uploaded {
         self.queue.write_buffer(
             &self.globals,
             0,
             bytemuck::bytes_of(&Globals {
-                size: [self.config.width as f32, self.config.height as f32],
+                size: [size.0 as f32, size.1 as f32],
                 scale,
                 _pad: 0.0,
             }),

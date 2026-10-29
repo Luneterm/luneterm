@@ -10,6 +10,7 @@
 mod backdrop;
 mod blur;
 mod chrome;
+mod dump;
 mod gpu;
 mod mock;
 mod overlays;
@@ -54,20 +55,24 @@ struct Renderer {
 struct App {
     renderer: Option<Renderer>,
     state: State,
+    /// Process exit status (non-zero when a frame dump failed).
+    exit_code: u8,
     last_title_click: Option<std::time::Instant>,
     /// Borderless window edge under the mouse (Windows only).
     resize_edge: Option<winit::window::ResizeDirection>,
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     let event_loop = EventLoop::new().expect("event loop");
     let mut app = App {
         renderer: None,
         state: State::new(),
+        exit_code: 0,
         last_title_click: None,
         resize_edge: None,
     };
     event_loop.run_app(&mut app).expect("run app");
+    std::process::ExitCode::from(app.exit_code)
 }
 
 fn apply_glass(window: &Window, st: &State) {
@@ -88,7 +93,9 @@ impl ApplicationHandler for App {
             .with_title("Luneterm")
             .with_inner_size(LogicalSize::new(1040.0, 660.0))
             .with_min_inner_size(LogicalSize::new(560.0, 360.0))
-            .with_transparent(true);
+            .with_transparent(true)
+            // Frame-dump runs render offscreen only; keep their window out of sight.
+            .with_visible(dump_dir().is_none());
         #[cfg(target_os = "macos")]
         {
             use winit::platform::macos::WindowAttributesExtMacOS;
@@ -165,7 +172,7 @@ impl ApplicationHandler for App {
         }
         window.request_redraw();
         let blur = blur::Blur::new(&gpu.device, gpu.config.format);
-        self.renderer = Some(Renderer {
+        let mut renderer = Renderer {
             blur,
             dumped: false,
             gpu,
@@ -174,7 +181,18 @@ impl ApplicationHandler for App {
             viewport,
             atlas,
             layers,
-        });
+        };
+        // Scripted offscreen frames (`GLASS_UI_DUMP_FRAMES=<dir>`): render, write, exit.
+        if let Some(dir) = dump_dir() {
+            if let Err(e) = dump::dump_frames(&mut renderer, &mut self.state, &dir) {
+                eprintln!("dump: {e}");
+                self.exit_code = 1;
+            }
+            self.renderer = Some(renderer);
+            event_loop.exit();
+            return;
+        }
+        self.renderer = Some(renderer);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -358,8 +376,10 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         let Some(r) = &self.renderer else { return };
         let st = &self.state;
-        let fading = st.switched_at.elapsed().as_secs_f32() < terminal_view::SWITCH_FADE;
-        if fading || st.tabs.iter().any(|t| t.running) || overlays::popup_animating(st) {
+        let now = std::time::Instant::now();
+        let fading = now.saturating_duration_since(st.switched_at).as_secs_f32()
+            < terminal_view::SWITCH_FADE;
+        if fading || st.tabs.iter().any(|t| t.running) || overlays::popup_animating(st, now) {
             r.gpu.window.request_redraw();
         }
     }
@@ -383,13 +403,52 @@ fn edge_at(p: (f32, f32), w: f32, h: f32) -> Option<winit::window::ResizeDirecti
     })
 }
 
+/// `GLASS_UI_DUMP_FRAMES`: the directory for scripted offscreen frame dumps, if requested.
+fn dump_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("GLASS_UI_DUMP_FRAMES")
+        .filter(|v| !v.is_empty())
+        .map(Into::into)
+}
+
+/// Draws one frame into the window's surface.
 fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
-    let win = Rect::new(
-        0.0,
-        0.0,
-        r.gpu.config.width as f32 / s,
-        r.gpu.config.height as f32 / s,
-    );
+    st.now = std::time::Instant::now();
+    let frame = match r.gpu.surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(t) => t,
+        wgpu::CurrentSurfaceTexture::Outdated
+        | wgpu::CurrentSurfaceTexture::Suboptimal(_)
+        | wgpu::CurrentSurfaceTexture::Lost => {
+            let (w, h) = (r.gpu.config.width, r.gpu.config.height);
+            r.gpu.resize(w, h);
+            r.gpu.window.request_redraw();
+            return Ok(());
+        }
+        // Hidden or minimised: skip; macOS sends a redraw when the window is visible again.
+        wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => {
+            return Ok(());
+        }
+        other => return Err(format!("surface: {other:?}")),
+    };
+    let view = frame.texture.create_view(&Default::default());
+    let size = (r.gpu.config.width, r.gpu.config.height);
+    draw_frame(r, st, s, &view, size)?;
+    r.gpu.window.pre_present_notify();
+    r.gpu.queue.present(frame);
+    r.atlas.trim();
+    r.text.end_frame();
+    Ok(())
+}
+
+/// Paints and submits one frame of `size` physical pixels at scale `s` into `target`.
+/// Serves both the window surface and the offscreen frame dumps.
+fn draw_frame(
+    r: &mut Renderer,
+    st: &mut State,
+    s: f32,
+    target: &wgpu::TextureView,
+    size: (u32, u32),
+) -> Result<(), String> {
+    let win = Rect::new(0.0, 0.0, size.0 as f32 / s, size.1 as f32 / s);
     r.text.set_scale(s);
     let mut p = Painter::new(s, win, &mut r.text, st.hover);
     terminal_view::draw(&mut p, st);
@@ -408,8 +467,8 @@ fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
     r.viewport.update(
         &r.gpu.queue,
         Resolution {
-            width: r.gpu.config.width,
-            height: r.gpu.config.height,
+            width: size.0,
+            height: size.1,
         },
     );
     for (layer, renderer) in layers.iter().zip(&mut r.layers) {
@@ -445,26 +504,8 @@ fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
 
-    let frame = match r.gpu.surface.get_current_texture() {
-        wgpu::CurrentSurfaceTexture::Success(t) => t,
-        wgpu::CurrentSurfaceTexture::Outdated
-        | wgpu::CurrentSurfaceTexture::Suboptimal(_)
-        | wgpu::CurrentSurfaceTexture::Lost => {
-            let (w, h) = (r.gpu.config.width, r.gpu.config.height);
-            r.gpu.resize(w, h);
-            r.gpu.window.request_redraw();
-            return Ok(());
-        }
-        // Hidden or minimised: skip; macOS sends a redraw when the window is visible again.
-        wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => {
-            return Ok(());
-        }
-        other => return Err(format!("surface: {other:?}")),
-    };
     let geometry: Vec<gpu::LayerGeometry> = layers.into_iter().map(|l| l.geometry).collect();
-    let uploaded = r.gpu.upload(&geometry, s);
-    let view = frame.texture.create_view(&Default::default());
-    let size = (r.gpu.config.width, r.gpu.config.height);
+    let uploaded = r.gpu.upload(&geometry, size, s);
     let sigma = st.settings.menu_blur.sigma();
     r.blur.prepare(&r.gpu.device, &r.gpu.queue, size, s, sigma);
     let mut encoder = r.gpu.device.create_command_encoder(&Default::default());
@@ -511,7 +552,7 @@ fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
         r.blur.run(&mut encoder);
     }
     pass_desc(
-        &view,
+        target,
         &mut |pass| {
             r.blur.blit_scene(pass);
             if backdrop.is_some() {
@@ -538,9 +579,5 @@ fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
         r.blur
             .dump(&r.gpu.device, &r.gpu.queue, std::path::Path::new(&dir));
     }
-    r.gpu.window.pre_present_notify();
-    r.gpu.queue.present(frame);
-    r.atlas.trim();
-    r.text.end_frame();
     Ok(())
 }
