@@ -28,6 +28,7 @@ use winit::window::{CursorIcon, Window, WindowId};
 
 use lune_ui::frame::{FrameParams, FrameRenderer};
 use lune_ui::gpu::{self, Gpu};
+use lune_ui::lunegit_dark;
 use lune_ui::paint::{Painter, Rect};
 use lune_ui::text::TextCache;
 use state::{Effect, Hit, MenuKind, Modal, Page, Popup, State};
@@ -402,7 +403,7 @@ fn draw_frame(
 ) -> Result<(), String> {
     let win = Rect::new(0.0, 0.0, size.0 as f32 / s, size.1 as f32 / s);
     r.text.set_scale(s);
-    let mut p = Painter::new(s, win, &mut r.text, st.hover);
+    let mut p = Painter::new(s, win, &mut r.text, st.hover, lunegit_dark::THEME);
     terminal_view::draw(&mut p, st);
     settings_view::draw(&mut p, st);
     overlays::draw_popup(&mut p, st);
