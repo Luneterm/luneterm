@@ -1,0 +1,16 @@
+[package]
+name = "luneterm-ffi"
+description = "C ABI over luneterm-vt, so Lunegit (.NET) can replace its V8-hosted xterm.js"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+luneterm-vt.workspace = true
+
+[lints]
+workspace = true
