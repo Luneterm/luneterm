@@ -1,5 +1,5 @@
 // Reference oracle: replays a byte stream through real @xterm/headless 6.0.0 and prints the
-// resulting screen as JSON, for comparison against luneterm-vt in differential tests.
+// resulting screen as JSON, for comparison against lune-vt in differential tests.
 //
 // Usage: node oracle.mjs <cols> <rows> <input-file> [resizeCols resizeRows]
 

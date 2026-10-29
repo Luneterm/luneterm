@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fetch the pinned xterm.js source into reference/xterm.js (gitignored) for porting.
-# The pin must match luneterm_vt::XTERM_JS_TAG / XTERM_JS_COMMIT.
+# The pin must match lune_vt::XTERM_JS_TAG / XTERM_JS_COMMIT.
 set -euo pipefail
 
 TAG=6.0.0

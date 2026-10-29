@@ -53,14 +53,14 @@ pub mod lunegit_dark {
         material_opacity: 0.7,
     };
 
-    /// Terminal panel layer (`GlassTintLightOpacity` 0.8, `GlassMaterialLightOpacity` 0.7).
+    /// Panel layer (`GlassTintLightOpacity` 0.8, `GlassMaterialLightOpacity` 0.7).
     pub const PANEL: GlassLayer = GlassLayer {
         tint: TINT,
         tint_opacity: 0.8,
         material_opacity: 0.7,
     };
 
-    /// Terminal card and header-tint layer (tint 1, `GlassMaterialDarkHeaderOpacity` 0.8).
+    /// Card and header-tint layer (tint 1, `GlassMaterialDarkHeaderOpacity` 0.8).
     pub const CARD: GlassLayer = GlassLayer {
         tint: TINT,
         tint_opacity: 1.0,

@@ -17,6 +17,8 @@ jobs:
       - uses: actions/checkout@v4
       # rust-toolchain.toml pins the toolchain; rustup installs it on first cargo call.
       - run: cargo fmt --all -- --check
+      - if: runner.os == 'Linux'
+        run: scripts/check-lib-boundaries.sh
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 

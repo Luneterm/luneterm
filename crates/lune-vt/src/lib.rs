@@ -1,4 +1,4 @@
-//! Luneterm VT engine.
+//! VT engine.
 //!
 //! A test-driven Rust port of xterm.js `src/common` at tag 6.0.0
 //! (commit [`XTERM_JS_COMMIT`]). Module layout mirrors the xterm.js source tree so upstream

@@ -2,7 +2,7 @@
 
 use std::f32::consts::PI;
 
-use luneterm_glass::lunegit_dark;
+use lune_ui::lunegit_dark;
 
 use crate::chrome;
 use crate::paint::{LayerId, Rect, StrokeStyle, polyline_length};

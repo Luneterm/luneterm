@@ -2,7 +2,7 @@
 
 Source of truth: Lunegit `src/Lunegit.Desktop/` — `MainWindow.axaml`, `Views/TerminalPanelView.axaml`,
 `Themes/DarkTheme.axaml`, `Controls/Terminal/TerminalView.cs`, `TerminalChromeGeometry.cs`,
-`TerminalChromeAnimation.cs`. Constants live in `luneterm_glass::lunegit_dark`.
+`TerminalChromeAnimation.cs`. Constants live in `lune_ui::lunegit_dark`.
 
 ## Layer stack (back to front)
 
