@@ -82,6 +82,31 @@ pub fn draw(p: &mut P<'_>, st: &mut State) {
     p.acrylic(win, 0.0, g.panel, [0.0; 4], g.noise);
     p.acrylic(card, chrome::CARD_RADIUS, g.card, g.panel, g.noise);
     p.hit(Rect::new(0.0, 0.0, win.w, TITLE_BAND), Hit::TitleBand);
+    // Window title, centred in the band: "<tab> · Luneterm".
+    let title = Spec {
+        runs: vec![
+            (
+                st.tabs[st.active].title.clone(),
+                Style::ui(12.0, FG_SECONDARY).medium(),
+            ),
+            ("  ·  Luneterm".to_owned(), Style::ui(12.0, FG_TERTIARY)),
+        ],
+        wrap: None,
+    };
+    // Keep clear of the traffic lights (macOS) and caption buttons (Windows).
+    let side = if cfg!(target_os = "windows") {
+        3.0 * 46.0 + 8.0
+    } else {
+        90.0
+    };
+    p.set_clip(Some(Rect::new(
+        side,
+        0.0,
+        (win.w - 2.0 * side).max(0.0),
+        TITLE_BAND,
+    )));
+    p.text_centered(&title, Rect::new(0.0, 0.0, win.w, TITLE_BAND - 2.0));
+    p.set_clip(None);
     if cfg!(target_os = "windows") {
         caption_buttons(p, win, st.maximized);
     }

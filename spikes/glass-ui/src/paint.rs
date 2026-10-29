@@ -72,6 +72,8 @@ pub struct TextItem {
     pub x: f32,
     pub y: f32,
     pub clip: Rect,
+    /// Glyph scale relative to the shaped size (popup open/close animation).
+    pub scale: f32,
 }
 
 #[derive(Debug, Default)]
@@ -103,6 +105,29 @@ impl StrokeStyle {
     }
 }
 
+/// Animation transform for a popup: scale about `origin`, then move down `dy`, and fade.
+#[derive(Debug, Clone, Copy)]
+pub struct Xform {
+    pub origin: (f32, f32),
+    pub scale: f32,
+    pub dy: f32,
+    pub alpha: f32,
+}
+
+impl Xform {
+    fn point(&self, x: f32, y: f32) -> (f32, f32) {
+        (
+            self.origin.0 + (x - self.origin.0) * self.scale,
+            self.origin.1 + (y - self.origin.1) * self.scale + self.dy,
+        )
+    }
+
+    fn rect(&self, r: Rect) -> Rect {
+        let (x, y) = self.point(r.x, r.y);
+        Rect::new(x, y, r.w * self.scale, r.h * self.scale)
+    }
+}
+
 pub struct Painter<'a, H> {
     pub s: f32,
     pub window: Rect,
@@ -112,6 +137,9 @@ pub struct Painter<'a, H> {
     pub hits: Vec<(Rect, H)>,
     pub text: &'a mut TextCache,
     pub hover: Option<H>,
+    xform: Option<Xform>,
+    /// Blurred-backdrop region requested by a glass menu (physical px).
+    pub backdrop: Option<crate::blur::Backdrop>,
 }
 
 impl<'a, H: Copy + PartialEq> Painter<'a, H> {
@@ -125,6 +153,8 @@ impl<'a, H: Copy + PartialEq> Painter<'a, H> {
             hits: Vec::new(),
             text,
             hover,
+            xform: None,
+            backdrop: None,
         }
     }
 
@@ -137,8 +167,31 @@ impl<'a, H: Copy + PartialEq> Painter<'a, H> {
         self.clip = clip;
     }
 
+    pub fn set_xform(&mut self, xform: Option<Xform>) {
+        self.xform = xform;
+    }
+
+    fn tr(&self, r: Rect) -> Rect {
+        self.xform.map_or(r, |x| x.rect(r))
+    }
+
+    fn fade(&self, c: [f32; 4]) -> [f32; 4] {
+        let a = self.xform.map_or(1.0, |x| x.alpha);
+        c.map(|v| v * a)
+    }
+
     fn clip_phys(&self) -> [f32; 4] {
-        self.clip.map_or([0.0; 4], |c| c.phys(self.s))
+        self.clip.map_or([0.0; 4], |c| self.tr(c).phys(self.s))
+    }
+
+    /// Ask for the blurred scene inside `r` (drawn under this layer).
+    pub fn backdrop(&mut self, r: Rect, radius: f32) {
+        let k = self.xform.map_or(1.0, |x| x.scale);
+        self.backdrop = Some(crate::blur::Backdrop {
+            rect: self.tr(r).phys(self.s),
+            radius: radius * k * self.s,
+            alpha: self.xform.map_or(1.0, |x| x.alpha),
+        });
     }
 
     fn geo(&mut self) -> &mut LayerGeometry {
@@ -146,10 +199,11 @@ impl<'a, H: Copy + PartialEq> Painter<'a, H> {
     }
 
     fn shape(&self, r: Rect, radii: [f32; 4], color: [f32; 4]) -> Shape {
+        let k = self.xform.map_or(1.0, |x| x.scale);
         Shape {
-            rect: r.phys(self.s),
-            radii: radii.map(|v| v * self.s),
-            color,
+            rect: self.tr(r).phys(self.s),
+            radii: radii.map(|v| v * self.s * k),
+            color: self.fade(color),
             under: [0.0; 4],
             params: [0.0; 4],
             clip: self.clip_phys(),
@@ -193,11 +247,27 @@ impl<'a, H: Copy + PartialEq> Painter<'a, H> {
     }
 
     pub fn text(&mut self, spec: &Spec, x: f32, y: f32) -> (f32, f32) {
-        let (key, size) = self.text.prepare(spec);
-        let clip = self.clip.unwrap_or(self.window);
-        self.layers[self.layer]
-            .texts
-            .push(TextItem { key, x, y, clip });
+        let size = self.text.prepare(spec).1;
+        let (key, scale) = match self.xform {
+            Some(xf) if xf.alpha < 0.999 => {
+                let mut faded = spec.clone();
+                for (_, style) in &mut faded.runs {
+                    style.color[3] = (f32::from(style.color[3]) * xf.alpha).round() as u8;
+                }
+                (self.text.prepare(&faded).0, xf.scale)
+            }
+            Some(xf) => (self.text.prepare(spec).0, xf.scale),
+            None => (self.text.prepare(spec).0, 1.0),
+        };
+        let clip = self.tr(self.clip.unwrap_or(self.window));
+        let (x, y) = self.xform.map_or((x, y), |xf| xf.point(x, y));
+        self.layers[self.layer].texts.push(TextItem {
+            key,
+            x,
+            y,
+            clip,
+            scale,
+        });
         size
     }
 
@@ -222,6 +292,7 @@ impl<'a, H: Copy + PartialEq> Painter<'a, H> {
             Some(c) => r.intersect(&c),
             None => r,
         };
+        let r = self.tr(r);
         self.hits.push((r, h));
     }
 
@@ -233,6 +304,23 @@ impl<'a, H: Copy + PartialEq> Painter<'a, H> {
     pub fn stroke(&mut self, pts: &[[f32; 2]], closed: bool, st: StrokeStyle) {
         let s = self.s;
         let clip = self.clip_phys();
+        let (pts, st) = match self.xform {
+            Some(xf) => (
+                pts.iter()
+                    .map(|q| {
+                        let (x, y) = xf.point(q[0], q[1]);
+                        [x, y]
+                    })
+                    .collect::<Vec<_>>(),
+                StrokeStyle {
+                    color: st.color.map(|v| v * xf.alpha),
+                    width: st.width * xf.scale,
+                    ..st
+                },
+            ),
+            None => (pts.to_vec(), st),
+        };
+        let pts = pts.as_slice();
         let mut p: Vec<[f32; 2]> = Vec::with_capacity(pts.len());
         for &q in pts {
             if p.last()
