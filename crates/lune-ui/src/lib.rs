@@ -12,6 +12,8 @@ pub mod acrylic;
 pub mod blur;
 pub mod chrome;
 pub mod color;
+pub mod dump;
+pub mod frame;
 pub mod gpu;
 pub mod paint;
 pub mod text;
