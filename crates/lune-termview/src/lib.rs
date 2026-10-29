@@ -6,13 +6,15 @@
 pub mod atlas;
 pub mod build;
 pub mod contain;
+pub mod custom_glyphs;
+pub mod glyph_canvas;
 pub mod layout;
 pub mod model;
 pub mod render;
 pub mod text;
 pub mod theme;
 
-pub use atlas::{Atlas, AtlasCore, Entry, Full, Page, Raster, SwashRaster};
+pub use atlas::{Atlas, AtlasCore, AtlasKey, CustomKey, Entry, Full, Page, Raster, SwashRaster};
 pub use build::{Builder, DecoInst, GlyphInst, Overlay, RectInst, RowInstances};
 pub use contain::{Containment, Placement};
 pub use layout::{CellMetrics, GridLayout};

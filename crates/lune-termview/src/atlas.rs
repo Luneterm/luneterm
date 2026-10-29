@@ -1,5 +1,6 @@
 //! Glyph atlas (plan step 4): one mask page (R8Unorm) and one colour page (Rgba8Unorm,
-//! premultiplied), keyed by cosmic-text's [`CacheKey`].
+//! premultiplied), keyed by [`AtlasKey`]: cosmic-text's [`CacheKey`] for font glyphs, or a
+//! [`CustomKey`] for the procedural box-drawing glyphs (plan step 6a).
 //!
 //! [`AtlasCore`] is the CPU half (allocators, entry maps, staged uploads, generations) and needs
 //! no GPU; [`Atlas`] wraps it with the two textures and their bind group.
@@ -14,6 +15,9 @@ use std::collections::HashMap;
 
 use cosmic_text::{CacheKey, FontSystem, SwashCache, SwashContent};
 use etagere::{AtlasAllocator, size2};
+
+use crate::custom_glyphs::try_draw_custom_char;
+use crate::glyph_canvas::GlyphCanvas;
 
 /// Start size of each page in texels (square).
 pub const START_DIM: u32 = 512;
@@ -82,9 +86,28 @@ pub struct Image {
     pub data: Vec<u8>,
 }
 
+/// What a procedural glyph depends on: the character and everything that changes its pixels.
+/// `font_size` is the logical size (`CellMetrics.font_size`) and `scale` is `CellMetrics.scale`,
+/// both as `f32` bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CustomKey {
+    pub ch: char,
+    pub cell_w: u32,
+    pub cell_h: u32,
+    pub scale_bits: u32,
+    pub font_size_bits: u32,
+}
+
+/// Atlas key: a font glyph or a procedural (box drawing, block, powerline) glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AtlasKey {
+    Font(CacheKey),
+    Custom(CustomKey),
+}
+
 /// Produces glyph images. The real one is [`SwashRaster`]; tests use a fake.
 pub trait Raster {
-    fn raster(&mut self, key: CacheKey) -> Option<Image>;
+    fn raster(&mut self, key: AtlasKey) -> Option<Image>;
 }
 
 /// [`Raster`] over cosmic-text's swash integration.
@@ -100,7 +123,11 @@ impl std::fmt::Debug for SwashRaster<'_> {
 }
 
 impl Raster for SwashRaster<'_> {
-    fn raster(&mut self, key: CacheKey) -> Option<Image> {
+    fn raster(&mut self, key: AtlasKey) -> Option<Image> {
+        let key = match key {
+            AtlasKey::Font(k) => k,
+            AtlasKey::Custom(k) => return raster_custom(k),
+        };
         // uncached: the atlas map is the cache
         let img = self.cache.get_image_uncached(self.fs, key)?;
         let (content, data) = match img.content {
@@ -123,6 +150,34 @@ impl Raster for SwashRaster<'_> {
     }
 }
 
+/// A procedural glyph as an A8 image of exactly the cell, placed at the cell's top-left.
+fn raster_custom(k: CustomKey) -> Option<Image> {
+    let mut canvas = GlyphCanvas::new(k.cell_w, k.cell_h);
+    let (w, h) = (canvas.width(), canvas.height());
+    let mut buf = [0; 4];
+    let drawn = try_draw_custom_char(
+        &mut canvas,
+        k.ch.encode_utf8(&mut buf),
+        0.0,
+        0.0,
+        f64::from(k.cell_w),
+        f64::from(k.cell_h),
+        f64::from(f32::from_bits(k.font_size_bits)),
+        f64::from(f32::from_bits(k.scale_bits)),
+    );
+    if !drawn {
+        return None;
+    }
+    canvas.into_image().map(|data| Image {
+        content: Content::Mask,
+        w,
+        h,
+        left: 0,
+        top: 0,
+        data,
+    })
+}
+
 /// One pending texture write: `data` fills `[x, y, w, h]` of its page, tightly packed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upload {
@@ -135,7 +190,7 @@ pub struct Upload {
 
 struct PageCore {
     alloc: AtlasAllocator,
-    map: HashMap<CacheKey, Option<Entry>>,
+    map: HashMap<AtlasKey, Option<Entry>>,
     staging: Vec<Upload>,
     size: u32,
     generation: u64,
@@ -246,7 +301,7 @@ impl AtlasCore {
         std::mem::take(&mut self.pages[page.index()].staging)
     }
 
-    fn cached(&self, key: &CacheKey) -> Option<Option<Entry>> {
+    fn cached(&self, key: &AtlasKey) -> Option<Option<Entry>> {
         self.pages.iter().find_map(|p| p.map.get(key).copied())
     }
 
@@ -256,7 +311,7 @@ impl AtlasCore {
     ///   called for them again; a glyph bigger than `max_dim` is not cached and is counted in
     ///   [`dropped`](Self::dropped).
     /// - `Err(Full(page))`: no room on `page` now; see the module docs.
-    pub fn get(&mut self, raster: &mut dyn Raster, key: CacheKey) -> Result<Option<Entry>, Full> {
+    pub fn get(&mut self, raster: &mut dyn Raster, key: AtlasKey) -> Result<Option<Entry>, Full> {
         if let Some(hit) = self.cached(&key) {
             return Ok(hit);
         }
@@ -536,9 +591,23 @@ mod tests {
     }
 
     impl Raster for Fake {
-        fn raster(&mut self, key: CacheKey) -> Option<Image> {
+        fn raster(&mut self, key: AtlasKey) -> Option<Image> {
             self.calls += 1;
-            if key.glyph_id == 0 {
+            let glyph_id = match key {
+                AtlasKey::Font(k) => k.glyph_id,
+                // a custom glyph: the whole cell, 1-byte mask
+                AtlasKey::Custom(k) => {
+                    return Some(Image {
+                        content: Content::Mask,
+                        w: k.cell_w,
+                        h: k.cell_h,
+                        left: 0,
+                        top: 0,
+                        data: vec![255; (k.cell_w * k.cell_h) as usize],
+                    });
+                }
+            };
+            if glyph_id == 0 {
                 return Some(Image {
                     content: Content::Mask,
                     w: 0,
@@ -549,7 +618,7 @@ mod tests {
                 });
             }
             let n = (self.w * self.h) as usize;
-            Some(if key.glyph_id >= COLOR_FROM {
+            Some(if glyph_id >= COLOR_FROM {
                 Image {
                     content: Content::Color,
                     w: self.w,
@@ -571,16 +640,28 @@ mod tests {
         }
     }
 
-    fn key(glyph: u16) -> CacheKey {
-        CacheKey::new(
-            fontdb::ID::dummy(),
-            glyph,
-            13.0,
-            (0.0, 0.0),
-            cosmic_text::Weight::NORMAL,
-            CacheKeyFlags::empty(),
+    fn key(glyph: u16) -> AtlasKey {
+        AtlasKey::Font(
+            CacheKey::new(
+                fontdb::ID::dummy(),
+                glyph,
+                13.0,
+                (0.0, 0.0),
+                cosmic_text::Weight::NORMAL,
+                CacheKeyFlags::empty(),
+            )
+            .0,
         )
-        .0
+    }
+
+    fn custom(ch: char, cell_w: u32, cell_h: u32, scale: f32, size: f32) -> AtlasKey {
+        AtlasKey::Custom(CustomKey {
+            ch,
+            cell_w,
+            cell_h,
+            scale_bits: scale.to_bits(),
+            font_size_bits: size.to_bits(),
+        })
     }
 
     #[test]
@@ -703,7 +784,7 @@ mod tests {
     fn short_image_data_is_treated_as_empty() {
         struct Short;
         impl Raster for Short {
-            fn raster(&mut self, _: CacheKey) -> Option<Image> {
+            fn raster(&mut self, _: AtlasKey) -> Option<Image> {
                 Some(Image {
                     content: Content::Color,
                     w: 4,
@@ -717,5 +798,66 @@ mod tests {
         let mut core = AtlasCore::new(64, 64);
         assert_eq!(core.get(&mut Short, key(1)), Ok(None));
         assert!(core.staged(Page::Color).is_empty());
+    }
+
+    #[test]
+    fn same_custom_key_rasterizes_once() {
+        let mut core = AtlasCore::new(256, 256);
+        let mut r = Fake::new(1, 1);
+        let k = custom('─', 16, 34, 2.0, 13.0);
+        let a = core.get(&mut r, k).expect("room").expect("entry");
+        let b = core.get(&mut r, k).expect("room").expect("entry");
+        assert_eq!(r.calls, 1);
+        assert_eq!(a, b);
+        assert_eq!(
+            (a.page, a.uv[2], a.uv[3], a.left, a.top),
+            (Page::Mask, 16, 34, 0, 0)
+        );
+    }
+
+    #[test]
+    fn custom_keys_differing_in_any_field_are_distinct_entries() {
+        let mut core = AtlasCore::new(512, 512);
+        let mut r = Fake::new(1, 1);
+        let base = custom('─', 16, 34, 2.0, 13.0);
+        let others = [
+            custom('─', 16, 35, 2.0, 13.0),
+            custom('─', 16, 34, 3.0, 13.0),
+            custom('─', 16, 34, 2.0, 14.0),
+            custom('─', 15, 34, 2.0, 13.0),
+            custom('│', 16, 34, 2.0, 13.0),
+        ];
+        core.get(&mut r, base).expect("room");
+        for k in others {
+            core.get(&mut r, k).expect("room");
+        }
+        assert_eq!(r.calls, 6);
+        assert_eq!(core.len(Page::Mask), 6);
+        // a font key never collides with a custom one
+        core.get(&mut r, key(1)).expect("room");
+        assert_eq!(core.len(Page::Mask), 7);
+    }
+
+    #[test]
+    fn swash_raster_serves_custom_keys_without_fonts() {
+        let mut cache = SwashCache::new();
+        let mut fs =
+            FontSystem::new_with_locale_and_db("en-US".to_owned(), fontdb::Database::new());
+        let mut r = SwashRaster {
+            cache: &mut cache,
+            fs: &mut fs,
+        };
+        let img = r.raster(custom('─', 16, 34, 2.0, 13.0)).expect("image");
+        assert_eq!(
+            (img.content, img.w, img.h, img.left, img.top),
+            (Content::Mask, 16, 34, 0, 0)
+        );
+        assert_eq!(img.data.len(), 16 * 34);
+        assert_eq!(img.data[16 * 16], 255);
+        assert_eq!(img.data[0], 0);
+        // no definition: no image
+        assert!(r.raster(custom('a', 16, 34, 2.0, 13.0)).is_none());
+        // an empty cell: no image
+        assert!(r.raster(custom('─', 0, 0, 2.0, 13.0)).is_none());
     }
 }
