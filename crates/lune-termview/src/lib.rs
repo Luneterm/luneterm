@@ -1,42 +1,43 @@
-//! Renderer.
+//! Renderer: an engine-agnostic cell grid drawn inside a `lune-ui` frame.
 //!
-//! GPU backend still to be chosen by measurement (binary size and frame time); see
-//! `docs/architecture.md`. The paint order below is fixed now because it is what makes the
-//! terminal match Lunegit (`TerminalView.cs` render pass).
+//! The paint order in [`Pass`] is what makes the terminal match Lunegit (`TerminalView.cs`
+//! render pass). Glass, scrollbar and chrome are drawn by the app around the grid.
 
-/// Cells with this background are not painted, so the glass shows through.
-pub const TRANSPARENT_CELL_BG: lune_ui::color::Rgba = [0x1E, 0x1E, 0x1E, 0xFF];
+pub mod layout;
+pub mod model;
+pub mod theme;
 
-/// Paint passes, back to front. Each pass is a separate draw so new passes slot in by order.
+pub use layout::{CellMetrics, GridLayout};
+pub use model::{
+    Attrs, Cell, Color, Cursor, CursorShape, Grid, SelectionKind, SelectionRange, UnderlineStyle,
+    ViewState,
+};
+pub use theme::{Resolved, TermTheme, resolve};
+
+/// Paint passes inside the grid, back to front (plan decision D9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Pass {
-    /// App-drawn glass layers over the OS backdrop (`lune_ui::lunegit_dark`).
-    Glass,
-    /// Coalesced cell backgrounds; the default background is skipped so glass shows through.
+    /// Coalesced cell backgrounds; default and theme-background cells are skipped so glass
+    /// shows through.
     CellBackground,
-    /// Glyph runs. Wide/emoji glyphs are contained horizontally (Lunegit glyph-containment fix)
-    /// and clipped to their row (Lunegit left vertical overflow open; we fix it here).
+    /// Glyphs, mask then colour. Contained horizontally in their slot (Lunegit glyph-containment
+    /// fix) and clipped to their row (Lunegit left vertical overflow open; fixed here).
     Text,
-    Underline,
-    Selection,
+    /// Underlines (five styles), strikethrough, overline.
+    Decoration,
     Cursor,
-    Scrollbar,
+    Selection,
     LinkHover,
-    /// Tab chrome outline and running-command animation.
-    Chrome,
 }
 
 impl Pass {
-    pub const ALL: [Pass; 9] = [
-        Pass::Glass,
+    pub const ALL: [Pass; 6] = [
         Pass::CellBackground,
         Pass::Text,
-        Pass::Underline,
-        Pass::Selection,
+        Pass::Decoration,
         Pass::Cursor,
-        Pass::Scrollbar,
+        Pass::Selection,
         Pass::LinkHover,
-        Pass::Chrome,
     ];
 }
 
