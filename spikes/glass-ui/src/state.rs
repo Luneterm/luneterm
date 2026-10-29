@@ -349,7 +349,7 @@ pub enum Popup {
     },
     Combo {
         id: SettingId,
-        anchor: crate::paint::Rect,
+        anchor: lune_ui::paint::Rect,
     },
 }
 
@@ -414,15 +414,18 @@ pub struct State {
     pub modal: Option<Modal>,
     pub editing: Option<SettingId>,
     pub hover: Option<Hit>,
-    pub hits: Vec<(crate::paint::Rect, Hit)>,
+    pub hits: Vec<(lune_ui::paint::Rect, Hit)>,
     /// Terminal body rect and (cell width, line height), from the last frame.
-    pub term_body: crate::paint::Rect,
+    pub term_body: lune_ui::paint::Rect,
     pub cell: (f32, f32),
     /// Window is maximised (Windows caption shows "restore").
     pub maximized: bool,
     /// When the current popup opened, and a just-closed menu still fading out.
     pub popup_at: Instant,
     pub closing: Option<(Popup, Instant)>,
+    /// The frame clock: set once per frame (the wall clock in normal mode, a fixed instant in
+    /// frame dumps). All draw-time ages are measured against it.
+    pub now: Instant,
 }
 
 impl State {
@@ -451,12 +454,18 @@ impl State {
             editing: None,
             hover: None,
             hits: Vec::new(),
-            term_body: crate::paint::Rect::default(),
+            term_body: lune_ui::paint::Rect::default(),
             cell: (7.8, 17.0),
             maximized: false,
             popup_at: now,
             closing: None,
+            now,
         }
+    }
+
+    /// Seconds from `since` to the frame clock (0 if `since` is later).
+    pub fn age(&self, since: Instant) -> f32 {
+        self.now.saturating_duration_since(since).as_secs_f32()
     }
 
     pub fn open_popup(&mut self, popup: Popup) {

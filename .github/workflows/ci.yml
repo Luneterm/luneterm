@@ -2,8 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, "orch/**", "spike/**"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   check:
@@ -16,5 +17,22 @@ jobs:
       - uses: actions/checkout@v4
       # rust-toolchain.toml pins the toolchain; rustup installs it on first cargo call.
       - run: cargo fmt --all -- --check
+      - if: runner.os == 'Linux'
+        run: scripts/check-lib-boundaries.sh
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  # Windows build for testing on real hardware. M9 adds luneterm.exe here.
+  windows-exe:
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the toolchain; rustup installs it on first cargo call.
+      - run: cargo build --release -p glass-ui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glass-ui-windows-x64
+          path: target/release/glass-ui.exe
+          retention-days: 7
+          if-no-files-found: error

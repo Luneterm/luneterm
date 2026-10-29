@@ -5,6 +5,6 @@ fn main() {
     println!(
         "luneterm {} (xterm.js {} port)",
         env!("CARGO_PKG_VERSION"),
-        luneterm_vt::XTERM_JS_TAG
+        lune_vt::XTERM_JS_TAG
     );
 }

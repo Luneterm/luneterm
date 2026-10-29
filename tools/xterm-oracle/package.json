@@ -2,7 +2,7 @@
   "name": "luneterm-xterm-oracle",
   "private": true,
   "type": "module",
-  "description": "Reference xterm.js used to generate differential-test goldens for luneterm-vt",
+  "description": "Reference xterm.js used to generate differential-test goldens for lune-vt",
   "dependencies": {
     "@xterm/addon-unicode11": "0.9.0",
     "@xterm/headless": "6.0.0"

@@ -5,12 +5,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
-luneterm-vt.workspace = true
-luneterm-pty.workspace = true
-luneterm-glass.workspace = true
-luneterm-render.workspace = true
+lune-vt.workspace = true
+lune-pty.workspace = true
+lune-ui.workspace = true
+lune-termview.workspace = true
 
 [lints]
 workspace = true

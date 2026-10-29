@@ -1,0 +1,25 @@
+[package]
+name = "lune-ui"
+description = "App-agnostic glass UI toolkit: immediate-mode painter on wgpu, widgets, OS materials, window helpers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+winit = "0.30"
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+png = "0.18"
+glyphon = "0.12"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+window-vibrancy = "0.8.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView"] }
+raw-window-handle = "0.6"
+
+[lints]
+workspace = true
