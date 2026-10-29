@@ -1,10 +1,21 @@
-//! Glass styling.
+//! App-agnostic glass UI toolkit: an immediate-mode painter on wgpu, widgets, OS backdrop
+//! materials and window helpers, styled after Lunegit (see `docs/glass-styling.md`).
 //!
-//! Lunegit's look is two things stacked (see `docs/glass-styling.md`):
-//! 1. an OS backdrop blur behind a transparent window ([`Backdrop`]: NSVisualEffectView on
-//!    macOS, DWM acrylic/Mica on Windows, compositor blur where Linux offers one), and
-//! 2. tint/material layers drawn by the app itself ([`GlassLayer`]), which the renderer
-//!    composites over the backdrop.
+//! lune-ui knows nothing about the app that uses it. The app owns the winit event loop and passes
+//! in everything else: fonts, the [`theme::Theme`], hit values (the painter and widgets are
+//! generic over the app's hit type), sizes, scale and time. The crate reads neither the clock nor
+//! the environment, so frames are deterministic.
+//!
+//! Modules:
+//! - [`color`], [`theme`] (the `Theme` tokens and the [`lunegit_dark`] preset with its glass
+//!   layers), [`acrylic`] (Avalonia acrylic colour math);
+//! - [`paint`] (the `Painter`), [`text`], [`icon`], [`widgets`] (controls, menus, dropdowns,
+//!   dialogs), [`chrome`] (tab outline geometry);
+//! - [`gpu`], [`blur`], [`frame`] (wgpu setup, backdrop blur, the scene → blur → target pass
+//!   sequence), [`dump`] (offscreen targets and PNG readback);
+//! - [`material`] (OS backdrop per platform, [`GlassLayer`] and [`Backdrop`] describe the layers
+//!   and capability levels), [`window`] (glass window attributes, edge resize, double click,
+//!   caption buttons).
 //!
 //! Values in [`lunegit_dark`] are copied from Lunegit's `DarkTheme.axaml` so the two apps match.
 
