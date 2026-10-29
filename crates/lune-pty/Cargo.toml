@@ -1,6 +1,6 @@
 [package]
-name = "luneterm-vt"
-description = "Luneterm VT engine: a test-driven Rust port of xterm.js src/common"
+name = "lune-pty"
+description = "PTY abstraction: spawn shells on ConPTY (Windows) and openpty (Unix)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,7 +1,7 @@
 # Porting xterm.js
 
 Pinned: xterm.js **6.0.0**, commit `f447274f430fd22513f6adbf9862d19524471c04`
-(`luneterm_vt::XTERM_JS_COMMIT`). Fetch the source with `scripts/fetch-xterm-ref.sh` into
+(`lune_vt::XTERM_JS_COMMIT`). Fetch the source with `scripts/fetch-xterm-ref.sh` into
 `reference/xterm.js` (gitignored). Licence: MIT — `licenses/xterm.js-LICENSE` must ship with the app.
 
 ## Rules
@@ -9,7 +9,7 @@ Pinned: xterm.js **6.0.0**, commit `f447274f430fd22513f6adbf9862d19524471c04`
 1. **Tests first.** Port `Foo.test.ts` to Rust tests, watch them fail, then port `Foo.ts` until
    they pass. A module is done when all of its upstream tests pass. Keep test names recognisable
    (`describe`/`it` text → `snake_case` fn names).
-2. **Mirror the layout.** `src/common/parser/Params.ts` → `crates/luneterm-vt/src/parser/params.rs`.
+2. **Mirror the layout.** `src/common/parser/Params.ts` → `crates/lune-vt/src/parser/params.rs`.
    One TS file → one Rust file. Each file starts with
    `//! Port of xterm.js src/common/<path> @ f447274.`
 3. **Port behaviour, not idioms.** Keep algorithms, constants and edge-case handling identical;

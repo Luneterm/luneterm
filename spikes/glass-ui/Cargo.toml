@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-luneterm-glass.workspace = true
+lune-ui.workspace = true
 winit = "0.30"
 wgpu = "30"
 glyphon = "0.12"

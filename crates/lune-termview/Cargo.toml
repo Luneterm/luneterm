@@ -1,10 +1,13 @@
 [package]
-name = "luneterm-pty"
-description = "Luneterm PTY abstraction: spawn shells on ConPTY (Windows) and openpty (Unix)"
+name = "lune-termview"
+description = "Renderer: glyph atlas, cell grid and glass layer compositing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+
+[dependencies]
+lune-ui.workspace = true
 
 [lints]
 workspace = true

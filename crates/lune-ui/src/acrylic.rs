@@ -1,4 +1,4 @@
-//! Avalonia `ExperimentalAcrylicMaterial` colour math, ported so Luneterm's glass layers produce the
+//! Avalonia `ExperimentalAcrylicMaterial` colour math, ported so the glass layers produce the
 //! same pixels as Lunegit's.
 //!
 //! Source: Avalonia 12.1.2 `src/Avalonia.Base/Media/ExperimentalAcrylicMaterial.cs`

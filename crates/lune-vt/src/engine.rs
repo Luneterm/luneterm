@@ -1,7 +1,7 @@
 //! Public engine contract.
 //!
 //! Mirrors Lunegit's `IVtEngine` (`Lunegit.Core/Terminal/IVtEngine.cs`) so Lunegit can later
-//! swap its V8-hosted xterm.js for this engine through `luneterm-ffi` without changing callers.
+//! swap its V8-hosted xterm.js for this engine through a C ABI crate without changing callers.
 //! Provisional: the viewport/snapshot types land with the buffer port.
 
 /// Something the engine wants the host to act on, produced while processing [`VtEngine::write`].

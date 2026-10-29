@@ -7,7 +7,7 @@
 /// Paint passes, back to front. Each pass is a separate draw so new passes slot in by order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Pass {
-    /// App-drawn glass layers over the OS backdrop (`luneterm_glass::lunegit_dark`).
+    /// App-drawn glass layers over the OS backdrop (`lune_ui::lunegit_dark`).
     Glass,
     /// Coalesced cell backgrounds; the default background is skipped so glass shows through.
     CellBackground,
