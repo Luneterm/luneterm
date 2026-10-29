@@ -33,6 +33,9 @@ pub struct Theme {
     pub menu_item_hover: Rgba,
     pub menu_separator: Rgba,
     pub menu_glass: Rgba,
+    /// Caption close button fill while hovered, and its glyph colour.
+    pub caption_close_hover: Rgba,
+    pub caption_close_fg: Rgba,
     pub font_s: f32,
     pub font_base: f32,
     pub font_m: f32,
@@ -70,6 +73,8 @@ pub mod lunegit_dark {
         menu_separator: [0xFF, 0xFF, 0xFF, 0x22],
         // `linear-gradient(rgba(0,0,0,.45)), rgba(165,165,165,.3)` flattened: alpha .615, grey 44.
         menu_glass: [44, 44, 44, 157],
+        caption_close_hover: [0xC4, 0x2B, 0x1C, 0xFF],
+        caption_close_fg: [0xFF, 0xFF, 0xFF, 0xFF],
         font_s: 11.0,
         font_base: 13.0,
         font_m: 14.0,

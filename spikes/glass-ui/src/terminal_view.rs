@@ -107,7 +107,14 @@ pub fn draw(p: &mut P<'_>, st: &mut State) {
     p.text_centered(&title, Rect::new(0.0, 0.0, win.w, TITLE_BAND - 2.0));
     p.set_clip(None);
     if cfg!(target_os = "windows") {
-        caption_buttons(p, win, st.maximized);
+        use crate::state::Caption;
+        lune_ui::window::caption_buttons(
+            p,
+            win,
+            TITLE_BAND - 4.0,
+            st.maximized,
+            [Caption::Minimize, Caption::Maximize, Caption::Close].map(Hit::Caption),
+        );
     }
 
     // Tab strip.
@@ -320,35 +327,6 @@ pub fn draw(p: &mut P<'_>, st: &mut State) {
             p.stroke(&pts, true, style);
         }
         None => {}
-    }
-}
-
-/// Windows 11 style caption buttons (the window is borderless so the glass reaches the top edge).
-fn caption_buttons(p: &mut P<'_>, win: Rect, maximized: bool) {
-    use crate::state::Caption;
-    let restore = if maximized {
-        icon::CHROME_RESTORE
-    } else {
-        icon::CHROME_MAXIMIZE
-    };
-    let buttons = [
-        (Caption::Minimize, icon::CHROME_MINIMIZE),
-        (Caption::Maximize, restore),
-        (Caption::Close, icon::CHROME_CLOSE),
-    ];
-    for (k, (caption, glyph)) in buttons.into_iter().enumerate() {
-        let r = Rect::new(win.w - 46.0 * (3 - k) as f32, 0.0, 46.0, TITLE_BAND - 4.0);
-        let hit = Hit::Caption(caption);
-        let hovered = p.hovered(hit);
-        let mut fg = FG_PRIMARY;
-        if hovered && caption == Caption::Close {
-            p.fill(r, 0.0, [0xC4, 0x2B, 0x1C, 0xFF]);
-            fg = [0xFF, 0xFF, 0xFF, 0xFF];
-        } else if hovered {
-            p.fill(r, 0.0, SURFACE_HOVER);
-        }
-        p.text_centered(&icon(glyph, 10.0, fg), r);
-        p.hit(r, hit);
     }
 }
 
