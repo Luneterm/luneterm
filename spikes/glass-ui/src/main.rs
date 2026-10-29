@@ -120,7 +120,6 @@ impl ApplicationHandler for App {
                 at: (500.0, 120.0),
             });
         }
-        window.request_redraw();
         let frame = FrameRenderer::new(&gpu);
         let mut renderer = Renderer {
             gpu,
@@ -129,6 +128,8 @@ impl ApplicationHandler for App {
             dumped: false,
         };
         // Scripted offscreen frames (`GLASS_UI_DUMP_FRAMES=<dir>`): render, write, exit.
+        // No redraw is requested on this path: winit would still deliver a queued
+        // `RedrawRequested` after `exit()` on macOS, presenting a frame to the hidden window.
         if let Some(dir) = dump_dir() {
             if let Err(e) = dump::dump_frames(&mut renderer, &mut self.state, &dir) {
                 eprintln!("dump: {e}");
@@ -138,6 +139,7 @@ impl ApplicationHandler for App {
             event_loop.exit();
             return;
         }
+        window.request_redraw();
         self.renderer = Some(renderer);
     }
 

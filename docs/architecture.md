@@ -28,11 +28,11 @@ tested, fuzzed and embedded on its own. No `lune-*` crate depends on an app crat
 |---|---|
 | `color` | `Rgba = [u8; 4]` (straight alpha), premultiply and blend helpers |
 | `theme` | `Theme` (tokens widgets read) and the `lunegit_dark` preset: `THEME` plus the glass layers `WINDOW`, `PANEL`, `CARD` |
-| `acrylic` | Avalonia acrylic colour math (tested) and the noise texture |
+| `acrylic` | Avalonia acrylic colour math (tested) and the noise opacity |
 | `paint` | `Painter<H>`: immediate-mode layers, hit regions (`H` is the app's hit type), clip, transform |
 | `widgets` | Controls generic over `H`; `widgets::menu`, `dropdown` and `dialog` for the overlays |
 | `text`, `icon` | Shaped-text cache over glyphon (the app registers its fonts), Codicon glyphs |
-| `gpu`, `blur`, `frame` | wgpu setup and pipelines, backdrop blur, and the scene → blur → target pass sequence (`FrameRenderer`) |
+| `gpu`, `blur`, `frame` | wgpu setup and pipelines, the Avalonia noise texture (`assets/acrylic-noise.png`), backdrop blur, and the scene → blur → target pass sequence (`FrameRenderer`) |
 | `dump` | Offscreen targets and GPU readback to PNG (no screen capture) |
 | `chrome` | Tab chrome loop geometry |
 | `material` | `Material` and `apply(window, Material)`: OS backdrop per platform in `#[cfg]` submodules (the only `unsafe` is `material/macos.rs`) |

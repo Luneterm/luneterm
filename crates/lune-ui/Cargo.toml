@@ -1,6 +1,6 @@
 [package]
 name = "lune-ui"
-description = "Glass styling: OS backdrop materials plus the tint/material layer spec"
+description = "App-agnostic glass UI toolkit: immediate-mode painter on wgpu, widgets, OS materials, window helpers"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
