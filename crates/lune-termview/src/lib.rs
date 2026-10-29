@@ -3,15 +3,19 @@
 //! The paint order in [`Pass`] is what makes the terminal match Lunegit (`TerminalView.cs`
 //! render pass). Glass, scrollbar and chrome are drawn by the app around the grid.
 
+pub mod contain;
 pub mod layout;
 pub mod model;
+pub mod text;
 pub mod theme;
 
+pub use contain::{Containment, Placement};
 pub use layout::{CellMetrics, GridLayout};
 pub use model::{
     Attrs, Cell, Color, Cursor, CursorShape, Grid, SelectionKind, SelectionRange, UnderlineStyle,
     ViewState,
 };
+pub use text::{Shaped, ShapedGlyph, Shaper, TermFonts, cell_metrics};
 pub use theme::{Resolved, TermTheme, resolve};
 
 /// Paint passes inside the grid, back to front (plan decision D9).
