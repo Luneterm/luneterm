@@ -8,10 +8,7 @@
 #![allow(unreachable_pub)] // binary crate: `pub` marks items shared between its modules
 
 mod backdrop;
-mod blur;
-mod chrome;
 mod dump;
-mod gpu;
 mod mock;
 mod overlays;
 mod paint;
@@ -34,10 +31,14 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
-use gpu::Gpu;
+use lune_ui::gpu::Gpu;
+use lune_ui::{blur, gpu};
 use paint::{LAYER_COUNT, Painter, Rect};
 use state::{Effect, Hit, MenuKind, Modal, Page, Popup, State};
 use text::TextCache;
+
+/// Luneium context-menu glass: blur 30px, saturate 1.8, then acrylic on top.
+const BACKDROP_SATURATION: f32 = 1.8;
 
 struct Renderer {
     gpu: Gpu,
@@ -548,7 +549,7 @@ fn draw_frame(
         &mut encoder,
     )?;
     if let Some(b) = backdrop {
-        r.blur.set_backdrop(&r.gpu.queue, b);
+        r.blur.set_backdrop(&r.gpu.queue, b, BACKDROP_SATURATION);
         r.blur.run(&mut encoder);
     }
     pass_desc(

@@ -34,10 +34,10 @@ pub struct Backdrop {
 
 // The blur strength comes from Settings (`BlurLevel::sigma`). Luneium's CSS says `blur(30px)`, but
 // taken literally that erases text to flat grey; its real menus use the lighter native macOS blur.
-const SATURATION: f32 = 1.8;
 /// Blur runs at 1/8 resolution.
 const DOWNSCALE: u32 = 8;
 
+#[derive(Debug)]
 struct Targets {
     scene: wgpu::TextureView,
     levels: [wgpu::TextureView; 3],
@@ -46,6 +46,7 @@ struct Targets {
     groups: [wgpu::BindGroup; 6],
 }
 
+#[derive(Debug)]
 pub struct Blur {
     format: wgpu::TextureFormat,
     layout: wgpu::BindGroupLayout,
@@ -328,13 +329,13 @@ impl Blur {
         pass.draw(0..3, 0..1);
     }
 
-    pub fn set_backdrop(&self, queue: &wgpu::Queue, b: Backdrop) {
+    pub fn set_backdrop(&self, queue: &wgpu::Queue, b: Backdrop, saturation: f32) {
         let u = BackdropUniform {
             rect: b.rect,
             target_size: [self.size.0 as f32, self.size.1 as f32],
             radius: b.radius,
             alpha: b.alpha,
-            saturation: SATURATION,
+            saturation,
             _pad: [0.0; 3],
         };
         queue.write_buffer(&self.backdrop_buf, 0, bytemuck::bytes_of(&u));

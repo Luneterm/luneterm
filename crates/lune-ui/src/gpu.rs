@@ -71,6 +71,7 @@ pub struct LayerGeometry {
 
 type Range = std::ops::Range<u32>;
 
+#[derive(Debug)]
 pub struct Uploaded {
     shapes: wgpu::Buffer,
     strokes: Option<wgpu::Buffer>,

@@ -4,6 +4,9 @@
 //! `docs/architecture.md`. The paint order below is fixed now because it is what makes the
 //! terminal match Lunegit (`TerminalView.cs` render pass).
 
+/// Cells with this background are not painted, so the glass shows through.
+pub const TRANSPARENT_CELL_BG: lune_ui::color::Rgba = [0x1E, 0x1E, 0x1E, 0xFF];
+
 /// Paint passes, back to front. Each pass is a separate draw so new passes slot in by order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Pass {
