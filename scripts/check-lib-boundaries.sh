@@ -7,6 +7,7 @@
 #   3  no file under crates/lune-ui mentions app or terminal words; exceptions are the fixed
 #      strings in scripts/lib-boundaries.allow
 #   4  no crates/lune-ui/src file reads the clock or the environment (keeps frames deterministic)
+#   5  every crates/*/Cargo.toml and spikes/*/Cargo.toml inherits the licence from the workspace
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -52,6 +53,13 @@ check 1 no -n -i luneterm crates/lune-*/Cargo.toml
 check 2 no -rn -i luneterm crates/lune-*
 check 3 yes -rn -i -E 'mock|terminal|xterm|scrollback|glass_ui|(^|[^[:alnum:]_])(pty|shell|ansi)($|[^[:alnum:]_])' crates/lune-ui
 check 4 no -rn -F -e 'env::var' -e 'Instant::now' -e 'SystemTime::now' -e '.elapsed()' crates/lune-ui/src
+
+for m in crates/*/Cargo.toml spikes/*/Cargo.toml; do
+  if ! grep -q -F 'license.workspace = true' "$m"; then
+    echo "rule 5: $m: no 'license.workspace = true'"
+    fail=1
+  fi
+done
 
 if [ "$fail" -ne 0 ]; then
   echo "check-lib-boundaries: FAILED" >&2
