@@ -82,6 +82,34 @@ pub fn draw(p: &mut P<'_>, st: &mut State) {
     p.acrylic(win, 0.0, g.panel, [0.0; 4], g.noise);
     p.acrylic(card, chrome::CARD_RADIUS, g.card, g.panel, g.noise);
     p.hit(Rect::new(0.0, 0.0, win.w, TITLE_BAND), Hit::TitleBand);
+    // Window title, centred in the band: "<tab> · Luneterm".
+    let title = Spec {
+        runs: vec![
+            (
+                st.tabs[st.active].title.clone(),
+                Style::ui(12.0, FG_SECONDARY).medium(),
+            ),
+            ("  ·  Luneterm".to_owned(), Style::ui(12.0, FG_TERTIARY)),
+        ],
+        wrap: None,
+    };
+    // Keep clear of the traffic lights (macOS) and caption buttons (Windows).
+    let side = if cfg!(target_os = "windows") {
+        3.0 * 46.0 + 8.0
+    } else {
+        90.0
+    };
+    p.set_clip(Some(Rect::new(
+        side,
+        0.0,
+        (win.w - 2.0 * side).max(0.0),
+        TITLE_BAND,
+    )));
+    p.text_centered(&title, Rect::new(0.0, 0.0, win.w, TITLE_BAND - 2.0));
+    p.set_clip(None);
+    if cfg!(target_os = "windows") {
+        caption_buttons(p, win, st.maximized);
+    }
 
     // Tab strip.
     let title_style = |active: bool| Style::ui(FONT_S, if active { FG_PRIMARY } else { FG_MUTED });
@@ -293,6 +321,35 @@ pub fn draw(p: &mut P<'_>, st: &mut State) {
             p.stroke(&pts, true, style);
         }
         None => {}
+    }
+}
+
+/// Windows 11 style caption buttons (the window is borderless so the glass reaches the top edge).
+fn caption_buttons(p: &mut P<'_>, win: Rect, maximized: bool) {
+    use crate::state::Caption;
+    let restore = if maximized {
+        icon::CHROME_RESTORE
+    } else {
+        icon::CHROME_MAXIMIZE
+    };
+    let buttons = [
+        (Caption::Minimize, icon::CHROME_MINIMIZE),
+        (Caption::Maximize, restore),
+        (Caption::Close, icon::CHROME_CLOSE),
+    ];
+    for (k, (caption, glyph)) in buttons.into_iter().enumerate() {
+        let r = Rect::new(win.w - 46.0 * (3 - k) as f32, 0.0, 46.0, TITLE_BAND - 4.0);
+        let hit = Hit::Caption(caption);
+        let hovered = p.hovered(hit);
+        let mut fg = FG_PRIMARY;
+        if hovered && caption == Caption::Close {
+            p.fill(r, 0.0, [0xC4, 0x2B, 0x1C, 0xFF]);
+            fg = [0xFF, 0xFF, 0xFF, 0xFF];
+        } else if hovered {
+            p.fill(r, 0.0, SURFACE_HOVER);
+        }
+        p.text_centered(&icon(glyph, 10.0, fg), r);
+        p.hit(r, hit);
     }
 }
 

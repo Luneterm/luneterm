@@ -104,9 +104,11 @@ impl Gpu {
         .into_iter()
         .find(|f| caps.formats.contains(f))
         .unwrap_or(caps.formats[0]);
+        // Our output is premultiplied. DirectComposition (Windows) offers PreMultiplied; Metal only
+        // offers PostMultiplied, which CoreAnimation composites as premultiplied anyway.
         let alpha_mode = [
-            wgpu::CompositeAlphaMode::PostMultiplied,
             wgpu::CompositeAlphaMode::PreMultiplied,
+            wgpu::CompositeAlphaMode::PostMultiplied,
         ]
         .into_iter()
         .find(|m| caps.alpha_modes.contains(m))
