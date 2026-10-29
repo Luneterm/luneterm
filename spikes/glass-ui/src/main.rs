@@ -128,8 +128,8 @@ impl ApplicationHandler for App {
             dumped: false,
         };
         // Scripted offscreen frames (`GLASS_UI_DUMP_FRAMES=<dir>`): render, write, exit.
-        // No redraw is requested on this path: winit would still deliver a queued
-        // `RedrawRequested` after `exit()` on macOS, presenting a frame to the hidden window.
+        // winit still drains events after `exit()`; `window_event` and `about_to_wait`
+        // return early once exiting, so nothing reaches `render()` on this path.
         if let Some(dir) = dump_dir() {
             if let Err(e) = dump::dump_frames(&mut renderer, &mut self.state, &dir) {
                 eprintln!("dump: {e}");
@@ -144,6 +144,11 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // After `exit()` winit still delivers queued events (macOS drains `RedrawRequested`,
+        // `Resized`, `Focused`, ...). Ignore them so no frame is acquired or presented.
+        if event_loop.exiting() {
+            return;
+        }
         let Some(r) = &mut self.renderer else { return };
         let st = &mut self.state;
         let window = r.gpu.window.clone();
@@ -317,7 +322,10 @@ impl ApplicationHandler for App {
         window.request_redraw();
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if event_loop.exiting() {
+            return;
+        }
         let Some(r) = &self.renderer else { return };
         let st = &self.state;
         let now = std::time::Instant::now();
