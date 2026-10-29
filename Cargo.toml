@@ -8,12 +8,13 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 publish = false
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-luneterm-vt = { path = "crates/luneterm-vt" }
-luneterm-pty = { path = "crates/luneterm-pty" }
-luneterm-glass = { path = "crates/luneterm-glass" }
-luneterm-render = { path = "crates/luneterm-render" }
+lune-vt = { path = "crates/lune-vt" }
+lune-pty = { path = "crates/lune-pty" }
+lune-ui = { path = "crates/lune-ui" }
+lune-termview = { path = "crates/lune-termview" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

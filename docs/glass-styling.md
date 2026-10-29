@@ -2,7 +2,7 @@
 
 Source of truth: Lunegit `src/Lunegit.Desktop/` — `MainWindow.axaml`, `Views/TerminalPanelView.axaml`,
 `Themes/DarkTheme.axaml`, `Controls/Terminal/TerminalView.cs`, `TerminalChromeGeometry.cs`,
-`TerminalChromeAnimation.cs`. Constants live in `luneterm_glass::lunegit_dark`.
+`TerminalChromeAnimation.cs`. The constants live in the `lunegit_dark` module of `crates/lune-ui/src/theme.rs` (`lune_ui::lunegit_dark`): `THEME` for the widget tokens, `WINDOW`, `PANEL` and `CARD` for the glass layers.
 
 ## Layer stack (back to front)
 
