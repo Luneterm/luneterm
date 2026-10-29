@@ -932,6 +932,7 @@ dependencies = [
  "png",
  "pollster",
  "wgpu",
+ "zeno",
 ]
 
 [[package]]

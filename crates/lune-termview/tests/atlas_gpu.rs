@@ -4,13 +4,13 @@
 mod common;
 
 use cosmic_text::{CacheKey, CacheKeyFlags, Weight, fontdb};
-use lune_termview::atlas::{Atlas, Content, Image, Page, Raster, START_DIM};
+use lune_termview::atlas::{Atlas, AtlasKey, Content, Image, Page, Raster, START_DIM};
 
 /// One 2x1 straight-alpha red pixel pair per key.
 struct Red;
 
 impl Raster for Red {
-    fn raster(&mut self, _: CacheKey) -> Option<Image> {
+    fn raster(&mut self, _: AtlasKey) -> Option<Image> {
         Some(Image {
             content: Content::Color,
             w: 2,
@@ -29,15 +29,17 @@ fn atlas_flush_uploads_and_regrows() {
     };
     let mut atlas = Atlas::new(&device);
     assert_eq!(atlas.core().size(Page::Color), START_DIM);
-    let key = CacheKey::new(
-        fontdb::ID::dummy(),
-        7,
-        13.0,
-        (0.0, 0.0),
-        Weight::NORMAL,
-        CacheKeyFlags::empty(),
-    )
-    .0;
+    let key = AtlasKey::Font(
+        CacheKey::new(
+            fontdb::ID::dummy(),
+            7,
+            13.0,
+            (0.0, 0.0),
+            Weight::NORMAL,
+            CacheKeyFlags::empty(),
+        )
+        .0,
+    );
     let e = atlas
         .core_mut()
         .get(&mut Red, key)

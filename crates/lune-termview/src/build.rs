@@ -13,8 +13,9 @@ use bytemuck::{Pod, Zeroable};
 use cosmic_text::{CacheKey, CacheKeyFlags, FontSystem, SwashCache};
 use lune_ui::color::Rgba;
 
-use crate::atlas::{AtlasCore, Entry, Full, Page, SwashRaster};
+use crate::atlas::{AtlasCore, AtlasKey, CustomKey, Entry, Full, Page, SwashRaster};
 use crate::contain::{is_blank, next_cell_blank, place};
+use crate::custom_glyphs::has_custom_char;
 use crate::layout::{CellMetrics, GridLayout};
 use crate::model::{Attrs, Cell, Cursor, CursorShape, Grid, UnderlineStyle, ViewState};
 use crate::text::{ShapedGlyph, Shaper, TermFonts, cell_metrics};
@@ -371,7 +372,7 @@ fn fetch(
     core: &mut AtlasCore,
     raster: &mut SwashRaster<'_>,
     proto: &mut Protocol,
-    key: CacheKey,
+    key: AtlasKey,
 ) -> Result<Option<Entry>, Restart> {
     match core.get(raster, key) {
         Ok(e) => Ok(e),
@@ -388,6 +389,15 @@ fn fetch(
             }
         }
     }
+}
+
+/// The character of a cell whose text is exactly one character with a procedural definition.
+fn custom_char(text: &str) -> Option<char> {
+    let mut it = text.chars();
+    let (Some(c), None) = (it.next(), it.next()) else {
+        return None;
+    };
+    has_custom_char(c).then_some(c)
 }
 
 fn clamp_i32(v: i64) -> i32 {
@@ -444,7 +454,38 @@ fn build_row(
         let [cell_x, row_top, _, _] = ctx.layout.cell_rect_px(r, c, span);
 
         let text = cell.text();
-        if !is_blank(text) {
+        if let Some(ch) = custom_char(text) {
+            // Procedural glyph (box drawing, block, powerline): one cell-sized mask image, never
+            // shaped, so bold and italic don't change it. A width-2 cell gets the one-cell image
+            // at its leading cell, as xterm.js draws it.
+            let mut raster = SwashRaster { cache: swash, fs };
+            let key = AtlasKey::Custom(CustomKey {
+                ch,
+                cell_w: m.cell_w,
+                cell_h: m.cell_h,
+                scale_bits: m.scale.to_bits(),
+                font_size_bits: m.font_size.to_bits(),
+            });
+            if let Some(e) = fetch(core, &mut raster, proto, key)? {
+                let (cw, ch_) = (m.cell_w as f32, m.cell_h as f32);
+                out.mask.push(GlyphInst {
+                    rect: [
+                        cell_x as f32,
+                        row_top as f32,
+                        e.uv[2] as f32,
+                        e.uv[3] as f32,
+                    ],
+                    uv: e.uv.map(|v| v as f32),
+                    color: premul(res.fg),
+                    clip: [
+                        cell_x as f32,
+                        row_top as f32,
+                        cell_x as f32 + cw,
+                        row_top as f32 + ch_,
+                    ],
+                });
+            }
+        } else if !is_blank(text) {
             let bold = cell.attrs.contains(Attrs::BOLD);
             let italic = cell.attrs.contains(Attrs::ITALIC);
             let shaped = shaper.shape(fs, ctx.fonts, text, bold, italic);
@@ -459,7 +500,7 @@ fn build_row(
                     } else {
                         CacheKeyFlags::empty()
                     };
-                    CacheKey::new(
+                    let (key, xi, yi) = CacheKey::new(
                         g.font_id,
                         g.glyph_id,
                         m.font_size * scale * rs,
@@ -469,7 +510,8 @@ fn build_row(
                         ),
                         g.weight,
                         flags,
-                    )
+                    );
+                    (AtlasKey::Font(key), xi, yi)
                 };
                 // Whether the glyph is colour is known only once it is rasterized: probe the
                 // first glyph as a mask glyph, then re-place if it turns out to be colour.
@@ -1018,6 +1060,70 @@ mod tests {
             "{g:?}"
         );
         assert!(r.b.rows()[0].mask.is_empty());
+    }
+
+    #[test]
+    fn single_box_char_is_one_cell_sized_mask_instance() {
+        let mut r = rig(4, 2);
+        let mut c = Cell::default();
+        c.set_char('─');
+        r.grid.set(1, 2, c);
+        r.update();
+        let row = &r.b.rows()[1];
+        assert_eq!(row.mask.len(), 1, "{row:?}");
+        assert!(row.color.is_empty());
+        let g = row.mask[0];
+        // cell (row 1, col 2) at 2x: x = 2*16, y = 1*34, 16 x 34
+        assert_eq!(g.rect, [32.0, 34.0, 16.0, 34.0]);
+        assert_eq!(g.clip, [32.0, 34.0, 48.0, 68.0]);
+        assert_eq!((g.uv[2], g.uv[3]), (16.0, 34.0));
+        assert!(r.b.rows()[0].mask.is_empty());
+
+        // bold does not change a procedural glyph
+        let mut bold = Cell::default();
+        bold.set_char('─');
+        bold.attrs.insert(Attrs::BOLD);
+        r.grid.set(1, 3, bold);
+        r.update();
+        let row = &r.b.rows()[1];
+        assert_eq!(row.mask.len(), 2);
+        assert_eq!(row.mask[1].uv, row.mask[0].uv);
+        assert_eq!(row.mask[1].rect, [48.0, 34.0, 16.0, 34.0]);
+    }
+
+    #[test]
+    fn box_char_with_a_combining_mark_takes_the_font_path() {
+        let mut r = rig(3, 1);
+        let mut c = Cell::default();
+        c.set_char('─');
+        r.grid.set(0, 0, c);
+        let mut c = Cell::default();
+        c.set_text("─\u{301}");
+        r.grid.set(0, 1, c);
+        r.update();
+        let row = &r.b.rows()[0];
+        let plain = row.mask[0];
+        assert_eq!(plain.rect[2..], [16.0, 34.0]);
+        assert!(
+            row.mask.len() >= 2,
+            "the mark cell draws through the font: {row:?}"
+        );
+        // whatever the font path produced, it is not the cell-sized procedural image
+        assert!(row.mask.iter().skip(1).all(|g| g.uv != plain.uv), "{row:?}");
+    }
+
+    #[test]
+    fn wide_cell_box_char_draws_one_cell_at_the_leading_column() {
+        let mut r = rig(4, 1);
+        let mut c = Cell::default();
+        c.set_char('█');
+        c.width = 2;
+        r.grid.set(0, 1, c);
+        r.update();
+        let row = &r.b.rows()[0];
+        assert_eq!(row.mask.len(), 1);
+        assert_eq!(row.mask[0].rect, [16.0, 0.0, 16.0, 34.0]);
+        assert_eq!(row.mask[0].clip, [16.0, 0.0, 32.0, 34.0]);
     }
 
     #[test]

@@ -872,7 +872,7 @@ fn box_drawing_scene() -> Scene {
 }
 
 fn blocks_scene() -> Scene {
-    let mut sc = Scene::new(16, 9);
+    let mut sc = Scene::new(16, 11);
     let g = &mut sc.grid;
     for i in 0..32u32 {
         let ch = char::from_u32(0x2580 + i).unwrap_or(' ').to_string();
@@ -893,6 +893,10 @@ fn blocks_scene() -> Scene {
         for r in 6..9 {
             put(g, r, col, ch, s().fg(pal(2)));
         }
+    }
+    // row 9 stays blank; row 10 is a horizontal run to measure seams across cell boundaries
+    for col in 0..8 {
+        put(g, 10, col, "\u{2588}", s());
     }
     sc
 }
@@ -1150,6 +1154,11 @@ fn containment_no_spill() {
         "\u{2605}",
         "\u{2318}",
         "\u{F07B}",
+        // procedural glyphs (plan step 6a)
+        "\u{2500}",
+        "\u{2588}",
+        "\u{256D}",
+        "\u{E0B0}",
     ];
     // present in the committed test fonts on every OS, so they must draw something
     let must_ink = [
@@ -1159,6 +1168,10 @@ fn containment_no_spill() {
         "\u{23FA}",
         "\u{2733}",
         "\u{2605}",
+        "\u{2500}",
+        "\u{2588}",
+        "\u{256D}",
+        "\u{E0B0}",
     ];
     let hidden = s().attr(Attrs::INVISIBLE);
     for scale in [1.0f32, 2.0] {
