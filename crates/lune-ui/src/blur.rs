@@ -356,53 +356,22 @@ impl Blur {
         let Some(t) = &self.targets else { return };
         for (name, view) in [("scene", &t.scene), ("blurred", &t.levels[2])] {
             let tex = view.texture();
-            let (w, h) = (tex.width(), tex.height());
-            let row = (w * 4).div_ceil(256) * 256;
-            let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("dump"),
-                size: u64::from(row * h),
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            let mut enc = device.create_command_encoder(&Default::default());
-            enc.copy_texture_to_buffer(
-                tex.as_image_copy(),
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &buf,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(row),
-                        rows_per_image: Some(h),
-                    },
-                },
-                tex.size(),
-            );
-            queue.submit(Some(enc.finish()));
-            let slice = buf.slice(..);
-            slice.map_async(wgpu::MapMode::Read, |_| {});
-            let _ = device.poll(wgpu::PollType::wait_indefinitely());
-            let Ok(data) = slice.get_mapped_range() else {
-                return;
-            };
-            let bgra = self.format == wgpu::TextureFormat::Bgra8Unorm;
-            let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-            for y in 0..h {
-                let line = &data[(y * row) as usize..(y * row + w * 4) as usize];
-                for px in line.chunks(4) {
-                    let (r, b) = if bgra { (px[2], px[0]) } else { (px[0], px[2]) };
-                    rgba.extend_from_slice(&[r, px[1], b, 255]);
-                }
-            }
             let path = dir.join(format!("{name}.png"));
-            if let Ok(file) = std::fs::File::create(&path) {
-                let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-                enc.set_color(png::ColorType::Rgba);
-                enc.set_depth(png::BitDepth::Eight);
-                if let Ok(mut writer) = enc.write_header() {
-                    let _ = writer.write_image_data(&rgba);
+            let mut rgba = match crate::dump::read_rgba(device, queue, tex) {
+                Ok(rgba) => rgba,
+                Err(e) => {
+                    eprintln!("dump {name}: {e}");
+                    return;
                 }
+            };
+            for px in rgba.chunks_exact_mut(4) {
+                px[3] = 255;
             }
-            eprintln!("dumped {} ({w}x{h})", path.display());
+            let size = (tex.width(), tex.height());
+            match crate::dump::write_png(&path, size, &rgba) {
+                Ok(()) => eprintln!("dumped {} ({}x{})", path.display(), size.0, size.1),
+                Err(e) => eprintln!("dump {name}: {e}"),
+            }
         }
     }
 }

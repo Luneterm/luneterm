@@ -79,6 +79,19 @@ pub struct Uploaded {
     ranges: Vec<(Range, Range, Range, Range)>,
 }
 
+/// The wgpu instance for a winit event loop. On Windows this is DX12 presented through a
+/// DirectComposition visual, the wgpu path that supports a transparent window.
+pub fn instance(display: winit::event_loop::OwnedDisplayHandle) -> wgpu::Instance {
+    #[allow(unused_mut)]
+    let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display));
+    #[cfg(target_os = "windows")]
+    {
+        desc.backends = wgpu::Backends::DX12;
+        desc.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+    }
+    wgpu::Instance::new(desc)
+}
+
 impl Gpu {
     pub async fn new(window: Arc<Window>, instance: &wgpu::Instance) -> Result<Self, String> {
         let surface = instance
@@ -297,6 +310,33 @@ impl Gpu {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         self.surface.configure(&self.device, &self.config);
+    }
+
+    /// The next surface texture, or `None` when this frame should be skipped. An outdated or
+    /// lost surface is reconfigured and a redraw requested; a hidden or minimised window is
+    /// skipped (macOS sends a redraw when it is visible again).
+    pub fn acquire(&mut self) -> Result<Option<wgpu::SurfaceTexture>, String> {
+        match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) => Ok(Some(t)),
+            wgpu::CurrentSurfaceTexture::Outdated
+            | wgpu::CurrentSurfaceTexture::Suboptimal(_)
+            | wgpu::CurrentSurfaceTexture::Lost => {
+                let (w, h) = (self.config.width, self.config.height);
+                self.resize(w, h);
+                self.window.request_redraw();
+                Ok(None)
+            }
+            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => {
+                Ok(None)
+            }
+            other => Err(format!("surface: {other:?}")),
+        }
+    }
+
+    /// Shows a finished surface texture.
+    pub fn present(&self, frame: wgpu::SurfaceTexture) {
+        self.window.pre_present_notify();
+        self.queue.present(frame);
     }
 
     pub fn upload(&self, layers: &[LayerGeometry], size: (u32, u32), scale: f32) -> Uploaded {

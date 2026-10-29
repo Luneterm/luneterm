@@ -19,9 +19,6 @@ mod widgets;
 
 use std::sync::Arc;
 
-use glyphon::{
-    Cache, Color, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
-};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -29,10 +26,10 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
-use lune_ui::gpu::Gpu;
-use lune_ui::paint::{LAYER_COUNT, Painter, Rect};
+use lune_ui::frame::{FrameParams, FrameRenderer};
+use lune_ui::gpu::{self, Gpu};
+use lune_ui::paint::{Painter, Rect};
 use lune_ui::text::TextCache;
-use lune_ui::{blur, gpu};
 use state::{Effect, Hit, MenuKind, Modal, Page, Popup, State};
 
 /// Luneium context-menu glass: blur 30px, saturate 1.8, then acrylic on top.
@@ -41,13 +38,7 @@ const BACKDROP_SATURATION: f32 = 1.8;
 struct Renderer {
     gpu: Gpu,
     text: TextCache,
-    swash: SwashCache,
-    viewport: Viewport,
-    atlas: TextAtlas,
-    /// One text renderer per paint layer, so text interleaves correctly with shapes.
-    layers: Vec<TextRenderer>,
-    /// Offscreen scene + blur for glass menus.
-    blur: blur::Blur,
+    frame: FrameRenderer,
     dumped: bool,
 }
 
@@ -121,17 +112,7 @@ impl ApplicationHandler for App {
         }
         apply_glass(&window, &self.state);
 
-        #[allow(unused_mut)]
-        let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
-            event_loop.owned_display_handle(),
-        ));
-        #[cfg(target_os = "windows")]
-        {
-            // DX12 through a DirectComposition visual is the wgpu path that supports transparency.
-            desc.backends = wgpu::Backends::DX12;
-            desc.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
-        }
-        let instance = wgpu::Instance::new(desc);
+        let instance = gpu::instance(event_loop.owned_display_handle());
         let gpu = pollster::block_on(Gpu::new(window.clone(), &instance)).expect("gpu");
         eprintln!(
             "surface: {:?}, alpha {:?}, scale {}",
@@ -139,25 +120,6 @@ impl ApplicationHandler for App {
             gpu.alpha_mode,
             window.scale_factor()
         );
-        let cache = Cache::new(&gpu.device);
-        let viewport = Viewport::new(&gpu.device, &cache);
-        let mut atlas = TextAtlas::with_color_mode(
-            &gpu.device,
-            &gpu.queue,
-            &cache,
-            gpu.config.format,
-            glyphon::ColorMode::Web,
-        );
-        let layers = (0..LAYER_COUNT)
-            .map(|_| {
-                TextRenderer::new(
-                    &mut atlas,
-                    &gpu.device,
-                    wgpu::MultisampleState::default(),
-                    None,
-                )
-            })
-            .collect();
         let text = TextCache::new(
             window.scale_factor() as f32,
             &[
@@ -180,16 +142,12 @@ impl ApplicationHandler for App {
             });
         }
         window.request_redraw();
-        let blur = blur::Blur::new(&gpu.device, gpu.config.format);
+        let frame = FrameRenderer::new(&gpu);
         let mut renderer = Renderer {
-            blur,
-            dumped: false,
             gpu,
             text,
-            swash: SwashCache::new(),
-            viewport,
-            atlas,
-            layers,
+            frame,
+            dumped: false,
         };
         // Scripted offscreen frames (`GLASS_UI_DUMP_FRAMES=<dir>`): render, write, exit.
         if let Some(dir) = dump_dir() {
@@ -422,29 +380,14 @@ fn dump_dir() -> Option<std::path::PathBuf> {
 /// Draws one frame into the window's surface.
 fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
     st.now = std::time::Instant::now();
-    let frame = match r.gpu.surface.get_current_texture() {
-        wgpu::CurrentSurfaceTexture::Success(t) => t,
-        wgpu::CurrentSurfaceTexture::Outdated
-        | wgpu::CurrentSurfaceTexture::Suboptimal(_)
-        | wgpu::CurrentSurfaceTexture::Lost => {
-            let (w, h) = (r.gpu.config.width, r.gpu.config.height);
-            r.gpu.resize(w, h);
-            r.gpu.window.request_redraw();
-            return Ok(());
-        }
-        // Hidden or minimised: skip; macOS sends a redraw when the window is visible again.
-        wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => {
-            return Ok(());
-        }
-        other => return Err(format!("surface: {other:?}")),
+    let Some(frame) = r.gpu.acquire()? else {
+        return Ok(());
     };
     let view = frame.texture.create_view(&Default::default());
     let size = (r.gpu.config.width, r.gpu.config.height);
     draw_frame(r, st, s, &view, size)?;
-    r.gpu.window.pre_present_notify();
-    r.gpu.queue.present(frame);
-    r.atlas.trim();
-    r.text.end_frame();
+    r.gpu.present(frame);
+    r.frame.end_frame(&mut r.text);
     Ok(())
 }
 
@@ -473,119 +416,22 @@ fn draw_frame(
     st.hits = hits;
     st.hover = st.hit_at(st.mouse);
 
-    r.viewport.update(
-        &r.gpu.queue,
-        Resolution {
-            width: size.0,
-            height: size.1,
-        },
-    );
-    for (layer, renderer) in layers.iter().zip(&mut r.layers) {
-        let (fonts, buffer_of) = r.text.split();
-        let areas = layer.texts.iter().filter_map(|t| {
-            let buffer = buffer_of(t.key)?;
-            let c = t.clip;
-            Some(TextArea {
-                buffer,
-                left: t.x * s,
-                top: t.y * s,
-                scale: t.scale,
-                bounds: TextBounds {
-                    left: (c.x * s) as i32,
-                    top: (c.y * s) as i32,
-                    right: (c.right() * s) as i32,
-                    bottom: (c.bottom() * s) as i32,
-                },
-                default_color: Color::rgb(0xCC, 0xCC, 0xCC),
-                custom_glyphs: &[],
-            })
-        });
-        renderer
-            .prepare(
-                &r.gpu.device,
-                &r.gpu.queue,
-                fonts,
-                &mut r.atlas,
-                &r.viewport,
-                areas,
-                &mut r.swash,
-            )
-            .map_err(|e| e.to_string())?;
-    }
-
-    let geometry: Vec<gpu::LayerGeometry> = layers.into_iter().map(|l| l.geometry).collect();
-    let uploaded = r.gpu.upload(&geometry, size, s);
-    let sigma = st.settings.menu_blur.sigma();
-    r.blur.prepare(&r.gpu.device, &r.gpu.queue, size, s, sigma);
-    let mut encoder = r.gpu.device.create_command_encoder(&Default::default());
-    // Layers under popups go to an offscreen scene, so a glass menu can blur them.
-    const SCENE_LAYERS: usize = 2;
-    let pass_desc = |target: &wgpu::TextureView,
-                     f: &mut dyn FnMut(&mut wgpu::RenderPass<'_>) -> Result<(), String>,
-                     encoder: &mut wgpu::CommandEncoder| {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("frame"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        f(&mut pass)
+    let params = FrameParams {
+        size,
+        scale: s,
+        blur_sigma: st.settings.menu_blur.sigma(),
+        saturation: BACKDROP_SATURATION,
     };
-    let scene = r.blur.scene_view().ok_or("no scene target")?;
-    pass_desc(
-        scene,
-        &mut |pass| {
-            for i in 0..SCENE_LAYERS {
-                r.gpu.draw_below_text(pass, &uploaded, i);
-                r.layers[i]
-                    .render(&r.atlas, &r.viewport, pass)
-                    .map_err(|e| e.to_string())?;
-                r.gpu.draw_above_text(pass, &uploaded, i);
-            }
-            Ok(())
-        },
-        &mut encoder,
-    )?;
-    if let Some(b) = backdrop {
-        r.blur.set_backdrop(&r.gpu.queue, b, BACKDROP_SATURATION);
-        r.blur.run(&mut encoder);
-    }
-    pass_desc(
-        target,
-        &mut |pass| {
-            r.blur.blit_scene(pass);
-            if backdrop.is_some() {
-                r.blur.draw_backdrop(pass);
-            }
-            for i in SCENE_LAYERS..r.layers.len() {
-                r.gpu.draw_below_text(pass, &uploaded, i);
-                r.layers[i]
-                    .render(&r.atlas, &r.viewport, pass)
-                    .map_err(|e| e.to_string())?;
-                r.gpu.draw_above_text(pass, &uploaded, i);
-            }
-            Ok(())
-        },
-        &mut encoder,
-    )?;
-    r.gpu.queue.submit(Some(encoder.finish()));
+    r.frame
+        .draw(&r.gpu, &mut r.text, layers, backdrop, target, params)?;
     // Debug: GLASS_UI_DUMP=<dir> writes the scene and blurred textures once a menu is fully open.
     if backdrop.is_some_and(|b| b.alpha >= 0.999)
         && let Some(dir) = std::env::var_os("GLASS_UI_DUMP")
         && !r.dumped
     {
         r.dumped = true;
-        r.blur
+        r.frame
+            .blur()
             .dump(&r.gpu.device, &r.gpu.queue, std::path::Path::new(&dir));
     }
     Ok(())
