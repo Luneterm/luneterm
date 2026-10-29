@@ -16,6 +16,7 @@
 
 use crate::layout::CellMetrics;
 use crate::model::Cell;
+use crate::text::ShapedGlyph;
 
 /// Width of the slot a cell owns: `max(width, 1)` cells (`RunSlotWidth` :2116, run length 1).
 pub fn slot_width(width: u8, cell_w: f32) -> f32 {
@@ -89,6 +90,30 @@ pub struct Placement {
     /// `[x0, y0, x1, y1]`: the cell plus its allowance horizontally, the row vertically. The
     /// row clip is always on (ledger 2).
     pub clip: [i32; 4],
+}
+
+// LUNETERM: D4 (iii), E2 2026-10-29 — GDEF-less fonts give marks a full advance; HarfBuzz's zero-width-mark fallback, approximated
+/// The advance a cluster is fitted on: its base glyph's, not the whole run's. The shipped mono
+/// face has no mark class, so every combining mark carries a full cell of advance and the whole
+/// cluster would otherwise be shrunk to fit.
+pub fn base_advance(glyphs: &[ShapedGlyph]) -> f32 {
+    glyphs.first().map_or(0.0, |g| g.advance)
+}
+
+// LUNETERM: D4 (iii), E2 2026-10-29 — GDEF-less fonts give marks a full advance; HarfBuzz's zero-width-mark fallback, approximated
+/// Where glyph `i` of a cluster starts, logical px from the cluster origin. The base keeps its
+/// own `x`. A later glyph sits at the base's pen after the base plus its own offset
+/// (`x - pen_x`), so a mark with a negative left bearing overprints the base instead of
+/// advancing past it. A font with GPOS marks (zero advance, offset in `x`) is placed as before.
+pub fn glyph_x(glyphs: &[ShapedGlyph], i: usize) -> f32 {
+    let (Some(base), Some(g)) = (glyphs.first(), glyphs.get(i)) else {
+        return 0.0;
+    };
+    if i == 0 {
+        base.x
+    } else {
+        base.pen_x + base.advance + (g.x - g.pen_x)
+    }
 }
 
 /// Place one cluster of `advance_px` physical px at `cell_x` on the row starting at `row_top`.
@@ -255,6 +280,48 @@ mod tests {
         assert_eq!(p.raster_scale, 1.0);
         assert_eq!(p.origin_x, 13.0);
         assert_eq!(p.clip, [10, 0, 42, 34]);
+    }
+
+    fn glyph(pen_x: f32, advance: f32, x: f32) -> ShapedGlyph {
+        ShapedGlyph {
+            font_id: cosmic_text::fontdb::ID::dummy(),
+            glyph_id: 1,
+            x,
+            y: 0.0,
+            pen_x,
+            advance,
+            weight: cosmic_text::Weight::NORMAL,
+            italic: false,
+        }
+    }
+
+    #[test]
+    fn glyph_x_single_glyph_keeps_its_own_x() {
+        let g = [glyph(0.0, 7.8, 0.0)];
+        assert_eq!(glyph_x(&g, 0), 0.0);
+        assert_eq!(base_advance(&g), 7.8);
+        assert_eq!(glyph_x(&[], 0), 0.0);
+        assert_eq!(glyph_x(&g, 5), 0.0);
+        assert_eq!(base_advance(&[]), 0.0);
+    }
+
+    #[test]
+    fn glyph_x_gpos_cluster_is_unchanged() {
+        // base pen 0, advance 7.8; the mark has pen 7.8, advance 0 and GPOS offset -3
+        let g = [glyph(0.0, 7.8, 0.0), glyph(7.8, 0.0, 4.8)];
+        assert!((glyph_x(&g, 1) - 4.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn glyph_x_gdef_less_cluster_overprints_the_base() {
+        let g = [
+            glyph(0.0, 7.8, 0.0),
+            glyph(7.8, 7.8, 7.8),
+            glyph(15.6, 7.8, 15.6),
+        ];
+        assert!((glyph_x(&g, 1) - 7.8).abs() < 1e-6);
+        assert!((glyph_x(&g, 2) - 7.8).abs() < 1e-6);
+        assert_eq!(base_advance(&g), 7.8);
     }
 
     #[test]
