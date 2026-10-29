@@ -9,6 +9,7 @@ use glyphon::{
 };
 
 use crate::blur::{self, Blur};
+use crate::custom::{CustomDraw, CustomFrame, CustomItem};
 use crate::gpu::{self, Gpu};
 use crate::paint::{LAYER_COUNT, Layer};
 use crate::text::TextCache;
@@ -93,6 +94,40 @@ impl FrameRenderer {
         target: &wgpu::TextureView,
         params: FrameParams,
     ) -> Result<(), String> {
+        self.draw_with(gpu, text, layers, backdrop, target, params, &mut [])
+    }
+
+    /// [`draw`](Self::draw) with app-owned draws: each layer's [`CustomItem`]s render after the
+    /// layer's acrylic and under shapes and before its text, scissored to the item's clip.
+    /// `customs[slot]` draws the items recorded with that slot. Every element of `customs` gets
+    /// one `prepare` call before the first render pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_with(
+        &mut self,
+        gpu: &Gpu,
+        text: &mut TextCache,
+        mut layers: Vec<Layer>,
+        backdrop: Option<blur::Backdrop>,
+        target: &wgpu::TextureView,
+        params: FrameParams,
+        customs: &mut [&mut dyn CustomDraw],
+    ) -> Result<(), String> {
+        let items: Vec<Vec<CustomItem>> = layers
+            .iter_mut()
+            .map(|l| std::mem::take(&mut l.customs))
+            .collect();
+        if let Some(bad) = items.iter().flatten().find(|i| i.slot >= customs.len()) {
+            return Err(format!("custom draw slot {} not supplied", bad.slot));
+        }
+        let custom_frame = CustomFrame {
+            size: params.size,
+            scale: params.scale,
+            format: gpu.config.format,
+        };
+        for c in customs.iter_mut() {
+            c.prepare(&gpu.device, &gpu.queue, &custom_frame);
+        }
+        let customs: &[&mut dyn CustomDraw] = customs;
         let FrameParams {
             size,
             scale: s,
@@ -168,8 +203,9 @@ impl FrameRenderer {
         pass_desc(
             scene,
             &mut |pass| {
-                for i in 0..SCENE_LAYERS {
+                for (i, layer_items) in items.iter().enumerate().take(SCENE_LAYERS) {
                     gpu.draw_below_text(pass, &uploaded, i);
+                    draw_customs(pass, layer_items, customs, &custom_frame);
                     self.layers[i]
                         .render(&self.atlas, &self.viewport, pass)
                         .map_err(|e| e.to_string())?;
@@ -190,8 +226,9 @@ impl FrameRenderer {
                 if backdrop.is_some() {
                     self.blur.draw_backdrop(pass);
                 }
-                for i in SCENE_LAYERS..self.layers.len() {
+                for (i, layer_items) in items.iter().enumerate().skip(SCENE_LAYERS) {
                     gpu.draw_below_text(pass, &uploaded, i);
+                    draw_customs(pass, layer_items, customs, &custom_frame);
                     self.layers[i]
                         .render(&self.atlas, &self.viewport, pass)
                         .map_err(|e| e.to_string())?;
@@ -210,5 +247,27 @@ impl FrameRenderer {
     pub fn end_frame(&mut self, text: &mut TextCache) {
         self.atlas.trim();
         text.end_frame();
+    }
+}
+
+/// Renders one layer's custom items in record order, each under a scissor of its clip clamped to
+/// the target; the scissor goes back to the full target afterwards.
+fn draw_customs(
+    pass: &mut wgpu::RenderPass<'_>,
+    items: &[CustomItem],
+    customs: &[&mut dyn CustomDraw],
+    frame: &CustomFrame,
+) {
+    let (tw, th) = frame.size;
+    for item in items {
+        let [x, y, w, h] = item.clip;
+        let (x, y) = (x.min(tw), y.min(th));
+        let (w, h) = (w.min(tw - x), h.min(th - y));
+        if w == 0 || h == 0 {
+            continue;
+        }
+        pass.set_scissor_rect(x, y, w, h);
+        customs[item.slot].render(pass, frame);
+        pass.set_scissor_rect(0, 0, tw, th);
     }
 }

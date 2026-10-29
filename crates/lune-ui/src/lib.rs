@@ -9,7 +9,7 @@
 //! Modules:
 //! - [`color`], [`theme`] (the `Theme` tokens and the [`lunegit_dark`] preset with its glass
 //!   layers), [`acrylic`] (Avalonia acrylic colour math);
-//! - [`paint`] (the `Painter`), [`text`], [`icon`], [`widgets`] (controls, menus, dropdowns,
+//! - [`paint`] (the `Painter`), [`custom`] (app-owned GPU drawing inside a layer), [`text`], [`icon`], [`widgets`] (controls, menus, dropdowns,
 //!   dialogs), [`chrome`] (tab outline geometry);
 //! - [`gpu`], [`blur`], [`frame`] (wgpu setup, backdrop blur, the scene → blur → target pass
 //!   sequence), [`dump`] (offscreen targets and PNG readback);
@@ -23,6 +23,7 @@ pub mod acrylic;
 pub mod blur;
 pub mod chrome;
 pub mod color;
+pub mod custom;
 pub mod dump;
 pub mod frame;
 pub mod gpu;
