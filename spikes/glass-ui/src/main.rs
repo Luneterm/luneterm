@@ -20,7 +20,6 @@ mod widgets;
 use std::sync::Arc;
 
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
@@ -31,6 +30,7 @@ use lune_ui::gpu::{self, Gpu};
 use lune_ui::lunegit_dark;
 use lune_ui::paint::{Painter, Rect};
 use lune_ui::text::TextCache;
+use lune_ui::window::{self, DoubleClick, edge_at};
 use state::{Effect, Hit, MenuKind, Modal, Page, Popup, State};
 
 /// Luneium context-menu glass: blur 30px, saturate 1.8, then acrylic on top.
@@ -48,7 +48,7 @@ struct App {
     state: State,
     /// Process exit status (non-zero when a frame dump failed).
     exit_code: u8,
-    last_title_click: Option<std::time::Instant>,
+    title_click: DoubleClick,
     /// Borderless window edge under the mouse (Windows only).
     resize_edge: Option<winit::window::ResizeDirection>,
 }
@@ -59,7 +59,7 @@ fn main() -> std::process::ExitCode {
         renderer: None,
         state: State::new(),
         exit_code: 0,
-        last_title_click: None,
+        title_click: DoubleClick::new(),
         resize_edge: None,
     };
     event_loop.run_app(&mut app).expect("run app");
@@ -78,35 +78,13 @@ impl ApplicationHandler for App {
         if self.renderer.is_some() {
             return;
         }
-        // `attrs` is only reassigned under the macOS/Windows cfg blocks below.
-        #[allow(unused_mut)]
-        let mut attrs = Window::default_attributes()
-            .with_title("Luneterm")
-            .with_inner_size(LogicalSize::new(1040.0, 660.0))
-            .with_min_inner_size(LogicalSize::new(560.0, 360.0))
-            .with_transparent(true)
-            // Frame-dump runs render offscreen only; keep their window out of sight.
-            .with_visible(dump_dir().is_none());
-        #[cfg(target_os = "macos")]
-        {
-            use winit::platform::macos::WindowAttributesExtMacOS;
-            attrs = attrs
-                .with_titlebar_transparent(true)
-                .with_fullsize_content_view(true)
-                .with_title_hidden(true);
-        }
-        #[cfg(target_os = "windows")]
-        {
-            // Borderless so the glass reaches the top edge; we draw the caption buttons. No
-            // redirection bitmap: wgpu presents through DirectComposition, which keeps alpha.
-            use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
-            attrs = attrs
-                .with_decorations(false)
-                .with_no_redirection_bitmap(true)
-                .with_undecorated_shadow(true)
-                .with_corner_preference(CornerPreference::Round)
-                .with_theme(Some(winit::window::Theme::Dark));
-        }
+        // Frame-dump runs render offscreen only; keep their window out of sight.
+        let attrs = window::glass_attributes(
+            "Luneterm",
+            (1040.0, 660.0),
+            (560.0, 360.0),
+            dump_dir().is_none(),
+        );
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         if !cfg!(any(target_os = "macos", target_os = "windows")) {
             self.state.settings.glass = state::GlassStyle::Off;
@@ -257,11 +235,7 @@ impl ApplicationHandler for App {
                     match st.click(hit) {
                         Effect::ApplyGlass => apply_glass(&window, st),
                         Effect::DragWindow => {
-                            let now = std::time::Instant::now();
-                            let double = self.last_title_click.is_some_and(|t| {
-                                now.duration_since(t) < std::time::Duration::from_millis(400)
-                            });
-                            self.last_title_click = Some(now);
+                            let double = self.title_click.click(std::time::Instant::now());
                             if double && cfg!(target_os = "windows") {
                                 window.set_maximized(!window.is_maximized());
                             } else {
@@ -351,24 +325,6 @@ impl ApplicationHandler for App {
             r.gpu.window.request_redraw();
         }
     }
-}
-
-/// Which edge of a borderless window the mouse is on, for resizing.
-fn edge_at(p: (f32, f32), w: f32, h: f32) -> Option<winit::window::ResizeDirection> {
-    use winit::window::ResizeDirection as D;
-    const B: f32 = 6.0;
-    let (l, r, t, b) = (p.0 < B, p.0 >= w - B, p.1 < B, p.1 >= h - B);
-    Some(match (l, r, t, b) {
-        (true, _, true, _) => D::NorthWest,
-        (_, true, true, _) => D::NorthEast,
-        (true, _, _, true) => D::SouthWest,
-        (_, true, _, true) => D::SouthEast,
-        (true, ..) => D::West,
-        (_, true, ..) => D::East,
-        (_, _, true, _) => D::North,
-        (.., true) => D::South,
-        _ => return None,
-    })
 }
 
 /// `GLASS_UI_DUMP_FRAMES`: the directory for scripted offscreen frame dumps, if requested.

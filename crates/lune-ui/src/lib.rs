@@ -16,10 +16,12 @@ pub mod dump;
 pub mod frame;
 pub mod gpu;
 pub mod icon;
+pub mod material;
 pub mod paint;
 pub mod text;
 pub mod theme;
 pub mod widgets;
+pub mod window;
 
 pub use theme::lunegit_dark;
 
