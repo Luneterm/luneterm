@@ -1,2 +1,3 @@
 # Fixed strings that may appear on a lune-ui line the boundary rule 3 would otherwise reject.
-# One per line; blank lines and # comments are ignored. Starts with no entries.
+# One per line; blank lines and # comments are ignored.
+Controls/Terminal/TerminalChromeGeometry.cs

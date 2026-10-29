@@ -1,4 +1,4 @@
-//! Tab chrome loop: one closed outline that wraps the active tab and the terminal body.
+//! Tab chrome loop: one closed outline that wraps the active tab and the card body.
 //!
 //! Port of Lunegit `Controls/Terminal/TerminalChromeGeometry.cs` (`BuildLoopFigure`), flattened to
 //! a polyline. Card-local coordinates, logical pixels, y down. Clockwise on screen.

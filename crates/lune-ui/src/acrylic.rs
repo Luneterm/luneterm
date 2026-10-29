@@ -9,7 +9,8 @@
 //! Skia paints an acrylic layer as `noise OVER (tint OVER luminosity)` with blend mode `Src`
 //! (for `BackgroundSource=Digger`), so each layer *replaces* what is under it rather than stacking.
 
-use crate::{GlassLayer, Rgba};
+use crate::GlassLayer;
+use crate::color::Rgba;
 
 /// Opacity Avalonia applies to its 256×256 noise texture.
 pub const NOISE_OPACITY: f32 = 0.0225;
@@ -27,7 +28,7 @@ impl GlassLayer {
     /// Avalonia's effective tint and luminosity colours for this layer
     /// (`PlatformTransparencyCompensationLevel` = 0, Avalonia's default).
     pub fn acrylic_colors(&self) -> AcrylicColors {
-        let Rgba(r, g, b, a) = self.tint;
+        let [r, g, b, a] = self.tint;
         let modifier = tint_opacity_modifier(self.tint);
         let tint_alpha =
             (255.0 * ((255.0 / f64::from(a)) * f64::from(self.tint_opacity)) * modifier) as u8;
@@ -42,8 +43,8 @@ impl GlassLayer {
         let lum_alpha = (255.0 * material.clamp(0.0, 1.0)) as u8;
 
         AcrylicColors {
-            tint: Rgba(r, g, b, tint_alpha),
-            luminosity: Rgba(l, l, l, lum_alpha),
+            tint: [r, g, b, tint_alpha],
+            luminosity: [l, l, l, lum_alpha],
         }
     }
 
@@ -61,7 +62,7 @@ impl GlassLayer {
     }
 }
 
-fn to_f32(Rgba(r, g, b, a): Rgba) -> [f32; 4] {
+fn to_f32([r, g, b, a]: Rgba) -> [f32; 4] {
     [r, g, b, a].map(|v| f32::from(v) / 255.0)
 }
 
@@ -69,7 +70,7 @@ fn trim(value: f64) -> u8 {
     (value * 256.0).floor().clamp(0.0, 255.0) as u8
 }
 
-fn tint_opacity_modifier(Rgba(r, g, b, _): Rgba) -> f64 {
+fn tint_opacity_modifier([r, g, b, _]: Rgba) -> f64 {
     const MID_POINT: f64 = 0.5;
     const WHITE_MAX_OPACITY: f64 = 0.2;
     const MID_POINT_MAX_OPACITY: f64 = 0.45;
@@ -97,30 +98,30 @@ fn tint_opacity_modifier(Rgba(r, g, b, _): Rgba) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::GlassLayer;
     use crate::lunegit_dark::{CARD, PANEL, WINDOW};
-    use crate::{GlassLayer, Rgba};
 
     // Expected values computed independently from Avalonia 12.1.2's formulas.
 
     #[test]
     fn window_layer_matches_avalonia() {
         let c = WINDOW.acrylic_colors();
-        assert_eq!(c.tint, Rgba(0, 0, 0, 114));
-        assert_eq!(c.luminosity, Rgba(90, 90, 90, 178));
+        assert_eq!(c.tint, [0, 0, 0, 114]);
+        assert_eq!(c.luminosity, [90, 90, 90, 178]);
     }
 
     #[test]
     fn panel_layer_matches_avalonia() {
         let c = PANEL.acrylic_colors();
-        assert_eq!(c.tint, Rgba(0, 0, 0, 91));
-        assert_eq!(c.luminosity, Rgba(90, 90, 90, 178));
+        assert_eq!(c.tint, [0, 0, 0, 91]);
+        assert_eq!(c.luminosity, [90, 90, 90, 178]);
     }
 
     #[test]
     fn card_layer_matches_avalonia() {
         let c = CARD.acrylic_colors();
-        assert_eq!(c.tint, Rgba(0, 0, 0, 114));
-        assert_eq!(c.luminosity, Rgba(71, 71, 71, 204));
+        assert_eq!(c.tint, [0, 0, 0, 114]);
+        assert_eq!(c.luminosity, [71, 71, 71, 204]);
         let p = CARD.premultiplied();
         assert!((p[3] - 0.8894).abs() < 1e-3, "alpha {}", p[3]);
         assert!((p[0] - 0.1232).abs() < 1e-3, "red {}", p[0]);
@@ -129,10 +130,10 @@ mod tests {
     #[test]
     fn white_tint_is_suppressed_to_twenty_percent() {
         let white = GlassLayer {
-            tint: Rgba(255, 255, 255, 255),
+            tint: [255, 255, 255, 255],
             tint_opacity: 1.0,
             material_opacity: 0.0,
         };
-        assert_eq!(white.acrylic_colors().tint.3, 51);
+        assert_eq!(white.acrylic_colors().tint[3], 51);
     }
 }

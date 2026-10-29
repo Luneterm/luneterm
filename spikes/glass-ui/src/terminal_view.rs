@@ -2,9 +2,8 @@
 
 use std::f32::consts::PI;
 
-use lune_ui::lunegit_dark;
+use lune_ui::{chrome, lunegit_dark};
 
-use crate::chrome;
 use crate::paint::{LayerId, Rect, StrokeStyle, polyline_length};
 use crate::state::{Hit, OutlineAnim, State};
 use crate::text::{Spec, Style};
