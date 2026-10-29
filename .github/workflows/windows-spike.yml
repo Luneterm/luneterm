@@ -1,0 +1,20 @@
+name: windows-spike
+
+# Builds the glass UI spike for Windows so it can be tested on real hardware.
+on:
+  push:
+    branches: ["spike/**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the toolchain; rustup installs it on first cargo call.
+      - run: cargo build --release -p glass-ui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glass-ui-windows-x64
+          path: target/release/glass-ui.exe
+          retention-days: 7

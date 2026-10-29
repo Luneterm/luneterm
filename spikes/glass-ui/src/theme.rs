@@ -48,6 +48,9 @@ pub mod icon {
     pub const CHEVRON_DOWN: &str = "\u{eab4}";
     pub const ARROW_LEFT: &str = "\u{ea9b}";
     pub const CHECK: &str = "\u{eab2}";
+    pub const CHROME_MINIMIZE: &str = "\u{eaba}";
+    pub const CHROME_MAXIMIZE: &str = "\u{eab9}";
+    pub const CHROME_RESTORE: &str = "\u{eabb}";
 }
 
 #[derive(Debug)]
