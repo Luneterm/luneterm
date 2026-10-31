@@ -8,6 +8,8 @@ use std::thread;
 
 use portable_pty::{Child, CommandBuilder, MasterPty, native_pty_system};
 
+#[cfg(unix)]
+use crate::RawMode;
 use crate::{Pty, PtyBackend, PtySize, PtyWriter, SpawnOptions};
 
 /// Largest accepted `columns` / `rows`: ConPTY's `COORD` is `i16`, and portable-pty casts with
@@ -286,6 +288,21 @@ impl Pty for PortablePty {
 
     fn process_id(&self) -> Option<u32> {
         self.pid
+    }
+
+    #[cfg(unix)]
+    fn raw_mode(&self) -> RawMode {
+        match self.master.as_deref() {
+            Some(master) => crate::unix::raw_mode(master),
+            None => RawMode::Unknown,
+        }
+    }
+
+    #[cfg(unix)]
+    fn foreground_process(&self) -> Option<u32> {
+        self.master
+            .as_deref()
+            .and_then(|master| crate::unix::foreground_process(master))
     }
 }
 
