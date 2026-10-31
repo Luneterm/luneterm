@@ -32,6 +32,14 @@ jobs:
       - uses: actions/checkout@v4
       # rust-toolchain.toml pins the toolchain; rustup installs it on first cargo call.
       - run: cargo build --release -p glass-ui
+      # M3 step 0 (P7/P8): portable-pty size cost = spawn example minus the luneterm placeholder.
+      - run: cargo build --release -p lune-pty --example spawn
+      - run: cargo build --release -p luneterm
+      - shell: pwsh
+        run: |
+          $spawn = (Get-Item target/release/examples/spawn.exe).Length
+          $base = (Get-Item target/release/luneterm.exe).Length
+          "spawn.exe=$spawn luneterm.exe=$base delta=$($spawn - $base)"
       - uses: actions/upload-artifact@v4
         with:
           name: glass-ui-windows-x64
