@@ -7,7 +7,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use lune_pty::{PortablePtyBackend, PtyBackend, SpawnOptions};
+use lune_pty::{PortablePtyBackend, PtyBackend, RawMode, SpawnOptions};
 use support::{DEADLINE, Session, command, size};
 
 /// A fresh, unique directory under the temp dir; removed by the caller.
@@ -190,6 +190,90 @@ mod unix {
         }
     }
 
+    /// Polls `check` until it returns `Some`; panics with `what` at the deadline.
+    fn poll<T>(what: &str, mut check: impl FnMut() -> Option<T>) -> T {
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(found) = check() {
+                return found;
+            }
+            assert!(
+                start.elapsed() < DEADLINE,
+                "{what} not reached within {DEADLINE:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Spawns `script`, waits for `marker`, and returns the session with the termios state final.
+    fn after(script: &str, marker: &str) -> Session {
+        let s = Session::spawn(&sh(script), size(80, 24));
+        s.wait_for(marker, DEADLINE);
+        s
+    }
+
+    #[test]
+    fn raw_mode_cooked() {
+        let s = after("stty sane && echo C && sleep 30", "C");
+        assert_eq!(s.pty.raw_mode(), RawMode::Cooked);
+    }
+
+    #[test]
+    fn raw_mode_raw() {
+        let s = after("stty raw -echo && echo R && sleep 30", "R");
+        assert_eq!(s.pty.raw_mode(), RawMode::Raw);
+    }
+
+    #[test]
+    fn raw_mode_non_canonical_only() {
+        let s = after("stty -icanon && echo B && sleep 30", "B");
+        assert_eq!(s.pty.raw_mode(), RawMode::Raw);
+    }
+
+    #[test]
+    fn raw_mode_follows_changes() {
+        let mut s = after(
+            "stty sane; echo C; read _; stty -icanon; echo B; sleep 30",
+            "C",
+        );
+        assert_eq!(s.pty.raw_mode(), RawMode::Cooked);
+        s.write(b"\n");
+        s.wait_for("B", DEADLINE);
+        assert_eq!(s.pty.raw_mode(), RawMode::Raw);
+    }
+
+    #[test]
+    fn raw_mode_after_exit_returns() {
+        let mut s = Session::spawn(&sh("exit 0"), size(80, 24));
+        assert_eq!(s.wait_exit(DEADLINE), 0);
+        s.wait_eof(DEADLINE);
+        // Any variant is fine: the call must simply return.
+        let _ = s.pty.raw_mode();
+        let _ = s.pty.foreground_process();
+    }
+
+    #[test]
+    fn foreground_process_follows_the_job() {
+        let mut options = command("/bin/sh", &["-i"]);
+        options.env = vec![("PS1".into(), "lune$ ".into())];
+        let mut s = Session::spawn(&options, size(80, 24));
+        let pid = s.pty.process_id().expect("pid");
+        s.wait_for("lune$ ", DEADLINE);
+        // Job control may take a moment to set the foreground group at startup.
+        poll("shell is foreground", || {
+            (s.pty.foreground_process() == Some(pid)).then_some(())
+        });
+        s.write(b"sleep 30\n");
+        let job = poll("a foreground job", || {
+            s.pty.foreground_process().filter(|p| *p != pid)
+        });
+        assert_ne!(job, pid);
+        s.write(b"\x03");
+        poll("shell is foreground again", || {
+            (s.pty.foreground_process() == Some(pid)).then_some(())
+        });
+    }
+
     pub(super) fn long_running() -> SpawnOptions {
         sh("sleep 30")
     }
@@ -356,4 +440,14 @@ fn reader_is_handed_over_once() {
     let mut buf = [0u8; 16];
     assert!(pty.read(&mut buf).is_err(), "Pty::read after take_reader");
     drop(reader);
+}
+
+#[cfg(windows)]
+#[test]
+fn raw_mode_and_foreground_are_unsupported() {
+    let pty = PortablePtyBackend::new()
+        .spawn(&long_running(), size(80, 24))
+        .expect("spawn");
+    assert_eq!(pty.raw_mode(), RawMode::Unknown);
+    assert_eq!(pty.foreground_process(), None);
 }
