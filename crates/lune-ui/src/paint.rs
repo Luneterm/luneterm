@@ -2,6 +2,7 @@
 //! text placements and hit regions. Clicks resolve against the previous frame's hit regions.
 
 use crate::color::{Rgba, premul};
+use crate::custom::CustomItem;
 use crate::gpu::{LayerGeometry, Shape, StrokeVertex};
 use crate::text::{Spec, TextCache};
 use crate::theme::Theme;
@@ -81,6 +82,8 @@ pub struct TextItem {
 pub struct Layer {
     pub geometry: LayerGeometry,
     pub texts: Vec<TextItem>,
+    /// App-owned draws, in record order; drawn after the under shapes, before the text.
+    pub customs: Vec<CustomItem>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -257,6 +260,30 @@ impl<'a, H: Copy + PartialEq> Painter<'a, H> {
         self.geo().acrylic.push(sh);
     }
 
+    /// Records an app-owned draw ([`CustomDraw`](crate::custom::CustomDraw) number `slot`) on the
+    /// current layer, clipped to `r`, the current clip and the window. Nothing is recorded when
+    /// that is empty. The clip is in physical px, left and top floored, right and bottom
+    /// ceiled. The popup transform is ignored: custom items are not animated.
+    pub fn custom(&mut self, slot: usize, r: Rect) {
+        let mut area = r.intersect(&self.window);
+        if let Some(c) = self.clip {
+            area = area.intersect(&c);
+        }
+        if area.w <= 0.0 || area.h <= 0.0 {
+            return;
+        }
+        let [x, y, w, h] = area.phys(self.s);
+        let (x0, y0) = (x.floor().max(0.0), y.floor().max(0.0));
+        let (x1, y1) = ((x + w).ceil().max(0.0), (y + h).ceil().max(0.0));
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        self.layers[self.layer].customs.push(CustomItem {
+            slot,
+            clip: [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32],
+        });
+    }
+
     pub fn text(&mut self, spec: &Spec, x: f32, y: f32) -> (f32, f32) {
         let size = self.text.prepare(spec).1;
         let (key, scale) = match self.xform {
@@ -421,4 +448,72 @@ pub fn polyline_length(pts: &[[f32; 2]]) -> f32 {
             .first()
             .zip(pts.last())
             .map_or(0.0, |(a, b)| dist(*a, *b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::lunegit_dark::THEME;
+
+    fn with_painter(f: impl FnOnce(&mut Painter<'_, u8>)) {
+        let mut text = TextCache::new(2.0, &[], "sans-serif", "monospace");
+        let mut p = Painter::new(
+            2.0,
+            Rect::new(0.0, 0.0, 200.0, 100.0),
+            &mut text,
+            None,
+            THEME,
+        );
+        f(&mut p);
+    }
+
+    #[test]
+    fn custom_records_physical_clip_on_base() {
+        with_painter(|p| {
+            p.custom(3, Rect::new(10.0, 20.0, 30.25, 40.0));
+            assert_eq!(
+                p.layers[0].customs,
+                [CustomItem {
+                    slot: 3,
+                    clip: [20, 40, 61, 80]
+                }]
+            );
+        });
+    }
+
+    #[test]
+    fn custom_is_cut_by_the_current_clip() {
+        with_painter(|p| {
+            p.set_clip(Some(Rect::new(0.0, 0.0, 15.0, 100.0)));
+            p.custom(3, Rect::new(10.0, 20.0, 30.25, 40.0));
+            assert_eq!(
+                p.layers[0].customs,
+                [CustomItem {
+                    slot: 3,
+                    clip: [20, 40, 10, 80]
+                }]
+            );
+        });
+    }
+
+    #[test]
+    fn custom_outside_the_window_records_nothing() {
+        with_painter(|p| {
+            p.custom(0, Rect::new(300.0, 20.0, 30.0, 40.0));
+            p.custom(0, Rect::new(-50.0, 20.0, 30.0, 40.0));
+            p.custom(0, Rect::new(10.0, 20.0, 0.0, 40.0));
+            assert!(p.layers.iter().all(|l| l.customs.is_empty()));
+        });
+    }
+
+    #[test]
+    fn custom_lands_on_the_current_layer() {
+        with_painter(|p| {
+            p.on(LayerId::Popup);
+            p.custom(1, Rect::new(10.0, 20.0, 30.0, 40.0));
+            assert!(p.layers[0].customs.is_empty());
+            assert_eq!(p.layers[2].customs.len(), 1);
+            assert_eq!(p.layers[2].customs[0].slot, 1);
+        });
+    }
 }

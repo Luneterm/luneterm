@@ -37,3 +37,17 @@ Pinned: xterm.js **6.0.0**, commit `f447274f430fd22513f6adbf9862d19524471c04`
 cd tools/xterm-oracle && pnpm install
 node oracle.mjs <cols> <rows> <input-file> [resizeCols resizeRows]   # JSON screen dump
 ```
+
+## Ported outside `lune-vt`
+
+Files from other parts of the xterm.js tree follow the same rules (marker line, tables and
+comments in upstream order, deviations only in `// LUNETERM:` blocks), but live in the crate that
+uses them and stay flat.
+
+| Upstream file @ f447274 | Rust file | Deviations |
+|---|---|---|
+| `addons/addon-webgl/src/CustomGlyphs.ts` (box drawing, blocks, shades, legacy computing, powerline) | `crates/lune-termview/src/custom_glyphs.rs`, drawn through the original `glyph_canvas.rs` | Stroke snap generalised for even line widths; pattern fill on a colourless mask; `has_custom_char`; NaN coordinates skip their instruction. Upstream has no test file, so the tests are original. |
+
+On a version bump (rule 6), diff each file in this table against its new tag too, not only
+`src/common`: `git diff <old>..<new> -- addons/addon-webgl/src/CustomGlyphs.ts` in
+`reference/xterm.js`, then port each change with a test and update the marker line.
