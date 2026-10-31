@@ -16,9 +16,17 @@ nix = { version = "0.28", default-features = false, features = ["term", "fs"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
 
+# The ConPTY input harness (tests/conpty_input.rs) reads console input records.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
 [lints]
 workspace = true
 
 [[test]]
 name = "dll_search"
+harness = false
+
+[[test]]
+name = "conpty_input"
 harness = false
