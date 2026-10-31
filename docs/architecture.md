@@ -3,7 +3,8 @@
 ```
 crates/
   lune-vt         VT engine (xterm.js port). No deps, no unsafe. Pure: bytes in, state + events out.
-  lune-pty        Pty / PtyBackend traits; platform backends behind them.
+  lune-pty        Pty / PtyBackend traits; PortablePtyBackend (portable-pty 0.9.0: ConPTY on Windows,
+                  openpty on Unix) with raw-mode and foreground-process queries. See "lune-pty".
   lune-ui         App-agnostic glass UI toolkit: painter, widgets, menus and dialogs, blur, text,
                   OS materials, window helpers, Lunegit dark theme. See "lune-ui modules".
   lune-termview   Engine-agnostic cell grid renderer: glyph atlas, instanced quads, GPU-drawn inside
@@ -103,6 +104,41 @@ engine from M5, the mock adapter in `spikes/glass-ui/src/term_grid.rs` until the
   The GPU column includes waiting for the GPU to finish, so it is an upper bound on the cost of
   a frame; a blink-only frame costs about the same as an idle redraw of the whole grid.
 
+## lune-pty
+
+`Pty` / `PtyBackend` (`crates/lune-pty/src/lib.rs`) and the one backend, `PortablePtyBackend`
+(`portable.rs`; `unix.rs` and `windows.rs` hold the platform parts). `Pty` has `read`, `write_all`,
+`resize`, `try_exit_code` and `kill`, plus `take_reader()`, `writer()` (a cloneable `PtyWriter`),
+`process_id()`, `raw_mode()` and `foreground_process()`.
+
+- **Validation fails closed:** `columns` and `rows` must be 1..=32767, `cwd` an existing directory,
+  and `args` need a `program`.
+- **Environment:** the child gets the inherited environment plus `SpawnOptions.env`; the crate
+  adds no terminal identity (`TERM`, `COLORTERM` and the like are the app's job). One exception
+  from portable-pty: on Unix `SHELL` is set when it is missing. On Windows portable-pty would also
+  merge the registry environment and let the user `PATH` replace the inherited one; the backend
+  clears that and uses the inherited environment (assumed decision Q7, reversible in four lines of
+  `portable.rs`).
+- **Raw mode** (ledger 9): `tcgetattr` on the master, else the slave opened transiently by
+  `tty_name()`. No `unsafe`, no termios offsets. Windows: always `Unknown`;
+  `foreground_process()` is `None` there.
+- **Windows ConPTY input** was measured on CI (ledger 10): `docs/conpty-input.md`.
+
+Obligations on the host:
+
+- **DSR.** ConPTY asks for the cursor position (`ESC[6n`) at startup and may stall until the
+  answer is written back. The VT engine answers every `ESC[6n` (M6/M9); `lune-pty` does not, since
+  a second answer would be injected input. Tests and the ConPTY harness answer it in their reader.
+- **Unix EOF** arrives only after every holder of the slave closes it, so a background job can
+  delay it past the shell's exit.
+
+**DLL search hardening (decision D4, Windows).** portable-pty loads `conpty.dll` by bare name. The
+first spawn therefore calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` once
+(`windows.rs`), and spawn fails if the call fails. The effect is process-wide and permanent: later
+bare-name `LoadLibrary` calls skip the current directory and `PATH`. For M9: check whether wgpu's
+DX12 backend loads `dxcompiler.dll` (or anything else) by bare name from `PATH`; it is unverified
+whether it does. `crates/lune-pty/tests/dll_search.rs` proves the plant is not loaded after a spawn.
+
 ## Extension points
 
 | Point | Mechanism | Example |
@@ -141,3 +177,16 @@ One engine per session, owned by that session (not `Sync`). PTY reading happens 
 bytes are handed to the session, which writes them into its engine and marks dirty rows. The renderer
 paints on vsync from the dirty state and honours synchronized output (mode 2026), which Lunegit parses
 but does not use for painting.
+
+PTY threads (`lune-pty`):
+
+- **Reader.** `Pty::take_reader()` moves the blocking reader out once; the caller runs it on its
+  read thread. It holds no shared state and returns `Ok(0)` at EOF.
+- **Writers.** `Pty::writer()` returns a `PtyWriter`, cloneable and `Send + Sync`: a mutex around
+  the single portable-pty writer, held for one `write_all` + `flush` only. The engine's replies
+  (DSR and the like) and the UI's keystrokes can both write through clones.
+- **Windows exit watcher.** ConPTY never closes its output when the child exits. A watcher thread
+  waits on a duplicate of the process handle, then closes the pseudoconsole (off the UI and reader
+  threads), which is what gives the reader its `Ok(0)`.
+- **Drop** never blocks: an unfinished child is killed and everything is closed and reaped on a
+  detached thread.
