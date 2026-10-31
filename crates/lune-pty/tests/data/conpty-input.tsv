@@ -1,0 +1,167 @@
+# ConPTY input golden for tests/conpty_input.rs (see docs/conpty-input.md).
+# Measured on GitHub Actions windows-latest, CI runs 41215989551 and 41216589762 (2026-10-31).
+# Format: mode<TAB>case<TAB>bytes written (hex)<TAB>what the child read.
+#   vt:   bytes from ReadFile (CONIN$ in ENABLE_VIRTUAL_TERMINAL_INPUT, code page 65001);
+#         [read0] = ReadFile returned 0 bytes; "-" = nothing arrived.
+#   keys: ReadConsoleInputW key-down records "vk sc ch cs" (cs without NumLock/ScrollLock/
+#         CapsLock), records separated by " ; "; "up" = the Alt key-up that carries an Alt+numpad
+#         character; [focus N] and [mouse ...] = non-key records.
+# A case may list alternative observations separated by " | ". Comment lines are not compared.
+# Conditions of this measurement (the comment lines the harness prints):
+# os: Microsoft Windows [Version 10.0.26100.33650]
+# System32\conpty.dll exists: false
+# portable-pty 0.9.0 flags: INHERIT_CURSOR | RESIZE_QUIRK | WIN32_INPUT_MODE; ESC[?9001h requested by conhost: vt=yes keys=yes (ignored, plain VT sent)
+vt	a	61	61
+vt	A	41	41
+vt	tilde	7e	7e
+vt	space	20	20
+vt	utf8-2 e-acute	c3 a9	c3 a9
+vt	utf8-3 euro	e2 82 ac	e2 82 ac
+vt	utf8-4 emoji	f0 9f 98 80	ef bf bd ef bf bd
+vt	enter	0d	0d
+vt	tab	09	09
+vt	shift-tab	1b 5b 5a	1b 5b 5a
+vt	backspace	7f	7f
+vt	ctrl-h	08	08
+vt	esc	1b	1b
+vt	ctrl-c	03	03
+vt	ctrl-d	04	04
+vt	ctrl-z	1a	[read0]
+vt	ctrl-space	00	00
+vt	ctrl-backslash	1c	1c
+vt	ctrl-]	1d	1d
+vt	ctrl-^	1e	1e
+vt	ctrl-_	1f	1f
+vt	alt-a	1b 61	1b 61
+vt	alt-shift-a	1b 41	1b 41
+vt	alt-backspace	1b 7f	1b 7f
+vt	up	1b 5b 41	1b 5b 41
+vt	down	1b 5b 42	1b 5b 42
+vt	right	1b 5b 43	1b 5b 43
+vt	left	1b 5b 44	1b 5b 44
+vt	up-app	1b 4f 41	1b 4f 41
+vt	down-app	1b 4f 42	1b 4f 42
+vt	right-app	1b 4f 43	1b 4f 43
+vt	left-app	1b 4f 44	1b 4f 44
+vt	shift-up	1b 5b 31 3b 32 41	1b 5b 31 3b 32 41
+vt	alt-up	1b 5b 31 3b 33 41	1b 5b 31 3b 33 41
+vt	ctrl-up	1b 5b 31 3b 35 41	1b 5b 31 3b 35 41
+vt	ctrl-shift-up	1b 5b 31 3b 36 41	1b 5b 31 3b 36 41
+vt	shift-left	1b 5b 31 3b 32 44	1b 5b 31 3b 32 44
+vt	alt-left	1b 5b 31 3b 33 44	1b 5b 31 3b 33 44
+vt	ctrl-left	1b 5b 31 3b 35 44	1b 5b 31 3b 35 44
+vt	ctrl-shift-left	1b 5b 31 3b 36 44	1b 5b 31 3b 36 44
+vt	home-csi	1b 5b 48	1b 5b 48
+vt	end-csi	1b 5b 46	1b 5b 46
+vt	home-ss3	1b 4f 48	1b 4f 48
+vt	end-ss3	1b 4f 46	1b 4f 46
+vt	home-tilde	1b 5b 31 7e	1b 5b 31 7e
+vt	end-tilde	1b 5b 34 7e	1b 5b 34 7e
+vt	insert	1b 5b 32 7e	1b 5b 32 7e
+vt	delete	1b 5b 33 7e	1b 5b 33 7e
+vt	ctrl-delete	1b 5b 33 3b 35 7e	1b 5b 33 3b 35 7e
+vt	pgup	1b 5b 35 7e	1b 5b 35 7e
+vt	pgdn	1b 5b 36 7e	1b 5b 36 7e
+vt	f1	1b 4f 50	1b 4f 50
+vt	f2	1b 4f 51	1b 4f 51
+vt	f3	1b 4f 52	1b 4f 52
+vt	f4	1b 4f 53	1b 4f 53
+vt	f5	1b 5b 31 35 7e	1b 5b 31 35 7e
+vt	f6	1b 5b 31 37 7e	1b 5b 31 37 7e
+vt	f7	1b 5b 31 38 7e	1b 5b 31 38 7e
+vt	f8	1b 5b 31 39 7e	1b 5b 31 39 7e
+vt	f9	1b 5b 32 30 7e	1b 5b 32 30 7e
+vt	f10	1b 5b 32 31 7e	1b 5b 32 31 7e
+vt	f11	1b 5b 32 33 7e	1b 5b 32 33 7e
+vt	f12	1b 5b 32 34 7e	1b 5b 32 34 7e
+vt	shift-f5	1b 5b 31 35 3b 32 7e	1b 5b 31 35 3b 32 7e
+vt	ctrl-f1	1b 5b 31 3b 35 50	1b 5b 31 3b 35 50
+vt	focus-in	1b 5b 49	-
+vt	focus-out	1b 5b 4f	-
+vt	paste	1b 5b 32 30 30 7e 68 69 20 74 68 65 72 65 1b 5b 32 30 31 7e	1b 5b 32 30 30 7e 68 69 20 74 68 65 72 65 1b 5b 32 30 31 7e
+vt	mouse-sgr-press	1b 5b 3c 30 3b 31 30 3b 35 4d	1b 5b 3c 30 3b 31 30 3b 35 4d
+vt	mouse-sgr-release	1b 5b 3c 30 3b 31 30 3b 35 6d	1b 5b 3c 30 3b 31 30 3b 35 6d
+vt	mouse-x10-press	1b 5b 4d 20 2a 25	1b 5b 4d 20 2a 25
+vt	kitty-ctrl-a	1b 5b 39 37 3b 35 75	1b 5b 39 37 3b 35 75
+vt	kitty-shift-enter	1b 5b 31 33 3b 32 75	1b 5b 31 33 3b 32 75
+vt	modify-other-keys-ctrl-a	1b 5b 32 37 3b 35 3b 39 37 7e	1b 5b 32 37 3b 35 3b 39 37 7e
+vt	cpr-reply	1b 5b 31 32 3b 33 34 52	1b 5b 31 32 3b 33 34 52
+vt	da1-reply	1b 5b 3f 31 3b 32 63	1b 5b 3f 31 3b 32 63
+vt	win32-input-a	1b 5b 36 35 3b 33 30 3b 39 37 3b 31 3b 30 3b 31 5f	61
+keys	a	61	vk=41 sc=1e ch=0061 cs=0000
+keys	A	41	vk=10 sc=2a ch=0000 cs=0010 ; vk=41 sc=1e ch=0041 cs=0010
+keys	tilde	7e	vk=10 sc=2a ch=0000 cs=0010 ; vk=c0 sc=29 ch=007e cs=0010
+keys	space	20	vk=20 sc=39 ch=0020 cs=0000
+keys	utf8-2 e-acute	c3 a9	vk=00 sc=00 ch=00e9 cs=0000
+keys	utf8-3 euro	e2 82 ac	vk=12 sc=38 ch=0000 cs=0002 ; vk=66 sc=4d ch=0000 cs=0002 ; vk=63 sc=51 ch=0000 cs=0002 ; up vk=12 sc=38 ch=20ac cs=0000
+keys	utf8-4 emoji	f0 9f 98 80	vk=12 sc=38 ch=0000 cs=0002 ; vk=66 sc=4d ch=0000 cs=0002 ; vk=63 sc=51 ch=0000 cs=0002 ; up vk=12 sc=38 ch=d83d cs=0000 ; vk=12 sc=38 ch=0000 cs=0002 ; vk=66 sc=4d ch=0000 cs=0002 ; vk=63 sc=51 ch=0000 cs=0002 ; up vk=12 sc=38 ch=de00 cs=0000
+keys	enter	0d	vk=0d sc=1c ch=000d cs=0000
+keys	tab	09	vk=09 sc=0f ch=0009 cs=0000
+keys	shift-tab	1b 5b 5a	vk=10 sc=2a ch=0000 cs=0010 ; vk=09 sc=0f ch=0009 cs=0010
+keys	backspace	7f	vk=08 sc=0e ch=0008 cs=0000
+keys	ctrl-h	08	vk=11 sc=1d ch=0000 cs=0008 ; vk=08 sc=0e ch=007f cs=0008
+keys	esc	1b	vk=1b sc=01 ch=001b cs=0000
+keys	ctrl-c	03	vk=43 sc=00 ch=0003 cs=0008
+keys	ctrl-d	04	vk=11 sc=1d ch=0000 cs=0008 ; vk=44 sc=20 ch=0004 cs=0008
+keys	ctrl-z	1a	vk=11 sc=1d ch=0000 cs=0008 ; vk=5a sc=2c ch=001a cs=0008
+keys	ctrl-space	00	vk=10 sc=2a ch=0000 cs=0010 ; vk=11 sc=1d ch=0000 cs=0018 ; vk=32 sc=03 ch=0000 cs=0018
+keys	ctrl-backslash	1c	vk=11 sc=1d ch=0000 cs=0008 ; vk=dc sc=2b ch=001c cs=0008
+keys	ctrl-]	1d	vk=11 sc=1d ch=0000 cs=0008 ; vk=dd sc=1b ch=001d cs=0008
+keys	ctrl-^	1e	vk=10 sc=2a ch=0000 cs=0010 ; vk=11 sc=1d ch=0000 cs=0018 ; vk=36 sc=07 ch=001e cs=0018
+keys	ctrl-_	1f	vk=10 sc=2a ch=0000 cs=0010 ; vk=11 sc=1d ch=0000 cs=0018 ; vk=bd sc=0c ch=001f cs=0018
+keys	alt-a	1b 61	vk=12 sc=38 ch=0000 cs=0002 ; vk=41 sc=1e ch=0061 cs=0002
+keys	alt-shift-a	1b 41	vk=10 sc=2a ch=0000 cs=0010 ; vk=12 sc=38 ch=0000 cs=0012 ; vk=41 sc=1e ch=0041 cs=0012
+keys	alt-backspace	1b 7f	vk=12 sc=38 ch=0000 cs=0002 ; vk=08 sc=0e ch=0008 cs=0002
+keys	up	1b 5b 41	vk=26 sc=48 ch=0000 cs=0100
+keys	down	1b 5b 42	vk=28 sc=50 ch=0000 cs=0100
+keys	right	1b 5b 43	vk=27 sc=4d ch=0000 cs=0100
+keys	left	1b 5b 44	vk=25 sc=4b ch=0000 cs=0100
+keys	up-app	1b 4f 41	vk=26 sc=48 ch=0000 cs=0000
+keys	down-app	1b 4f 42	vk=28 sc=50 ch=0000 cs=0000
+keys	right-app	1b 4f 43	vk=27 sc=4d ch=0000 cs=0000
+keys	left-app	1b 4f 44	vk=25 sc=4b ch=0000 cs=0000
+keys	shift-up	1b 5b 31 3b 32 41	vk=10 sc=2a ch=0000 cs=0010 ; vk=26 sc=48 ch=0000 cs=0110
+keys	alt-up	1b 5b 31 3b 33 41	vk=12 sc=38 ch=0000 cs=0002 ; vk=26 sc=48 ch=0000 cs=0102
+keys	ctrl-up	1b 5b 31 3b 35 41	vk=11 sc=1d ch=0000 cs=0008 ; vk=26 sc=48 ch=0000 cs=0108
+keys	ctrl-shift-up	1b 5b 31 3b 36 41	vk=10 sc=2a ch=0000 cs=0010 ; vk=11 sc=1d ch=0000 cs=0018 ; vk=26 sc=48 ch=0000 cs=0118
+keys	shift-left	1b 5b 31 3b 32 44	vk=10 sc=2a ch=0000 cs=0010 ; vk=25 sc=4b ch=0000 cs=0110
+keys	alt-left	1b 5b 31 3b 33 44	vk=12 sc=38 ch=0000 cs=0002 ; vk=25 sc=4b ch=0000 cs=0102
+keys	ctrl-left	1b 5b 31 3b 35 44	vk=11 sc=1d ch=0000 cs=0008 ; vk=25 sc=4b ch=0000 cs=0108
+keys	ctrl-shift-left	1b 5b 31 3b 36 44	vk=10 sc=2a ch=0000 cs=0010 ; vk=11 sc=1d ch=0000 cs=0018 ; vk=25 sc=4b ch=0000 cs=0118
+keys	home-csi	1b 5b 48	vk=24 sc=47 ch=0000 cs=0100
+keys	end-csi	1b 5b 46	vk=23 sc=4f ch=0000 cs=0100
+keys	home-ss3	1b 4f 48	vk=24 sc=47 ch=0000 cs=0000
+keys	end-ss3	1b 4f 46	vk=23 sc=4f ch=0000 cs=0000
+keys	home-tilde	1b 5b 31 7e	vk=24 sc=47 ch=0000 cs=0100
+keys	end-tilde	1b 5b 34 7e	vk=23 sc=4f ch=0000 cs=0100
+keys	insert	1b 5b 32 7e	vk=2d sc=52 ch=0000 cs=0100
+keys	delete	1b 5b 33 7e	vk=2e sc=53 ch=0000 cs=0100
+keys	ctrl-delete	1b 5b 33 3b 35 7e	vk=11 sc=1d ch=0000 cs=0008 ; vk=2e sc=53 ch=0000 cs=0108
+keys	pgup	1b 5b 35 7e	vk=21 sc=49 ch=0000 cs=0100
+keys	pgdn	1b 5b 36 7e	vk=22 sc=51 ch=0000 cs=0100
+keys	f1	1b 4f 50	vk=70 sc=3b ch=0000 cs=0000
+keys	f2	1b 4f 51	vk=71 sc=3c ch=0000 cs=0000
+keys	f3	1b 4f 52	vk=72 sc=3d ch=0000 cs=0000
+keys	f4	1b 4f 53	vk=73 sc=3e ch=0000 cs=0000
+keys	f5	1b 5b 31 35 7e	vk=74 sc=3f ch=0000 cs=0000
+keys	f6	1b 5b 31 37 7e	vk=75 sc=40 ch=0000 cs=0000
+keys	f7	1b 5b 31 38 7e	vk=76 sc=41 ch=0000 cs=0000
+keys	f8	1b 5b 31 39 7e	vk=77 sc=42 ch=0000 cs=0000
+keys	f9	1b 5b 32 30 7e	vk=78 sc=43 ch=0000 cs=0000
+keys	f10	1b 5b 32 31 7e	vk=79 sc=44 ch=0000 cs=0000
+keys	f11	1b 5b 32 33 7e	vk=7a sc=57 ch=0000 cs=0000
+keys	f12	1b 5b 32 34 7e	vk=7b sc=58 ch=0000 cs=0000
+keys	shift-f5	1b 5b 31 35 3b 32 7e	vk=10 sc=2a ch=0000 cs=0010 ; vk=74 sc=3f ch=0000 cs=0010
+keys	ctrl-f1	1b 5b 31 3b 35 50	vk=11 sc=1d ch=0000 cs=0008 ; vk=70 sc=3b ch=0000 cs=0008
+keys	focus-in	1b 5b 49	[focus 1]
+keys	focus-out	1b 5b 4f	[focus 0]
+keys	paste	1b 5b 32 30 30 7e 68 69 20 74 68 65 72 65 1b 5b 32 30 31 7e	vk=48 sc=23 ch=0068 cs=0000 ; vk=49 sc=17 ch=0069 cs=0000 ; vk=20 sc=39 ch=0020 cs=0000 ; vk=54 sc=14 ch=0074 cs=0000 ; vk=48 sc=23 ch=0068 cs=0000 ; vk=45 sc=12 ch=0065 cs=0000 ; vk=52 sc=13 ch=0072 cs=0000 ; vk=45 sc=12 ch=0065 cs=0000
+keys	mouse-sgr-press	1b 5b 3c 30 3b 31 30 3b 35 4d	[mouse x=9 y=4 btn=1 flags=0]
+keys	mouse-sgr-release	1b 5b 3c 30 3b 31 30 3b 35 6d	[mouse x=9 y=4 btn=0 flags=0]
+keys	mouse-x10-press	1b 5b 4d 20 2a 25	vk=20 sc=39 ch=0020 cs=0000 ; vk=10 sc=2a ch=0000 cs=0010 ; vk=38 sc=09 ch=002a cs=0010 ; vk=10 sc=2a ch=0000 cs=0010 ; vk=35 sc=06 ch=0025 cs=0010
+keys	kitty-ctrl-a	1b 5b 39 37 3b 35 75	-
+keys	kitty-shift-enter	1b 5b 31 33 3b 32 75	-
+keys	modify-other-keys-ctrl-a	1b 5b 32 37 3b 35 3b 39 37 7e	-
+keys	cpr-reply	1b 5b 31 32 3b 33 34 52	vk=10 sc=2a ch=0000 cs=0010 ; vk=72 sc=3d ch=0000 cs=0010
+keys	da1-reply	1b 5b 3f 31 3b 32 63	-
+keys	win32-input-a	1b 5b 36 35 3b 33 30 3b 39 37 3b 31 3b 30 3b 31 5f	vk=41 sc=1e ch=0061 cs=0000

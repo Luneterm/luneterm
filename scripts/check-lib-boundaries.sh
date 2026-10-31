@@ -3,10 +3,12 @@
 # the same on macOS (bash 3.2, BSD grep) and Linux (GNU grep). Prints each offending line with
 # its rule number. Exit 1 on any offender, 0 when clean.
 #   1  no crates/lune-*/Cargo.toml mentions luneterm (no dependency on an app crate)
-#   2  no file under crates/lune-* mentions luneterm
+#   2  no file under crates/lune-* mentions luneterm; the only exception is the port marker
+#      `// LUNETERM:` (docs/porting-xterm.md rule 4), listed in scripts/lib-boundaries.allow
 #   3  no file under crates/lune-ui mentions app or terminal words; exceptions are the fixed
 #      strings in scripts/lib-boundaries.allow
-#   4  no crates/lune-ui/src file reads the clock or the environment (keeps frames deterministic)
+#   4  no crates/lune-ui/src or crates/lune-termview/src file reads the clock or the environment
+#      (keeps frames deterministic)
 #   5  every crates/*/Cargo.toml and spikes/*/Cargo.toml inherits the licence from the workspace
 set -euo pipefail
 
@@ -50,9 +52,9 @@ check() {
 }
 
 check 1 no -n -i luneterm crates/lune-*/Cargo.toml
-check 2 no -rn -i luneterm crates/lune-*
+check 2 yes -rn -i luneterm crates/lune-*
 check 3 yes -rn -i -E 'mock|terminal|xterm|scrollback|glass_ui|(^|[^[:alnum:]_])(pty|shell|ansi)($|[^[:alnum:]_])' crates/lune-ui
-check 4 no -rn -F -e 'env::var' -e 'Instant::now' -e 'SystemTime::now' -e '.elapsed()' crates/lune-ui/src
+check 4 no -rn -F -e 'env::var' -e 'Instant::now' -e 'SystemTime::now' -e '.elapsed()' crates/lune-ui/src crates/lune-termview/src
 
 for m in crates/*/Cargo.toml spikes/*/Cargo.toml; do
   if ! grep -q -F 'license.workspace = true' "$m"; then

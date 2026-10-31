@@ -5,6 +5,7 @@ use std::f32::consts::PI;
 use lune_ui::{chrome, lunegit_dark};
 
 use crate::state::{Hit, OutlineAnim, State};
+use crate::term_grid::{TERM_SLOT, TermState};
 use crate::theme::*;
 use crate::widgets::{P, icon};
 use lune_ui::paint::{LayerId, Rect, StrokeStyle, polyline_length};
@@ -70,7 +71,7 @@ fn sine_ease_in_out(t: f32) -> f32 {
     0.5 - 0.5 * (PI * t.clamp(0.0, 1.0)).cos()
 }
 
-pub fn draw(p: &mut P<'_>, st: &mut State) {
+pub fn draw(p: &mut P<'_>, st: &mut State, term: Option<&mut TermState>) {
     p.on(LayerId::Base);
     let win = p.window;
     let g = glass(st);
@@ -196,32 +197,46 @@ pub fn draw(p: &mut P<'_>, st: &mut State) {
         card.w - 2.0 * BODY_PAD,
         card.h - HEADER - 2.0 * BODY_PAD,
     );
-    let cell_w =
-        p.measure(&Spec::plain(
-            "0123456789",
-            Style::mono(size, line, FG_PRIMARY),
-        ))
-        .0 / 10.0;
+    // Termview mode (`GLASS_UI_TERMVIEW=1`): cells come from the termview's metrics.
+    let term_metrics = term.map(|t| t.metrics(p.text, s, p.s));
+    let (cell_w, line) = match term_metrics {
+        Some(m) => (m.cell_w as f32 / p.s, m.cell_h as f32 / p.s),
+        None => (
+            p.measure(&Spec::plain(
+                "0123456789",
+                Style::mono(size, line, FG_PRIMARY),
+            ))
+            .0 / 10.0,
+            line,
+        ),
+    };
     st.term_body = body;
     st.cell = (cell_w, line);
 
     let tab = &st.tabs[st.active];
-    let mut runs = Vec::new();
-    for (i, l) in tab.screen.lines.iter().enumerate() {
-        if i > 0 {
-            runs.push(("\n".to_owned(), Style::mono(size, line, [0, 0, 0, 0])));
-        }
-        for span in &l.spans {
-            let [r, g, b] = palette.rgb(span.fg);
-            let mut style = Style::mono(size, line, [r, g, b, alpha]);
-            if span.bold {
-                style = style.bold();
-            }
-            runs.push((span.text.clone(), style));
-        }
-    }
+    let termview = term_metrics.is_some();
     p.set_clip(Some(body));
-    p.text(&Spec { runs, wrap: None }, body.x, body.y);
+    if termview {
+        // The grid draws the text, selection, cursor and link underline. The tab-switch fade
+        // is not applied (an M9 concern).
+        p.custom(TERM_SLOT, body);
+    } else {
+        let mut runs = Vec::new();
+        for (i, l) in tab.screen.lines.iter().enumerate() {
+            if i > 0 {
+                runs.push(("\n".to_owned(), Style::mono(size, line, [0, 0, 0, 0])));
+            }
+            for span in &l.spans {
+                let [r, g, b] = palette.rgb(span.fg);
+                let mut style = Style::mono(size, line, [r, g, b, alpha]);
+                if span.bold {
+                    style = style.bold();
+                }
+                runs.push((span.text.clone(), style));
+            }
+        }
+        p.text(&Spec { runs, wrap: None }, body.x, body.y);
+    }
     p.hit(body, Hit::Body);
 
     // Overlays: selection, cursor, scrollbar, link underline.
@@ -235,7 +250,7 @@ pub fn draw(p: &mut P<'_>, st: &mut State) {
             line,
         )
     };
-    if let Some((a, b)) = tab.selection {
+    if !termview && let Some((a, b)) = tab.selection {
         let (start, end) = if a <= b { (a, b) } else { (b, a) };
         for row in start.0..=end.0.min(rows.saturating_sub(1)) {
             let c0 = if row == start.0 { start.1 } else { 0 };
@@ -244,7 +259,7 @@ pub fn draw(p: &mut P<'_>, st: &mut State) {
         }
     }
     let (crow, ccol) = tab.screen.cursor;
-    if crow < rows {
+    if !termview && crow < rows {
         let r = cell_rect(crow, ccol, ccol + 1);
         if st.focused {
             p.fill_over(r, 0.0, premul(CURSOR));
@@ -256,7 +271,7 @@ pub fn draw(p: &mut P<'_>, st: &mut State) {
     let thumb_h = (body.h * 0.35).max(24.0);
     let thumb = Rect::new(card.right() - 7.0, body.bottom() - thumb_h, 4.0, thumb_h);
     p.fill_over(thumb, 2.0, premul(with_alpha(ACCENT, 0.55)));
-    if st.cmd && link_at(st).is_some() {
+    if !termview && st.cmd && link_at(st).is_some() {
         for l in &tab.screen.links {
             let r = cell_rect(l.row, l.col_start, l.col_end);
             p.fill_over(
