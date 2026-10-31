@@ -21,6 +21,14 @@ jobs:
         run: scripts/check-lib-boundaries.sh
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # M3 D10: lune-pty flake detector, 5 consecutive runs; stops at the first failure.
+      - name: lune-pty soak (5x)
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "lune-pty soak run $i"
+            cargo test -p lune-pty || exit 1
+          done
       # cargo test captures stdout; --nocapture puts the P6 adapter / P4 emoji probe lines in the log.
       - run: cargo test -p lune-termview --test probe -- --nocapture
 
