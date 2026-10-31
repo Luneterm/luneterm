@@ -247,8 +247,12 @@ mod tests {
         let dir = temp_dir("abs");
         touch(&dir.join("lunetool.exe"));
         let path = format!(";.;{};", dir.display());
-        let got = resolve_program(Some(Path::new("lunetool")), &env(&[("PATH", &path)]))
-            .expect("resolve");
+        // PATHEXT pinned: the inherited one is upper case and the file system ignores case.
+        let got = resolve_program(
+            Some(Path::new("lunetool")),
+            &env(&[("PATH", &path), ("PATHEXT", ".exe")]),
+        )
+        .expect("resolve");
         assert_eq!(got, dir.join("lunetool.exe"));
         let got = resolve_program(Some(Path::new("lunetool.exe")), &env(&[("Path", &path)]))
             .expect("resolve exact");
