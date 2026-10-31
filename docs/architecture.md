@@ -139,6 +139,14 @@ bare-name `LoadLibrary` calls skip the current directory and `PATH`. For M9: che
 DX12 backend loads `dxcompiler.dll` (or anything else) by bare name from `PATH`; it is unverified
 whether it does. `crates/lune-pty/tests/dll_search.rs` proves the plant is not loaded after a spawn.
 
+**Executable resolution (finding S1, Windows).** portable-pty passes the program to
+`CreateProcessW` as `lpApplicationName`, which completes a relative name with the host's current
+directory, so `spawn` first resolves it to an absolute existing file (`windows.rs`
+`resolve_program`): a bare name only from absolute, non-empty `PATH` entries, `ComSpec` only if
+absolute (else System32 `cmd.exe`), anything else `NotFound`. `tests/exe_search.rs` plants
+executables in the current directory and checks both the hole (portable-pty alone) and the fix.
+`SpawnOptions::cwd: None` starts the child in the home directory (`$HOME` / `%USERPROFILE%`).
+
 ## Extension points
 
 | Point | Mechanism | Example |

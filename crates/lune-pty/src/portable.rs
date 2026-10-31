@@ -20,7 +20,9 @@ const MAX_CELLS: u16 = i16::MAX as u16;
 ///
 /// - `program: None` starts the login shell: `$SHELL` (from [`SpawnOptions::env`] if set there,
 ///   else inherited), else the passwd shell, with argv0 `-<name>` (login(1) convention). On
-///   Windows it is `%ComSpec%` (else `cmd.exe`).
+///   Windows it is `%ComSpec%` if that is an absolute path, else `<system directory>\cmd.exe`.
+/// - `cwd: None` starts the child in the home directory (portable-pty's fallback): Unix `$HOME`,
+///   else the passwd entry; Windows `%USERPROFILE%`, else the host process's current directory.
 /// - The child's environment is the inherited one plus [`SpawnOptions::env`]; this crate adds
 ///   nothing. One exception from portable-pty: on Unix `SHELL` is set when it is missing.
 /// - `columns` and `rows` must be in `1..=32767`; `cwd` must be an existing directory; `args`
@@ -45,6 +47,12 @@ const MAX_CELLS: u16 = i16::MAX as u16;
 ///   from the current directory or `PATH`. Afterwards every bare-name `LoadLibrary` in the
 ///   process searches only the application directory, System32 and `AddDllDirectory` entries. If
 ///   the call fails, spawn fails with its error.
+/// - **Windows: the program is resolved to an absolute path before portable-pty sees it.**
+///   `CreateProcessW` completes a relative application name with the host process's current
+///   directory, so a bare name not on `PATH`, an empty or relative `PATH` entry, or a relative
+///   `ComSpec` would run an executable planted there. A bare name is searched only in absolute,
+///   non-empty entries of the child's `PATH` (with `PATHEXT` entries that start with `.`; `.EXE`
+///   if unset); a path with directories must be absolute. Anything else fails with `NotFound`.
 /// - Dropping a [`Pty`] never blocks: an unfinished child is killed (Unix: `SIGHUP`, then
 ///   `SIGKILL` after up to 200 ms; Windows: `TerminateProcess`) and reaped on a detached thread,
 ///   which also closes the PTY.
@@ -78,6 +86,10 @@ impl PtyBackend for PortablePtyBackend {
         // Before portable-pty's first bare-name `LoadLibrary("conpty.dll")`; fails closed.
         #[cfg(windows)]
         crate::windows::ensure_dll_search_restricted()?;
+        // An absolute, existing path, so CreateProcessW never completes a relative name with the
+        // process's current directory. portable-pty's own PATH search returns it unchanged.
+        #[cfg(windows)]
+        let program = crate::windows::resolve_program(options.program.as_deref(), &options.env)?;
 
         let pair = native_pty_system()
             .openpty(to_portable(size))
@@ -86,6 +98,15 @@ impl PtyBackend for PortablePtyBackend {
         let reader = pair.master.try_clone_reader().map_err(other)?;
         let writer = PtyWriter::new(pair.master.take_writer().map_err(other)?);
 
+        // On Windows `program: None` is `ComSpec` with no arguments, which is what
+        // `new_default_prog` would run there; the resolved path replaces it.
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut cmd = CommandBuilder::new(program);
+            cmd.args(&options.args);
+            cmd
+        };
+        #[cfg(not(windows))]
         let mut cmd = match &options.program {
             None => CommandBuilder::new_default_prog(),
             Some(program) => {
