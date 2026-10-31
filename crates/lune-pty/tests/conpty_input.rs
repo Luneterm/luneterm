@@ -179,7 +179,17 @@ fn parse_log(log: &str, mode: &str) -> Vec<Item> {
             items.push(Item::Obs("[read0]".into()));
         } else if let Some(record) = line.strip_prefix("key ") {
             if mode == "keys" && record.split(' ').any(|t| t == "ch=0007") {
-                items.push(Item::Mark(record.into()));
+                // conhost synthesizes a Ctrl press before Ctrl+G: those modifier-only records
+                // directly before the mark belong to the mark, not to the case.
+                let mut parts = vec![record.to_string()];
+                while let Some(Item::Obs(prev)) = items.last() {
+                    if !is_modifier_press(prev) {
+                        break;
+                    }
+                    parts.insert(0, prev.clone());
+                    items.pop();
+                }
+                items.push(Item::Mark(parts.join(" + ")));
             } else {
                 items.push(Item::Obs(record.into()));
             }
@@ -191,6 +201,13 @@ fn parse_log(log: &str, mode: &str) -> Vec<Item> {
         }
     }
     items
+}
+
+/// A key record of Shift, Ctrl or Alt alone (no character), as conhost synthesizes around keys.
+fn is_modifier_press(record: &str) -> bool {
+    // An "up ..." record starts with "up", so it never matches.
+    matches!(record.split(' ').next(), Some("vk=10" | "vk=11" | "vk=12"))
+        && record.split(' ').any(|t| t == "ch=0000")
 }
 
 fn count_marks(items: &[Item]) -> usize {
@@ -309,13 +326,16 @@ fn self_test() {
     assert_eq!(observation(&items, 2, 3, "07", sep), "1b");
     assert_eq!(observation(&items, 3, 5, "07", sep), "(extra mark) [read0]");
     assert_eq!(hex(b"\x1b[A"), "1b 5b 41");
-    let keys = "key vk=47 sc=22 ch=0007 cs=0008\nkey vk=41 sc=1e ch=0061 cs=0000\n\
+    let keys = "key vk=11 sc=1d ch=0000 cs=0008\nkey vk=47 sc=22 ch=0007 cs=0008\n\
+                key vk=41 sc=1e ch=0061 cs=0000\nkey vk=11 sc=1d ch=0000 cs=0008\n\
                 key vk=47 sc=22 ch=0007 cs=000a\n";
     let items = parse_log(keys, "keys");
-    let plain = "vk=47 sc=22 ch=0007 cs=0008";
+    assert_eq!(count_marks(&items), 2, "self-test: keys mark count");
+    let plain = "vk=11 sc=1d ch=0000 cs=0008 + vk=47 sc=22 ch=0007 cs=0008";
     assert_eq!(
         observation(&items, 1, 2, plain, separator("keys")),
-        "vk=41 sc=1e ch=0061 cs=0000 ; (mark vk=47 sc=22 ch=0007 cs=000a)"
+        "vk=41 sc=1e ch=0061 cs=0000 ; \
+         (mark vk=11 sc=1d ch=0000 cs=0008 + vk=47 sc=22 ch=0007 cs=000a)"
     );
     let row = |o: &str| Row {
         mode: "vt".into(),
@@ -387,6 +407,7 @@ mod imp {
     /// After a resent mark, time for the original one to show up late.
     const SETTLE: Duration = Duration::from_millis(300);
     const CP_UTF8: u32 = 65001;
+    const VK_MENU: u16 = 0x12;
 
     // ---- child -------------------------------------------------------------------------------
 
@@ -493,15 +514,21 @@ mod imp {
                 if kind == KEY_EVENT {
                     // SAFETY: EventType is KEY_EVENT, so KeyEvent is the active union field.
                     let key = unsafe { record.Event.KeyEvent };
-                    if key.bKeyDown == 0 {
-                        continue;
-                    }
                     // SAFETY: UnicodeChar is the field ReadConsoleInputW (W) fills.
                     let ch = unsafe { key.uChar.UnicodeChar };
+                    // Key-down records, plus the one key-up that carries input: conhost delivers
+                    // a character outside the keyboard layout as Alt+numpad, with the character
+                    // on the Alt (VK_MENU) key-up.
+                    let up = key.bKeyDown == 0;
+                    if up && !(key.wVirtualKeyCode == VK_MENU && ch != 0) {
+                        continue;
+                    }
                     let cs = key.dwControlKeyState & !(NUMLOCK_ON | SCROLLLOCK_ON | CAPSLOCK_ON);
                     let mut line = format!(
-                        "key vk={:02x} sc={:02x} ch={ch:04x} cs={cs:04x}",
-                        key.wVirtualKeyCode, key.wVirtualScanCode
+                        "key {}vk={:02x} sc={:02x} ch={ch:04x} cs={cs:04x}",
+                        if up { "up " } else { "" },
+                        key.wVirtualKeyCode,
+                        key.wVirtualScanCode
                     );
                     if key.wRepeatCount > 1 {
                         line.push_str(&format!(" rep={}", key.wRepeatCount));
