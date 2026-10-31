@@ -39,6 +39,12 @@ const MAX_CELLS: u16 = i16::MAX as u16;
 ///   [`Pty::try_exit_code`] keeps returning `None` for a child that exits with 259.
 /// - On Windows an exit-watcher thread closes the pseudoconsole when the child exits, which is
 ///   what ends the reader with `Ok(0)` (ConPTY never closes its output on its own).
+/// - **Windows: the first spawn restricts the process's DLL search.** It calls
+///   `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` once, process-wide and
+///   permanently, so portable-pty's bare-name load of `conpty.dll` cannot pick up a planted copy
+///   from the current directory or `PATH`. Afterwards every bare-name `LoadLibrary` in the
+///   process searches only the application directory, System32 and `AddDllDirectory` entries. If
+///   the call fails, spawn fails with its error.
 /// - Dropping a [`Pty`] never blocks: an unfinished child is killed (Unix: `SIGHUP`, then
 ///   `SIGKILL` after up to 200 ms; Windows: `TerminateProcess`) and reaped on a detached thread,
 ///   which also closes the PTY.
@@ -68,6 +74,10 @@ impl PtyBackend for PortablePtyBackend {
                 ));
             }
         }
+
+        // Before portable-pty's first bare-name `LoadLibrary("conpty.dll")`; fails closed.
+        #[cfg(windows)]
+        crate::windows::ensure_dll_search_restricted()?;
 
         let pair = native_pty_system()
             .openpty(to_portable(size))
