@@ -5,13 +5,13 @@
 //! relative name there with the host process's current directory. The backend resolves the
 //! program to an absolute path first. Two self-re-exec children run with the current directory
 //! set to a temp dir that holds two plants: `lunepl-<pid>.exe` (a copy of `cmd.exe`, on no `PATH`)
-//! and `cmd.exe` (not an executable, so running it fails with os error 193):
+//! and `cmd.exe` (not an executable, so running it fails with os error 193 or 216):
 //!
 //! - `control`: portable-pty directly. A bare `lunepl-<pid>.exe` spawns (the plant ran), and
-//!   `ComSpec=cmd.exe` fails with 193 (the plant was picked). This proves the hole is real.
+//!   `ComSpec=cmd.exe` fails with 193/216 (the plant was picked). This proves the hole is real.
 //! - `hardened`: the backend. The bare plant name fails with `NotFound`, also with empty and `.`
 //!   entries on `PATH`; `program: None` with a relative `ComSpec` spawns (System32's `cmd.exe`,
-//!   since the plant would fail with 193); bare `cmd.exe` and `cmd` (with empty `PATHEXT`
+//!   since the plant would fail with 193/216); bare `cmd.exe` and `cmd` (with empty `PATHEXT`
 //!   entries, which made portable-pty 0.9.0 panic) still spawn.
 
 #[cfg(not(windows))]
@@ -175,8 +175,10 @@ mod imp {
             "control: portable-pty did not run the planted bare name from the current dir"
         );
         let comspec = outcome(&control, "control-comspec");
+        // 193 (bad exe format) or 216 (machine type mismatch, what windows-latest reports for a
+        // text file): either means the plant was opened; a miss would be os error 2.
         assert!(
-            comspec.contains("os error 193"),
+            comspec.contains("os error 193") || comspec.contains("os error 216"),
             "control: relative ComSpec did not pick the planted cmd.exe: {comspec}"
         );
 
