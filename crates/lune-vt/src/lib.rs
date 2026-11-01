@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod buffer;
+pub mod circular_list;
 pub mod color;
 pub mod data;
 pub mod engine;
