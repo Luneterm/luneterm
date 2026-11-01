@@ -19,16 +19,6 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Goldens that fail until their handlers are ported (steps 5-8). Shrinks to empty.
 const PENDING: &[&str] = &[
-    "sgr_attributes",
-    "sgr_fg_bg_16",
-    "sgr_bold_with_palette",
-    "sgr_256",
-    "sgr_rgb",
-    "sgr_underline_styles",
-    "sgr_underline_colors",
-    "sgr_resets",
-    "sgr_bad_params",
-    "erase_with_background",
     "osc8_links",
     "osc8_link_with_underline",
     "decset_modes",
@@ -42,7 +32,6 @@ const PENDING: &[&str] = &[
     "bracketed_paste_and_sync",
     "alt_screen_1049",
     "alt_screen_47_1047",
-    "scrollback_attributes",
     "da1_da2",
     "dsr_5_6",
     "dsr_6_origin_mode",
@@ -56,12 +45,11 @@ const PENDING: &[&str] = &[
     "charsets_dec_graphics",
     "insert_mode_and_tabs",
     "origin_mode_margins",
-    "save_restore_cursor",
     "wrap_pending_and_reverse",
     "decaln_and_ris",
     "keypad_modes",
+    "soft_reset", // DECSTR (step 7); resets SGR, so it fails once SGR is ported
     "c1_as_utf8",
-    "resize_shrink_cols",
     "resize_with_alt_buffer",
     "chunked_ascii_and_csi",
     "lunegit_altscreen_resize",
