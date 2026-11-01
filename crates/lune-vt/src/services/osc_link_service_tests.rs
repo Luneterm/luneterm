@@ -425,6 +425,14 @@ fn forwarding_the_disposal_of_a_long_link_filters_its_list_once() {
     // a partial batch keeps the link with the rest of its markers
     let (mut buffers, mut osc, long) = long_link(100);
     let lines: Vec<_> = osc.link_markers(long).unwrap().to_vec();
+    // the merge relies on this: a link's markers are in ascending id order
+    assert!(lines.windows(2).all(|w| w[0].id < w[1].id));
+    // one marker (the single-id path), then every other one
+    osc.on_markers_disposed(&[lines[1].id]);
+    let mut left: Vec<_> = lines.clone();
+    left.remove(1);
+    assert_eq!(osc.link_markers(long), Some(left.as_slice()));
+    let lines = left;
     let half: Vec<_> = lines.iter().step_by(2).map(|m| m.id).collect();
     osc.on_markers_disposed(&half);
     let left: Vec<_> = lines.iter().skip(1).step_by(2).copied().collect();
