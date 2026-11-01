@@ -1,0 +1,3 @@
+# Goldens and corpus files are read byte-exact on every OS; keep LF on checkout.
+crates/lune-vt-conformance/goldens/** text eol=lf
+crates/lune-vt-conformance/corpus/** text eol=lf

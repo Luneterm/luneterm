@@ -1,0 +1,428 @@
+lune-vt-golden 1
+kind screen
+name lunegit_wrap_basic
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden wrap_basic.grid.txt
+size 10 3
+chunk 303132333435363738394142
+expect
+cursor 2 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "0123456789"
+line 1 1 "AB"
+line 2 0 ""
+end
+kind screen
+name lunegit_wrap_cancel_cr
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden wrap_cancel_cr.grid.txt
+size 10 3
+chunk 303132333435363738390d5859
+expect
+cursor 2 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "XY23456789"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name lunegit_wrap_cancel_cup
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden wrap_cancel_cup.grid.txt
+size 10 3
+chunk 303132333435363738391b5b313b31485859
+expect
+cursor 2 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "XY23456789"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name lunegit_el_clearline_afterwrap
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden el_clearline_afterwrap.grid.txt
+size 10 3
+chunk 303132333435363738391b5b313b31481b5b324b5a5a
+expect
+cursor 2 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ZZ"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name lunegit_el_to_eol
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden el_to_eol.grid.txt
+size 10 3
+chunk 1b5b313b314841424344451b5b33471b5b304b
+expect
+cursor 2 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "AB"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name lunegit_erase_display_below
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden erase_display_below.grid.txt
+size 10 3
+chunk 41414141410a0d42424242420a0d43434343431b5b323b31481b5b304a
+expect
+cursor 0 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "AAAAA"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name lunegit_scroll_region
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden scroll_region.grid.txt
+size 10 4
+chunk 1b5b323b33721b5b323b31484c320a0d4c330a0d4c34
+expect
+cursor 2 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 "L3"
+line 2 0 "L4"
+line 3 0 ""
+end
+kind screen
+name lunegit_rep_csi_b
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden rep_csi_b.grid.txt
+size 10 2
+chunk 411b5b3462
+expect
+cursor 5 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "AAAAA"
+line 1 0 ""
+end
+kind screen
+name lunegit_cursor_clamp
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden cursor_clamp.grid.txt
+size 10 3
+chunk 1b5b3939393b3939394858
+expect
+cursor 10 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 "         X"
+end
+kind screen
+name lunegit_ich_insertchar
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden ich_insertchar.grid.txt
+size 10 2
+chunk 1b5b313b314841424344451b5b313b33481b5b3240
+expect
+cursor 2 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "AB  CDE"
+line 1 0 ""
+end
+kind screen
+name lunegit_dch_deletechar
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden dch_deletechar.grid.txt
+size 10 2
+chunk 1b5b313b314841424344451b5b313b32481b5b3250
+expect
+cursor 1 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ADE"
+line 1 0 ""
+end
+kind screen
+name lunegit_widechar_cjk
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden widechar_cjk.grid.txt
+size 10 2
+chunk e4bda0e5a5bd4142
+expect
+cursor 6 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "\u{4F60}\u{597D}AB"
+line 1 0 ""
+attr 0 0 1 w=2
+attr 0 1 1 w=0
+attr 0 2 1 w=2
+attr 0 3 1 w=0
+end
+kind screen
+name lunegit_widechar_emoji
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden widechar_emoji.grid.txt
+size 12 2
+chunk f09f9a8058
+expect
+cursor 3 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "\u{1F680}X"
+line 1 0 ""
+attr 0 0 1 w=2
+attr 0 1 1 w=0
+end
+kind screen
+name lunegit_inplace_wrap_redraw
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden inplace_wrap_redraw.grid.txt
+size 10 4
+chunk 1b5b3f32356c303132333435363738396162630d1b5b31411b5b324b0d4e4557
+expect
+cursor 3 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "NEW"
+line 1 1 "abc"
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name lunegit_ech_erasechar
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden ech_erasechar.grid.txt
+size 10 2
+chunk 1b5b313b314841424344451b5b313b31481b5b3358
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "   DE"
+line 1 0 ""
+end
+kind screen
+name lunegit_cursor_moves
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden cursor_moves.grid.txt
+size 10 3
+chunk 1b5b313b31484142431b5b323b31484445461b5b313b31481b5b32435a
+expect
+cursor 3 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABZ"
+line 1 0 "DEF"
+line 2 0 ""
+end
+kind screen
+name lunegit_scroll_on_lf
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden scroll_on_lf.grid.txt
+size 6 3
+chunk 4c310a0d4c320a0d4c330a0d4c34
+expect
+cursor 2 2
+buffer normal
+base-y 1
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "L1"
+line 1 0 "L2"
+line 2 0 "L3"
+line 3 0 "L4"
+end
+kind screen
+name lunegit_decstbm_scroll
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden decstbm_scroll.grid.txt
+size 6 4
+chunk 1b5b313b33721b5b313b3148610a0d620a0d630a0d64
+expect
+cursor 1 2
+buffer normal
+base-y 1
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "a"
+line 1 0 "b"
+line 2 0 "c"
+line 3 0 "d"
+line 4 0 ""
+end
+kind screen
+name lunegit_wrap_widechar_acct
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden wrap_widechar_acct.grid.txt
+size 6 3
+chunk 6162e4bda0e5a5bd0d1b5b31411b5b324b5a
+expect
+cursor 1 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "Z"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name lunegit_el0_after_widechar
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden el0_after_widechar.grid.txt
+size 8 2
+chunk e4bda0e5a5bd41421b5b313b33481b5b304b
+expect
+cursor 2 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "\u{4F60}"
+line 1 0 ""
+attr 0 0 1 w=2
+attr 0 1 1 w=0
+end
+kind screen
+name lunegit_shrink_wrapped
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden shrink_wrapped.grid.txt
+size 12 4
+resize 8 4
+chunk 6162636465666768696a6b6c6d6e6f7071727374
+expect
+cursor 7 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abcdefgh"
+line 1 1 "mnopqrst"
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name lunegit_grow_wrapped
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden grow_wrapped.grid.txt
+size 8 4
+resize 16 4
+chunk 6162636465666768696a6b6c6d6e6f7071727374
+expect
+cursor 4 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abcdefgh"
+line 1 1 "ijklmnop"
+line 2 1 "qrst"
+line 3 0 ""
+end
+kind screen
+name lunegit_shrink_multiline
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden shrink_multiline.grid.txt
+size 12 4
+resize 6 6
+chunk 4142434445464748494a4b4c0d0a30313233343536373839
+expect
+cursor 5 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDEF"
+line 1 1 "GHIJKL"
+line 2 0 "012345"
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+end
+kind screen
+name lunegit_grow_after_wrap
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden grow_after_wrap.grid.txt
+size 6 6
+resize 18 4
+chunk 48656c6c6f2d576f726c642d5265666c6f772d54657374
+expect
+cursor 5 3
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "Hello-"
+line 1 1 "World-"
+line 2 1 "Reflow"
+line 3 1 "-Test"
+end
+kind screen
+name lunegit_shrink_then_text
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden shrink_then_text.grid.txt
+size 12 4
+resize 8 4
+chunk 303132333435363738394142
+expect
+cursor 7 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "01234567"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name lunegit_altscreen_resize
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden altscreen_resize.grid.txt
+size 12 4
+resize 8 4
+chunk 1b5b3f313034396846554c4c53435245454e2d4150502d434f4e54454e541b5b48
+expect
+cursor 0 0
+buffer alternate
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "FULLSCRE"
+line 1 1 "PP-CONTE"
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name lunegit_viewport_resize
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden viewport_resize.grid.txt
+size 12 4
+resize 8 4
+chunk 303132333435363738394142434445464748494a
+expect
+cursor 7 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "01234567"
+line 1 1 "CDEFGHIJ"
+line 2 0 ""
+line 3 0 ""
+end

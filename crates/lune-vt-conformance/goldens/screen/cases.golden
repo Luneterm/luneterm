@@ -1,0 +1,1186 @@
+lune-vt-golden 1
+kind screen
+name sgr_attributes
+source screen.cases:5
+size 40 6
+chunk 1b5b316d626f6c641b5b306d201b5b326d64696d1b5b306d201b5b336d6974616c69631b5b306d201b5b346d756e6465721b5b306d201b5b356d626c696e6b1b5b306d201b5b376d696e76657273651b5b306d0d0a1b5b386d696e7669731b5b306d201b5b396d737472696b651b5b306d201b5b35336d6f7665726c696e651b5b306d201b5b313b333b343b396d616c6c1b5b306d20656e64
+expect
+cursor 29 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "bold dim italic under blink inverse"
+line 1 0 "invis strike overline all end"
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+attr 0 0 4 b
+attr 0 5 3 d
+attr 0 9 6 i
+attr 0 16 5 u=1
+attr 0 22 5 bl
+attr 0 28 7 inv
+attr 1 0 5 invis
+attr 1 6 6 s
+attr 1 13 8 o
+attr 1 22 3 b i u=1 s
+end
+kind screen
+name sgr_fg_bg_16
+source screen.cases:9
+size 40 6
+chunk 1b5b33306d411b5b33316d421b5b33326d431b5b33336d441b5b33346d451b5b33356d461b5b33366d471b5b33376d481b5b39306d491b5b39316d4a1b5b39376d4b1b5b33396d4c0d0a1b5b34306d411b5b34316d421b5b34326d431b5b34336d441b5b34346d451b5b34356d461b5b34366d471b5b34376d481b5b3130306d491b5b3130316d4a1b5b3130376d4b1b5b34396d4c
+expect
+cursor 12 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDEFGHIJKL"
+line 1 0 "ABCDEFGHIJKL"
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+attr 0 0 1 fg=p16:0
+attr 0 1 1 fg=p16:1
+attr 0 2 1 fg=p16:2
+attr 0 3 1 fg=p16:3
+attr 0 4 1 fg=p16:4
+attr 0 5 1 fg=p16:5
+attr 0 6 1 fg=p16:6
+attr 0 7 1 fg=p16:7
+attr 0 8 1 fg=p16:8
+attr 0 9 1 fg=p16:9
+attr 0 10 1 fg=p16:15
+attr 1 0 1 bg=p16:0
+attr 1 1 1 bg=p16:1
+attr 1 2 1 bg=p16:2
+attr 1 3 1 bg=p16:3
+attr 1 4 1 bg=p16:4
+attr 1 5 1 bg=p16:5
+attr 1 6 1 bg=p16:6
+attr 1 7 1 bg=p16:7
+attr 1 8 1 bg=p16:8
+attr 1 9 1 bg=p16:9
+attr 1 10 1 bg=p16:15
+end
+kind screen
+name sgr_bold_with_palette
+source screen.cases:13
+size 30 4
+chunk 1b5b313b33306d411b5b313b33316d421b5b313b33376d431b5b313b39306d441b5b303b313b33383b353b316d451b5b306d
+expect
+cursor 5 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDE"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+attr 0 0 1 fg=p16:0 b
+attr 0 1 1 fg=p16:1 b
+attr 0 2 1 fg=p16:7 b
+attr 0 3 1 fg=p16:8 b
+attr 0 4 1 fg=p256:1 b
+end
+kind screen
+name sgr_256
+source screen.cases:17
+size 40 4
+chunk 1b5b33383b353b306d411b5b33383b353b376d421b5b33383b353b386d431b5b33383b353b31356d441b5b33383b353b31366d451b5b33383b353b3233316d461b5b33383b353b3235356d470d0a1b5b34383b353b316d411b5b34383b353b3130306d421b5b34383b353b3235356d431b5b306d1b5b33383a353a396d441b5b34383a353a3230306d451b5b306d
+expect
+cursor 5 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDEFG"
+line 1 0 "ABCDE"
+line 2 0 ""
+line 3 0 ""
+attr 0 0 1 fg=p256:0
+attr 0 1 1 fg=p256:7
+attr 0 2 1 fg=p256:8
+attr 0 3 1 fg=p256:15
+attr 0 4 1 fg=p256:16
+attr 0 5 1 fg=p256:231
+attr 0 6 1 fg=p256:255
+attr 1 0 1 fg=p256:255 bg=p256:1
+attr 1 1 1 fg=p256:255 bg=p256:100
+attr 1 2 1 fg=p256:255 bg=p256:255
+attr 1 3 1 fg=p256:9
+attr 1 4 1 fg=p256:9 bg=p256:200
+end
+kind screen
+name sgr_rgb
+source screen.cases:21
+size 40 4
+chunk 1b5b33383b323b313b323b336d411b5b34383b323b3235303b3235313b3235326d421b5b33383b323b3235353b303b303b34383b323b303b303b3235356d431b5b306d1b5b33383a323a3a31303a32303a33306d441b5b34383a323a3a34303a35303a36306d451b5b33383a323a313a323a336d461b5b306d
+expect
+cursor 6 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDEF"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+attr 0 0 1 fg=rgb:010203
+attr 0 1 1 fg=rgb:010203 bg=rgb:fafbfc
+attr 0 2 1 fg=rgb:ff0000 bg=rgb:0000ff
+attr 0 3 1 fg=rgb:0a141e
+attr 0 4 1 fg=rgb:0a141e bg=rgb:28323c
+attr 0 5 1 fg=rgb:020300 bg=rgb:28323c
+end
+kind screen
+name sgr_underline_styles
+source screen.cases:25
+size 40 8
+chunk 1b5b346d411b5b343a306d421b5b343a316d431b5b343a326d441b5b343a336d451b5b343a346d461b5b343a356d471b5b343a366d481b5b32316d491b5b32346d4a1b5b306d
+expect
+cursor 10 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDEFGHIJ"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+line 6 0 ""
+line 7 0 ""
+attr 0 0 1 u=1
+attr 0 2 1 u=1
+attr 0 3 1 u=2
+attr 0 4 1 u=3
+attr 0 5 1 u=4
+attr 0 6 1 u=5
+attr 0 7 1 u=1
+attr 0 8 1 u=2
+end
+kind screen
+name sgr_underline_colors
+source screen.cases:29
+size 40 6
+chunk 1b5b343a333b35383b323b313b323b336d411b5b35383b353b396d421b5b35383a323a3a373a383a396d431b5b35383a353a3230306d441b5b35396d451b5b343b35383b323b3235353b303b3235356d461b5b32346d471b5b306d48
+expect
+cursor 8 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDEFGH"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+attr 0 0 1 u=3 uc=rgb:010203
+attr 0 1 1 u=3 uc=p256:9
+attr 0 2 1 u=3 uc=rgb:070809
+attr 0 3 1 u=3 uc=p256:200
+attr 0 4 1 u=3 uc=rgb:ffffff
+attr 0 5 1 u=1 uc=rgb:ff00ff
+end
+kind screen
+name sgr_resets
+source screen.cases:33
+size 40 4
+chunk 1b5b313b323b333b343b353b373b383b393b35333b33313b34326d581b5b32326d411b5b32336d421b5b32346d431b5b32356d441b5b32376d451b5b32386d461b5b32396d471b5b35356d481b5b33396d491b5b34396d4a
+expect
+cursor 11 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "XABCDEFGHIJ"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+attr 0 0 1 fg=p16:1 bg=p16:2 b d i u=1 bl inv invis s o
+attr 0 1 1 fg=p16:1 bg=p16:2 i u=1 bl inv invis s o
+attr 0 2 1 fg=p16:1 bg=p16:2 u=1 bl inv invis s o
+attr 0 3 1 fg=p16:1 bg=p16:2 bl inv invis s o
+attr 0 4 1 fg=p16:1 bg=p16:2 inv invis s o
+attr 0 5 1 fg=p16:1 bg=p16:2 invis s o
+attr 0 6 1 fg=p16:1 bg=p16:2 s o
+attr 0 7 1 fg=p16:1 bg=p16:2 o
+attr 0 8 1 fg=p16:1 bg=p16:2
+attr 0 9 1 bg=p16:2
+end
+kind screen
+name sgr_bad_params
+source screen.cases:37
+size 40 4
+chunk 1b5b33383b356d411b5b33383b323b316d421b5b33383b393b313b326d431b5b34386d441b5b35386d451b5b3939396d461b5b3b3b6d471b5b306d
+expect
+cursor 7 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDEFG"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+attr 0 0 1 fg=p256:0
+attr 0 1 5 fg=rgb:010000
+end
+kind screen
+name erase_with_background
+source screen.cases:41
+size 20 4
+chunk 1b5b34346d414141411b5b324b1b5b313b31481b5b34326d1b5b304a1b5b333b35481b5b34356d1b5b314b1b5b306d656e64
+expect
+cursor 7 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 "    end"
+line 3 0 ""
+attr 0 0 20 bg=p16:2
+attr 1 0 20 bg=p16:2
+attr 2 0 4 bg=p16:5
+attr 2 7 13 bg=p16:2
+attr 3 0 20 bg=p16:2
+end
+kind screen
+name osc8_links
+source screen.cases:45
+size 40 4
+chunk 1b5d383b3b687474703a2f2f612e6578616d706c652f076c696e6b2d611b5d383b3b0720706c61696e201b5d383b69643d783b687474703a2f2f622e6578616d706c652f3f713d3126723d32076c696e6b2d621b5d383b3b070d0a1b5d383b69643d783b687474703a2f2f622e6578616d706c652f3f713d3126723d3207616761696e1b5d383b3b07201b5d383b3b687474703a2f2f632e6578616d706c652f1b5c6c696e6b2d631b5d383b3b1b5c
+expect
+cursor 12 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "link-a plain link-b"
+line 1 0 "again link-c"
+line 2 0 ""
+line 3 0 ""
+attr 0 0 6 u=0 url=1
+attr 0 13 6 u=0 url=2
+attr 1 0 5 u=0 url=2
+attr 1 6 6 u=0 url=3
+link 1 "http://a.example/"
+link 2 "http://b.example/?q=1&r=2"
+link 3 "http://c.example/"
+end
+kind screen
+name osc8_link_with_underline
+source screen.cases:49
+size 40 4
+chunk 1b5b343a336d1b5d383b3b687474703a2f2f612e6578616d706c652f076375726c792d6c696e6b1b5d383b3b071b5b343a326d646f75626c651b5b306d201b5d383b3b687474703a2f2f612e6578616d706c652f071b5b343a356d6461736865642d6c696e6b1b5b306d1b5d383b3b07
+expect
+cursor 28 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "curly-linkdouble dashed-link"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+attr 0 0 10 u=3 url=1
+attr 0 10 6 u=2
+attr 0 17 11 u=5 url=2
+link 1 "http://a.example/"
+link 2 "http://a.example/"
+end
+kind screen
+name decset_modes
+source screen.cases:53
+size 30 6
+chunk 1b5b3f31681b5b3f36681b5b3f376c1b5b3f3435681b5b3f3636681b5b3f32303034681b5b3f31303034681b5b3f32356c1b5b3f3132681b5b3468
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=1 dec.applicationCursorKeys=1 dec.applicationKeypad=1 dec.bracketedPasteMode=1 dec.cursorBlink=- dec.cursorStyle=- dec.origin=1 dec.reverseWraparound=1 dec.sendFocus=1 dec.synchronizedOutput=0 dec.wraparound=0 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=1 public.applicationKeypadMode=1 public.bracketedPasteMode=1 public.insertMode=1 public.mouseTrackingMode=none public.originMode=1 public.reverseWraparoundMode=1 public.sendFocusMode=1 public.synchronizedOutputMode=0 public.wraparoundMode=0
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+end
+kind screen
+name decset_modes_reset
+source screen.cases:57
+size 30 6
+chunk 1b5b3f31681b5b3f36681b5b3f376c1b5b3f3435681b5b3f3636681b5b3f32303034681b5b3f31303034681b5b3f316c1b5b3f366c1b5b3f37681b5b3f34356c1b5b3f36366c1b5b3f323030346c1b5b3f313030346c1b5b346c
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+end
+kind screen
+name mouse_x10
+source screen.cases:61
+size 30 4
+chunk 1b5b3f3968
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=X10 public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=x10 public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name mouse_vt200
+source screen.cases:65
+size 30 4
+chunk 1b5b3f3130303068
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=VT200 public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=vt200 public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name mouse_drag
+source screen.cases:69
+size 30 4
+chunk 1b5b3f31303032681b5b3f3130303668
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=SGR mouse.protocol=DRAG public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=drag public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name mouse_any_sgr
+source screen.cases:73
+size 30 4
+chunk 1b5b3f31303033681b5b3f3130303668
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=SGR mouse.protocol=ANY public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=any public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name mouse_utf8_encoding
+source screen.cases:77
+size 30 4
+chunk 1b5b3f31303030681b5b3f3130303568
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=VT200 public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=vt200 public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name mouse_urxvt_encoding
+source screen.cases:81
+size 30 4
+chunk 1b5b3f31303030681b5b3f3130313568
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=VT200 public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=vt200 public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name mouse_sgr_pixels
+source screen.cases:85
+size 30 4
+chunk 1b5b3f31303030681b5b3f3130313668
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=SGR_PIXELS mouse.protocol=VT200 public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=vt200 public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name mouse_enable_then_disable
+source screen.cases:89
+size 30 4
+chunk 1b5b3f31303033681b5b3f31303036681b5b3f313030336c1b5b3f313030366c
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name bracketed_paste_and_sync
+source screen.cases:93
+size 30 4
+chunk 1b5b3f32303034681b5b3f3230323668
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=1 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=1 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=1 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=1 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name sync_output_text
+source screen.cases:97
+size 30 4
+chunk 1b5b3f323032366862756666657265641b5b3f323032366c206166746572
+expect
+cursor 14 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "buffered after"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name alt_screen_1049
+source screen.cases:101
+size 20 5
+chunk 6d61696e0d0a1b5b3f31303439681b5b324a1b5b48414c541b5b333b33486d69641b5b3f313034396c206261636b
+expect
+cursor 5 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "main"
+line 1 0 " back"
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+end
+kind screen
+name alt_screen_47_1047
+source screen.cases:105
+size 20 5
+chunk 6d61696e1b5b3f343768414c541b5b3f34376c0d0a1b5b3f3130343768414c54321b5b3f313034376c20656e64
+expect
+cursor 8 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "main"
+line 1 0 "     end"
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+end
+kind screen
+name scrollback_fill
+source screen.cases:109
+size 10 5
+chunk 4c30300d0a4c30310d0a4c30320d0a4c30330d0a4c30340d0a4c30350d0a4c30360d0a4c30370d0a4c30380d0a4c30390d0a4c31300d0a4c31310d0a4c31320d0a4c31330d0a4c3134
+expect
+cursor 3 4
+buffer normal
+base-y 10
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "L00"
+line 1 0 "L01"
+line 2 0 "L02"
+line 3 0 "L03"
+line 4 0 "L04"
+line 5 0 "L05"
+line 6 0 "L06"
+line 7 0 "L07"
+line 8 0 "L08"
+line 9 0 "L09"
+line 10 0 "L10"
+line 11 0 "L11"
+line 12 0 "L12"
+line 13 0 "L13"
+line 14 0 "L14"
+end
+kind screen
+name scrollback_attributes
+source screen.cases:113
+size 12 3
+chunk 1b5b33316d7265640d0a1b5b313b34326d626f6c642d677265656e0d0a1b5b306d706c61696e0d0a1b5b346d750d0a6c617374
+expect
+cursor 4 2
+buffer normal
+base-y 2
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "red"
+line 1 0 "bold-green"
+line 2 0 "plain"
+line 3 0 "u"
+line 4 0 "last"
+attr 0 0 3 fg=p16:1
+attr 1 0 10 fg=p16:1 bg=p16:2 b
+attr 3 0 1 u=1
+attr 4 0 4 u=1
+end
+kind screen
+name wide_and_combining
+source screen.cases:117
+size 20 5
+chunk e4bda0e5a5bd2061620d0a65cc817820f09f91a8e2808df09f91a9e2808df09f91a720790d0af09f918df09f8fbd7a20e29aa0efb88f770d0af09f87aff09f87b520ed959ceab880
+expect
+cursor 7 3
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "\u{4F60}\u{597D} ab"
+line 1 0 "e\u{301}x \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} y"
+line 2 0 "\u{1F44D}\u{1F3FD}z \u{26A0}\u{FE0F}w"
+line 3 0 "\u{1F1EF}\u{1F1F5} \u{D55C}\u{AE00}"
+line 4 0 ""
+attr 0 0 1 w=2
+attr 0 1 1 w=0
+attr 0 2 1 w=2
+attr 0 3 1 w=0
+attr 1 3 1 w=2
+attr 1 4 1 w=0
+attr 1 5 1 w=2
+attr 1 6 1 w=0
+attr 1 7 1 w=2
+attr 1 8 1 w=0
+attr 2 0 1 w=2
+attr 2 1 1 w=0
+attr 2 2 1 w=2
+attr 2 3 1 w=0
+attr 3 3 1 w=2
+attr 3 4 1 w=0
+attr 3 5 1 w=2
+attr 3 6 1 w=0
+end
+kind screen
+name wide_at_margin
+source screen.cases:121
+size 6 4
+chunk 6162636465e4bda0666768696ae4bda0
+expect
+cursor 3 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abcde"
+line 1 1 "\u{4F60}fghi"
+line 2 1 "j\u{4F60}"
+line 3 0 ""
+attr 1 0 1 w=2
+attr 1 1 1 w=0
+attr 2 1 1 w=2
+attr 2 2 1 w=0
+end
+kind screen
+name da1_da2
+source screen.cases:125
+size 20 3
+chunk 1b5b631b5b30631b5b3e631b5b3e3063
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[?1;2c"
+response "\u{1B}[?1;2c"
+response "\u{1B}[>0;276;0c"
+response "\u{1B}[>0;276;0c"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name dsr_5_6
+source screen.cases:129
+size 20 5
+chunk 1b5b356e1b5b333b37481b5b366e1b5b3f366e
+expect
+cursor 6 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[0n"
+response "\u{1B}[3;7R"
+response "\u{1B}[?3;7R"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+end
+kind screen
+name dsr_6_origin_mode
+source screen.cases:133
+size 20 6
+chunk 1b5b323b35721b5b3f36681b5b323b33481b5b366e
+expect
+cursor 2 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=1 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=1 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[3;3R"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+end
+kind screen
+name decrqm_dec_modes
+source screen.cases:137
+size 20 3
+chunk 1b5b3f3124701b5b3f3624701b5b3f3724701b5b3f323524701b5b3f343724701b5b3f3130303024701b5b3f3130303624701b5b3f3130343924701b5b3f3230303424701b5b3f3230323624701b5b3f3939393924701b5b3f32303236681b5b3f3230323624701b5b3f376c1b5b3f372470
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=1 dec.wraparound=0 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=1 public.wraparoundMode=0
+response "\u{1B}[?1;2$y"
+response "\u{1B}[?6;2$y"
+response "\u{1B}[?7;1$y"
+response "\u{1B}[?25;1$y"
+response "\u{1B}[?47;2$y"
+response "\u{1B}[?1000;2$y"
+response "\u{1B}[?1006;2$y"
+response "\u{1B}[?1049;2$y"
+response "\u{1B}[?2004;2$y"
+response "\u{1B}[?2026;2$y"
+response "\u{1B}[?9999;0$y"
+response "\u{1B}[?2026;1$y"
+response "\u{1B}[?7;2$y"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name decrqm_ansi_modes
+source screen.cases:141
+size 20 3
+chunk 1b5b3424701b5b323024701b5b313224701b5b34681b5b3424701b5b39392470
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=1 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=1 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[4;2$y"
+response "\u{1B}[20;2$y"
+response "\u{1B}[12;3$y"
+response "\u{1B}[4;1$y"
+response "\u{1B}[99;0$y"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name decrqss_sgr_and_margins
+source screen.cases:145
+size 20 6
+chunk 1b5b313b333b33383b353b3139363b34383b323b313b323b336d1b5024716d1b5c1b5b306d1b5024716d1b5c1b5b323b35721b502471721b5c1b5b3420711b50247120711b5c1b5024717a1b5c
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=0 dec.cursorStyle=underline dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}P1$r0m\u{1B}\u{5C}"
+response "\u{1B}P1$r0m\u{1B}\u{5C}"
+response "\u{1B}P1$r2;5r\u{1B}\u{5C}"
+response "\u{1B}P1$r2 q\u{1B}\u{5C}"
+response "\u{1B}P0$r\u{1B}\u{5C}"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+end
+kind screen
+name title_osc
+source screen.cases:149
+size 20 3
+chunk 1b5d303b7469746c65207a65726f071b5d323b7469746c652074776f071b5d313b69636f6e07
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title "title two"
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name title_unicode_and_long
+source screen.cases:153
+size 20 3
+chunk 1b5d303be4bda0e5a5bd20f09f9a8020747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747407
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title "\u{4F60}\u{597D} \u{1F680} tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt"
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name title_st_terminators
+source screen.cases:157
+size 20 3
+chunk 1b5d323b611b5c1b5d303b62c29c
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title "b"
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name title_stack
+source screen.cases:161
+size 20 3
+chunk 1b5d303b6669727374071b5b32323b30741b5d303b7365636f6e64071b5b32333b3074
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title "second"
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name osc_color_queries
+source screen.cases:165
+size 20 3
+chunk 1b5d31303b3f071b5d31313b3f071b5d31323b3f071b5d343b313b3f071b5d31303b7267623a66662f30302f3030071b5d31303b3f07
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name cursor_style_decscusr
+source screen.cases:169
+size 20 3
+chunk 1b5b3120711b5b3220711b5b3320711b5b3420711b5b3520711b5b3620711b5b302071
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name charsets_dec_graphics
+source screen.cases:173
+size 20 4
+chunk 1b28306c71716b0a781b2842201b29300e6c716b0f0d0a1b28416c716b1b28426c716b
+expect
+cursor 6 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "\u{250C}\u{2500}\u{2500}\u{2510}"
+line 1 0 "    \u{2502} \u{250C}\u{2500}\u{2510}"
+line 2 0 "lqklqk"
+line 3 0 ""
+end
+kind screen
+name insert_mode_and_tabs
+source screen.cases:177
+size 20 4
+chunk 1b5b34686162631b5b313b314858591b5b346c0d0a094109421b5b30671b5b313b35481b480d0a090943
+expect
+cursor 9 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "XYabc"
+line 1 0 "        C       B"
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name origin_mode_margins
+source screen.cases:181
+size 20 6
+chunk 1b5b323b35721b5b3f36681b5b313b3148411b5b343b3148441b5b353b3148450a1b5b3f366c1b5b313b31485a
+expect
+cursor 1 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "Z"
+line 1 0 ""
+line 2 0 ""
+line 3 0 "E"
+line 4 0 ""
+line 5 0 ""
+end
+kind screen
+name left_right_margins
+source screen.cases:185
+size 20 4
+chunk 1b5b3f3639681b5b333b38731b5b313b31486162636465666768696a6b6c6d6e6f701b5b3f36396c
+expect
+cursor 16 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abcdefghijklmnop"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name save_restore_cursor
+source screen.cases:189
+size 20 4
+chunk 1b5b333b34481b371b5b313b31481b5b33316d581b38591b5b731b5b313b3130481b5b7521
+expect
+cursor 5 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "X"
+line 1 0 ""
+line 2 0 "   Y!"
+line 3 0 ""
+attr 0 0 1 fg=p16:1
+end
+kind screen
+name wrap_pending_and_reverse
+source screen.cases:193
+size 6 3
+chunk 6162636465661b5b3f34356808085a1b5b3f376c515253545556
+expect
+cursor 6 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=1 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=0 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=1 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=0
+line 0 0 "abcdZV"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name rep_and_ech
+source screen.cases:197
+size 20 3
+chunk 61621b5b3362631b5b32581b5b313b31481b5b32407a1b5b313b31481b5b3350
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "bbbbc"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name decaln_and_ris
+source screen.cases:201
+size 10 3
+chunk 1b23381b5b313b3148781b632061667465722d7265736574
+expect
+cursor 2 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 " after-res"
+line 1 1 "et"
+line 2 0 ""
+end
+kind screen
+name soft_reset
+source screen.cases:205
+size 20 3
+chunk 1b5b313b33316d1b5b3f31681b5b3f376c1b5b34681b5b217061
+expect
+cursor 1 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "a"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name keypad_modes
+source screen.cases:209
+size 20 3
+chunk 1b3d1b3e1b3d1b5b3f363668
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=1 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=1 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name c1_as_utf8
+source screen.cases:213
+size 20 3
+chunk c29b33316d726564c29b306dc29d303b74c29c
+expect
+cursor 3 0
+buffer normal
+base-y 0
+title "t"
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "red"
+line 1 0 ""
+line 2 0 ""
+attr 0 0 3 fg=p16:1
+end
+kind screen
+name scroll_region_with_scrollback
+source screen.cases:217
+size 10 5
+chunk 1b5b323b34721b5b343b3148310d0a320d0a330d0a340d0a351b5b721b5b353b3148656e64
+expect
+cursor 3 4
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 "3"
+line 2 0 "4"
+line 3 0 "5"
+line 4 0 "end"
+end
+kind screen
+name resize_shrink_cols
+source screen.cases:221
+size 12 4
+resize 8 4
+chunk 6162636465666768696a6b6c6d6e6f70717273740d0a1b5b33316d78797a
+expect
+cursor 3 3
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abcdefgh"
+line 1 1 "ijklmnop"
+line 2 1 "qrst"
+line 3 0 "xyz"
+attr 3 0 3 fg=p16:1
+end
+kind screen
+name resize_grow_rows
+source screen.cases:226
+size 10 3
+resize 10 6
+chunk 310d0a320d0a330d0a340d0a35
+expect
+cursor 1 4
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "1"
+line 1 0 "2"
+line 2 0 "3"
+line 3 0 "4"
+line 4 0 "5"
+line 5 0 ""
+end
+kind screen
+name resize_with_alt_buffer
+source screen.cases:231
+size 10 3
+resize 6 3
+chunk 61621b5b3f3130343968414c54434f4e54454e54
+expect
+cursor 2 1
+buffer alternate
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "  ALTC"
+line 1 1 "NT"
+line 2 0 ""
+end
+kind screen
+name chunked_ascii_and_csi
+source screen.cases:236
+size 20 3
+chunk 6162
+chunk 1b
+chunk 5b33
+chunk 316d
+chunk 63
+chunk 1b5d303b7469
+chunk 746c6507
+chunk 64
+expect
+cursor 4 0
+buffer normal
+base-y 0
+title "title"
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abcd"
+line 1 0 ""
+line 2 0 ""
+attr 0 2 2 fg=p16:1
+end
+kind screen
+name chunked_utf8_clean_boundaries
+source screen.cases:240
+size 20 3
+chunk e4bda0
+chunk e5a5bd
+chunk f09f9a80
+chunk 78
+expect
+cursor 7 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "\u{4F60}\u{597D}\u{1F680}x"
+line 1 0 ""
+line 2 0 ""
+attr 0 0 1 w=2
+attr 0 1 1 w=0
+attr 0 2 1 w=2
+attr 0 3 1 w=0
+attr 0 4 1 w=2
+attr 0 5 1 w=0
+end
+kind screen
+name chunked_utf8_split
+source screen.cases:244
+size 20 3
+chunk f0
+chunk 9f
+chunk 9a
+chunk 80
+chunk e4bd
+chunk a0
+chunk 78
+expect
+cursor 5 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "\u{1F680}\u{4F60}x"
+line 1 0 ""
+line 2 0 ""
+attr 0 0 1 w=2
+attr 0 1 1 w=0
+attr 0 2 1 w=2
+attr 0 3 1 w=0
+end
+kind screen
+name chunked_utf8_split_after_80
+source E2 80 | 99 loses U+2019 in upstream Utf8ToUtf32 (TextDecoder.ts:161); the unsplit dump is expected
+size 20 3
+divergent upstream Utf8ToUtf32 split-sequence bug (TextDecoder.ts:161)
+chunk 61e280
+chunk 9962
+expect
+cursor 3 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "a\u{2019}b"
+line 1 0 ""
+line 2 0 ""
+end

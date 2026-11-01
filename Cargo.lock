@@ -991,6 +991,13 @@ name = "lune-vt"
 version = "0.1.0"
 
 [[package]]
+name = "lune-vt-conformance"
+version = "0.1.0"
+dependencies = [
+ "lune-vt",
+]
+
+[[package]]
 name = "luneterm"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,251 @@
+# Screen corpus. Syntax: see ../FORMAT.md ("Corpus files"). Each case is written through a
+# headless xterm.js 6.0.0 terminal (Unicode 11 active) and dumped (attributes, modes, responses,
+# title, links). `size` defaults to 80 24.
+
+case sgr_attributes
+size 40 6
+input "\e[1mbold\e[0m \e[2mdim\e[0m \e[3mitalic\e[0m \e[4munder\e[0m \e[5mblink\e[0m \e[7minverse\e[0m\r\n\e[8minvis\e[0m \e[9mstrike\e[0m \e[53moverline\e[0m \e[1;3;4;9mall\e[0m end"
+
+case sgr_fg_bg_16
+size 40 6
+input "\e[30mA\e[31mB\e[32mC\e[33mD\e[34mE\e[35mF\e[36mG\e[37mH\e[90mI\e[91mJ\e[97mK\e[39mL\r\n\e[40mA\e[41mB\e[42mC\e[43mD\e[44mE\e[45mF\e[46mG\e[47mH\e[100mI\e[101mJ\e[107mK\e[49mL"
+
+case sgr_bold_with_palette
+size 30 4
+input "\e[1;30mA\e[1;31mB\e[1;37mC\e[1;90mD\e[0;1;38;5;1mE\e[0m"
+
+case sgr_256
+size 40 4
+input "\e[38;5;0mA\e[38;5;7mB\e[38;5;8mC\e[38;5;15mD\e[38;5;16mE\e[38;5;231mF\e[38;5;255mG\r\n\e[48;5;1mA\e[48;5;100mB\e[48;5;255mC\e[0m\e[38:5:9mD\e[48:5:200mE\e[0m"
+
+case sgr_rgb
+size 40 4
+input "\e[38;2;1;2;3mA\e[48;2;250;251;252mB\e[38;2;255;0;0;48;2;0;0;255mC\e[0m\e[38:2::10:20:30mD\e[48:2::40:50:60mE\e[38:2:1:2:3mF\e[0m"
+
+case sgr_underline_styles
+size 40 8
+input "\e[4mA\e[4:0mB\e[4:1mC\e[4:2mD\e[4:3mE\e[4:4mF\e[4:5mG\e[4:6mH\e[21mI\e[24mJ\e[0m"
+
+case sgr_underline_colors
+size 40 6
+input "\e[4:3;58;2;1;2;3mA\e[58;5;9mB\e[58:2::7:8:9mC\e[58:5:200mD\e[59mE\e[4;58;2;255;0;255mF\e[24mG\e[0mH"
+
+case sgr_resets
+size 40 4
+input "\e[1;2;3;4;5;7;8;9;53;31;42mX\e[22mA\e[23mB\e[24mC\e[25mD\e[27mE\e[28mF\e[29mG\e[55mH\e[39mI\e[49mJ"
+
+case sgr_bad_params
+size 40 4
+input "\e[38;5mA\e[38;2;1mB\e[38;9;1;2mC\e[48mD\e[58mE\e[999mF\e[;;mG\e[0m"
+
+case erase_with_background
+size 20 4
+input "\e[44mAAAA\e[2K\e[1;1H\e[42m\e[0J\e[3;5H\e[45m\e[1K\e[0mend"
+
+case osc8_links
+size 40 4
+input "\e]8;;http://a.example/\x07link-a\e]8;;\x07 plain \e]8;id=x;http://b.example/?q=1&r=2\x07link-b\e]8;;\x07\r\n\e]8;id=x;http://b.example/?q=1&r=2\x07again\e]8;;\x07 \e]8;;http://c.example/\e\\link-c\e]8;;\e\\"
+
+case osc8_link_with_underline
+size 40 4
+input "\e[4:3m\e]8;;http://a.example/\x07curly-link\e]8;;\x07\e[4:2mdouble\e[0m \e]8;;http://a.example/\x07\e[4:5mdashed-link\e[0m\e]8;;\x07"
+
+case decset_modes
+size 30 6
+input "\e[?1h\e[?6h\e[?7l\e[?45h\e[?66h\e[?2004h\e[?1004h\e[?25l\e[?12h\e[4h"
+
+case decset_modes_reset
+size 30 6
+input "\e[?1h\e[?6h\e[?7l\e[?45h\e[?66h\e[?2004h\e[?1004h\e[?1l\e[?6l\e[?7h\e[?45l\e[?66l\e[?2004l\e[?1004l\e[4l"
+
+case mouse_x10
+size 30 4
+input "\e[?9h"
+
+case mouse_vt200
+size 30 4
+input "\e[?1000h"
+
+case mouse_drag
+size 30 4
+input "\e[?1002h\e[?1006h"
+
+case mouse_any_sgr
+size 30 4
+input "\e[?1003h\e[?1006h"
+
+case mouse_utf8_encoding
+size 30 4
+input "\e[?1000h\e[?1005h"
+
+case mouse_urxvt_encoding
+size 30 4
+input "\e[?1000h\e[?1015h"
+
+case mouse_sgr_pixels
+size 30 4
+input "\e[?1000h\e[?1016h"
+
+case mouse_enable_then_disable
+size 30 4
+input "\e[?1003h\e[?1006h\e[?1003l\e[?1006l"
+
+case bracketed_paste_and_sync
+size 30 4
+input "\e[?2004h\e[?2026h"
+
+case sync_output_text
+size 30 4
+input "\e[?2026hbuffered\e[?2026l after"
+
+case alt_screen_1049
+size 20 5
+input "main\r\n\e[?1049h\e[2J\e[HALT\e[3;3Hmid\e[?1049l back"
+
+case alt_screen_47_1047
+size 20 5
+input "main\e[?47hALT\e[?47l\r\n\e[?1047hALT2\e[?1047l end"
+
+case scrollback_fill
+size 10 5
+input "L00\r\nL01\r\nL02\r\nL03\r\nL04\r\nL05\r\nL06\r\nL07\r\nL08\r\nL09\r\nL10\r\nL11\r\nL12\r\nL13\r\nL14"
+
+case scrollback_attributes
+size 12 3
+input "\e[31mred\r\n\e[1;42mbold-green\r\n\e[0mplain\r\n\e[4mu\r\nlast"
+
+case wide_and_combining
+size 20 5
+input "你好 ab\r\ne\u{301}x \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} y\r\n\u{1F44D}\u{1F3FD}z \u{26A0}\u{FE0F}w\r\n\u{1F1EF}\u{1F1F5} 한글"
+
+case wide_at_margin
+size 6 4
+input "abcde你fghij你"
+
+case da1_da2
+size 20 3
+input "\e[c\e[0c\e[>c\e[>0c"
+
+case dsr_5_6
+size 20 5
+input "\e[5n\e[3;7H\e[6n\e[?6n"
+
+case dsr_6_origin_mode
+size 20 6
+input "\e[2;5r\e[?6h\e[2;3H\e[6n"
+
+case decrqm_dec_modes
+size 20 3
+input "\e[?1$p\e[?6$p\e[?7$p\e[?25$p\e[?47$p\e[?1000$p\e[?1006$p\e[?1049$p\e[?2004$p\e[?2026$p\e[?9999$p\e[?2026h\e[?2026$p\e[?7l\e[?7$p"
+
+case decrqm_ansi_modes
+size 20 3
+input "\e[4$p\e[20$p\e[12$p\e[4h\e[4$p\e[99$p"
+
+case decrqss_sgr_and_margins
+size 20 6
+input "\e[1;3;38;5;196;48;2;1;2;3m\eP$qm\e\\\e[0m\eP$qm\e\\\e[2;5r\eP$qr\e\\\e[4 q\eP$q q\e\\\eP$qz\e\\"
+
+case title_osc
+size 20 3
+input "\e]0;title zero\x07\e]2;title two\x07\e]1;icon\x07"
+
+case title_unicode_and_long
+size 20 3
+input "\e]0;你好 \u{1F680} " "t"*200 "\x07"
+
+case title_st_terminators
+size 20 3
+input "\e]2;a\e\\\e]0;b" hex:c29c
+
+case title_stack
+size 20 3
+input "\e]0;first\x07\e[22;0t\e]0;second\x07\e[23;0t"
+
+case osc_color_queries
+size 20 3
+input "\e]10;?\x07\e]11;?\x07\e]12;?\x07\e]4;1;?\x07\e]10;rgb:ff/00/00\x07\e]10;?\x07"
+
+case cursor_style_decscusr
+size 20 3
+input "\e[1 q\e[2 q\e[3 q\e[4 q\e[5 q\e[6 q\e[0 q"
+
+case charsets_dec_graphics
+size 20 4
+input "\e(0lqqk\x0ax\e(B \e)0\x0elqk\x0f\r\n\e(Alqk\e(Blqk"
+
+case insert_mode_and_tabs
+size 20 4
+input "\e[4habc\e[1;1HXY\e[4l\r\n\tA\tB\e[0g\e[1;5H\eH\r\n\t\tC"
+
+case origin_mode_margins
+size 20 6
+input "\e[2;5r\e[?6h\e[1;1HA\e[4;1HD\e[5;1HE\n\e[?6l\e[1;1HZ"
+
+case left_right_margins
+size 20 4
+input "\e[?69h\e[3;8s\e[1;1Habcdefghijklmnop\e[?69l"
+
+case save_restore_cursor
+size 20 4
+input "\e[3;4H\e7\e[1;1H\e[31mX\e8Y\e[s\e[1;10H\e[u!"
+
+case wrap_pending_and_reverse
+size 6 3
+input "abcdef\e[?45h\x08\x08Z\e[?7lQRSTUV"
+
+case rep_and_ech
+size 20 3
+input "ab\e[3bc\e[2X\e[1;1H\e[2@z\e[1;1H\e[3P"
+
+case decaln_and_ris
+size 10 3
+input "\e#8\e[1;1Hx\ec after-reset"
+
+case soft_reset
+size 20 3
+input "\e[1;31m\e[?1h\e[?7l\e[4h\e[!pa"
+
+case keypad_modes
+size 20 3
+input "\e=\e>\e=\e[?66h"
+
+case c1_as_utf8
+size 20 3
+input hex:c29b "31mred" hex:c29b "0m" hex:c29d "0;t" hex:c29c
+
+case scroll_region_with_scrollback
+size 10 5
+input "\e[2;4r\e[4;1H1\r\n2\r\n3\r\n4\r\n5\e[r\e[5;1Hend"
+
+case resize_shrink_cols
+size 12 4
+resize 8 4
+input "abcdefghijklmnopqrst\r\n\e[31mxyz"
+
+case resize_grow_rows
+size 10 3
+resize 10 6
+input "1\r\n2\r\n3\r\n4\r\n5"
+
+case resize_with_alt_buffer
+size 10 3
+resize 6 3
+input "ab\e[?1049hALTCONTENT"
+
+case chunked_ascii_and_csi
+size 20 3
+input "ab" | "\e" | "[3" | "1m" | "c" | "\e]0;ti" | "tle" hex:07 | "d"
+
+case chunked_utf8_clean_boundaries
+size 20 3
+input "你" | "好" | hex:f09f9a80 | "x"
+
+case chunked_utf8_split
+size 20 3
+input hex:f0 | hex:9f | hex:9a | hex:80 | hex:e4bd | hex:a0 | "x"
+
+case chunked_utf8_split_after_80
+source E2 80 | 99 loses U+2019 in upstream Utf8ToUtf32 (TextDecoder.ts:161); the unsplit dump is expected
+size 20 3
+input "a" hex:e280 | hex:99 "b"
