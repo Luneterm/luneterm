@@ -179,7 +179,7 @@ dropped. Each expected line is the escaped row string, `""` for an interior empt
 Under `corpus/`, read only by the generator. `#` starts a comment line; keys:
 
 ```
-random <count> seed <n>   (parser.cases only) extra generated parser cases, mulberry32
+random <count> seed <n>   (parser.cases, screen.cases) extra generated cases, mulberry32
 case <name>               starts a case
 source <text>             optional origin note
 size <cols> <rows>        screen and grid cases
@@ -196,3 +196,41 @@ repeat it; `|` ends the current chunk (`| |` yields an empty chunk).
 Random cases are named `rand_0001` and up: up to 120 bytes of weighted byte soup (escape
 structure characters, digits, intermediates, C0 controls, UTF-8 snippets, stray high bytes) cut
 into 1 to 5 chunks at random offsets.
+
+### Random screen cases
+
+`random <count> seed <n>` in `screen.cases` adds `<count>` generated screen cases, named
+`srand_0001` and up, written to `goldens/screen/random.golden` (same record format as any screen
+golden; the generator's source line says how many chunks the input has). Each case is built from
+whole tokens drawn from a grammar of the registered sequences, so most of the input reaches a
+real handler:
+
+- size one of 12 small geometries (largest 20x8; 2x1, 2x2, 3x1, 5x1 and 20x1 give the one-row
+  and two-column edge cases); 40% of cases also `resize` afterwards;
+- 4 to 30 tokens: text (ASCII words; wide, combining, ZWJ, emoji, VS15/16 clusters; stray or
+  invalid UTF-8 bytes), C0 and C1 controls, CSI sequences for every registered identifier,
+  ESC sequences including all charset designators, OSC (titles, colours, OSC 8 links, OSC 52 and
+  other unregistered ids; BEL, `ESC \` or C1 ST terminators), DCS DECRQSS, and one token in
+  twelve is cut short so the next token interrupts it;
+- CSI parameters come from a pool that includes the extremes `0 1 2 65535 2147483647`, empty
+  values, and `:` sub-parameter separators; the finals that loop once per unit (`L M S T I Z b`)
+  are capped at 65535 because the oracle would take minutes (and lune-vt bounds them, plan M6
+  step 5);
+- 1 to 4 chunks, cut at random offsets and, now and then, right after `E2 80` (upstream's split
+  UTF-8 bug): such cases are `divergent` exactly like the hand cases and hold the unsplit dump;
+- RIS (`ESC c`) and OSC 8 links never appear in the same case: lune-vt frees a reset buffer's
+  links (decision Q9), upstream leaks them, so url ids after a reset differ by design.
+
+- a drawn case is dropped (and another drawn) when the oracle's dump of the input in one write
+  differs from its dump with one write per UTF-8 character: upstream's `print` depends on where
+  `write` calls end for some inputs (a wide character and a joiner at the right margin with
+  autowrap off, for example `ESC [ 1 ; 1 5 H ESC [ ? 7 l` then U+1F468 U+200D U+1F469 U+200D
+  U+1F467), `lune-vt` reproduces that, and the screen runner's replays (one byte per write,
+  random splits) require every chunking to give one dump;
+- `CSI 1 J` and `CSI ? 1 J` are not generated: with the cursor on the last row at the last column
+  upstream reads `lines.get(j + 1)!` without adding `ybase` (`InputHandler.ts:1218`), gets
+  `undefined` and throws, which stops the oracle's write loop. Hand cases cover ED 1 with the
+  cursor elsewhere.
+
+Generation is deterministic (mulberry32, no clock). A case that makes the oracle itself throw
+would stop the generator; pick another seed.

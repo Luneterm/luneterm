@@ -45,13 +45,24 @@ fn screen_goldens_match_the_corpus_counts() -> Result<()> {
     let lunegit = corpus_summary("lunegit.cases")?;
     let goldens = load(Kind::Screen)?;
     assert!(
-        screen.names.len() >= 25,
+        screen.names.len() >= 150,
         "screen cases: {}",
         screen.names.len()
     );
-    assert_eq!(goldens.len(), screen.names.len() + lunegit.names.len());
+    assert!(
+        screen.random >= 100,
+        "random screen cases: {}",
+        screen.random
+    );
+    assert_eq!(
+        goldens.len(),
+        screen.names.len() + screen.random + lunegit.names.len()
+    );
     for name in &screen.names {
         named(&goldens, name)?;
+    }
+    for i in 1..=screen.random {
+        named(&goldens, &format!("srand_{i:04}"))?;
     }
     for name in &lunegit.names {
         named(&goldens, &format!("lunegit_{name}"))?;
