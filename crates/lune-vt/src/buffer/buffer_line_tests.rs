@@ -1142,4 +1142,86 @@ mod edge_semantics {
         assert_eq!(line.get_string(0).chars().count(), MAX_COMBINED_CODE_POINTS);
         assert_eq!(line.get_width(0), 2);
     }
+
+    /// LUNETERM: (review S7) `insert_cells_repeatedly` leaves exactly what the loop of
+    /// `insert_cells` calls leaves: cells and both side tables, stale entries included, over
+    /// random lines (narrow, wide, combined and extended cells, stale entries at unflagged
+    /// cells), fills (plain, extended, combined, wide) and positions, including calls outside
+    /// the fast path's conditions.
+    #[test]
+    fn inserting_repeatedly_equals_the_loop_of_inserts() {
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let ext = |v: usize| ExtendedAttrs::new(v as u32 + 1, v as u32);
+        let mut fast = 0;
+        for _ in 0..50_000 {
+            let len = 1 + next(12);
+            let mut line = null_line(len);
+            let mut c = 0;
+            while c < len {
+                let mut cell = CellData::new();
+                let kind = next(5);
+                let width = if kind == 1 && c + 1 < len { 2 } else { 1 };
+                cell.content = match kind {
+                    0 => NULL_CELL_CODE | (NULL_CELL_WIDTH << Content::WIDTH_SHIFT),
+                    2 => {
+                        cell.combined_data =
+                            format!("e{}", char::from_u32(0x300 + c as u32).unwrap());
+                        Content::IS_COMBINED_MASK | (width << Content::WIDTH_SHIFT)
+                    }
+                    _ => (u32::from('a') + c as u32) | (width << Content::WIDTH_SHIFT),
+                };
+                if next(3) == 0 {
+                    cell.bg |= BgFlags::HAS_EXTENDED;
+                    cell.extended = ext(next(4));
+                }
+                line.set_cell(c, &cell);
+                if next(4) == 0 {
+                    // a stale entry at a cell without the flag
+                    line.combined.insert(c, format!("stale{c}"));
+                    line.extended_attrs.insert(c, ext(9));
+                }
+                if width == 2 {
+                    line.set_cell_from_codepoint(c + 1, 0, 0, &DEFAULT_ATTR_DATA);
+                }
+                c += width as usize;
+            }
+            let mut fill = null_cell();
+            match next(6) {
+                0 | 1 => {
+                    fill.bg |= BgFlags::HAS_EXTENDED;
+                    fill.extended = ext(7);
+                }
+                2 => {
+                    fill.content = Content::IS_COMBINED_MASK | (1 << Content::WIDTH_SHIFT);
+                    fill.combined_data = "fill".into();
+                }
+                3 => fill.content = u32::from('w') | (2 << Content::WIDTH_SHIFT),
+                _ => {}
+            }
+            let pos = next(len + 1);
+            let n = next(4);
+            // mostly within the line (the fast path), sometimes one step past it
+            let times = next((len - pos) / n.max(1) + 2);
+            if fill.get_width() != 2 && n != 0 && times != 0 && pos + n * times <= len {
+                fast += 1;
+            }
+            let mut looped = line.clone();
+            for j in 0..times {
+                looped.insert_cells(pos + j * n, n, &fill);
+            }
+            let mut once = line.clone();
+            once.insert_cells_repeatedly(pos, n, times, &fill);
+            assert_eq!(
+                once, looped,
+                "{line:?} pos {pos} n {n} times {times} fill {fill:?}"
+            );
+        }
+        assert!(fast > 8000, "{fast}");
+    }
 }

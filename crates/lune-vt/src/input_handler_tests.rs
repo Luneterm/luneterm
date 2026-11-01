@@ -200,6 +200,38 @@ impl UnicodeVersionProvider for Vs16Widens {
     }
 }
 
+/// A Unicode provider over V6 where `b` takes the width the preceding character did not have
+/// (1 after a wide character, else 2): a unit whose repetitions alternate (review S7).
+struct AlternatingB(UnicodeV6);
+
+impl UnicodeVersionProvider for AlternatingB {
+    fn version(&self) -> &str {
+        "alternating-test"
+    }
+
+    fn wcwidth(&self, codepoint: u32) -> u32 {
+        self.0.wcwidth(codepoint)
+    }
+
+    fn char_properties(&self, codepoint: u32, preceding: u32) -> u32 {
+        if codepoint == u32::from('b') {
+            let width = if UnicodeService::extract_width(preceding) == 2 {
+                1
+            } else {
+                2
+            };
+            return UnicodeService::create_property_value(0, width, false);
+        }
+        self.0.char_properties(codepoint, preceding)
+    }
+}
+
+fn with_alternating_b(t: &mut TestTerm) {
+    let unicode = &mut t.handler.services.unicode;
+    unicode.register(Box::new(AlternatingB(UnicodeV6::new())));
+    unicode.set_active_version("alternating-test").unwrap();
+}
+
 fn with_vs16(t: &mut TestTerm) {
     let unicode = &mut t.handler.services.unicode;
     unicode.register(Box::new(Vs16Widens(UnicodeV6::new())));
@@ -2675,22 +2707,51 @@ fn rep_state(t: &mut TestTerm) -> RepState {
 /// Review S3: REP prints at most what can still change the state. For each setup, REP with a
 /// count past the cut leaves exactly the state of printing all of the repetitions (the
 /// uncapped path: `print` of the whole repeated data, what REP did before the cut). The cases
-/// marked `fill` take the line-fill path (`print_repeated`, review S3 residual), the others
-/// `print`; each case checks which.
+/// marked `fill` take the line-fill path (`print_repeated`, reviews S3 residual and S7), the
+/// others `print`; each case checks which. Lines compare whole, side-table entries included.
 #[test]
 fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
     type Setup = fn(&mut TestTerm);
-    let cases: [(&str, Setup, &str, bool, bool); 14] = [
+    let cases: [(&str, Setup, &str, bool, bool); 23] = [
         ("plain", |_| {}, "a", true, true),
         ("wide, odd cols", |_| {}, "\u{4e2d}", true, true),
-        ("cluster", |_| {}, "e\u{301}", true, false),
-        ("wide cluster", |_| {}, "\u{4e2d}\u{301}", true, false),
+        ("cluster", |_| {}, "e\u{301}", true, true),
+        ("wide cluster", |_| {}, "\u{4e2d}\u{301}", true, true),
         (
             "insert mode",
             |t| t.parse_str("xyz\r\n12345\x1b[H\x1b[4h"),
             "a",
             true,
-            false,
+            true,
+        ),
+        (
+            "insert mode, wide cluster over clusters and wides",
+            |t| {
+                t.parse_str(
+                    "e\u{301}\u{4e2d}e\u{301}x\r\n\u{4e2d}\u{301}e\u{301}e\u{301}\x1b[H\x1b[4h",
+                )
+            },
+            "\u{4e2d}\u{301}",
+            true,
+            true,
+        ),
+        (
+            "insert mode, cluster below the region",
+            |t| t.parse_str("1\r\n2\r\n3\x1b[1;2r\x1b[3;2H\x1b[4h"),
+            "e\u{301}",
+            true,
+            true,
+        ),
+        (
+            "insert mode, underline style over link cells",
+            |t| {
+                t.parse_str(
+                    "\x1b]8;;u\x07e\u{301}y\u{4e2d}z\r\n123\x1b]8;;\x07\x1b[4:3m\x1b[H\x1b[4h",
+                )
+            },
+            "a",
+            true,
+            true,
         ),
         (
             "region, cursor inside",
@@ -2721,6 +2782,27 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
             false,
         ),
         (
+            "no wraparound, cluster",
+            |t| t.parse_str("\x1b[?7l"),
+            "e\u{301}",
+            true,
+            false,
+        ),
+        (
+            "no wraparound, wide cluster",
+            |t| t.parse_str("\x1b[?7l"),
+            "\u{4e2d}\u{301}",
+            true,
+            false,
+        ),
+        (
+            "no wraparound, insert mode, cluster",
+            |t| t.parse_str("xyz\x1b[?7l\x1b[4h\x1b[H"),
+            "e\u{301}",
+            true,
+            false,
+        ),
+        (
             "alt buffer",
             |t| t.parse_str("1\r\n2\x1b[?1049h"),
             "a",
@@ -2732,7 +2814,14 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
             |t| t.parse_str("\x1b]8;;u\x07"),
             "a",
             true,
-            false,
+            true,
+        ),
+        (
+            "open link, insert mode, wide cluster",
+            |t| t.parse_str("xyz\r\n12\x1b]8;;u\x07\x1b[H\x1b[4h"),
+            "\u{4e2d}\u{301}",
+            true,
+            true,
         ),
         (
             "user scrolled",
@@ -2752,10 +2841,19 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
             },
             "q",
             true,
-            false,
+            true,
+        ),
+        (
+            "screen reader, cluster",
+            |t| t.set_option(OptionValue::ScreenReaderMode(true)),
+            "e\u{301}",
+            true,
+            true,
         ),
         // the cursor-moving join is not proven periodic: no cut
         ("joiner that widens", with_vs16, "a\u{fe0f}", false, false),
+        // repetitions that alternate are not alike: no cut, no fill
+        ("alternating widths", with_alternating_b, "b", false, false),
     ];
     // sizes (cols, rows, scrollback) and counts around and past the cut; at 300x100 counts that
     // fill, wrap and scroll the screen (the line-fill path of review S3)
@@ -2810,8 +2908,182 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
             }
         }
     }
-    // only the multi-byte units at the largest count
-    assert_eq!(skipped.len(), 2, "{skipped:?}");
+    // only the five-byte units at the largest count
+    assert_eq!(skipped.len(), 5, "{skipped:?}");
+}
+
+/// Review S7 (cases from the round-3 code review's probe, plus the S7 variants): the line-fill
+/// path leaves the state of `print` over content already on screen (rows of wide chars at even
+/// and odd offsets, links, colours), with non-ASCII charsets, a pending wrap,
+/// insert mode, an open link, clusters, screen reader mode and lines of another length (the
+/// per-repetition insert path). Counts below the cut and one past a screen at the larger size.
+#[test]
+fn rep_fill_leaves_the_state_of_print_over_existing_content() {
+    type Setup = fn(&mut TestTerm, usize, usize);
+    fn fill_wides(t: &mut TestTerm, cols: usize, rows: usize, pre: &str) {
+        let mut s = String::new();
+        for r in 0..rows {
+            s.push_str(&format!("\x1b[{};1H{}", r + 1, pre));
+            let mut w = pre.chars().count();
+            while w + 2 <= cols {
+                s.push('\u{4e2d}');
+                w += 2;
+            }
+        }
+        s.push_str("\x1b[H");
+        t.parse_str(&s);
+    }
+    fn long_lines(t: &mut TestTerm, cols: usize, rows: usize) {
+        fill_wides(t, cols, rows, "x");
+        let buffer = t.handler.services.buffer.buffer_mut();
+        for y in 0..rows {
+            let mut line = BufferLine::new(cols + 2, None, false);
+            line.copy_cells_from(buffer.lines.get(y).unwrap(), 0, 0, cols, false);
+            line.set_cell_from_codepoint(cols, u32::from('\u{4e2d}'), 2, &DEFAULT_ATTR_DATA);
+            buffer.lines.set(y, Some(line));
+        }
+        t.parse_str("\x1b[4h");
+    }
+    let cases: [(&str, Setup, &str); 18] = [
+        // (a sequence between the unit and REP ends the print: REP repeats nothing)
+        ("uk charset", |t, _, _| t.parse_str("\x1b(A"), "#"),
+        ("over even wides", |t, c, r| fill_wides(t, c, r, ""), "a"),
+        ("over odd wides", |t, c, r| fill_wides(t, c, r, "x"), "a"),
+        (
+            "wide over odd wides",
+            |t, c, r| fill_wides(t, c, r, "x"),
+            "\u{4e2d}",
+        ),
+        (
+            "wide over even wides",
+            |t, c, r| fill_wides(t, c, r, ""),
+            "\u{4e2d}",
+        ),
+        ("dec graphics", |t, _, _| t.parse_str("\x1b(0"), "q"),
+        (
+            "pending wrap",
+            |t, c, _| t.parse_str(&"y".repeat(c - 1)),
+            "a",
+        ),
+        (
+            "bg colour",
+            |t, c, r| {
+                t.parse_str("\x1b[41m");
+                fill_wides(t, c, r, "x")
+            },
+            "a",
+        ),
+        (
+            "insert over odd wides",
+            |t, c, r| {
+                fill_wides(t, c, r, "x");
+                t.parse_str("\x1b[4h");
+            },
+            "a",
+        ),
+        (
+            "insert wide over odd wides, bg colour",
+            |t, c, r| {
+                fill_wides(t, c, r, "x");
+                t.parse_str("\x1b[42m\x1b[4h");
+            },
+            "\u{4e2d}",
+        ),
+        (
+            "insert cluster over even wides",
+            |t, c, r| {
+                fill_wides(t, c, r, "");
+                t.parse_str("\x1b[4h");
+            },
+            "e\u{301}",
+        ),
+        (
+            "link over odd wides",
+            |t, c, r| {
+                fill_wides(t, c, r, "x");
+                t.parse_str("\x1b]8;;u\x07");
+            },
+            "a",
+        ),
+        (
+            "insert under a new link over link cells",
+            |t, c, r| {
+                t.parse_str("\x1b]8;;old\x07");
+                fill_wides(t, c, r, "e\u{301}");
+                t.parse_str("\x1b]8;;new\x07\x1b[4:3m\x1b[4h");
+            },
+            "\u{4e2d}\u{301}",
+        ),
+        (
+            "link cluster, pending wrap",
+            |t, c, _| t.parse_str(&format!("{}\x1b]8;;u\x07", "y".repeat(c - 1))),
+            "e\u{301}",
+        ),
+        (
+            "screen reader over odd wides",
+            |t, c, r| {
+                t.set_option(OptionValue::ScreenReaderMode(true));
+                fill_wides(t, c, r, "x");
+            },
+            "a",
+        ),
+        (
+            "link wide over odd wides",
+            |t, c, r| {
+                fill_wides(t, c, r, "x");
+                t.parse_str("\x1b]8;;u\x07");
+            },
+            "\u{4e2d}",
+        ),
+        ("insert into longer lines", long_lines, "a"),
+        ("insert wide into longer lines", long_lines, "\u{4e2d}"),
+    ];
+    // (3 columns hold one wide character per line)
+    let sizes = [
+        (7, 3, 4),
+        (8, 3, 0),
+        (2, 1, 0),
+        (5, 2, 3),
+        (3, 3, 2),
+        (300, 100, 5),
+    ];
+    let counts = [1, 2, 3, 5, 6, 7, 13, 40, 97, 9_008, 30_001];
+    let mut filled = 0;
+    for (name, setup, unit) in cases {
+        for (cols, rows, scrollback) in sizes {
+            for count in counts {
+                let make = || {
+                    let mut t = test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
+                    setup(&mut t, cols, rows);
+                    t.parse_str(unit);
+                    t
+                };
+                let label = format!("{name} at {cols}x{rows}+{scrollback}, REP {count}");
+                let mut fill = make();
+                let fits = fill.handler.preceding_join_state != 0
+                    && UnicodeService::extract_width(fill.handler.preceding_join_state) as usize
+                        <= cols;
+                fill.parse_str(&format!("\x1b[{count}b"));
+                assert_eq!(fill.handler.rep_fills, u64::from(fits), "{label}: path");
+                filled += usize::from(fits);
+                let mut printed = make();
+                let text = {
+                    let buffer = printed.buffer();
+                    let width = UnicodeService::extract_width(printed.handler.preceding_join_state);
+                    let x = buffer.x.saturating_sub(width as usize);
+                    buffer.lines.get(abs_y(buffer)).unwrap().get_string(x)
+                };
+                let text = text.repeat(count);
+                if text.len() >= MAX_PARSEBUFFER_LENGTH {
+                    continue;
+                }
+                printed.parse_str(&format!("{text}\x1b[}}"));
+                assert_eq!(rep_state(&mut fill), rep_state(&mut printed), "{label}");
+            }
+        }
+    }
+    // every case takes the fill path
+    assert_eq!(filled, 18 * 6 * 11, "fill path cases");
 }
 
 #[test]
