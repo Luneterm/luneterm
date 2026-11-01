@@ -23,7 +23,7 @@
 //!    `undefined` (and throws on `.charCodeAt`); here that string is empty and its code is 0.
 //!  - `insert_cells` and `delete_cells` return early on a zero-length line (upstream computes
 //!    `pos %= 0` = `NaN` and ends up writing at most a `"NaN"` map key, which nothing reads).
-//!  - LUNETERM (review S4): [`add_codepoint_to_cell`](BufferLine::add_codepoint_to_cell) stores
+//!  - `// LUNETERM:` (review S4) [`add_codepoint_to_cell`](BufferLine::add_codepoint_to_cell) stores
 //!    at most [`MAX_COMBINED_CODE_POINTS`] code points per cell. Upstream appends every combining
 //!    character, so `a` followed by any number of U+0301 grows one cell without bound, beyond
 //!    what the scrollback limit bounds, and every read of the cell copies it. A code point past

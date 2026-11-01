@@ -20,7 +20,7 @@
 //!    field). Ids start at 1. After 2^32 - 1 registrations the counter wraps to 1 (upstream's
 //!    JS number keeps counting but `urlId` would truncate it as well); an id still in use is not
 //!    skipped.
-//!  - LUNETERM (review S2): upstream frees a link only when every line it marks is trimmed, so
+//!  - `// LUNETERM:` (review S2) upstream frees a link only when every line it marks is trimmed, so
 //!    a program that repeats `ESC ] 8 ; ; uri BEL` on one line grows the table (and the
 //!    buffer's marker list, which every scroll, insert and delete walks) without bound. Here
 //!    live links are capped at [`MAX_LINKS`] and the markers they hold at [`MAX_LINK_MARKERS`].
@@ -199,7 +199,7 @@ impl OscLinkService {
             let buffer = if m.alt { alt } else { normal };
             buffer.marker(m.id).is_some_and(|marker| marker.line == y)
         };
-        // LUNETERM (review F1/S1): upstream walks every marker of the link, each a lookup here.
+        // LUNETERM: (review F1/S1) upstream walks every marker of the link, each a lookup here.
         // The same answer, cheaper: the cached marker first (see `Entry::last`); then, for a
         // link with many markers, one pass over the buffers' marker lists, which costs about
         // what the marker walk of every scroll already costs.

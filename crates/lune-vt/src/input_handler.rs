@@ -2099,7 +2099,7 @@ impl InputHandler {
         true
     }
 
-    /// LUNETERM (review S3): the fewest repetitions of `unit` that leave the same state as
+    /// LUNETERM: (review S3) the fewest repetitions of `unit` that leave the same state as
     /// `repeats` repetitions printed by REP. Printing past what the buffer holds only rewrites
     /// it, so once the printed lines have replaced every line the print can reach, the state
     /// repeats with a period of one line's worth of units. Returns `repeats` unchanged where

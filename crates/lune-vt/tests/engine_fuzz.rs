@@ -875,7 +875,7 @@ fn check_bounds(sim: &Sim) {
         "links hold {} markers, {live} are live",
         osc_link.marker_count()
     );
-    // The LUNETERM caps (review S2): links, and their markers unless one link holds them all.
+    // LUNETERM: the caps (review S2): links, and their markers unless one link holds them all.
     assert!(osc_link.len() <= MAX_LINKS, "{} links", osc_link.len());
     assert!(
         osc_link.marker_count() <= MAX_LINK_MARKERS || osc_link.len() == 1,

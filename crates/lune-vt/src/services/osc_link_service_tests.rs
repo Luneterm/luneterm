@@ -232,7 +232,7 @@ fn link_ids_enumerate_the_live_links() {
     assert_eq!(ids, vec![a, b]);
 }
 
-// ---- LUNETERM caps (review S2) ----
+// ---- caps, `// LUNETERM:` (review S2) ----
 
 #[test]
 fn links_past_the_cap_evict_the_least_recently_extended_and_dispose_its_markers() {
