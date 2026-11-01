@@ -803,3 +803,74 @@ fn random_operations_match_a_literal_port_of_the_upstream_ring() {
     }
     assert!(compared > 5000, "{compared}");
 }
+
+// ---- splice_rotate, `// LUNETERM:` (review S6) ----
+
+/// `splice_rotate` leaves the items, the markers and the disposal log of the per-line splice
+/// loop it replaces, including lists shorter than the indices and a list of `max_length` 1.
+#[test]
+fn splice_rotate_equals_the_splice_loop() {
+    use crate::buffer::marker::MarkerSet;
+    let mut seed: u64 = 0x51ce;
+    let mut below = |n: u64| {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 33) % n
+    };
+    for case in 0..2000 {
+        let max = 1 + below(20) as usize;
+        let len = below(max as u64 + 1) as usize;
+        let marks: Vec<i64> = (0..below(12))
+            .map(|_| below(len as u64 + 3) as i64)
+            .collect();
+        let (d, i, n) = (
+            below(max as u64 + 2) as usize,
+            below(max as u64 + 2) as usize,
+            below(max as u64 + 3) as usize,
+        );
+        let build = || {
+            let mut list: CircularList<i32, MarkerSet> =
+                CircularList::with_observer(max, MarkerSet::new());
+            for v in 0..len as i32 {
+                list.push(v);
+            }
+            let ids: Vec<_> = marks.iter().map(|&l| list.observer_mut().add(l)).collect();
+            (list, ids)
+        };
+        let (mut fast, fast_ids) = build();
+        let (mut slow, slow_ids) = build();
+        let mut next = 100;
+        fast.splice_rotate(d, i, n, || {
+            next += 1;
+            next
+        });
+        let mut next = 100;
+        for _ in 0..n {
+            slow.splice(d, 1, Vec::new());
+            next += 1;
+            slow.splice(i, 0, vec![next]);
+        }
+        let ctx = format!("case {case}: max {max} len {len} marks {marks:?} d {d} i {i} n {n}");
+        assert_eq!(nums(&fast), nums(&slow), "{ctx}");
+        let lines = |l: &CircularList<i32, MarkerSet>, ids: &[crate::buffer::marker::MarkerId]| {
+            ids.iter()
+                .map(|id| l.observer().get(*id).map(|m| m.line))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(lines(&fast, &fast_ids), lines(&slow, &slow_ids), "{ctx}");
+        let log = |l: &mut CircularList<i32, MarkerSet>,
+                   ids: &[crate::buffer::marker::MarkerId]| {
+            l.observer_mut()
+                .take_disposed()
+                .iter()
+                .map(|id| ids.iter().position(|x| x == id).unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            log(&mut fast, &fast_ids),
+            log(&mut slow, &slow_ids),
+            "{ctx}"
+        );
+    }
+}

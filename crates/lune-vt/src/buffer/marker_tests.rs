@@ -187,3 +187,86 @@ fn lines_with_a_marker_set_observer_move_markers_synchronously() {
     lines.trim_start(2);
     assert_eq!(at(&lines), vec![None, None, None, Some(0)]);
 }
+
+// ---- on_rotate, `// LUNETERM:` (review S6) ----
+
+/// A small deterministic generator (no dependencies in lune-vt).
+struct Lcg(u64);
+
+impl Lcg {
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) % n
+    }
+}
+
+/// Two sets with the same markers (`detached` of them created before `detach_all`); returns
+/// the sets and their ids, index for index.
+fn twin_sets(lines: &[i64], detached: usize) -> [(MarkerSet, Vec<MarkerId>); 2] {
+    [0, 1].map(|_| {
+        let mut set = MarkerSet::new();
+        let mut ids: Vec<MarkerId> = lines[..detached].iter().map(|&l| set.add(l)).collect();
+        set.detach_all();
+        ids.extend(lines[detached..].iter().map(|&l| set.add(l)));
+        (set, ids)
+    })
+}
+
+fn positions(log: &[MarkerId], ids: &[MarkerId]) -> Vec<usize> {
+    log.iter()
+        .map(|id| ids.iter().position(|x| x == id).unwrap())
+        .collect()
+}
+
+#[test]
+fn on_rotate_equals_the_per_event_calls() {
+    let mut rng = Lcg(0x5e6);
+    for case in 0..3000 {
+        let count = rng.below(40) as usize;
+        let span = 1 + rng.below(30);
+        let lines: Vec<i64> = (0..count).map(|_| rng.below(span + 4) as i64).collect();
+        let detached = rng.below(count as u64 + 1) as usize;
+        let [(mut fast, fast_ids), (mut slow, slow_ids)] = twin_sets(&lines, detached);
+        let d = rng.below(span) as usize;
+        let i = rng.below(span) as usize;
+        let n = rng.below(span + 5) as usize;
+        fast.on_rotate(d, i, n);
+        for _ in 0..n {
+            slow.on_delete(DeleteEvent {
+                index: d,
+                amount: 1,
+            });
+            slow.on_insert(InsertEvent {
+                index: i,
+                amount: 1,
+            });
+        }
+        let ctx = format!("case {case}: lines {lines:?} detached {detached} d {d} i {i} n {n}");
+        assert_eq!(
+            lines_of(&fast, &fast_ids),
+            lines_of(&slow, &slow_ids),
+            "{ctx}"
+        );
+        assert_eq!(
+            positions(&fast.take_disposed(), &fast_ids),
+            positions(&slow.take_disposed(), &slow_ids),
+            "disposal order, {ctx}"
+        );
+        // survivors keep creation order
+        let order = |s: &MarkerSet, ids: &[MarkerId]| {
+            positions(&s.iter().map(|m| m.id).collect::<Vec<_>>(), ids)
+        };
+        assert_eq!(order(&fast, &fast_ids), order(&slow, &slow_ids), "{ctx}");
+    }
+}
+
+#[test]
+fn on_rotate_walks_the_markers_once() {
+    let (mut set, _) = set_with(&(0..1000).map(|l| l % 50).collect::<Vec<_>>());
+    set.visits = 0;
+    set.on_rotate(40, 2, 30);
+    assert_eq!(set.visits, 1000, "one walk, not 2 * 30");
+}

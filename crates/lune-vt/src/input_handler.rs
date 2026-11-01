@@ -76,6 +76,9 @@
 //!  - Differences (step 5): upstream loops `Ps` times in IL, DL, SU and SD (up to 2^31 - 1
 //!    splices); the loops stop after as many iterations as the region has rows, when every line
 //!    of it is blank and further iterations change nothing (state and markers are the same).
+//!    The splices of one sequence reach the markers as one composed event
+//!    (`CircularList::splice_rotate`, review S6): one walk of the marker list per sequence
+//!    instead of two per line, same end state and disposal order.
 //!    REP allocates `text length * Ps` code points upstream; here the repeated data is capped at
 //!    [`MAX_REP_CODE_POINTS`], so a larger count prints fewer repetitions. Of those, REP
 //!    prints only as many as still change the state (review S3), a cut proven to leave the
@@ -1839,15 +1842,14 @@ impl InputHandler {
         let row = abs_y(buffer);
         let bottom_row = buffer.ybase.saturating_add(buffer.scroll_bottom);
         let height = to_i64(buffer.scroll_bottom - buffer.y + 1);
-        // LUNETERM: upstream loops `param` times; the iterations past the height change nothing
-        let mut remaining = param.min(height);
-        while remaining > 0 {
-            remaining -= 1;
-            // blankLine(true) - xterm/linux behavior
-            buffer.lines.splice(bottom_row, 1, Vec::new());
-            let blank = buffer.get_blank_line(&erase, false);
-            buffer.lines.splice(row, 0, vec![blank]);
-        }
+        // LUNETERM: upstream loops `param` times; the iterations past the height change nothing.
+        // The markers hear the loop as one event (`splice_rotate`, review S6).
+        let count = to_usize(param.min(height));
+        // blankLine(true) - xterm/linux behavior
+        let blank = buffer.get_blank_line(&erase, false);
+        buffer
+            .lines
+            .splice_rotate(bottom_row, row, count, || blank.clone());
         let (y, bottom) = (buffer.y, buffer.scroll_bottom);
         buffer.x = 0; // see https://vt100.net/docs/vt220-rm/chapter4.html - vt220 only?
         self.dirty_row_tracker
@@ -1870,15 +1872,14 @@ impl InputHandler {
         let row = abs_y(buffer);
         let bottom_row = buffer.ybase.saturating_add(buffer.scroll_bottom);
         let height = to_i64(buffer.scroll_bottom - buffer.y + 1);
-        // LUNETERM: upstream loops `param` times; the iterations past the height change nothing
-        let mut remaining = param.min(height);
-        while remaining > 0 {
-            remaining -= 1;
-            // blankLine(true) - xterm/linux behavior
-            buffer.lines.splice(row, 1, Vec::new());
-            let blank = buffer.get_blank_line(&erase, false);
-            buffer.lines.splice(bottom_row, 0, vec![blank]);
-        }
+        // LUNETERM: upstream loops `param` times; the iterations past the height change nothing.
+        // The markers hear the loop as one event (`splice_rotate`, review S6).
+        let count = to_usize(param.min(height));
+        // blankLine(true) - xterm/linux behavior
+        let blank = buffer.get_blank_line(&erase, false);
+        buffer
+            .lines
+            .splice_rotate(row, bottom_row, count, || blank.clone());
         let (y, bottom) = (buffer.y, buffer.scroll_bottom);
         buffer.x = 0; // see https://vt100.net/docs/vt220-rm/chapter4.html - vt220 only?
         self.dirty_row_tracker
@@ -1929,14 +1930,13 @@ impl InputHandler {
         let top_row = buffer.ybase.saturating_add(buffer.scroll_top);
         let bottom_row = buffer.ybase.saturating_add(buffer.scroll_bottom);
         let height = to_i64(buffer.scroll_bottom.saturating_sub(buffer.scroll_top)) + 1;
-        // LUNETERM: upstream loops `param` times; the iterations past the height change nothing
-        let mut remaining = param.min(height);
-        while remaining > 0 {
-            remaining -= 1;
-            buffer.lines.splice(top_row, 1, Vec::new());
-            let blank = buffer.get_blank_line(&erase, false);
-            buffer.lines.splice(bottom_row, 0, vec![blank]);
-        }
+        // LUNETERM: upstream loops `param` times; the iterations past the height change nothing.
+        // The markers hear the loop as one event (`splice_rotate`, review S6).
+        let count = to_usize(param.min(height));
+        let blank = buffer.get_blank_line(&erase, false);
+        buffer
+            .lines
+            .splice_rotate(top_row, bottom_row, count, || blank.clone());
         let (top, bottom) = (to_i64(buffer.scroll_top), to_i64(buffer.scroll_bottom));
         self.dirty_row_tracker.mark_range_dirty(top, bottom);
         true
@@ -1952,14 +1952,13 @@ impl InputHandler {
         let top_row = buffer.ybase.saturating_add(buffer.scroll_top);
         let bottom_row = buffer.ybase.saturating_add(buffer.scroll_bottom);
         let height = to_i64(buffer.scroll_bottom.saturating_sub(buffer.scroll_top)) + 1;
-        // LUNETERM: upstream loops `param` times; the iterations past the height change nothing
-        let mut remaining = param.min(height);
-        while remaining > 0 {
-            remaining -= 1;
-            buffer.lines.splice(bottom_row, 1, Vec::new());
-            let blank = buffer.get_blank_line(&DEFAULT_ATTR_DATA, false);
-            buffer.lines.splice(top_row, 0, vec![blank]);
-        }
+        // LUNETERM: upstream loops `param` times; the iterations past the height change nothing.
+        // The markers hear the loop as one event (`splice_rotate`, review S6).
+        let count = to_usize(param.min(height));
+        let blank = buffer.get_blank_line(&DEFAULT_ATTR_DATA, false);
+        buffer
+            .lines
+            .splice_rotate(bottom_row, top_row, count, || blank.clone());
         let (top, bottom) = (to_i64(buffer.scroll_top), to_i64(buffer.scroll_bottom));
         self.dirty_row_tracker.mark_range_dirty(top, bottom);
         true
