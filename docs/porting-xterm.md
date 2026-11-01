@@ -88,42 +88,75 @@ and the runners: `crates/lune-vt-conformance/FORMAT.md`.
   `lune-vt` has no dev-dependencies: `no_panic.rs` includes the harness's `trace.rs` and
   `escape.rs` by `#[path]`.
 
+## Conventions the buffer port established
+
+- **Events become an observer or return values (M5 D1).** `CircularList<T, O: ListObserver>`
+  calls `on_trim` / `on_insert` / `on_delete` synchronously at each upstream `fire`;
+  `Buffer.lines` is `CircularList<BufferLine, MarkerSet>`, so markers move exactly where upstream
+  moves them. Every other emitter (`onBufferActivate`, `onResize`, `onScroll`, `onOptionChange`,
+  `onChange`) is a return value, produced exactly when upstream fires. Marker disposal is a log
+  the host drains (`Buffer::take_disposed_markers()`).
+- **Lazy storage (D2).** `CircularList` is a `VecDeque<Option<T>>` that grows on demand, never
+  preallocated to `rows + scrollback`; `get(i >= len)` is `None`; upstream `throw`s are
+  `Result::Err`. `shift_elements` moves elements and clones only into the vacated slots whose
+  values upstream's aliasing leaves there.
+- **Typed options passed by reference (D3).** `TerminalOptions` has the 21 options the core
+  reads; methods that read `rawOptions` take `opts: &TerminalOptions` (a live read, as upstream).
+  Renderer and browser options are not ported.
+- **JS value semantics in `BufferLine` (D7).** Out-of-range `_data` reads give 0 and writes are
+  no-ops (a `Uint32Array`); `_combined` and `_extendedAttrs` are ordered maps whose writes are as
+  unchecked as JS object writes; `translate_to_string`'s `out_columns` index UTF-16 code units.
+  Upstream quirks (`copyCellsFrom` copies every combined key `>= srcCol`) are kept.
+- **Preconditions, not guards (D8).** `cols >= 2` and `rows >= 1` are the caller's job
+  (`CoreTerminal.ts:175-176`); upstream locks up at one column and so would a guard-less port.
+- **Idle work is driven by the host (D5).** `Buffer::batched_memory_cleanup()` replaces the
+  `IdleTaskQueue`; `lune-vt` has no timers.
+- **No-panic gate.** As the parser's, plus `clippy::string_slice`; arithmetic that can go
+  negative in JS is computed in `i64` (D9).
+- **Buffer tests.** `cargo test -p lune-vt` runs the ported upstream tests (Buffer, BufferLine,
+  BufferReflow, BufferSet, BufferRange, CircularList, Color, UnicodeV6, OptionsService,
+  UnicodeService, OscLinkService) and `tests/buffer_ops.rs`, the seeded random-operation test
+  (cursor, resize both ways, scroll, splice, trim, cell edits, markers, links, alt buffer,
+  reflow). Knobs: `LUNE_VT_BUFFER_FUZZ_SEEDS=<n>` (default 300), `LUNE_VT_BUFFER_FUZZ_SEED=<s>`
+  replays one. Longer run: `LUNE_VT_BUFFER_FUZZ_SEEDS=5000 cargo test -p lune-vt --release
+  --test buffer_ops`.
+
 ## Port status
 
 One row per file of `git ls-files 'src/common/*'` at f447274, excluding `*.test.ts`: **54**
 entries. "Ported" names the Rust file (under `crates/lune-vt/src/`); "replaced" says why no Rust
-file exists; "pending" names the milestone that decides (roadmap M5 buffer and services, M6
-InputHandler and the engine API, M7 Lunegit additions). Update a row when its milestone lands.
+file exists; "pending" names the milestone that decides (roadmap M6 InputHandler and the engine
+API, M7 Lunegit additions). Update a row when its milestone lands.
 
 | Upstream (`src/common/`) | Status |
 |---|---|
-| `CircularList.ts` | pending M5 |
+| `CircularList.ts` | `circular_list.rs` (`CircularList<T, O: ListObserver>`: events become observer calls, storage grows lazily, D1/D2) |
 | `Clone.ts` | pending M6 (imported by `CoreService`) |
-| `Color.ts` | pending M5 |
+| `Color.ts` | `color.rs` (`css::to_color` has no canvas path; unsupported formats are `Err`) |
 | `CoreTerminal.ts` | pending M6 |
 | `InputHandler.ts` | pending M6 |
 | `MultiKeyMap.ts` | replaced: imported only by `src/browser/` (`ColorContrastCache`), not by `src/common` |
-| `Platform.ts` | pending M5 (user-agent sniffing; imported by `OptionsService` and `TaskQueue`) |
+| `Platform.ts` | replaced: user-agent sniffing that only fed a browser option's default (`rightClickSelectsWord`) and `TaskQueue`; the option is not ported (D3, D5) |
 | `SortedList.ts` | pending M6 (imported only by `DecorationService`) |
-| `TaskQueue.ts` | pending M5 (imported by `Buffer`) |
+| `TaskQueue.ts` | replaced: `Buffer::resize` sets a pending flag and the host drives `Buffer::batched_memory_cleanup` when idle (D5) |
 | `TypedArrayUtils.ts` | replaced: imported only by its own test; Rust has slices and `Vec` |
 | `Types.ts` | pending M6 (interfaces; Rust types replace most of them) |
 | `WindowsMode.ts` | pending M6 (imported by `CoreTerminal`) |
-| `buffer/AttributeData.ts` | pending M5 |
-| `buffer/Buffer.ts` | pending M5 |
-| `buffer/BufferLine.ts` | pending M5 |
-| `buffer/BufferRange.ts` | pending M5 |
-| `buffer/BufferReflow.ts` | pending M5 |
-| `buffer/BufferSet.ts` | pending M5 |
-| `buffer/CellData.ts` | pending M5 |
-| `buffer/Constants.ts` | pending M5 |
-| `buffer/Marker.ts` | pending M5 |
-| `buffer/Types.ts` | pending M5 |
+| `buffer/AttributeData.ts` | `buffer/attribute_data.rs` (`AttributeData`, `ExtendedAttrs` as a `Copy` value) |
+| `buffer/Buffer.ts` | `buffer/buffer.rs` (including the column reflow; deviations listed in its header) |
+| `buffer/BufferLine.ts` | `buffer/buffer_line.rs` (`Vec<u32>` storage with typed-array edge semantics, D7) |
+| `buffer/BufferRange.ts` | `buffer/buffer_range.rs` |
+| `buffer/BufferReflow.ts` | `buffer/buffer_reflow.rs` |
+| `buffer/BufferSet.ts` | `buffer/buffer_set.rs` (`onBufferActivate` is a return value, D1) |
+| `buffer/CellData.ts` | `buffer/cell_data.rs` |
+| `buffer/Constants.ts` | `buffer/constants.rs` |
+| `buffer/Marker.ts` | `buffer/marker.rs` (`MarkerId`, `MarkerSet`: the three `addMarker` listeners, D1/D4) |
+| `buffer/Types.ts` | replaced: interfaces; the Rust structs are the types (D6) |
 | `data/Charsets.ts` | `data/charsets.rs` |
 | `data/EscapeSequences.ts` | `data/escape_sequences.rs` |
 | `input/Keyboard.ts` | pending M7 (ported or recorded as superseded) |
 | `input/TextDecoder.ts` | `input/text_decoder.rs` (`Utf8ToUtf32` with the D4 fix; `StringToUtf32` replaced, D5; `stringFromCodePoint` and `utf32ToString` ported) |
-| `input/UnicodeV6.ts` | pending M5 |
+| `input/UnicodeV6.ts` | `input/unicode_v6.rs` |
 | `input/WriteBuffer.ts` | pending M6 (or a recorded replacement) |
 | `input/XParseColor.ts` | `input/x_parse_color.rs` |
 | `parser/Constants.ts` | `parser/constants.rs` |
@@ -138,29 +171,31 @@ InputHandler and the engine API, M7 Lunegit additions). Update a row when its mi
 | `public/BufferNamespaceApi.ts` | pending M6 (headless API) |
 | `public/ParserApi.ts` | pending M6 (headless API); `lune_vt::Extension` is the parser's extension point meanwhile |
 | `public/UnicodeApi.ts` | pending M6 (headless API) |
-| `services/BufferService.ts` | pending M5 |
-| `services/CharsetService.ts` | pending M5 |
+| `services/BufferService.ts` | `services/buffer_service.rs` (`onResize` and `onScroll` are return values, D1) |
+| `services/CharsetService.ts` | `services/charset_service.rs` |
 | `services/CoreMouseService.ts` | pending M6 |
 | `services/CoreService.ts` | pending M6 |
 | `services/DecorationService.ts` | pending M6 (headless API) |
 | `services/InstantiationService.ts` | replaced: DI container; Rust services are plain structs (rule 3) |
 | `services/LogService.ts` | pending M6 |
-| `services/OptionsService.ts` | pending M5 |
-| `services/OscLinkService.ts` | pending M5 |
+| `services/OptionsService.ts` | `services/options_service.rs` (typed `TerminalOptions` with the 21 options the core reads, D3) |
+| `services/OscLinkService.ts` | `services/osc_link_service.rs` (marker disposal arrives through `on_markers_disposed`, D1) |
 | `services/ServiceRegistry.ts` | replaced: DI registry; Rust services are plain structs (rule 3) |
 | `services/Services.ts` | replaced: DI service interfaces; the Rust structs are the interfaces (rule 3) |
-| `services/UnicodeService.ts` | pending M5 |
+| `services/UnicodeService.ts` | `services/unicode_service.rs` (`onChange` is the return value of `set_active_version`) |
 | `tsconfig.json` | replaced: TypeScript build configuration |
 
 ## Ported outside `lune-vt`
 
 Files from other parts of the xterm.js tree follow the same rules (marker line, tables and
 comments in upstream order, deviations only in `// LUNETERM:` blocks), but live in the crate that
-uses them and stay flat.
+uses them and stay flat. In `lune-vt` that means `src/addons/` only.
 
 | Upstream file @ f447274 | Rust file | Deviations |
 |---|---|---|
 | `addons/addon-webgl/src/CustomGlyphs.ts` (box drawing, blocks, shades, legacy computing, powerline) | `crates/lune-termview/src/custom_glyphs.rs`, drawn through the original `glyph_canvas.rs` | Stroke snap generalised for even line widths; pattern fill on a colourless mask; `has_custom_char`; NaN coordinates skip their instruction. Upstream has no test file, so the tests are original. |
+| `addons/addon-unicode11/src/UnicodeV11.ts` (wcwidth tables and `UnicodeV11` provider, addon 0.9.0) | `crates/lune-vt/src/addons/unicode_v11.rs` | None. Tables generated from the TS file; the Playwright test is not portable, so `wcwidth_v11_emoji_test` (10 x U+1F923 = 20 cells, against 10 for V6: `v6_is_ten_before_activation`) and `version_is_11_and_registered_after_6` in `addons/unicode_v11_tests.rs` cover it. |
+| `addons/addon-unicode11/src/Unicode11Addon.ts` | replaced | Activation is `UnicodeService::register(Box::new(UnicodeV11::new()))` followed by `set_active_version("11")` (M5 D6). |
 
 On a version bump (rule 6), diff each file in this table against its new tag too, not only
 `src/common`: `git diff <old>..<new> -- addons/addon-webgl/src/CustomGlyphs.ts` in
