@@ -2674,25 +2674,29 @@ fn rep_state(t: &mut TestTerm) -> RepState {
 
 /// Review S3: REP prints at most what can still change the state. For each setup, REP with a
 /// count past the cut leaves exactly the state of printing all of the repetitions (the
-/// uncapped path: `print` of the whole repeated data, what REP did before the cut).
+/// uncapped path: `print` of the whole repeated data, what REP did before the cut). The cases
+/// marked `fill` take the line-fill path (`print_repeated`, review S3 residual), the others
+/// `print`; each case checks which.
 #[test]
 fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
     type Setup = fn(&mut TestTerm);
-    let cases: [(&str, Setup, &str, bool); 14] = [
-        ("plain", |_| {}, "a", true),
-        ("wide, odd cols", |_| {}, "\u{4e2d}", true),
-        ("cluster", |_| {}, "e\u{301}", true),
-        ("wide cluster", |_| {}, "\u{4e2d}\u{301}", true),
+    let cases: [(&str, Setup, &str, bool, bool); 14] = [
+        ("plain", |_| {}, "a", true, true),
+        ("wide, odd cols", |_| {}, "\u{4e2d}", true, true),
+        ("cluster", |_| {}, "e\u{301}", true, false),
+        ("wide cluster", |_| {}, "\u{4e2d}\u{301}", true, false),
         (
             "insert mode",
             |t| t.parse_str("xyz\r\n12345\x1b[H\x1b[4h"),
             "a",
             true,
+            false,
         ),
         (
             "region, cursor inside",
             |t| t.parse_str("1\r\n2\r\n3\r\n4\x1b[2;3r\x1b[2;3H"),
             "a",
+            true,
             true,
         ),
         (
@@ -2700,21 +2704,36 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
             |t| t.parse_str("1\r\n2\r\n3\x1b[1;2r\x1b[3;2H"),
             "a",
             true,
+            true,
         ),
-        ("no wraparound", |t| t.parse_str("\x1b[?7l"), "a", true),
+        (
+            "no wraparound",
+            |t| t.parse_str("\x1b[?7l"),
+            "a",
+            true,
+            false,
+        ),
         (
             "no wraparound, wide",
             |t| t.parse_str("\x1b[?7l"),
             "\u{4e2d}",
             true,
+            false,
         ),
         (
             "alt buffer",
             |t| t.parse_str("1\r\n2\x1b[?1049h"),
             "a",
             true,
+            true,
         ),
-        ("open link", |t| t.parse_str("\x1b]8;;u\x07"), "a", true),
+        (
+            "open link",
+            |t| t.parse_str("\x1b]8;;u\x07"),
+            "a",
+            true,
+            false,
+        ),
         (
             "user scrolled",
             |t| {
@@ -2722,6 +2741,7 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
                 t.handler.services.buffer.scroll_lines(-2, false);
             },
             "a",
+            true,
             true,
         ),
         (
@@ -2732,16 +2752,26 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
             },
             "q",
             true,
+            false,
         ),
         // the cursor-moving join is not proven periodic: no cut
-        ("joiner that widens", with_vs16, "a\u{fe0f}", false),
+        ("joiner that widens", with_vs16, "a\u{fe0f}", false, false),
     ];
-    // sizes (cols, rows, scrollback) and counts around and past the cut
-    let sizes = [(7, 3, 4), (6, 4, 0), (2, 1, 0), (9, 2, 7)];
-    let counts = [40, 97, 211, 9_007, 9_008, 20_011];
-    for (name, setup, unit, cut) in cases {
-        for (cols, rows, scrollback) in sizes {
-            for count in counts {
+    // sizes (cols, rows, scrollback) and counts around and past the cut; at 300x100 counts that
+    // fill, wrap and scroll the screen (the line-fill path of review S3)
+    let small = [40, 97, 211, 9_007, 9_008, 20_011];
+    let large = [97, 9_008, 26_000, 40_000];
+    let sizes: [(usize, usize, usize, &[usize]); 5] = [
+        (7, 3, 4, &small),
+        (6, 4, 0, &small),
+        (2, 1, 0, &small),
+        (9, 2, 7, &small),
+        (300, 100, 5, &large),
+    ];
+    let mut skipped = Vec::new();
+    for (name, setup, unit, cut, fill) in cases {
+        for (cols, rows, scrollback, counts) in sizes {
+            for &count in counts {
                 let make = || {
                     let mut t = test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
                     setup(&mut t);
@@ -2764,17 +2794,24 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
                     assert_eq!(effective < count, cut, "{label}: {effective} of {count}");
                 }
                 capped.parse_str(&format!("\x1b[{count}b"));
+                assert_eq!(capped.handler.rep_fills, u64::from(fill), "{label}: path");
                 // the uncapped print of every repetition: one `print` call with all of them
                 // (one parse chunk), then a CSI with no handler, which ends the print as REP's
                 // CSI does
                 let mut uncapped = make();
                 let text = repeated.repeat(count);
-                assert!(text.len() < MAX_PARSEBUFFER_LENGTH);
+                if text.len() >= MAX_PARSEBUFFER_LENGTH {
+                    // the uncapped print would not be one `print` call
+                    skipped.push(label);
+                    continue;
+                }
                 uncapped.parse_str(&format!("{text}\x1b[}}"));
                 assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
             }
         }
     }
+    // only the multi-byte units at the largest count
+    assert_eq!(skipped.len(), 2, "{skipped:?}");
 }
 
 #[test]
