@@ -9,8 +9,11 @@
 //! `` ` `` a d e f g r s u, ESC 7 8 D E H M, the five fallbacks and the error handler, and
 //! `DirtyRowTracker`, `reset` (step 3); step 5: CSI @ SP@ SPA J ?J K ?K L M P S T X b `"q`
 //! `'}` `'~` and ESC # 8 (erase, insert/delete, scrolling, columns, ECH, REP, DECSCA, DECALN);
-//! step 6: CSI m (SGR with colon notation, 256/RGB colours, underline styles and colours).
-//! The other handler groups follow in steps 7 and 8.
+//! step 6: CSI m (SGR with colon notation, 256/RGB colours, underline styles and colours);
+//! step 7: CSI c > c h ? h l ? l n ? n ! p SP q t $ p ? $ p (DA1, DA2, SM, DECSET, RM, DECRST,
+//! DSR, DECDSR, DECSTR, DECSCUSR, XTWINOPS, DECRQM), ESC = > c n o | } ~ % @ % G and the charset
+//! designators (keypad, RIS, locking shifts, charsets), and `set_title`/`set_icon_name` (the
+//! stacks of XTWINOPS 22/23). The OSC and DCS handlers follow in step 8.
 //!
 //! Rust shape (plan M6 D1, D2, D3, D8):
 //!  - The parser is generic over a `'static` host, so [`InputHandler`] owns the services
@@ -23,7 +26,18 @@
 //!    `bufferService.onScroll` (forwarded by `CoreTerminal`) -> [`InputHandler::on_scroll`].
 //!    `onLineFeed` has no public consumer: it drives only the Windows wrapping heuristic, which
 //!    runs inside `line_feed` when `windows_heuristics` is set (D6, set by `CoreTerminal`).
-//!    `onRequestSyncScrollBar` (keypad mode switches, step 7) has no consumer and is dropped.
+//!    `onRequestSyncScrollBar` (keypad mode switches, alt buffer switches, DECSTR) has no consumer
+//!    and is dropped. `onRequestSendFocus` (DECSET 1004) is `HostEvent::FocusReportRequested` and
+//!    `onRequestWindowsOptionsReport` (XTWINOPS 14, 16) is `HostEvent::WindowReport`;
+//!    `onRequestReset` (DECCOLM, RIS) runs the headless `Terminal.reset` in place
+//!    ([`reset_terminal`]); a buffer activation (DECSET 47, 1047, 1049) is [`InputHandler::on_scroll`]
+//!    plus full damage, and `onRequestRefreshRows(undefined)` is damage over every viewport row.
+//!  - RIS (D7): upstream's `fullReset` calls `this._parser.reset()` before the terminal reset. The
+//!    parser is mid-dispatch of the ESC here and cannot be reached (it is borrowed by `parse`),
+//!    and the call changes nothing: the transition after an ESC dispatch is to GROUND, collect and
+//!    params are cleared when the next sequence starts, the OSC and DCS parsers are idle, and the
+//!    join state is cleared by the parser itself before it dispatches the ESC. Tests pin it
+//!    against the oracle.
 //!  - Marker disposal (M5 host duty): upstream frees an OSC 8 link the moment the last marker
 //!    of its lines is disposed. Here the buffers log disposals, and
 //!    [`InputHandler::forward_disposed_markers`] hands them to the `OscLinkService`. It runs
@@ -84,12 +98,15 @@ use std::mem;
 use crate::buffer::attribute_data::AttributeData;
 use crate::buffer::buffer::Buffer;
 use crate::buffer::buffer_line::{BufferLine, DEFAULT_ATTR_DATA};
+use crate::buffer::buffer_set::BufferActivate;
 use crate::buffer::cell_data::CellData;
 use crate::buffer::constants::{
     Attributes, BgFlags, Content, FgFlags, NULL_CELL_CODE, NULL_CELL_WIDTH, UnderlineStyle,
 };
+use crate::data::charsets::charset;
 use crate::data::escape_sequences::{C0, C1};
-use crate::engine::{Damage, HostEvent};
+use crate::engine::{Damage, HostEvent, WindowReportKind};
+use crate::headless::terminal::reset_terminal;
 use crate::input::text_decoder::{Utf8ToUtf32, string_from_code_point, utf32_to_string};
 use crate::parser::dcs_parser::DcsStringHandler;
 use crate::parser::escape_sequence_parser::{EscapeSequenceParser, ident_to_string};
@@ -104,13 +121,24 @@ use crate::services::charset_service::CharsetService;
 use crate::services::core_mouse_service::CoreMouseService;
 use crate::services::core_service::CoreService;
 use crate::services::log_service::LogService;
-use crate::services::options_service::{OptionsService, WindowOptions};
+use crate::services::options_service::{CursorStyle, OptionValue, OptionsService, WindowOptions};
 use crate::services::osc_link_service::OscLinkService;
 use crate::services::unicode_service::UnicodeService;
 use crate::windows_mode::update_windows_mode_wrapped_state;
 
 /// Max length of the UTF-32 input buffer; longer writes are parsed in chunks of this many bytes.
 pub const MAX_PARSEBUFFER_LENGTH: usize = 131_072;
+
+/// Limit length of the title and icon name stacks (XTWINOPS 22).
+const STACK_LIMIT: usize = 10;
+
+/// The designators `CHARSETS` has an entry for (`B`, US, is an entry holding `undefined`).
+const CHARSET_FLAGS: [char; 16] = [
+    '0', 'A', 'B', '4', 'C', '5', 'R', 'Q', 'K', 'Y', 'E', '6', 'Z', 'H', '7', '=',
+];
+
+/// The intermediates that designate a character set (`ESC ( C` and the others).
+const CHARSET_INTERMEDIATES: [char; 7] = ['(', ')', '*', '+', '-', '.', '/'];
 
 /// Most code points one REP (CSI Ps b) prints; upstream allocates `Ps` times the text.
 pub const MAX_REP_CODE_POINTS: usize = 1 << 20;
@@ -210,6 +238,12 @@ pub struct InputHandler {
     damage: Damage,
     /// The window title (upstream `_windowTitle`).
     window_title: String,
+    /// The icon name (upstream `_iconName`, OSC 1).
+    icon_name: String,
+    /// Titles saved by XTWINOPS 22, newest last (upstream `_windowTitleStack`).
+    window_title_stack: Vec<String>,
+    /// Icon names saved by XTWINOPS 22 (upstream `_iconNameStack`).
+    icon_name_stack: Vec<String>,
     /// Upstream's `onLineFeed` listener for the Windows wrapping heuristics (`CoreTerminal`'s
     /// `_handleWindowsPtyOptionChange`, plan M6 D6). Off until the host turns it on.
     pub(crate) windows_heuristics: bool,
@@ -407,6 +441,9 @@ impl InputHandler {
             events: Vec::new(),
             damage: Damage::default(),
             window_title: String::new(),
+            icon_name: String::new(),
+            window_title_stack: Vec::new(),
+            icon_name_stack: Vec::new(),
             windows_heuristics: false,
         }
     }
@@ -569,6 +606,39 @@ impl InputHandler {
                 h.select_protected(p)
             })?;
         parser.register_csi_handler(csi('m'), |h, p| h.char_attributes(p))?;
+        parser.register_csi_handler(csi('c'), |h, p| h.send_device_attributes_primary(p))?;
+        parser.register_csi_handler(FunctionIdentifier::with_prefix('>', 'c'), |h, p| {
+            h.send_device_attributes_secondary(p)
+        })?;
+        parser.register_csi_handler(csi('h'), |h, p| h.set_mode(p))?;
+        parser.register_csi_handler(FunctionIdentifier::with_prefix('?', 'h'), |h, p| {
+            h.set_mode_private(p)
+        })?;
+        parser.register_csi_handler(csi('l'), |h, p| h.reset_mode(p))?;
+        parser.register_csi_handler(FunctionIdentifier::with_prefix('?', 'l'), |h, p| {
+            h.reset_mode_private(p)
+        })?;
+        parser.register_csi_handler(csi('n'), |h, p| h.device_status(p))?;
+        parser.register_csi_handler(FunctionIdentifier::with_prefix('?', 'n'), |h, p| {
+            h.device_status_private(p)
+        })?;
+        parser.register_csi_handler(FunctionIdentifier::with_intermediates("!", 'p'), |h, p| {
+            h.soft_reset(p)
+        })?;
+        parser.register_csi_handler(FunctionIdentifier::with_intermediates(" ", 'q'), |h, p| {
+            h.set_cursor_style(p)
+        })?;
+        // The window option guard is part of the handler itself (upstream registers the plain
+        // method on the parser; only handlers added through `InputHandler.registerCsiHandler`
+        // are wrapped).
+        parser.register_csi_handler(csi('t'), |h, p| h.window_options(p))?;
+        parser.register_csi_handler(FunctionIdentifier::with_intermediates("$", 'p'), |h, p| {
+            h.request_mode(p, true)
+        })?;
+        parser.register_csi_handler(
+            FunctionIdentifier::with_prefix_and_intermediates('?', "$", 'p'),
+            |h, p| h.request_mode(p, false),
+        )?;
 
         // execute handler
         parser.set_execute_handler(C0::BEL, |h| {
@@ -615,6 +685,26 @@ impl InputHandler {
         parser.register_esc_handler(csi('E'), |h| h.next_line())?;
         parser.register_esc_handler(csi('H'), |h| h.tab_set())?;
         parser.register_esc_handler(csi('M'), |h| h.reverse_index())?;
+        parser.register_esc_handler(csi('='), |h| h.keypad_application_mode())?;
+        parser.register_esc_handler(csi('>'), |h| h.keypad_numeric_mode())?;
+        parser.register_esc_handler(csi('c'), |h| h.full_reset())?;
+        parser.register_esc_handler(csi('n'), |h| h.set_g_level(2))?;
+        parser.register_esc_handler(csi('o'), |h| h.set_g_level(3))?;
+        parser.register_esc_handler(csi('|'), |h| h.set_g_level(3))?;
+        parser.register_esc_handler(csi('}'), |h| h.set_g_level(2))?;
+        parser.register_esc_handler(csi('~'), |h| h.set_g_level(1))?;
+        parser.register_esc_handler(FunctionIdentifier::with_intermediates("%", '@'), |h| {
+            h.select_default_charset()
+        })?;
+        parser.register_esc_handler(FunctionIdentifier::with_intermediates("%", 'G'), |h| {
+            h.select_default_charset()
+        })?;
+        for flag in CHARSET_FLAGS {
+            for intermediate in CHARSET_INTERMEDIATES {
+                let id = FunctionIdentifier::with_intermediates(&intermediate.to_string(), flag);
+                parser.register_esc_handler(id, move |h| h.select_charset(intermediate, flag))?;
+            }
+        }
         parser.register_esc_handler(FunctionIdentifier::with_intermediates("#", '8'), |h| {
             h.screen_alignment_pattern()
         })?;
@@ -1845,6 +1935,580 @@ impl InputHandler {
         }
         self.dirty_row_tracker.mark_all_dirty(rows);
         self.set_cursor(0, 0);
+        true
+    }
+
+    /// Send `data` to the application (upstream `coreService.triggerDataEvent(data)`): a
+    /// [`HostEvent::Response`], nothing with `disable_stdin`.
+    pub(crate) fn send_data(&mut self, data: &str) {
+        let services = &mut self.services;
+        let event = services.core.trigger_data_event(
+            data,
+            false,
+            services.buffer.buffer(),
+            services.options.options(),
+            &services.log,
+        );
+        if let Some(event) = event {
+            self.events
+                .push(HostEvent::Response(event.data.into_bytes()));
+        }
+    }
+
+    /// Whether the terminal name starts with `term` (upstream `_is`).
+    fn is_term(&self, term: &str) -> bool {
+        self.services.options.options().term_name.starts_with(term)
+    }
+
+    /// CSI Ps c (DA1): the primary device attributes. Only Ps = 0 or omitted is answered.
+    pub fn send_device_attributes_primary(&mut self, params: &Params) -> bool {
+        if params.get(0).is_some_and(|p| p > 0) {
+            return true;
+        }
+        if self.is_term("xterm") || self.is_term("rxvt-unicode") || self.is_term("screen") {
+            self.send_data("\x1b[?1;2c");
+        } else if self.is_term("linux") {
+            self.send_data("\x1b[?6c");
+        }
+        true
+    }
+
+    /// CSI > Ps c (DA2): the secondary device attributes. Only Ps = 0 or omitted is answered.
+    pub fn send_device_attributes_secondary(&mut self, params: &Params) -> bool {
+        if params.get(0).is_some_and(|p| p > 0) {
+            return true;
+        }
+        // xterm and urxvt seem to spit this out around ~370 times (?).
+        if self.is_term("xterm") {
+            self.send_data("\x1b[>0;276;0c");
+        } else if self.is_term("rxvt-unicode") {
+            self.send_data("\x1b[>85;95;0c");
+        } else if self.is_term("linux") {
+            // not supported by the linux console, which echoes the parameters
+            let reply = match params.get(0) {
+                Some(p) => format!("{p}c"),
+                None => "undefinedc".to_owned(),
+            };
+            self.send_data(&reply);
+        } else if self.is_term("screen") {
+            self.send_data("\x1b[>83;40003;0c");
+        }
+        true
+    }
+
+    /// `options.<option> = value` for the options the handlers write (convertEol, cursorBlink);
+    /// they are booleans and neither has a listener in the core.
+    fn set_option_value(&mut self, value: OptionValue) {
+        // A boolean option cannot be rejected.
+        let _ = self.services.options.set(value);
+    }
+
+    /// Request a repaint of every viewport row (upstream `onRequestRefreshRows(undefined)`).
+    fn request_refresh_all_rows(&mut self) {
+        let rows = self.services.buffer.rows;
+        self.damage.add_rows(0, rows.saturating_sub(1));
+    }
+
+    /// A buffer activation (upstream `onBufferActivate`): `BufferService` forwards the active
+    /// buffer's `ydisp` as `onScroll`, and the whole screen is different.
+    fn buffer_activated(&mut self, activate: BufferActivate) {
+        self.on_scroll(activate.active_ydisp);
+        self.damage.full = true;
+    }
+
+    /// DECSET 47, 1047, 1049: switch to the alternate buffer, filled with the erase attributes.
+    fn use_alt_buffer(&mut self) {
+        let erase = self.erase_attr_data();
+        if let Some(activate) = self
+            .services
+            .buffer
+            .buffers
+            .activate_alt_buffer(Some(&erase))
+        {
+            self.buffer_activated(activate);
+        }
+        self.services.core.is_cursor_initialized = true;
+        self.request_refresh_all_rows();
+    }
+
+    /// DECRST 47, 1047, 1049: switch back to the normal buffer.
+    fn use_normal_buffer(&mut self) {
+        let services = &mut self.services;
+        let activate = services
+            .buffer
+            .buffers
+            .activate_normal_buffer(services.options.options());
+        if let Some(activate) = activate {
+            self.buffer_activated(activate);
+        }
+    }
+
+    /// DECCOLM (`CSI ? 3 h/l`): resize to `cols` columns and reset the terminal. Only with the
+    /// window option `SetWinLines`.
+    fn set_column_mode(&mut self, cols: usize) {
+        if !self.services.options.options().window_options.set_win_lines {
+            return;
+        }
+        let services = &mut self.services;
+        let rows = services.buffer.rows;
+        services
+            .buffer
+            .resize(cols, rows, services.options.options());
+        // onResize
+        self.damage.full = true;
+        self.forward_disposed_markers();
+        // onRequestReset
+        reset_terminal(self);
+    }
+
+    /// Set the mouse protocol by its `CoreMouseService` name. The names used are all registered.
+    fn set_mouse_protocol(&mut self, name: &str) {
+        let _ = self.services.mouse.set_active_protocol(name);
+    }
+
+    /// Set the mouse encoding by its `CoreMouseService` name. The names used are all registered.
+    fn set_mouse_encoding(&mut self, name: &str) {
+        let _ = self.services.mouse.set_active_encoding(name);
+    }
+
+    /// CSI Pm h (SM): only insert mode (4) and automatic newline (20) are supported.
+    pub fn set_mode(&mut self, params: &Params) -> bool {
+        for i in 0..params.length() {
+            match params.get(i) {
+                Some(4) => self.services.core.modes.insert_mode = true,
+                Some(20) => self.set_option_value(OptionValue::ConvertEol(true)),
+                _ => {}
+            }
+        }
+        true
+    }
+
+    /// CSI ? Pm h (DECSET): set DEC private modes (the supported ones are in the table of
+    /// upstream's `setModePrivate`).
+    pub fn set_mode_private(&mut self, params: &Params) -> bool {
+        for i in 0..params.length() {
+            match params.get(i) {
+                Some(1) => self.services.core.dec_private_modes.application_cursor_keys = true,
+                Some(2) => {
+                    // designate US-ASCII for G0-G3 (VT100 mode is not set)
+                    for level in 0..4 {
+                        self.services.charset.set_g_charset(level, None);
+                    }
+                }
+                Some(3) => self.set_column_mode(132),
+                Some(6) => {
+                    self.services.core.dec_private_modes.origin = true;
+                    self.set_cursor(0, 0);
+                }
+                Some(7) => self.services.core.dec_private_modes.wraparound = true,
+                Some(12) => self.set_option_value(OptionValue::CursorBlink(true)),
+                Some(45) => self.services.core.dec_private_modes.reverse_wraparound = true,
+                Some(66) => {
+                    self.services
+                        .log
+                        .debug(format_args!("Serial port requested application keypad."));
+                    self.services.core.dec_private_modes.application_keypad = true;
+                }
+                // X10 Mouse: no release, no motion, no wheel, no modifiers
+                Some(9) => self.set_mouse_protocol("X10"),
+                // vt200 mouse: no motion
+                Some(1000) => self.set_mouse_protocol("VT200"),
+                // button event mouse
+                Some(1002) => self.set_mouse_protocol("DRAG"),
+                // any event mouse: sends motion events, even if there is no button held down
+                Some(1003) => self.set_mouse_protocol("ANY"),
+                // send focusin/focusout events: focusin ^[[I, focusout ^[[O
+                Some(1004) => {
+                    self.services.core.dec_private_modes.send_focus = true;
+                    self.events.push(HostEvent::FocusReportRequested);
+                }
+                // utf8 ext mode mouse - removed in #2507
+                Some(1005) => self
+                    .services
+                    .log
+                    .debug(format_args!("DECSET 1005 not supported (see #2507)")),
+                // sgr ext mode mouse
+                Some(1006) => self.set_mouse_encoding("SGR"),
+                // urxvt ext mode mouse - removed in #2507
+                Some(1015) => self
+                    .services
+                    .log
+                    .debug(format_args!("DECSET 1015 not supported (see #2507)")),
+                // sgr pixels mode mouse
+                Some(1016) => self.set_mouse_encoding("SGR_PIXELS"),
+                // show cursor
+                Some(25) => self.services.core.is_cursor_hidden = false,
+                // alt screen cursor
+                Some(1048) => {
+                    self.save_cursor();
+                }
+                // alt screen buffer cursor, then as 47
+                Some(1049) => {
+                    self.save_cursor();
+                    self.use_alt_buffer();
+                }
+                // alt screen buffer
+                Some(47 | 1047) => self.use_alt_buffer(),
+                // bracketed paste mode (https://cirw.in/blog/bracketed-paste)
+                Some(2004) => self.services.core.dec_private_modes.bracketed_paste_mode = true,
+                // synchronized output
+                Some(2026) => self.services.core.dec_private_modes.synchronized_output = true,
+                _ => {}
+            }
+        }
+        true
+    }
+
+    /// CSI Pm l (RM): only replace mode (4) and normal linefeed (20) are supported.
+    pub fn reset_mode(&mut self, params: &Params) -> bool {
+        for i in 0..params.length() {
+            match params.get(i) {
+                Some(4) => self.services.core.modes.insert_mode = false,
+                Some(20) => self.set_option_value(OptionValue::ConvertEol(false)),
+                _ => {}
+            }
+        }
+        true
+    }
+
+    /// CSI ? Pm l (DECRST): reset DEC private modes.
+    pub fn reset_mode_private(&mut self, params: &Params) -> bool {
+        for i in 0..params.length() {
+            let param = params.get(i);
+            match param {
+                Some(1) => self.services.core.dec_private_modes.application_cursor_keys = false,
+                // DECCOLM: 80 columns (upstream switches to 80, not to the old width)
+                Some(3) => self.set_column_mode(80),
+                Some(6) => {
+                    self.services.core.dec_private_modes.origin = false;
+                    self.set_cursor(0, 0);
+                }
+                Some(7) => self.services.core.dec_private_modes.wraparound = false,
+                Some(12) => self.set_option_value(OptionValue::CursorBlink(false)),
+                Some(45) => self.services.core.dec_private_modes.reverse_wraparound = false,
+                Some(66) => {
+                    self.services
+                        .log
+                        .debug(format_args!("Switching back to normal keypad."));
+                    self.services.core.dec_private_modes.application_keypad = false;
+                }
+                // X10, vt200, button event and any event mouse
+                Some(9 | 1000 | 1002 | 1003) => self.set_mouse_protocol("NONE"),
+                Some(1004) => self.services.core.dec_private_modes.send_focus = false,
+                Some(1005) => self
+                    .services
+                    .log
+                    .debug(format_args!("DECRST 1005 not supported (see #2507)")),
+                Some(1006) => self.set_mouse_encoding("DEFAULT"),
+                Some(1015) => self
+                    .services
+                    .log
+                    .debug(format_args!("DECRST 1015 not supported (see #2507)")),
+                Some(1016) => self.set_mouse_encoding("DEFAULT"),
+                // hide cursor
+                Some(25) => self.services.core.is_cursor_hidden = true,
+                // alt screen cursor
+                Some(1048) => {
+                    self.restore_cursor();
+                }
+                // normal screen buffer (1049 also restores the cursor)
+                Some(47 | 1047 | 1049) => {
+                    self.use_normal_buffer();
+                    if param == Some(1049) {
+                        self.restore_cursor();
+                    }
+                    self.services.core.is_cursor_initialized = true;
+                    self.request_refresh_all_rows();
+                }
+                Some(2004) => self.services.core.dec_private_modes.bracketed_paste_mode = false,
+                Some(2026) => {
+                    self.services.core.dec_private_modes.synchronized_output = false;
+                    self.request_refresh_all_rows();
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+
+    /// CSI Ps $ p (DECRQM, `ansi`) and CSI ? Ps $ p: report whether a mode is set, as
+    /// `CSI [?] Ps ; Pm $ y` (Pm: 0 not recognized, 1 set, 2 reset, 3 permanently set, 4
+    /// permanently reset).
+    pub fn request_mode(&mut self, params: &Params, ansi: bool) -> bool {
+        const NOT_RECOGNIZED: u8 = 0;
+        const SET: u8 = 1;
+        const RESET: u8 = 2;
+        const PERMANENTLY_SET: u8 = 3;
+        const PERMANENTLY_RESET: u8 = 4;
+        fn b2v(value: bool) -> u8 {
+            if value { SET } else { RESET }
+        }
+
+        let services = &self.services;
+        let dm = &services.core.dec_private_modes;
+        let mouse_protocol = services.mouse.active_protocol();
+        let mouse_encoding = services.mouse.active_encoding();
+        let cols = services.buffer.cols;
+        let opts = services.options.options();
+        let alt_active = services.buffer.buffers.is_alt_active();
+
+        let p = params.get(0);
+        let value = match (ansi, p) {
+            (true, Some(2)) => PERMANENTLY_RESET,
+            (true, Some(4)) => b2v(services.core.modes.insert_mode),
+            (true, Some(12)) => PERMANENTLY_SET,
+            (true, Some(20)) => b2v(opts.convert_eol),
+            (true, _) => NOT_RECOGNIZED,
+            (false, Some(1)) => b2v(dm.application_cursor_keys),
+            (false, Some(3)) => {
+                if !opts.window_options.set_win_lines {
+                    NOT_RECOGNIZED
+                } else if cols == 80 {
+                    RESET
+                } else if cols == 132 {
+                    SET
+                } else {
+                    NOT_RECOGNIZED
+                }
+            }
+            (false, Some(6)) => b2v(dm.origin),
+            (false, Some(7)) => b2v(dm.wraparound),
+            (false, Some(8)) => PERMANENTLY_SET,
+            (false, Some(9)) => b2v(mouse_protocol == "X10"),
+            (false, Some(12)) => b2v(opts.cursor_blink),
+            (false, Some(25)) => b2v(!services.core.is_cursor_hidden),
+            (false, Some(45)) => b2v(dm.reverse_wraparound),
+            (false, Some(66)) => b2v(dm.application_keypad),
+            (false, Some(67)) => PERMANENTLY_RESET,
+            (false, Some(1000)) => b2v(mouse_protocol == "VT200"),
+            (false, Some(1002)) => b2v(mouse_protocol == "DRAG"),
+            (false, Some(1003)) => b2v(mouse_protocol == "ANY"),
+            (false, Some(1004)) => b2v(dm.send_focus),
+            (false, Some(1005)) => PERMANENTLY_RESET,
+            (false, Some(1006)) => b2v(mouse_encoding == "SGR"),
+            (false, Some(1015)) => PERMANENTLY_RESET,
+            (false, Some(1016)) => b2v(mouse_encoding == "SGR_PIXELS"),
+            // xterm always returns SET here
+            (false, Some(1048)) => SET,
+            (false, Some(47 | 1047 | 1049)) => b2v(alt_active),
+            (false, Some(2004)) => b2v(dm.bracketed_paste_mode),
+            (false, Some(2026)) => b2v(dm.synchronized_output),
+            (false, _) => NOT_RECOGNIZED,
+        };
+        let number = p.map_or_else(|| "undefined".to_owned(), |p| p.to_string());
+        let prefix = if ansi { "" } else { "?" };
+        self.send_data(&format!("\x1b[{prefix}{number};{value}$y"));
+        true
+    }
+
+    /// CSI Ps n (DSR): 5 reports the status, 6 the cursor position (`CSI y ; x R`, not adjusted
+    /// for origin mode).
+    pub fn device_status(&mut self, params: &Params) -> bool {
+        match params.get(0) {
+            // status report
+            Some(5) => self.send_data("\x1b[0n"),
+            // cursor position
+            Some(6) => {
+                let buffer = self.services.buffer.buffer();
+                let (y, x) = (buffer.y.saturating_add(1), buffer.x.saturating_add(1));
+                self.send_data(&format!("\x1b[{y};{x}R"));
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// CSI ? Ps n (DECDSR): only the cursor position (6) is answered (`CSI ? y ; x R`).
+    pub fn device_status_private(&mut self, params: &Params) -> bool {
+        // modern xterm doesnt seem to respond to any of these except ?6, 6, and 5
+        if params.get(0) == Some(6) {
+            let buffer = self.services.buffer.buffer();
+            let (y, x) = (buffer.y.saturating_add(1), buffer.x.saturating_add(1));
+            self.send_data(&format!("\x1b[?{y};{x}R"));
+        }
+        true
+    }
+
+    /// CSI ! p (DECSTR): soft terminal reset. Resets IRM and the other modes, the cursor
+    /// visibility, the scroll margins, the text attributes, the charsets, the DECSC data and
+    /// DECOM.
+    pub fn soft_reset(&mut self, _params: &Params) -> bool {
+        self.services.core.is_cursor_hidden = false;
+        let rows = self.services.buffer.rows;
+        let buffer = self.services.buffer.buffer_mut();
+        buffer.scroll_top = 0;
+        buffer.scroll_bottom = rows.saturating_sub(1);
+        self.cur_attr_data = DEFAULT_ATTR_DATA;
+        self.services.core.reset();
+        self.services.charset.reset();
+
+        // reset DECSC data
+        let (fg, bg) = (self.cur_attr_data.fg, self.cur_attr_data.bg);
+        let charset = self.services.charset.charset;
+        let buffer = self.services.buffer.buffer_mut();
+        buffer.saved_x = 0;
+        buffer.saved_y = buffer.ybase;
+        buffer.saved_cur_attr_data.fg = fg;
+        buffer.saved_cur_attr_data.bg = bg;
+        buffer.saved_charset = charset;
+
+        // reset DECOM
+        self.services.core.dec_private_modes.origin = false;
+        true
+    }
+
+    /// CSI Ps SP q (DECSCUSR): set the cursor style (0 resets to the option; 1 and 2 block,
+    /// 3 and 4 underline, 5 and 6 bar; odd values blink).
+    pub fn set_cursor_style(&mut self, params: &Params) -> bool {
+        let param = if params.length() == 0 {
+            Some(1)
+        } else {
+            params.get(0)
+        };
+        let modes = &mut self.services.core.dec_private_modes;
+        if param == Some(0) {
+            modes.cursor_style = None;
+            modes.cursor_blink = None;
+        } else {
+            match param {
+                Some(1 | 2) => modes.cursor_style = Some(CursorStyle::Block),
+                Some(3 | 4) => modes.cursor_style = Some(CursorStyle::Underline),
+                Some(5 | 6) => modes.cursor_style = Some(CursorStyle::Bar),
+                _ => {}
+            }
+            modes.cursor_blink = Some(param.is_some_and(|p| p % 2 == 1));
+        }
+        true
+    }
+
+    /// CSI Ps ; Ps ; Ps t (XTWINOPS): the window manipulations and reports that are enabled in
+    /// the `window_options` (all are off by default): 14 and 16 ask the host for a report, 18
+    /// reports the size in characters, 22 and 23 push and pop the titles.
+    pub fn window_options(&mut self, params: &Params) -> bool {
+        let first = params.get(0);
+        if !param_to_window_option(first, &self.services.options.options().window_options) {
+            return true;
+        }
+        let second = if params.length() > 1 {
+            params.get(1)
+        } else {
+            Some(0)
+        };
+        match first {
+            // GetWinSizePixels, returns CSI 4 ; height ; width t
+            Some(14) => {
+                if second != Some(2) {
+                    self.events
+                        .push(HostEvent::WindowReport(WindowReportKind::WinSizePixels));
+                }
+            }
+            // GetCellSizePixels, returns CSI 6 ; height ; width t
+            Some(16) => self
+                .events
+                .push(HostEvent::WindowReport(WindowReportKind::CellSizePixels)),
+            // GetWinSizeChars, returns CSI 8 ; height ; width t
+            Some(18) => {
+                let (rows, cols) = (self.services.buffer.rows, self.services.buffer.cols);
+                self.send_data(&format!("\x1b[8;{rows};{cols}t"));
+            }
+            // PushTitle
+            Some(22) => {
+                if second == Some(0) || second == Some(2) {
+                    self.window_title_stack.push(self.window_title.clone());
+                    if self.window_title_stack.len() > STACK_LIMIT {
+                        self.window_title_stack.remove(0);
+                    }
+                }
+                if second == Some(0) || second == Some(1) {
+                    self.icon_name_stack.push(self.icon_name.clone());
+                    if self.icon_name_stack.len() > STACK_LIMIT {
+                        self.icon_name_stack.remove(0);
+                    }
+                }
+            }
+            // PopTitle
+            Some(23) => {
+                if second == Some(0) || second == Some(2) {
+                    if let Some(title) = self.window_title_stack.pop() {
+                        self.set_title(&title);
+                    }
+                }
+                if second == Some(0) || second == Some(1) {
+                    if let Some(name) = self.icon_name_stack.pop() {
+                        self.set_icon_name(&name);
+                    }
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// OSC 0 and 2: set the window title and tell the host (`HostEvent::Title`).
+    pub fn set_title(&mut self, data: &str) -> bool {
+        self.window_title = data.to_owned();
+        self.events.push(HostEvent::Title(data.to_owned()));
+        true
+    }
+
+    /// OSC 0 and 1: set the icon name (not exposed to the host).
+    pub fn set_icon_name(&mut self, data: &str) -> bool {
+        self.icon_name = data.to_owned();
+        true
+    }
+
+    /// ESC = (DECKPAM): the numeric keypad sends application sequences.
+    pub fn keypad_application_mode(&mut self) -> bool {
+        self.services
+            .log
+            .debug(format_args!("Serial port requested application keypad."));
+        self.services.core.dec_private_modes.application_keypad = true;
+        true
+    }
+
+    /// ESC > (DECKPNM): the keypad sends numeric characters.
+    pub fn keypad_numeric_mode(&mut self) -> bool {
+        self.services
+            .log
+            .debug(format_args!("Switching back to normal keypad."));
+        self.services.core.dec_private_modes.application_keypad = false;
+        true
+    }
+
+    /// ESC % @, ESC % G: select the default character set. UTF-8 is not supported (the input is
+    /// Unicode anyway), so ESC % G does the same.
+    pub fn select_default_charset(&mut self) -> bool {
+        self.services.charset.set_g_level(0);
+        self.services.charset.set_g_charset(0, None); // US (default)
+        true
+    }
+
+    /// ESC ( C, ESC ) C, ESC * C, ESC + C, ESC - C, ESC . C, ESC / C: designate the character
+    /// set `flag` as G0, G1, G2, G3, G1, G2 (and for `/`: nothing, upstream's TODO).
+    pub fn select_charset(&mut self, intermediate: char, flag: char) -> bool {
+        let level = match intermediate {
+            '(' => 0,
+            ')' | '-' => 1,
+            '*' | '.' => 2,
+            '+' => 3,
+            // `/` (G3 of ISO Latin-1 Supplemental) is not supported
+            _ => return true,
+        };
+        self.services.charset.set_g_charset(level, charset(flag));
+        true
+    }
+
+    /// ESC n, ESC o, ESC |, ESC }, ESC ~ (LS2, LS3, LS3R, LS2R, LS1R): lock a G set into GL.
+    pub fn set_g_level(&mut self, level: usize) -> bool {
+        self.services.charset.set_g_level(level);
+        true
+    }
+
+    /// ESC c (RIS): reset to the initial state. Upstream also resets the parser first, which
+    /// changes nothing here (module notes, D7), then asks the terminal to reset.
+    pub fn full_reset(&mut self) -> bool {
+        // LUNETERM: no `parser.reset()` (plan M6 D7).
+        reset_terminal(self);
         true
     }
 

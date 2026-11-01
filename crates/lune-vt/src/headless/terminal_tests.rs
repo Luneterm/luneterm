@@ -16,8 +16,7 @@
 //!    the replacement.
 //!  - replaced: `onLineFeed` — no public consumer (D2).
 //!  - replaced: `dispose` — `Drop`.
-//!  - ignored until their handlers land: `onData` (DSR, step 7), `onTitleChange` (OSC 2, step
-//!    8), `active, normal, alternate` and the mode cases (DECSET/SM, step 7).
+//!  - ignored until its handler lands: `onTitleChange` (OSC 2, step 8).
 //!
 //! WriteBuffer.test.ts (D3): `string`, `bytes`, `string/bytes mixed` and `write callback works
 //! for empty chunks` are `Terminal::write` cases below; `writeSync`, `writeSync called from
@@ -195,7 +194,6 @@ fn on_cursor_move() {
 }
 
 #[test]
-#[ignore = "needs DSR (M6 step 7)"]
 fn on_data() {
     let mut t = term([]);
     t.write_str("\x1b[5n"); // DSR Status Report
@@ -347,7 +345,6 @@ fn buffer_get_line_get_cell() {
 }
 
 #[test]
-#[ignore = "needs DECSET 47 (M6 step 7)"]
 fn buffer_active_normal_alternate() {
     let mut t = term([OptionValue::Cols(5)]);
     let normal = |t: &Terminal| {
@@ -355,18 +352,32 @@ fn buffer_active_normal_alternate() {
             .normal()
             .translate_buffer_line_to_string(0, false, 0, None)
     };
+    // `translateToString()` without trimming
+    let active = |t: &Terminal| {
+        t.buffers()
+            .active()
+            .translate_buffer_line_to_string(0, false, 0, None)
+    };
     assert!(!t.buffers().is_alt_active());
     t.write_str("norm ");
+    assert_eq!(active(&t), "norm ");
     assert_eq!(normal(&t), "norm ");
     assert!(t.buffers().alt().lines.get(0).is_none());
     t.write_str("\x1b[?47h\r"); // use alternate screen buffer
     assert!(t.buffers().is_alt_active());
-    assert_eq!(line(&t, 0), "");
+    assert_eq!(active(&t), "     ");
     t.write_str("alt  ");
-    assert_eq!(line(&t, 0), "alt");
+    assert_eq!(active(&t), "alt  ");
     assert_eq!(normal(&t), "norm ");
+    assert_eq!(
+        t.buffers()
+            .alt()
+            .translate_buffer_line_to_string(0, false, 0, None),
+        "alt  "
+    );
     t.write_str("\x1b[?47l\r"); // use normal screen buffer
     assert!(!t.buffers().is_alt_active());
+    assert_eq!(active(&t), "norm ");
     assert_eq!(normal(&t), "norm ");
     assert!(t.buffers().alt().lines.get(0).is_none());
 }
@@ -394,7 +405,6 @@ fn modes_defaults() {
 }
 
 #[test]
-#[ignore = "needs SM/RM and DECSET/DECRST (M6 step 7)"]
 fn modes_set_and_reset() {
     type Get = fn(&Modes) -> bool;
     let cases: [(&str, Get); 8] = [
@@ -931,4 +941,55 @@ fn engine_is_usable_as_a_trait_object() {
     let mut boxed: Box<dyn VtEngine> = Box::new(t);
     boxed.write(b"\x1b]7;file:///tmp\x07");
     assert_eq!(*calls.borrow(), 1);
+}
+
+// --- step 7: the handlers through the public face -----------------------------------------
+
+#[test]
+fn replies_requests_and_titles_reach_the_host_in_fire_order() {
+    let mut t = term([OptionValue::WindowOptions(
+        crate::services::options_service::WindowOptions {
+            get_win_size_pixels: true,
+            get_cell_size_pixels: true,
+            get_win_size_chars: true,
+            ..Default::default()
+        },
+    )]);
+    t.write_str("\x07\x1b[5n\x1b[?1004h\x1b[14t\x1b[16t\x1b[18t\x1b[6n");
+    assert_eq!(
+        t.drain_events(),
+        [
+            HostEvent::Bell,
+            HostEvent::Response(b"\x1b[0n".to_vec()),
+            HostEvent::FocusReportRequested,
+            HostEvent::WindowReport(crate::engine::WindowReportKind::WinSizePixels),
+            HostEvent::WindowReport(crate::engine::WindowReportKind::CellSizePixels),
+            HostEvent::Response(b"\x1b[8;24;80t".to_vec()),
+            HostEvent::Response(b"\x1b[1;1R".to_vec()),
+        ]
+    );
+}
+
+#[test]
+fn full_reset_through_write_keeps_the_size_and_the_options() {
+    let mut t = sized(20, 6);
+    t.set_option(OptionValue::CursorBlink(true)).unwrap();
+    t.write_str("hello\x1b[?1049h\x1b[?2004h\x1bc");
+    assert_eq!((t.cols(), t.rows()), (20, 6));
+    assert!(t.options().cursor_blink);
+    assert!(!t.buffers().is_alt_active());
+    assert_eq!(line(&t, 0), "");
+    assert!(!t.modes().bracketed_paste);
+    assert!(t.take_damage().full);
+}
+
+#[test]
+fn the_alternate_screen_is_reported_by_the_viewport() {
+    let mut t = sized(10, 3);
+    t.write_str("n");
+    assert!(!t.viewport().alt_screen);
+    t.write_str("\x1b[?1049h");
+    assert!(t.viewport().alt_screen);
+    t.write_str("\x1b[?1049l");
+    assert!(!t.viewport().alt_screen);
 }

@@ -33,6 +33,7 @@ use super::*;
 use crate::buffer::attribute_data::ExtendedAttrs;
 use crate::buffer::constants::Attributes;
 use crate::data::charsets::charset;
+use crate::engine::WindowReportKind;
 use crate::input::unicode_v6::UnicodeV6;
 use crate::parser::params::ParamsArrayItem;
 use crate::services::options_service::{OptionValue, WindowOptions};
@@ -1077,7 +1078,8 @@ fn origin_mode_keeps_the_cursor_inside_the_margins() {
     assert_eq!(t.cursor(), [9, 4]);
 }
 
-/// Reverse wrap-around (the mode is set directly until DECSET is ported, plan M6 step 7).
+/// Reverse wrap-around with the mode set directly (the DECSET version is
+/// `bs_with_reverse_wraparound_set_*`).
 #[test]
 fn backspace_with_reverse_wraparound_lifts_the_soft_wrap() {
     let mut t = test_handler(5, 5, []);
@@ -3416,4 +3418,1936 @@ fn extract_color_survives_every_truncation_of_a_long_sequence() {
         assert_eq!(t.attr(), AttributeData::default());
         assert_eq!(t.screen().first().map(String::as_str), Some("ok"));
     }
+}
+
+// --- upstream: InputHandler.test.ts, step 7 (modes, reports, DECSTR, DECSCUSR, XTWINOPS) ---
+//
+// adapted (step 7):
+//  - `windowOptions` `22/23 - PushTitle/PopTitle` (3 cases) set the title with `ESC ] 0 ; Pt BEL`;
+//    OSC is step 8, so these call `set_title`/`set_icon_name` (what the OSC handlers call)
+//    directly; step 8 adds the escape sequence version. `inputHandler.onTitleChange` is the
+//    `HostEvent::Title` events.
+//  - `windowOptions` `14` and `16`: upstream's test terminal has no renderer and reports nothing;
+//    here they are the `HostEvent::WindowReport` events (the host answers them).
+//  - `DECRQM`, `DECSTR` and `windowOptions` read replies from `coreService.onData`; here they
+//    are the `HostEvent::Response` events.
+//  - `setCursorStyle` resets `optionsService.options = clone(DEFAULT_OPTIONS)` between cases;
+//    the DEC private modes are the only state the handler writes, so nothing is reset here.
+//  - `BS with reverseWraparound` `:134` places the cursor by setting `buffer.x/y` as upstream.
+
+/// The `Response` events since the last call, as strings.
+fn responses(t: &mut TestTerm) -> Vec<String> {
+    t.handler
+        .take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            HostEvent::Response(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn set_window_options(t: &mut TestTerm, options: WindowOptions) {
+    t.handler
+        .services
+        .options
+        .set(OptionValue::WindowOptions(options))
+        .unwrap();
+}
+
+#[test]
+fn set_cursor_style_sets_the_dec_private_modes() {
+    let mut t = upstream_handler();
+    let state = |t: &TestTerm| {
+        let modes = &t.handler.services.core.dec_private_modes;
+        (modes.cursor_style, modes.cursor_blink)
+    };
+    t.handler.set_cursor_style(&params(&[0]));
+    assert_eq!(state(&t), (None, None));
+    for (param, style, blink) in [
+        (1, CursorStyle::Block, true),
+        (2, CursorStyle::Block, false),
+        (3, CursorStyle::Underline, true),
+        (4, CursorStyle::Underline, false),
+        (5, CursorStyle::Bar, true),
+        (6, CursorStyle::Bar, false),
+    ] {
+        t.handler.set_cursor_style(&params(&[param]));
+        assert_eq!(state(&t), (Some(style), Some(blink)), "{param}");
+    }
+}
+
+#[test]
+fn set_mode_should_toggle_bracketed_paste_mode() {
+    let mut t = test_handler(80, 30, []);
+    // Set bracketed paste mode
+    t.handler.set_mode_private(&params(&[2004]));
+    assert!(
+        t.handler
+            .services
+            .core
+            .dec_private_modes
+            .bracketed_paste_mode
+    );
+    // Reset bracketed paste mode
+    t.handler.reset_mode_private(&params(&[2004]));
+    assert!(
+        !t.handler
+            .services
+            .core
+            .dec_private_modes
+            .bracketed_paste_mode
+    );
+}
+
+#[test]
+fn bs_with_reverse_wraparound_set_should_not_reverse_outside_of_scroll_margins() {
+    let mut t = upstream_handler();
+    t.resize(5, 5);
+    t.set_option(OptionValue::Scrollback(1));
+    t.reset_buffers();
+    // prepare buffer content
+    t.parse_str("#####abcdefghijklmnopqrstuvwxy");
+    assert_eq!(
+        t.lines(6),
+        ["#####", "abcde", "fghij", "klmno", "pqrst", "uvwxy"]
+    );
+    assert_eq!(t.buffer().ydisp, 1);
+    assert_eq!(t.buffer().x, 5);
+    assert_eq!(t.buffer().y, 4);
+    t.parse_str(&TTY_BS.repeat(100));
+    assert_eq!(
+        t.lines(6),
+        ["#####", "abcde", "fghij", "klmno", "pqrst", "    y"]
+    );
+
+    t.parse_str("\x1b[?45h");
+    t.parse_str("uvwxy");
+
+    // set top/bottom to 1/3 (0-based)
+    t.parse_str("\x1b[2;4r");
+    // place cursor below scroll bottom
+    t.set_cursor(5, 4);
+    t.parse_str(&TTY_BS.repeat(100));
+    assert_eq!(
+        t.lines(6),
+        ["#####", "abcde", "fghij", "klmno", "pqrst", "     "]
+    );
+
+    t.parse_str("uvwxy");
+    // place cursor within scroll margins
+    t.set_cursor(5, 3);
+    t.parse_str(&TTY_BS.repeat(100));
+    assert_eq!(
+        t.lines(6),
+        ["#####", "abcde", "     ", "     ", "     ", "uvwxy"]
+    );
+    assert_eq!(t.buffer().x, 0);
+    assert_eq!(t.buffer().y, t.buffer().scroll_top); // stops at 0, scrollTop
+
+    t.parse_str("fghijklmnopqrst");
+    // place cursor above scroll top
+    t.set_cursor(5, 0);
+    t.parse_str(&TTY_BS.repeat(100));
+    assert_eq!(
+        t.lines(6),
+        ["#####", "     ", "fghij", "klmno", "pqrst", "uvwxy"]
+    );
+}
+
+#[test]
+fn bs_with_reverse_wraparound_set_can_delete_last_cell() {
+    let mut t = bs_handler();
+    t.parse_str("\x1b[?45h");
+    t.parse_str("12345");
+    t.parse_str(TTY_BS);
+    assert_eq!(t.lines(1), ["1234 "]);
+    t.parse_str(&TTY_BS.repeat(7));
+    assert_eq!(t.lines(1), ["     "]);
+}
+
+#[test]
+fn bs_with_reverse_wraparound_set_can_access_prev_line_if_wrapped() {
+    let mut t = bs_handler();
+    t.parse_str("\x1b[?45h");
+    t.parse_str(&"12345".repeat(2));
+    t.parse_str(TTY_BS);
+    assert_eq!(t.lines(2), ["12345", "1234 "]);
+    t.parse_str(&TTY_BS.repeat(7));
+    assert_eq!(t.lines(2), ["12   ", "     "]);
+}
+
+#[test]
+fn bs_with_reverse_wraparound_set_should_lift_is_wrapped() {
+    let mut t = bs_handler();
+    t.parse_str("\x1b[?45h");
+    t.parse_str(&"12345".repeat(2));
+    assert!(t.buffer().lines.get(1).unwrap().is_wrapped);
+    t.parse_str(&TTY_BS.repeat(7));
+    assert!(!t.buffer().lines.get(1).unwrap().is_wrapped);
+}
+
+#[test]
+fn bs_with_reverse_wraparound_set_stops_at_hard_nls() {
+    let mut t = bs_handler();
+    t.parse_str("\x1b[?45h");
+    t.parse_str("12345\r\n");
+    t.parse_str(&"12345".repeat(2));
+    t.parse_str(&TTY_BS.repeat(50));
+    assert_eq!(t.lines(3), ["12345", "     ", "     "]);
+    assert_eq!(t.buffer().x, 0);
+    assert_eq!(t.buffer().y, 1);
+}
+
+#[test]
+fn bs_with_reverse_wraparound_set_handles_wide_chars_correctly() {
+    let mut t = bs_handler();
+    t.parse_str("\x1b[?45h");
+    t.parse_str("￥￥￥");
+    assert_eq!(t.lines(2), ["￥￥", "￥"]);
+    for (lines, x) in [
+        (["￥￥", "  "], 1),
+        (["￥￥", "  "], 0),
+        (["￥  ", "  "], 3), // x=4 skipped due to early wrap-around
+        (["￥  ", "  "], 2),
+        (["    ", "  "], 1),
+        (["    ", "  "], 0),
+    ] {
+        t.parse_str(TTY_BS);
+        assert_eq!(t.lines(2), lines);
+        assert_eq!(t.buffer().x, x);
+    }
+}
+
+/// `getFgColor()` / `getBgColor()` of a cell colour word: the palette index.
+fn palette(colour: u32) -> u32 {
+    colour & Attributes::PCOLOR_MASK
+}
+
+/// Upstream `describe('alt screen')`: a 80 x 30 handler.
+fn alt_screen_handler() -> TestTerm {
+    test_handler(80, 30, [])
+}
+
+#[test]
+fn alt_screen_should_handle_decset_decrst_47() {
+    let mut t = alt_screen_handler();
+    t.parse_str("\x1b[?47h\r\n\x1b[31mJUNK\x1b[?47lTEST");
+    assert_eq!(
+        t.buffer().translate_buffer_line_to_string(0, true, 0, None),
+        ""
+    );
+    assert_eq!(
+        t.buffer().translate_buffer_line_to_string(1, true, 0, None),
+        "    TEST"
+    );
+    // Text color of 'TEST' should be red
+    assert_eq!(palette(t.cell(1, 4).2), 1);
+}
+
+#[test]
+fn alt_screen_should_handle_decset_decrst_1047() {
+    let mut t = alt_screen_handler();
+    t.parse_str("\x1b[?1047h\r\n\x1b[31mJUNK\x1b[?1047lTEST");
+    assert_eq!(
+        t.buffer().translate_buffer_line_to_string(0, true, 0, None),
+        ""
+    );
+    assert_eq!(
+        t.buffer().translate_buffer_line_to_string(1, true, 0, None),
+        "    TEST"
+    );
+    assert_eq!(palette(t.cell(1, 4).2), 1);
+}
+
+#[test]
+fn alt_screen_should_handle_decset_decrst_1048() {
+    let mut t = alt_screen_handler();
+    t.parse_str("\x1b[?1048h\r\n\x1b[31mJUNK\x1b[?1048lTEST");
+    assert_eq!(
+        t.buffer().translate_buffer_line_to_string(0, true, 0, None),
+        "TEST"
+    );
+    assert_eq!(
+        t.buffer().translate_buffer_line_to_string(1, true, 0, None),
+        "JUNK"
+    );
+    // Text color of 'TEST' should be default
+    assert_eq!(
+        t.buffer().lines.get(0).unwrap().get_fg(0),
+        DEFAULT_ATTR_DATA.fg
+    );
+    // Text color of 'JUNK' should be red
+    assert_eq!(palette(t.cell(1, 0).2), 1);
+}
+
+#[test]
+fn alt_screen_should_handle_decset_decrst_1049() {
+    let mut t = alt_screen_handler();
+    t.parse_str("\x1b[?1049h\r\n\x1b[31mJUNK\x1b[?1049lTEST");
+    assert_eq!(
+        t.buffer().translate_buffer_line_to_string(0, true, 0, None),
+        "TEST"
+    );
+    assert_eq!(
+        t.buffer().translate_buffer_line_to_string(1, true, 0, None),
+        ""
+    );
+    // Text color of 'TEST' should be default
+    assert_eq!(
+        t.buffer().lines.get(0).unwrap().get_fg(0),
+        DEFAULT_ATTR_DATA.fg
+    );
+}
+
+#[test]
+fn alt_screen_1049_maintains_saved_cursor_for_alt_buffer() {
+    let mut t = alt_screen_handler();
+    t.parse_str("\x1b[?1049h\r\n\x1b[31m\x1b[s\x1b[?1049lTEST");
+    assert_eq!(
+        t.buffer().translate_buffer_line_to_string(0, true, 0, None),
+        "TEST"
+    );
+    // Text color of 'TEST' should be default
+    assert_eq!(
+        t.buffer().lines.get(0).unwrap().get_fg(0),
+        DEFAULT_ATTR_DATA.fg
+    );
+    t.parse_str("\x1b[?1049h\x1b[uTEST");
+    assert_eq!(
+        t.buffer().translate_buffer_line_to_string(1, true, 0, None),
+        "TEST"
+    );
+    // Text color of 'TEST' should be red
+    assert_eq!(palette(t.cell(1, 0).2), 1);
+}
+
+#[test]
+fn alt_screen_1049_clears_alt_buffer_with_erase_attributes() {
+    let mut t = alt_screen_handler();
+    t.parse_str("\x1b[42m\x1b[?1049h");
+    // Buffer should be filled with green background
+    assert_eq!(palette(t.cell(20, 10).3), 2);
+}
+
+#[test]
+fn window_options_all_should_be_disabled_by_default_and_not_report() {
+    let mut t = upstream_handler();
+    t.resize(10, 10);
+    for n in [14, 16, 18, 20, 21] {
+        t.parse_str(&format!("\x1b[{n}t"));
+    }
+    assert!(t.handler.take_events().is_empty());
+}
+
+#[test]
+fn window_options_14_get_win_size_pixels() {
+    let mut t = upstream_handler();
+    t.resize(10, 10);
+    set_window_options(
+        &mut t,
+        WindowOptions {
+            get_win_size_pixels: true,
+            ..WindowOptions::default()
+        },
+    );
+    t.parse_str("\x1b[14t");
+    assert_eq!(
+        t.handler.take_events(),
+        [HostEvent::WindowReport(WindowReportKind::WinSizePixels)]
+    );
+    // `CSI 14 ; 2 t` (the window size, not the text area) is not reported
+    t.parse_str("\x1b[14;2t");
+    assert!(t.handler.take_events().is_empty());
+}
+
+#[test]
+fn window_options_16_get_cell_size_pixels() {
+    let mut t = upstream_handler();
+    t.resize(10, 10);
+    set_window_options(
+        &mut t,
+        WindowOptions {
+            get_cell_size_pixels: true,
+            ..WindowOptions::default()
+        },
+    );
+    t.parse_str("\x1b[16t");
+    assert_eq!(
+        t.handler.take_events(),
+        [HostEvent::WindowReport(WindowReportKind::CellSizePixels)]
+    );
+}
+
+#[test]
+fn window_options_18_get_win_size_chars() {
+    let mut t = upstream_handler();
+    t.resize(10, 10);
+    set_window_options(
+        &mut t,
+        WindowOptions {
+            get_win_size_chars: true,
+            ..WindowOptions::default()
+        },
+    );
+    t.parse_str("\x1b[18t");
+    assert_eq!(responses(&mut t), ["\x1b[8;10;10t"]);
+    t.resize(50, 20);
+    t.parse_str("\x1b[18t");
+    assert_eq!(responses(&mut t), ["\x1b[8;20;50t"]);
+}
+
+fn push_pop_handler() -> TestTerm {
+    let mut t = upstream_handler();
+    t.resize(10, 10);
+    set_window_options(
+        &mut t,
+        WindowOptions {
+            push_title: true,
+            pop_title: true,
+            ..WindowOptions::default()
+        },
+    );
+    t
+}
+
+/// Upstream's `ESC ] 0 ; Pt BEL`: the title and the icon name.
+fn set_title_and_icon(t: &mut TestTerm, name: &str) {
+    t.handler.set_title(name);
+    t.handler.set_icon_name(name);
+}
+
+fn titles(t: &mut TestTerm) -> Vec<String> {
+    t.handler
+        .take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            HostEvent::Title(title) => Some(title),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn window_options_22_23_push_title_pop_title() {
+    let mut t = push_pop_handler();
+    for name in ["1", "2", "3"] {
+        set_title_and_icon(&mut t, name);
+        t.parse_str("\x1b[22t");
+    }
+    assert_eq!(t.handler.window_title_stack, ["1", "2", "3"]);
+    assert_eq!(t.handler.icon_name_stack, ["1", "2", "3"]);
+    assert_eq!(titles(&mut t), ["1", "2", "3"]);
+    for _ in 0..4 {
+        // the fourth one tests "overflow"
+        t.parse_str("\x1b[23t");
+    }
+    assert!(t.handler.window_title_stack.is_empty());
+    assert!(t.handler.icon_name_stack.is_empty());
+    assert_eq!(titles(&mut t), ["3", "2", "1"]);
+}
+
+#[test]
+fn window_options_22_23_push_title_pop_title_with_1() {
+    let mut t = push_pop_handler();
+    for name in ["1", "2", "3"] {
+        set_title_and_icon(&mut t, name);
+        t.parse_str("\x1b[22;1t");
+    }
+    assert!(t.handler.window_title_stack.is_empty());
+    assert_eq!(t.handler.icon_name_stack, ["1", "2", "3"]);
+    assert_eq!(titles(&mut t), ["1", "2", "3"]);
+    for _ in 0..4 {
+        t.parse_str("\x1b[23;1t");
+    }
+    assert!(t.handler.window_title_stack.is_empty());
+    assert!(t.handler.icon_name_stack.is_empty());
+    assert!(titles(&mut t).is_empty());
+}
+
+#[test]
+fn window_options_22_23_push_title_pop_title_with_2() {
+    let mut t = push_pop_handler();
+    for name in ["1", "2", "3"] {
+        set_title_and_icon(&mut t, name);
+        t.parse_str("\x1b[22;2t");
+    }
+    assert_eq!(t.handler.window_title_stack, ["1", "2", "3"]);
+    assert!(t.handler.icon_name_stack.is_empty());
+    assert_eq!(titles(&mut t), ["1", "2", "3"]);
+    for _ in 0..4 {
+        t.parse_str("\x1b[23;2t");
+    }
+    assert!(t.handler.window_title_stack.is_empty());
+    assert!(t.handler.icon_name_stack.is_empty());
+    assert_eq!(titles(&mut t), ["3", "2", "1"]);
+}
+
+#[test]
+fn window_options_deccolm_should_only_work_with_set_win_lines_enabled() {
+    let mut t = upstream_handler();
+    // disabled
+    t.resize(10, 10);
+    t.parse_str("\x1b[?3l");
+    assert_eq!(t.handler.services.buffer.cols, 10);
+    t.parse_str("\x1b[?3h");
+    assert_eq!(t.handler.services.buffer.cols, 10);
+    // enabled
+    t.handler.reset();
+    set_window_options(
+        &mut t,
+        WindowOptions {
+            set_win_lines: true,
+            ..WindowOptions::default()
+        },
+    );
+    t.parse_str("\x1b[?3l");
+    assert_eq!(t.handler.services.buffer.cols, 80);
+    t.parse_str("\x1b[?3h");
+    assert_eq!(t.handler.services.buffer.cols, 132);
+}
+
+/// Upstream `describe('DECSTR')`: 10 x 5, scrollback 1, `01234567890123` written.
+fn decstr_handler() -> TestTerm {
+    let mut t = upstream_handler();
+    t.resize(10, 5);
+    t.set_option(OptionValue::Scrollback(1));
+    t.parse_str("01234567890123");
+    t
+}
+
+#[test]
+fn decstr_should_reset_irm() {
+    let mut t = decstr_handler();
+    t.parse_str("\x1b[4h");
+    assert!(t.handler.services.core.modes.insert_mode);
+    t.parse_str("\x1b[!p");
+    assert!(!t.handler.services.core.modes.insert_mode);
+}
+
+#[test]
+fn decstr_should_reset_cursor_visibility() {
+    let mut t = decstr_handler();
+    t.parse_str("\x1b[?25l");
+    assert!(t.handler.services.core.is_cursor_hidden);
+    t.parse_str("\x1b[!p");
+    assert!(!t.handler.services.core.is_cursor_hidden);
+}
+
+#[test]
+fn decstr_should_reset_scroll_margins() {
+    let mut t = decstr_handler();
+    t.parse_str("\x1b[2;4r");
+    assert_eq!(t.buffer().scroll_top, 1);
+    assert_eq!(t.buffer().scroll_bottom, 3);
+    t.parse_str("\x1b[!p");
+    assert_eq!(t.buffer().scroll_top, 0);
+    assert_eq!(t.buffer().scroll_bottom, t.handler.services.buffer.rows - 1);
+}
+
+#[test]
+fn decstr_should_reset_text_attributes() {
+    let mut t = decstr_handler();
+    t.parse_str("\x1b[1;2;32;43m");
+    assert!(t.handler.cur_attr_data.is_bold() != 0);
+    t.parse_str("\x1b[!p");
+    assert!(t.handler.cur_attr_data.is_bold() == 0);
+    assert_eq!(t.handler.cur_attr_data.fg, 0);
+    assert_eq!(t.handler.cur_attr_data.bg, 0);
+}
+
+#[test]
+fn decstr_should_reset_decsc_data() {
+    let mut t = decstr_handler();
+    t.parse_str("\x1b7");
+    assert_eq!(t.buffer().saved_x, 4);
+    assert_eq!(t.buffer().saved_y, 1);
+    t.parse_str("\x1b[!p");
+    assert_eq!(t.buffer().saved_x, 0);
+    assert_eq!(t.buffer().saved_y, 0);
+}
+
+#[test]
+fn decstr_should_reset_decom() {
+    let mut t = decstr_handler();
+    t.parse_str("\x1b[?6h");
+    assert!(t.handler.services.core.dec_private_modes.origin);
+    t.parse_str("\x1b[!p");
+    assert!(!t.handler.services.core.dec_private_modes.origin);
+}
+
+/// Send `sequence` and return the one reply it produced.
+fn reply(t: &mut TestTerm, sequence: &str) -> String {
+    t.parse_str(sequence);
+    let mut all = responses(t);
+    assert_eq!(all.len(), 1, "replies to {sequence:?}: {all:?}");
+    all.remove(0)
+}
+
+#[test]
+fn decrqm_ansi_2_keyboard_action_mode() {
+    let mut t = upstream_handler();
+    assert_eq!(reply(&mut t, "\x1b[2$p"), "\x1b[2;4$y"); // always reset
+}
+
+#[test]
+fn decrqm_ansi_4_insert_mode() {
+    let mut t = upstream_handler();
+    assert_eq!(reply(&mut t, "\x1b[4$p"), "\x1b[4;2$y"); // reset by default
+    t.parse_str("\x1b[4h");
+    assert_eq!(reply(&mut t, "\x1b[4$p"), "\x1b[4;1$y"); // now active
+    t.parse_str("\x1b[4l");
+    assert_eq!(reply(&mut t, "\x1b[4$p"), "\x1b[4;2$y"); // again reset
+}
+
+#[test]
+fn decrqm_ansi_12_send_receive() {
+    let mut t = upstream_handler();
+    assert_eq!(reply(&mut t, "\x1b[12$p"), "\x1b[12;3$y"); // always set
+}
+
+#[test]
+fn decrqm_ansi_20_newline_mode() {
+    let mut t = upstream_handler();
+    assert_eq!(reply(&mut t, "\x1b[20$p"), "\x1b[20;2$y"); // reset by default
+    t.parse_str("\x1b[20h");
+    assert_eq!(reply(&mut t, "\x1b[20$p"), "\x1b[20;1$y"); // now active
+    t.parse_str("\x1b[20l");
+    assert_eq!(reply(&mut t, "\x1b[20$p"), "\x1b[20;2$y"); // again reset
+}
+
+#[test]
+fn decrqm_ansi_unknown() {
+    let mut t = upstream_handler();
+    assert_eq!(reply(&mut t, "\x1b[1234$p"), "\x1b[1234;0$y"); // not recognized
+}
+
+#[test]
+fn decrqm_dec_privates_with_set_reset_semantic() {
+    let mut t = upstream_handler();
+    // initially reset
+    for mode in [
+        1, 6, 9, 12, 45, 66, 1000, 1002, 1003, 1004, 1006, 1016, 47, 1047, 1049, 2004, 2026,
+    ] {
+        assert_eq!(
+            reply(&mut t, &format!("\x1b[?{mode}$p")),
+            format!("\x1b[?{mode};2$y")
+        );
+        t.parse_str(&format!("\x1b[?{mode}h"));
+        assert_eq!(
+            reply(&mut t, &format!("\x1b[?{mode}$p")),
+            format!("\x1b[?{mode};1$y")
+        );
+        t.parse_str(&format!("\x1b[?{mode}l"));
+        assert_eq!(
+            reply(&mut t, &format!("\x1b[?{mode}$p")),
+            format!("\x1b[?{mode};2$y")
+        );
+    }
+    // initially set
+    for mode in [7, 25] {
+        assert_eq!(
+            reply(&mut t, &format!("\x1b[?{mode}$p")),
+            format!("\x1b[?{mode};1$y")
+        );
+        t.parse_str(&format!("\x1b[?{mode}l"));
+        assert_eq!(
+            reply(&mut t, &format!("\x1b[?{mode}$p")),
+            format!("\x1b[?{mode};2$y")
+        );
+        t.parse_str(&format!("\x1b[?{mode}h"));
+        assert_eq!(
+            reply(&mut t, &format!("\x1b[?{mode}$p")),
+            format!("\x1b[?{mode};1$y")
+        );
+    }
+}
+
+#[test]
+fn decrqm_dec_privates_perma_modes() {
+    let mut t = upstream_handler();
+    for (mode, value) in [(3, 0), (8, 3), (67, 4), (1005, 4), (1015, 4), (1048, 1)] {
+        assert_eq!(
+            reply(&mut t, &format!("\x1b[?{mode}$p")),
+            format!("\x1b[?{mode};{value}$y")
+        );
+    }
+}
+
+// --- added: step 7, expected values from @xterm/headless 6.0.0 (the whole observable state after
+// the same input; the scratch generator prints one `key=value;...` line per case) ---
+
+/// The state string the oracle script prints: size, cursor and buffer geometry, attributes,
+/// modes, margins, tab stops, saved cursor, mouse, charset, the two options the handlers write,
+/// the replies and every buffer line (`|` row start, `~` wrapped row, right-trimmed).
+fn state_of(t: &TestTerm, replies: &[String]) -> String {
+    let services = &t.handler.services;
+    let b = services.buffer.buffer();
+    let flag = |v: bool| if v { '1' } else { '0' };
+    let opt = |v: Option<bool>| match v {
+        Some(v) => flag(v),
+        None => '-',
+    };
+    let dm = &services.core.dec_private_modes;
+    let style = match dm.cursor_style {
+        Some(CursorStyle::Block) => "block",
+        Some(CursorStyle::Underline) => "underline",
+        Some(CursorStyle::Bar) => "bar",
+        None => "-",
+    };
+    let tabs: Vec<String> = b.tabs.iter().map(usize::to_string).collect();
+    let lines: Vec<String> = (0..b.lines.len())
+        .filter_map(|i| b.lines.get(i))
+        .map(|line| {
+            format!(
+                "{}{}",
+                if line.is_wrapped { '~' } else { '|' },
+                line.translate_to_string(true, None, None, None)
+            )
+        })
+        .collect();
+    let opts = services.options.options();
+    format!(
+        "size={}x{};cur={},{},{},{},{};alt={};attr={},{};ins={};dm={}{}{}{}{}{}{}{};cursor={},{};\
+         hidden={};margins={},{};tabs={};saved={},{};mouse={}/{};g={},{};opt={}{};resp={};lines={}",
+        services.buffer.cols,
+        services.buffer.rows,
+        b.x,
+        b.y,
+        b.ybase,
+        b.ydisp,
+        b.lines.len(),
+        flag(services.buffer.buffers.is_alt_active()),
+        t.handler.cur_attr_data.fg,
+        t.handler.cur_attr_data.bg,
+        flag(services.core.modes.insert_mode),
+        flag(dm.application_cursor_keys),
+        flag(dm.application_keypad),
+        flag(dm.bracketed_paste_mode),
+        flag(dm.origin),
+        flag(dm.reverse_wraparound),
+        flag(dm.send_focus),
+        flag(dm.synchronized_output),
+        flag(dm.wraparound),
+        style,
+        opt(dm.cursor_blink),
+        flag(services.core.is_cursor_hidden),
+        b.scroll_top,
+        b.scroll_bottom,
+        tabs.join(","),
+        b.saved_x,
+        b.saved_y,
+        services.mouse.active_protocol(),
+        services.mouse.active_encoding(),
+        services.charset.glevel(),
+        flag(services.charset.charset.is_some()),
+        flag(opts.convert_eol),
+        flag(opts.cursor_blink),
+        replies.join("|").replace('\x1b', "\\e"),
+        lines.join("\n"),
+    )
+}
+
+/// Replay `inputs` (one `parse` each) and compare [`state_of`] with the oracle's.
+fn state_case(
+    cols: usize,
+    rows: usize,
+    options: Vec<OptionValue>,
+    inputs: &[&str],
+    expected: &str,
+) {
+    let mut t = test_handler(cols, rows, options);
+    let mut replies = Vec::new();
+    for input in inputs {
+        t.parse_str(input);
+        replies.extend(responses(&mut t));
+    }
+    let got = state_of(&t, &replies);
+    // compare field by field first: the failing field is named
+    for (g, e) in got.split(';').zip(expected.split(';')) {
+        assert_eq!(g, e, "state field");
+    }
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn oracle_state_ris_then_csi_osc_text() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["ab\x1b[1;31mcd\x1bc\x1b[2;3Hx\x1b]1000;zz\x07yz"],
+        "size=10x4;cur=5,1,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|  xyz\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_ris_at_chunk_end() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["ab\x1b[31m", "\x1bc", "[1mQ"],
+        "size=10x4;cur=4,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|[1mQ\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_ris_then_split_csi() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["ab\x1bc\x1b", "[1mQ"],
+        "size=10x4;cur=1,0,0,0,4;alt=0;attr=134217728,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|Q\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_ris_then_split_csi_params() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["ab\x1bc\x1b[1;", "31mQ"],
+        "size=10x4;cur=1,0,0,0,4;alt=0;attr=150994945,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|Q\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_ris_during_pending_osc() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["ab\x1b]1000;abc\x1bc", "xy"],
+        "size=10x4;cur=2,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|xy\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_ris_clears_rep() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["a\x1bc\x1b[3b"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_ris_resets_everything() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &[
+            "\x1b[4h\x1b[?6h\x1b[?7l\x1b[?45h\x1b[?25l\x1b[?1h\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?1004h\x1b(0\x0e\x1b[1;2r\x1b[3g\x1b[5G\x1bH\x1b[2;4H\x1b7\x1b[?12h\x1b[20h\x1b[3 q\x1b[1;31mxyz",
+            "\x1bc",
+            "q",
+        ],
+        "size=10x4;cur=1,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=1;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=11;resp=;lines=|q\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_ris_in_alt_screen() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["x\x1b[?1049hy\x1bcz"],
+        "size=10x4;cur=1,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|z\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_ris_with_scrollback() {
+    state_case(
+        5,
+        3,
+        vec![],
+        &["aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\r\nfffff\r\nggggg\r\nhhhhh\x1bck"],
+        "size=5x3;cur=1,0,0,0,3;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,2;tabs=0;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|k\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_da_primary_secondary() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["\x1b[c\x1b[>c\x1b[1c\x1b[>1c\x1b[0c\x1b[>0c\x1b[?c"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[?1;2c|\\e[>0;276;0c|\\e[?1;2c|\\e[>0;276;0c;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_da_term_rxvt() {
+    state_case(
+        10,
+        4,
+        vec![OptionValue::TermName("rxvt-unicode-256color".to_owned())],
+        &["\x1b[c\x1b[>c"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[?1;2c|\\e[>85;95;0c;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_da_term_screen() {
+    state_case(
+        10,
+        4,
+        vec![OptionValue::TermName("screen-256color".to_owned())],
+        &["\x1b[c\x1b[>c"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[?1;2c|\\e[>83;40003;0c;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_da_term_linux() {
+    state_case(
+        10,
+        4,
+        vec![OptionValue::TermName("linux".to_owned())],
+        &["\x1b[c\x1b[>c\x1b[>0c"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[?6c|0c|0c;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_da_term_other() {
+    state_case(
+        10,
+        4,
+        vec![OptionValue::TermName("vt100".to_owned())],
+        &["\x1b[c\x1b[>c"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_da_term_not_prefix() {
+    state_case(
+        10,
+        4,
+        vec![OptionValue::TermName("myxterm".to_owned())],
+        &["\x1b[c\x1b[>c"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_dsr_all() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &[
+            "ab\x1b[5n\x1b[6n\x1b[?6n\x1b[?15n\x1b[?25n\x1b[?26n\x1b[?53n\x1b[7n\x1b[n\x1b[1;2H\x1b[6n",
+        ],
+        "size=10x4;cur=1,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[0n|\\e[1;3R|\\e[?1;3R|\\e[1;2R;lines=|ab\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_dsr_origin() {
+    state_case(
+        10,
+        5,
+        vec![],
+        &["\x1b[2;4r\x1b[?6h\x1b[2;3H\x1b[6n\x1b[?6n"],
+        "size=10x5;cur=2,2,0,0,5;alt=0;attr=0,0;ins=0;dm=00010001;cursor=-,-;hidden=0;margins=1,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[3;3R|\\e[?3;3R;lines=|\n|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_dsr_wrap_pending() {
+    state_case(
+        5,
+        3,
+        vec![],
+        &["abcde\x1b[6n"],
+        "size=5x3;cur=5,0,0,0,3;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,2;tabs=0;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[1;6R;lines=|abcde\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_sm_rm() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &[
+            "\x1b[4;20h\x1b[2;12h",
+            "\x1b[4l",
+            "\x1b[20l\x1b[1;2;3;4h\x1b[1;2;3;4l",
+        ],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decset_all_known() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["\x1b[?1;6;7;12;25;45;66;2004;2026h"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=11111011;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=01;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decrst_all_known() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["\x1b[?1;6;7;12;25;45;66;2004;2026h\x1b[?1;6;7;12;25;45;66;2004;2026l"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000000;cursor=-,-;hidden=1;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decset_mouse() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &[
+            "\x1b[?9h",
+            "\x1b[?1000h",
+            "\x1b[?1002h",
+            "\x1b[?1003h\x1b[?1006h",
+            "\x1b[?1016h",
+            "\x1b[?1005h\x1b[?1015h",
+            "\x1b[?1003l\x1b[?1006l",
+        ],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decset_mouse_off_each() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &[
+            "\x1b[?1002h\x1b[?1016h\x1b[?9l\x1b[?1016l",
+            "\x1b[?1002h\x1b[?1000l",
+            "\x1b[?1003h\x1b[?1002l",
+            "\x1b[?1000h\x1b[?1003l",
+        ],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decset_focus() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["\x1b[?1004h", "\x1b[?1004l"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decset_2() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["\x1b(0\x1b)0\x1b*0\x1b+0q\x1b[?2h\x1b[?2l", "q\x1bnq\x1boq"],
+        "size=10x4;cur=4,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=3,0;opt=00;resp=;lines=|\u{2500}qqq\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decset_origin_cursor() {
+    state_case(
+        10,
+        5,
+        vec![],
+        &["\x1b[2;4r\x1b[4;4H\x1b[?6h", "x\x1b[?6l", "y"],
+        "size=10x5;cur=1,0,0,0,5;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=1,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|y\n|x\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decset_12_20_options() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["\x1b[?12h\x1b[20h", "a\nb", "\x1b[?12l\x1b[20l", "c\nd"],
+        "size=10x4;cur=3,2,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|a\n|bc\n|  d\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decset_multi_mixed() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["\x1b[?1;1049;2004;99999h", "\x1b[?1049;2004;7l"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=10000000;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_deccolm_off() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["ab\x1b[?3h", "\x1b[?3l"],
+        "size=10x4;cur=2,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|ab\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_deccolm_on() {
+    state_case(
+        10,
+        4,
+        vec![OptionValue::WindowOptions(WindowOptions {
+            set_win_lines: true,
+            ..WindowOptions::default()
+        })],
+        &["ab\x1b[?3h", "x", "\x1b[?3$p", "\x1b[?3l", "y\x1b[?3$p"],
+        "size=80x4;cur=1,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8,16,24,32,40,48,56,64,72;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[?3;1$y|\\e[?3;2$y;lines=|y\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_alt_47_1047() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &[
+            "ab\x1b[?47hxy",
+            "\x1b[?47l",
+            "z\x1b[?1047hq",
+            "\x1b[?1047lw",
+        ],
+        "size=10x4;cur=7,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|ab  z w\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_alt_1049() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &[
+            "ab\x1b[2;3H\x1b[?1049hxy\x1b[3;3Hz",
+            "\x1b[?1049lw",
+            "\x1b[?1049h\x1b[?1049hv\x1b[?1049l\x1b[?1049l",
+        ],
+        "size=10x4;cur=3,1,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=3,1;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|ab\n|  w\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_alt_1048() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["ab\x1b[2;3H\x1b[?1048h\x1b[1;1H\x1b[31mxy\x1b[?1048lw"],
+        "size=10x4;cur=3,1,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=2,1;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|xy\n|  w\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_alt_erase_attrs() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["\x1b[42m\x1b[?1049h"],
+        "size=10x4;cur=0,0,0,0,4;alt=1;attr=0,16777218;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_alt_scrollback_viewport() {
+    state_case(
+        5,
+        3,
+        vec![],
+        &[
+            "aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\r\nfffff",
+            "\x1b[?1049h\x1b[Hm",
+            "\x1b[?1049l",
+        ],
+        "size=5x3;cur=4,2,3,3,6;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,2;tabs=0;saved=5,5;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|aaaaa\n|bbbbb\n|ccccc\n|ddddd\n|eeeee\n|fffff",
+    );
+}
+
+#[test]
+fn oracle_state_alt_resize_flow() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["ab\x1b[?1049hxy\x1b[?47l\x1b[?1047hz\x1b[?47h"],
+        "size=10x4;cur=5,0,0,0,4;alt=1;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|    z\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decrqm_ansi() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["\x1b[2$p\x1b[4$p\x1b[12$p\x1b[20$p\x1b[1234$p\x1b[$p\x1b[4h\x1b[20h\x1b[4$p\x1b[20$p"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=1;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=10;resp=\\e[2;4$y|\\e[4;2$y|\\e[12;3$y|\\e[20;2$y|\\e[1234;0$y|\\e[0;0$y|\\e[4;1$y|\\e[20;1$y;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decrqm_dec_reset() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &[
+            "\x1b[?1$p\x1b[?3$p\x1b[?6$p\x1b[?7$p\x1b[?8$p\x1b[?9$p\x1b[?12$p\x1b[?25$p\x1b[?45$p\x1b[?47$p\x1b[?66$p\x1b[?67$p\x1b[?1000$p\x1b[?1002$p\x1b[?1003$p\x1b[?1004$p\x1b[?1005$p\x1b[?1006$p\x1b[?1015$p\x1b[?1016$p\x1b[?1047$p\x1b[?1048$p\x1b[?1049$p\x1b[?2004$p\x1b[?2026$p\x1b[?5$p\x1b[?99999$p",
+        ],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[?1;2$y|\\e[?3;0$y|\\e[?6;2$y|\\e[?7;1$y|\\e[?8;3$y|\\e[?9;2$y|\\e[?12;2$y|\\e[?25;1$y|\\e[?45;2$y|\\e[?47;2$y|\\e[?66;2$y|\\e[?67;4$y|\\e[?1000;2$y|\\e[?1002;2$y|\\e[?1003;2$y|\\e[?1004;2$y|\\e[?1005;4$y|\\e[?1006;2$y|\\e[?1015;4$y|\\e[?1016;2$y|\\e[?1047;2$y|\\e[?1048;1$y|\\e[?1049;2$y|\\e[?2004;2$y|\\e[?2026;2$y|\\e[?5;0$y|\\e[?99999;0$y;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decrqm_dec_set() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &[
+            "\x1b[?1h\x1b[?6h\x1b[?9h\x1b[?12h\x1b[?45h\x1b[?66h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1004h\x1b[?1006h\x1b[?1016h\x1b[?2004h\x1b[?2026h\x1b[?1$p\x1b[?6$p\x1b[?9$p\x1b[?12$p\x1b[?45$p\x1b[?66$p\x1b[?1000$p\x1b[?1002$p\x1b[?1003$p\x1b[?1004$p\x1b[?1006$p\x1b[?1016$p\x1b[?2004$p\x1b[?2026$p\x1b[?25$p\x1b[?7$p",
+        ],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=11111111;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=ANY/SGR_PIXELS;g=0,0;opt=01;resp=\\e[?1;1$y|\\e[?6;1$y|\\e[?9;2$y|\\e[?12;1$y|\\e[?45;1$y|\\e[?66;1$y|\\e[?1000;2$y|\\e[?1002;2$y|\\e[?1003;1$y|\\e[?1004;1$y|\\e[?1006;2$y|\\e[?1016;1$y|\\e[?2004;1$y|\\e[?2026;1$y|\\e[?25;1$y|\\e[?7;1$y;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decrqm_alt() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["\x1b[?47$p\x1b[?1049h\x1b[?47$p\x1b[?1047$p\x1b[?1049$p\x1b[?1049l\x1b[?1049$p"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[?47;2$y|\\e[?47;1$y|\\e[?1047;1$y|\\e[?1049;1$y|\\e[?1049;2$y;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decrqm_deccolm() {
+    state_case(
+        10,
+        4,
+        vec![OptionValue::WindowOptions(WindowOptions {
+            set_win_lines: true,
+            ..WindowOptions::default()
+        })],
+        &["\x1b[?3$p\x1b[?3h\x1b[?3$p\x1b[?3l\x1b[?3$p"],
+        "size=80x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8,16,24,32,40,48,56,64,72;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[?3;0$y|\\e[?3;1$y|\\e[?3;2$y;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decrqm_mouse_exclusive() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &[
+            "\x1b[?1000h\x1b[?1002h\x1b[?1000$p\x1b[?1002$p\x1b[?1006h\x1b[?1016h\x1b[?1006$p\x1b[?1016$p",
+        ],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=DRAG/SGR_PIXELS;g=0,0;opt=00;resp=\\e[?1000;2$y|\\e[?1002;1$y|\\e[?1006;2$y|\\e[?1016;1$y;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decstr_all() {
+    state_case(
+        10,
+        5,
+        vec![],
+        &[
+            "\x1b[4h\x1b[?25l\x1b[2;4r\x1b[1;2;32;43m\x1b7\x1b[?6h\x1b(0\x1b[?1h\x1b[?7l\x1b[?1000h\x1b[3 q",
+            "\x1b[!p",
+            "q",
+        ],
+        "size=10x5;cur=1,1,0,0,5;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,4;tabs=0,8;saved=0,0;mouse=VT200/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|q\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decstr_saved_cursor() {
+    state_case(
+        10,
+        5,
+        vec![],
+        &["012345678901234\x1b[1;31m\x1b7\x1b[!p\x1b8x"],
+        "size=10x5;cur=1,0,0,0,5;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,4;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|x123456789\n~01234\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decstr_keeps_screen() {
+    state_case(
+        10,
+        5,
+        vec![],
+        &["abc\x1b[2;5H\x1b[!p", "x"],
+        "size=10x5;cur=5,1,0,0,5;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,4;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|abc\n|    x\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_decscusr() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &[
+            "\x1b[ q",
+            "\x1b[2 q",
+            "\x1b[3 q",
+            "\x1b[4 q",
+            "\x1b[5 q",
+            "\x1b[6 q",
+            "\x1b[7 q",
+            "\x1b[0 q",
+            "\x1b[3 q\x1b[0 q",
+            "\x1b[9 q",
+            "\x1b[ q\x1b[100000 q",
+        ],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,0;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_xtwinops_defaults() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &[
+            "\x1b[1t\x1b[2t\x1b[3t\x1b[4t\x1b[5t\x1b[6t\x1b[7t\x1b[8t\x1b[9t\x1b[10t\x1b[11t\x1b[12t\x1b[13t\x1b[14t\x1b[15t\x1b[16t\x1b[17t\x1b[18t\x1b[19t\x1b[20t\x1b[21t\x1b[22t\x1b[23t\x1b[24t\x1b[25t\x1b[26t\x1b[27t\x1b[28t\x1b[29t\x1b[30t\x1b[1000t\x1b[t\x1b[22;0t\x1b[23;0t",
+        ],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_xtwinops_size_report() {
+    state_case(
+        7,
+        3,
+        vec![OptionValue::WindowOptions(WindowOptions {
+            get_win_size_chars: true,
+            ..WindowOptions::default()
+        })],
+        &["\x1b[18t\x1b[18;1;2t\x1b[14t\x1b[16t\x1b[19t\x1b[21t"],
+        "size=7x3;cur=0,0,0,0,3;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,2;tabs=0;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[8;3;7t|\\e[8;3;7t;lines=|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_xtwinops_all_on() {
+    state_case(
+        7,
+        3,
+        vec![OptionValue::WindowOptions(WindowOptions {
+            restore_win: true,
+            minimize_win: true,
+            set_win_position: true,
+            set_win_size_pixels: true,
+            raise_win: true,
+            lower_win: true,
+            refresh_win: true,
+            set_win_size_chars: true,
+            maximize_win: true,
+            fullscreen_win: true,
+            get_win_state: true,
+            get_win_position: true,
+            get_win_size_pixels: true,
+            get_screen_size_pixels: true,
+            get_cell_size_pixels: true,
+            get_win_size_chars: true,
+            get_screen_size_chars: true,
+            get_icon_title: true,
+            get_win_title: true,
+            push_title: true,
+            pop_title: true,
+            set_win_lines: true,
+        })],
+        &[
+            "\x1b[1t\x1b[2t\x1b[3t\x1b[4t\x1b[5t\x1b[6t\x1b[7t\x1b[8t\x1b[9t\x1b[10t\x1b[11t\x1b[12t\x1b[13t\x1b[14t\x1b[15t\x1b[16t\x1b[17t\x1b[18t\x1b[19t\x1b[20t\x1b[21t\x1b[22t\x1b[23t\x1b[24t\x1b[25t\x1b[26t\x1b[27t\x1b[28t\x1b[29t\x1b[30t\x1b[1000t\x1b[22;3t\x1b[23;3t\x1b[14;2t",
+        ],
+        "size=7x3;cur=0,0,0,0,3;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,2;tabs=0;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=\\e[8;3;7t;lines=|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_keypad() {
+    state_case(
+        10,
+        4,
+        vec![],
+        &["\x1b=", "\x1b>", "\x1b=\x1b[?66l", "\x1b[?66h"],
+        "size=10x4;cur=0,0,0,0,4;alt=0;attr=0,0;ins=0;dm=01000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_charsets_designate() {
+    state_case(
+        12,
+        4,
+        vec![],
+        &[
+            "\x1b(0q\x1b(Bq\x1b(Aq#\x1b(Kq{\x1b(Rq@\x1b(4q\x1b(Cq\x1b(5q\x1b(Qq\x1b(Yq\x1b(Eq\x1b(6q\x1b(Zq\x1b(Hq\x1b(7q\x1b(=q",
+            "\r\n\x1b(0\x1b)0\x1b*0\x1b+0\x0eq\x0fq\x1bnq\x1boq\x1b|q\x1b}q\x1b~q",
+        ],
+        "size=12x4;cur=7,2,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=1,1;opt=00;resp=;lines=|\u{2500}qq\u{a3}q\u{e4}q\u{e0}qqqq\n~qqqqqqq\n|\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n|",
+    );
+}
+
+#[test]
+fn oracle_state_charsets_every_intermediate() {
+    state_case(
+        20,
+        6,
+        vec![],
+        &[
+            "\x1b(0\x1b)A\x1b*K\x1b+R\x1b-Q\x1b.Y\x1b/Zqq\x0eq\x1bnq\x1boq\x1b~q\x1b}q\x1b|q",
+            "\r\n\x1b-0\x0e\x1b~q\x1b.0\x1bnq\x1b/0\x1bnq",
+        ],
+        "size=20x6;cur=3,1,0,0,6;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,5;tabs=0,8,16;saved=0,0;mouse=NONE/DEFAULT;g=2,1;opt=00;resp=;lines=|\u{2500}\u{2500}qqqqqq\n|\u{2500}\u{2500}\u{2500}\n|\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_charsets_default_select() {
+    state_case(
+        12,
+        4,
+        vec![],
+        &[
+            "\x1b(0\x1b)0\x0eq\x1b%@q\x1b(0\x0eq\x1b%Gq",
+            "\x1b(0q\x1b(Xq\x1b(0q\x1b(Bq",
+        ],
+        "size=12x4;cur=8,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|\u{2500}q\u{2500}q\u{2500}\u{2500}\u{2500}q\n|\n|\n|",
+    );
+}
+
+#[test]
+fn oracle_state_charsets_save_restore() {
+    state_case(
+        12,
+        4,
+        vec![],
+        &["\x1b(0\x1b7\x1b(Bq\x1b8q", "\x1b[!p\x1b8q"],
+        "size=12x4;cur=1,0,0,0,4;alt=0;attr=0,0;ins=0;dm=00000001;cursor=-,-;hidden=0;margins=0,3;tabs=0,8;saved=0,0;mouse=NONE/DEFAULT;g=0,0;opt=00;resp=;lines=|q\n|\n|\n|",
+    );
+}
+
+// --- added: step 7 (events, damage, options, bounds) ---
+
+#[test]
+fn replies_are_suppressed_by_disable_stdin() {
+    let mut t = test_handler(10, 4, [OptionValue::DisableStdin(true)]);
+    t.parse_str("\x1b[c\x1b[>c\x1b[5n\x1b[6n\x1b[?6n\x1b[4$p\x1b[?7$p");
+    assert!(t.handler.take_events().is_empty());
+    // with stdin enabled again the same input answers
+    t.set_option(OptionValue::DisableStdin(false));
+    t.parse_str("\x1b[5n");
+    assert_eq!(responses(&mut t), ["\x1b[0n"]);
+}
+
+#[test]
+fn replies_keep_their_order_and_are_not_merged() {
+    let mut t = test_handler(10, 4, []);
+    t.parse_str("\x1b[5n\x1b[c\x1b[?7$p");
+    assert_eq!(responses(&mut t), ["\x1b[0n", "\x1b[?1;2c", "\x1b[?7;1$y"]);
+}
+
+#[test]
+fn da_does_not_see_the_first_param_of_the_previous_sequence() {
+    // upstream reads `params.params[0]` of the shared typed array; the parser resets the first
+    // slot to 0 for every sequence, so the 5 of `CSI 5 c` does not suppress the next answer
+    let mut t = test_handler(10, 4, []);
+    t.parse_str("\x1b[5c\x1b[c");
+    assert_eq!(responses(&mut t), ["\x1b[?1;2c"]);
+}
+
+fn state_without_stacks(t: &TestTerm) -> String {
+    state_of(t, &[])
+}
+
+#[test]
+fn window_options_default_consume_every_csi_t_without_effect() {
+    let mut t = test_handler(10, 4, []);
+    t.parse_str("ab\x1b[2;3H");
+    let before = state_without_stacks(&t);
+    t.handler.take_events();
+    t.handler.take_damage();
+    for n in (1..=24).chain(25..=30).chain([1000, 65535]) {
+        t.parse_str(&format!("\x1b[{n}t"));
+        t.parse_str(&format!("\x1b[{n};1;2t"));
+    }
+    t.parse_str("\x1b[t");
+    assert!(t.handler.take_events().is_empty());
+    assert_eq!(state_without_stacks(&t), before);
+    assert!(t.handler.window_title_stack.is_empty());
+    assert!(t.handler.icon_name_stack.is_empty());
+}
+
+#[test]
+fn window_options_enabled_act_only_for_14_16_18_22_23() {
+    let all = WindowOptions {
+        restore_win: true,
+        minimize_win: true,
+        set_win_position: true,
+        set_win_size_pixels: true,
+        raise_win: true,
+        lower_win: true,
+        refresh_win: true,
+        set_win_size_chars: true,
+        maximize_win: true,
+        fullscreen_win: true,
+        get_win_state: true,
+        get_win_position: true,
+        get_win_size_pixels: true,
+        get_screen_size_pixels: true,
+        get_cell_size_pixels: true,
+        get_win_size_chars: true,
+        get_screen_size_chars: true,
+        get_icon_title: true,
+        get_win_title: true,
+        push_title: true,
+        pop_title: true,
+        set_win_lines: true,
+    };
+    for n in (1..=30).chain([1000, 65535]) {
+        let mut t = test_handler(7, 3, []);
+        set_window_options(&mut t, all);
+        t.parse_str("ab\x1b[2;3H");
+        let before = state_without_stacks(&t);
+        t.handler.take_events();
+        t.parse_str(&format!("\x1b[{n}t"));
+        let events = t.handler.take_events();
+        match n {
+            14 => assert_eq!(
+                events,
+                [HostEvent::WindowReport(WindowReportKind::WinSizePixels)]
+            ),
+            16 => assert_eq!(
+                events,
+                [HostEvent::WindowReport(WindowReportKind::CellSizePixels)]
+            ),
+            18 => assert_eq!(events, [HostEvent::Response(b"\x1b[8;3;7t".to_vec())]),
+            _ => assert!(events.is_empty(), "{n}: {events:?}"),
+        }
+        assert_eq!(state_without_stacks(&t), before, "{n}");
+        // push and pop change only the stacks (and pop sets the, empty, title back)
+        let pushed = usize::from(n == 22);
+        assert_eq!(t.handler.window_title_stack.len(), pushed, "{n}");
+        assert_eq!(t.handler.icon_name_stack.len(), pushed, "{n}");
+    }
+}
+
+#[test]
+fn window_options_pop_title_sets_the_saved_title_and_notifies_the_host() {
+    let mut t = push_pop_handler();
+    t.handler.set_title("saved");
+    t.handler.take_events();
+    t.parse_str("\x1b[22t");
+    t.handler.set_title("other");
+    t.handler.take_events();
+    t.parse_str("\x1b[23t");
+    assert_eq!(t.handler.window_title(), "saved");
+    assert_eq!(titles(&mut t), ["saved"]);
+}
+
+#[test]
+fn window_options_title_stacks_keep_the_ten_newest() {
+    let mut t = push_pop_handler();
+    for i in 0..12 {
+        set_title_and_icon(&mut t, &i.to_string());
+        t.parse_str("\x1b[22t");
+    }
+    let expected: Vec<String> = (2..12).map(|i| i.to_string()).collect();
+    assert_eq!(t.handler.window_title_stack, expected);
+    assert_eq!(t.handler.icon_name_stack, expected);
+    t.handler.take_events();
+    for _ in 0..12 {
+        t.parse_str("\x1b[23t");
+    }
+    assert!(t.handler.window_title_stack.is_empty());
+    let popped: Vec<String> = (2..12).rev().map(|i| i.to_string()).collect();
+    assert_eq!(titles(&mut t), popped);
+    assert_eq!(t.handler.window_title(), "2");
+}
+
+#[test]
+fn window_options_push_with_unknown_second_param_does_nothing() {
+    let mut t = push_pop_handler();
+    t.parse_str("\x1b[22;3t\x1b[22;7t\x1b[23;3t");
+    assert!(t.handler.window_title_stack.is_empty());
+    assert!(t.handler.icon_name_stack.is_empty());
+    assert!(t.handler.take_events().is_empty());
+}
+
+#[test]
+fn focus_report_is_requested_by_decset_1004_only() {
+    let mut t = test_handler(10, 4, []);
+    t.parse_str("\x1b[?1004h");
+    assert_eq!(t.handler.take_events(), [HostEvent::FocusReportRequested]);
+    t.parse_str("\x1b[?1004h");
+    assert_eq!(t.handler.take_events(), [HostEvent::FocusReportRequested]);
+    t.parse_str("\x1b[?1004l");
+    assert!(t.handler.take_events().is_empty());
+    assert!(!t.handler.services.core.dec_private_modes.send_focus);
+}
+
+#[test]
+fn mouse_modes_set_the_protocol_and_encoding_by_upstreams_names() {
+    let mut t = test_handler(10, 4, []);
+    for (mode, protocol) in [(9, "X10"), (1000, "VT200"), (1002, "DRAG"), (1003, "ANY")] {
+        t.parse_str(&format!("\x1b[?{mode}h"));
+        assert_eq!(t.handler.services.mouse.active_protocol(), protocol);
+        // every protocol is switched off by any of the four resets
+        for off in [9, 1000, 1002, 1003] {
+            t.parse_str(&format!("\x1b[?{mode}h\x1b[?{off}l"));
+            assert_eq!(t.handler.services.mouse.active_protocol(), "NONE");
+        }
+    }
+    for (mode, encoding) in [(1006, "SGR"), (1016, "SGR_PIXELS")] {
+        t.parse_str(&format!("\x1b[?{mode}h"));
+        assert_eq!(t.handler.services.mouse.active_encoding(), encoding);
+        t.parse_str(&format!("\x1b[?{mode}l"));
+        assert_eq!(t.handler.services.mouse.active_encoding(), "DEFAULT");
+    }
+}
+
+#[test]
+fn utf8_and_urxvt_mouse_encodings_only_log() {
+    use crate::services::log_service::Logger;
+    use crate::services::options_service::LogLevel;
+
+    struct Capture(Rc<RefCell<Vec<String>>>);
+    impl Logger for Capture {
+        fn log(&self, _level: LogLevel, message: &str) {
+            self.0.borrow_mut().push(message.to_string());
+        }
+    }
+    let mut t = test_handler(10, 4, [OptionValue::LogLevel(LogLevel::Debug)]);
+    let messages = Rc::new(RefCell::new(Vec::new()));
+    t.handler
+        .services
+        .log
+        .set_logger(Some(Box::new(Capture(Rc::clone(&messages)))));
+    t.parse_str("\x1b[?1006h");
+    let before = state_without_stacks(&t);
+    t.parse_str("\x1b[?1005h\x1b[?1015h\x1b[?1005l\x1b[?1015l");
+    assert_eq!(state_without_stacks(&t), before);
+    let messages = messages.borrow();
+    for expected in [
+        "DECSET 1005 not supported (see #2507)",
+        "DECSET 1015 not supported (see #2507)",
+        "DECRST 1005 not supported (see #2507)",
+        "DECRST 1015 not supported (see #2507)",
+    ] {
+        assert!(messages.iter().any(|m| m == expected), "{expected}");
+    }
+}
+
+#[test]
+fn decset_12_and_20_write_the_options() {
+    let mut t = test_handler(10, 4, []);
+    assert!(!t.handler.services.options.options().cursor_blink);
+    assert!(!t.handler.services.options.options().convert_eol);
+    t.parse_str("\x1b[?12h\x1b[20h");
+    assert!(t.handler.services.options.options().cursor_blink);
+    assert!(t.handler.services.options.options().convert_eol);
+    // LNM is observable: LF returns the carriage
+    t.parse_str("ab\ncd");
+    assert_eq!(t.lines(2), ["ab", "cd"]);
+    t.parse_str("\x1b[?12l\x1b[20l");
+    assert!(!t.handler.services.options.options().cursor_blink);
+    assert!(!t.handler.services.options.options().convert_eol);
+}
+
+#[test]
+fn alt_buffer_switches_report_scroll_and_full_damage() {
+    let mut t = test_handler(10, 4, []);
+    t.parse_str("ab");
+    t.handler.take_damage();
+    t.parse_str("\x1b[?1049h");
+    let damage = t.handler.take_damage();
+    assert!(damage.full && damage.scrolled, "{damage:?}");
+    assert_eq!(damage.rows, Some((0, 3)));
+    // already on the alt buffer: no activation, but the rows are requested again
+    t.parse_str("\x1b[?47h");
+    let damage = t.handler.take_damage();
+    assert!(!damage.full && !damage.scrolled, "{damage:?}");
+    assert_eq!(damage.rows, Some((0, 3)));
+    t.parse_str("\x1b[?1049l");
+    let damage = t.handler.take_damage();
+    assert!(damage.full && damage.scrolled, "{damage:?}");
+    // already on the normal buffer: rows only
+    t.parse_str("\x1b[?47l");
+    let damage = t.handler.take_damage();
+    assert!(!damage.full, "{damage:?}");
+    assert_eq!(damage.rows, Some((0, 3)));
+    // the synchronized output reset repaints too
+    t.parse_str("\x1b[?2026h");
+    assert!(
+        t.handler
+            .take_damage()
+            .rows
+            .is_some_and(|rows| rows == (0, 0))
+    );
+    t.parse_str("\x1b[?2026l");
+    assert_eq!(t.handler.take_damage().rows, Some((0, 3)));
+}
+
+#[test]
+fn alt_buffer_activation_marks_the_cursor_as_initialized() {
+    let mut t = test_handler(10, 4, []);
+    assert!(!t.handler.services.core.is_cursor_initialized);
+    t.parse_str("\x1b[?47h");
+    assert!(t.handler.services.core.is_cursor_initialized);
+    t.handler.services.core.is_cursor_initialized = false;
+    t.parse_str("\x1b[?47l");
+    assert!(t.handler.services.core.is_cursor_initialized);
+}
+
+#[test]
+fn alt_buffer_has_no_scrollback_and_normal_scrollback_survives() {
+    let mut t = test_handler(5, 3, [OptionValue::Scrollback(10)]);
+    t.parse_str("1\r\n2\r\n3\r\n4\r\n5");
+    assert_eq!(t.buffer().ybase, 2);
+    t.parse_str("\x1b[?1049h");
+    t.parse_str("a\r\nb\r\nc\r\nd\r\ne");
+    assert_eq!(t.buffer().ybase, 0);
+    assert_eq!(t.buffer().lines.len(), 3);
+    t.parse_str("\x1b[?1049l");
+    assert_eq!(t.buffer().ybase, 2);
+    assert_eq!(t.viewport(), ["3", "4", "5"]);
+}
+
+#[test]
+fn the_alt_buffer_markers_are_disposed_when_switching_back() {
+    let mut t = test_handler(10, 4, []);
+    t.parse_str("\x1b[?1049h");
+    let marker = t.handler.services.buffer.buffers.alt_mut().add_marker(1);
+    t.parse_str("\x1b[?1049l");
+    let alt = t.handler.services.buffer.buffers.alt_mut();
+    assert!(alt.take_disposed_markers().contains(&marker));
+}
+
+#[test]
+fn deccolm_resizes_resets_and_reports_full_damage() {
+    let mut t = test_handler(10, 4, []);
+    set_window_options(
+        &mut t,
+        WindowOptions {
+            set_win_lines: true,
+            ..WindowOptions::default()
+        },
+    );
+    t.parse_str("abc\x1b[2;3H\x1b[?6h");
+    t.handler.take_damage();
+    t.parse_str("\x1b[?3h");
+    assert_eq!(
+        (
+            t.handler.services.buffer.cols,
+            t.handler.services.buffer.rows
+        ),
+        (132, 4)
+    );
+    // the terminal reset ran: screen, cursor and modes are default, the size stays
+    assert_eq!(t.screen(), ["", "", "", ""]);
+    assert_eq!(t.cursor(), [0, 0]);
+    assert!(!t.handler.services.core.dec_private_modes.origin);
+    assert!(t.handler.take_damage().full);
+    assert_eq!(t.handler.services.options.options().cols, 132);
+    assert_eq!(t.handler.services.options.options().rows, 4);
+    t.parse_str("\x1b[?3l");
+    assert_eq!(t.handler.services.buffer.cols, 80);
+    assert_eq!(t.handler.services.options.options().cols, 80);
+}
+
+#[test]
+fn keypad_modes_log_and_set_the_mode() {
+    let mut t = test_handler(10, 4, []);
+    t.parse_str("\x1b=");
+    assert!(t.handler.services.core.dec_private_modes.application_keypad);
+    t.parse_str("\x1b>");
+    assert!(!t.handler.services.core.dec_private_modes.application_keypad);
+    t.parse_str("\x1b[?66h");
+    assert!(t.handler.services.core.dec_private_modes.application_keypad);
+    t.parse_str("\x1b[?66l");
+    assert!(!t.handler.services.core.dec_private_modes.application_keypad);
+}
+
+#[test]
+fn every_charset_designator_selects_its_set_for_the_level_of_its_intermediate() {
+    for flag in [
+        '0', 'A', 'B', '4', 'C', '5', 'R', 'Q', 'K', 'Y', 'E', '6', 'Z', 'H', '7', '=',
+    ] {
+        for (intermediate, level) in [('(', 0), (')', 1), ('*', 2), ('+', 3), ('-', 1), ('.', 2)] {
+            let mut t = test_handler(10, 4, []);
+            t.parse_str(&format!("\x1b{intermediate}{flag}"));
+            let service = &t.handler.services.charset;
+            // the designated set is current only when its level is
+            let expected = if level == 0 { charset(flag) } else { None };
+            assert_eq!(service.charset, expected, "ESC {intermediate} {flag}");
+            t.handler.services.charset.set_g_level(level);
+            assert_eq!(
+                t.handler.services.charset.charset,
+                charset(flag),
+                "ESC {intermediate} {flag} at level {level}"
+            );
+        }
+    }
+}
+
+#[test]
+fn designating_with_slash_or_an_unknown_flag_leaves_the_sets() {
+    let mut t = test_handler(10, 4, []);
+    t.parse_str("\x1b(0");
+    let dec = t.handler.services.charset.charset;
+    assert!(dec.is_some());
+    // `ESC / C` is a no-op (upstream TODO)
+    for flag in ['0', 'A', 'B', 'Z'] {
+        t.parse_str(&format!("\x1b/{flag}"));
+        assert_eq!(t.handler.services.charset.charset, dec);
+    }
+    // an unknown flag selects the default set (it has no handler, so nothing changes)
+    t.parse_str("\x1b(X");
+    assert_eq!(t.handler.services.charset.charset, dec);
+    t.parse_str("\x1b(B");
+    assert!(t.handler.services.charset.charset.is_none());
+}
+
+#[test]
+fn ris_runs_the_terminal_reset_and_reports_full_damage() {
+    let mut t = test_handler(10, 4, [OptionValue::Scrollback(5)]);
+    t.parse_str("1\r\n2\r\n3\r\n4\r\n5\r\n6\x1b[1;31m\x1b[?7l");
+    assert_eq!(t.buffer().ybase, 2);
+    t.handler.take_damage();
+    t.parse_str("\x1bc");
+    assert_eq!(t.buffer().ybase, 0);
+    assert_eq!(t.screen(), ["", "", "", ""]);
+    assert_eq!(t.handler.cur_attr_data, DEFAULT_ATTR_DATA);
+    assert!(t.handler.services.core.dec_private_modes.wraparound);
+    let damage = t.handler.take_damage();
+    assert!(damage.full && damage.scrolled);
+}
+
+#[test]
+fn ris_with_an_active_link_frees_the_link_table() {
+    use crate::services::osc_link_service::OscLinkData;
+
+    let mut t = test_handler(10, 4, []);
+    let services = &mut t.handler.services;
+    let id = services.osc_link.register_link(
+        &mut services.buffer,
+        OscLinkData {
+            id: None,
+            uri: "https://a".to_owned(),
+        },
+    );
+    assert!(t.handler.services.osc_link.get_link_data(id).is_some());
+    t.parse_str("\x1bc");
+    t.handler.forward_disposed_markers();
+    assert!(t.handler.services.osc_link.get_link_data(id).is_none());
+}
+
+#[test]
+fn soft_reset_keeps_the_screen_the_cursor_and_the_erase_attributes() {
+    let mut t = test_handler(10, 5, []);
+    t.parse_str("abc\x1b[2;5H\x1b[42m");
+    t.parse_str("\x1b[!p");
+    assert_eq!(t.lines(1), ["abc"]);
+    assert_eq!(t.cursor(), [4, 1]);
+    // upstream does not reset the erase attributes (`_eraseAttrDataInternal`), only the colours
+    // of the text attributes: the erase takes the background of the (reset) attributes
+    assert_eq!(t.handler.cur_attr_data, DEFAULT_ATTR_DATA);
+}
+
+#[test]
+fn requests_for_an_unknown_mode_number_and_missing_params() {
+    let mut t = test_handler(10, 4, []);
+    t.parse_str("\x1b[$p\x1b[?$p\x1b[?65535$p\x1b[?2147483647$p");
+    assert_eq!(
+        responses(&mut t),
+        [
+            "\x1b[0;0$y",
+            "\x1b[?0;0$y",
+            "\x1b[?65535;0$y",
+            "\x1b[?2147483647;0$y"
+        ]
+    );
+}
+
+#[test]
+fn handlers_survive_extreme_params_and_many_params() {
+    let mut t = test_handler(10, 4, []);
+    let many = (0..40)
+        .map(|i| (1000 + i).to_string())
+        .collect::<Vec<_>>()
+        .join(";");
+    for body in [
+        format!("\x1b[?{many}h"),
+        format!("\x1b[?{many}l"),
+        format!("\x1b[{many}h"),
+        format!("\x1b[{many}l"),
+        "\x1b[?2147483647h\x1b[?2147483647l\x1b[2147483647h".to_owned(),
+        "\x1b[2147483647;2147483647 q\x1b[2147483647n\x1b[?2147483647n".to_owned(),
+        "\x1b[2147483647t\x1b[2147483647;2147483647;2147483647t".to_owned(),
+        "\x1b[1:2:3h\x1b[?1:2h\x1b[:h\x1b[;;h".to_owned(),
+    ] {
+        t.parse_str(&body);
+        t.handler.take_events();
+    }
+    t.parse_str("\x1b[0mok");
+    assert_eq!(t.lines(1), ["ok"]);
+}
+
+#[test]
+fn decscusr_without_params_is_blinking_block_and_other_params_keep_the_style() {
+    let mut t = test_handler(10, 4, []);
+    // the parser always supplies a default param (0): a bare sequence resets to the option
+    t.parse_str("\x1b[3 q\x1b[ q");
+    let modes = &t.handler.services.core.dec_private_modes;
+    assert_eq!((modes.cursor_style, modes.cursor_blink), (None, None));
+    // only a handler call without any param takes the `length === 0` branch
+    t.handler.set_cursor_style(&Params::new());
+    let modes = &t.handler.services.core.dec_private_modes;
+    assert_eq!(modes.cursor_style, Some(CursorStyle::Block));
+    assert_eq!(modes.cursor_blink, Some(true));
+    // 7 matches no style but still sets the blink by parity
+    t.parse_str("\x1b[4 q\x1b[7 q");
+    let modes = &t.handler.services.core.dec_private_modes;
+    assert_eq!(modes.cursor_style, Some(CursorStyle::Underline));
+    assert_eq!(modes.cursor_blink, Some(true));
 }
