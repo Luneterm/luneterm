@@ -28,4 +28,5 @@
 )]
 
 pub mod text_decoder;
+pub mod unicode_v6;
 pub mod x_parse_color;
