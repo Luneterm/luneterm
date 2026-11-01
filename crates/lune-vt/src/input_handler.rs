@@ -2325,6 +2325,10 @@ impl InputHandler {
         }
 
         // the head cell every repetition writes, made by `print`'s calls
+        let single = match fill.codes.as_slice() {
+            [code] => Some(*code),
+            _ => None,
+        };
         let head = {
             let mut scratch = BufferLine::new(w, None, false);
             let mut codes = fill.codes.iter().copied();
@@ -2385,12 +2389,25 @@ impl InputHandler {
             let Some(buffer_row) = lines.get_mut(row) else {
                 return;
             };
-            let batched = insert_mode && buffer_row.len() == cols;
-            if batched {
+            let per_repetition_insert = insert_mode && buffer_row.len() != cols;
+            if insert_mode && !per_repetition_insert {
                 buffer_row.insert_cells_repeatedly(*x, w, fit, &null_cell);
             }
+            if let (Some(code), false) = (single, insert_mode) {
+                // (the common case, kept a tight loop)
+                for _ in 0..fit {
+                    buffer_row.set_cell_from_codepoint(*x, code, width, &cur_attr);
+                    *x += 1;
+                    for _ in 1..w {
+                        buffer_row.set_cell_from_codepoint(*x, 0, 0, &cur_attr);
+                        *x += 1;
+                    }
+                }
+                left -= fit;
+                continue;
+            }
             for _ in 0..fit {
-                if insert_mode && !batched {
+                if per_repetition_insert {
                     // `print`'s insert-mode path, per repetition
                     buffer_row.insert_cells(*x, w, &null_cell);
                     if buffer_row.get_width(cols.saturating_sub(1)) == 2 {
@@ -2402,7 +2419,11 @@ impl InputHandler {
                         );
                     }
                 }
-                buffer_row.set_cell(*x, &head);
+                match single {
+                    // the same writes as `set_cell(head)` for a cell with no joiners
+                    Some(code) => buffer_row.set_cell_from_codepoint(*x, code, width, &cur_attr),
+                    None => buffer_row.set_cell(*x, &head),
+                }
                 *x += 1;
                 for _ in 1..w {
                     buffer_row.set_cell_from_codepoint(*x, 0, 0, &cur_attr);
