@@ -15,6 +15,12 @@
 //!  - `should parse big chunks in smaller subchunks` replaces `_parser.parse` with a recorder;
 //!    here the print handler records the length of each run it receives (one run per parser
 //!    call for printable input). The parse buffer's capacity is not observable.
+//!  - Step 5 (erase, insert/delete, scroll, REP, DECSCA, DECALN): the `regression tests`
+//!    (`insertChars`, `deleteChars`, `eraseInLine`, `eraseInLine reflow`, both ED cases) call the
+//!    handler methods with `Params::fromArray`; here too, through `params`. `MockBufferService`
+//!    is a `test_handler` of the same size. `ED2 with scrollOnEraseInDisplay` builds its handler
+//!    over the same `bufferService` with a mock option; here the option is passed to the
+//!    constructor. `DECSCA and DECSED/DECSEL`'s `DECRQSS reports correct DECSCA state` is step 8's.
 //!  - `print`/`should not cause an infinite loop` calls `print` with the one-element slice
 //!    (upstream passes a 10-element array with `start = 0, end = 1`).
 
@@ -27,6 +33,7 @@ use super::*;
 use crate::buffer::constants::Attributes;
 use crate::data::charsets::charset;
 use crate::input::unicode_v6::UnicodeV6;
+use crate::parser::params::ParamsArrayItem;
 use crate::services::options_service::{OptionValue, WindowOptions};
 use crate::services::unicode_service::UnicodeVersionProvider;
 
@@ -103,6 +110,12 @@ impl TestTerm {
             .filter_map(|i| buffer.lines.get(i))
             .map(|line| line.translate_to_string(true, None, None, None))
             .collect()
+    }
+
+    /// Upstream `bufferService.reset()`.
+    fn reset_buffers(&mut self) {
+        let services = &mut self.handler.services;
+        services.buffer.reset(services.options.options());
     }
 
     fn resize(&mut self, cols: usize, rows: usize) {
@@ -183,6 +196,12 @@ fn with_vs16(t: &mut TestTerm) {
     let unicode = &mut t.handler.services.unicode;
     unicode.register(Box::new(Vs16Widens(UnicodeV6::new())));
     unicode.set_active_version("vs16-test").unwrap();
+}
+
+/// Upstream `Params.fromArray([..])` of plain params.
+fn params(values: &[i32]) -> Params {
+    let items: Vec<ParamsArrayItem> = values.iter().map(|&v| ParamsArrayItem::Param(v)).collect();
+    Params::from_array(&items).unwrap()
 }
 
 const RED: u32 = Attributes::CM_P16 | 1;
@@ -1225,5 +1244,1556 @@ fn print_with_a_link_trimmed_earlier_in_the_same_parse_does_not_revive_it() {
     assert_eq!(
         t.handler.services.osc_link.link_markers(id).unwrap().len(),
         2
+    );
+}
+
+// --- upstream: InputHandler.test.ts, step 5 (erase, insert/delete, scroll, protect) ---
+
+/// `describe('SL/SR/DECIC/DECDC')`: 5 x 5, scrollback 1, buffers reset.
+fn columns_handler() -> TestTerm {
+    let mut t = upstream_handler();
+    t.resize(5, 5);
+    t.set_option(OptionValue::Scrollback(1));
+    t.reset_buffers();
+    t
+}
+
+#[test]
+fn sl_sr_decic_decdc_sl_scroll_left() {
+    let mut t = columns_handler();
+    t.parse_str(&"12345".repeat(6));
+    t.parse_str("\x1b[ @");
+    assert_eq!(
+        t.lines(6),
+        ["12345", "2345", "2345", "2345", "2345", "2345"]
+    );
+    t.parse_str("\x1b[0 @");
+    assert_eq!(t.lines(6), ["12345", "345", "345", "345", "345", "345"]);
+    t.parse_str("\x1b[2 @");
+    assert_eq!(t.lines(6), ["12345", "5", "5", "5", "5", "5"]);
+}
+
+#[test]
+fn sl_sr_decic_decdc_sr_scroll_right() {
+    let mut t = columns_handler();
+    t.parse_str(&"12345".repeat(6));
+    t.parse_str("\x1b[ A");
+    assert_eq!(
+        t.lines(6),
+        ["12345", " 1234", " 1234", " 1234", " 1234", " 1234"]
+    );
+    t.parse_str("\x1b[0 A");
+    assert_eq!(
+        t.lines(6),
+        ["12345", "  123", "  123", "  123", "  123", "  123"]
+    );
+    t.parse_str("\x1b[2 A");
+    assert_eq!(
+        t.lines(6),
+        ["12345", "    1", "    1", "    1", "    1", "    1"]
+    );
+}
+
+/// The three runs of the DECIC / DECDC tests: no param, `1` and `2`, each on a fresh buffer.
+fn columns_runs(final_byte: &str, expected: [[&str; 6]; 3]) {
+    let mut t = columns_handler();
+    for (param, expect) in ["", "1", "2"].into_iter().zip(expected) {
+        t.reset_buffers();
+        t.parse_str(&"12345".repeat(6));
+        t.parse_str("\x1b[3;3H");
+        t.parse_str(&format!("\x1b[{param}'{final_byte}"));
+        assert_eq!(t.lines(6), expect, "param {param:?}");
+    }
+}
+
+#[test]
+fn sl_sr_decic_decdc_insert_columns_decic() {
+    let row = ["12345", "12 34", "12 34", "12 34", "12 34", "12 34"];
+    columns_runs(
+        "}",
+        [
+            row,
+            row,
+            ["12345", "12  3", "12  3", "12  3", "12  3", "12  3"],
+        ],
+    );
+}
+
+#[test]
+fn sl_sr_decic_decdc_delete_columns_decdc() {
+    let row = ["12345", "1245", "1245", "1245", "1245", "1245"];
+    columns_runs(
+        "~",
+        [row, row, ["12345", "125", "125", "125", "125", "125"]],
+    );
+}
+
+fn eighty_by_thirty() -> TestTerm {
+    test_handler(80, 30, [])
+}
+
+fn a_run(n: usize) -> String {
+    "a".repeat(n)
+}
+
+#[test]
+fn regression_tests_insert_chars() {
+    let mut t = eighty_by_thirty();
+    // insert some data in first and second line
+    t.parse_str(&a_run(70));
+    t.parse_str("1234567890");
+    t.parse_str(&a_run(70));
+    t.parse_str("1234567890");
+    let line = |t: &TestTerm, trim| {
+        t.buffer()
+            .lines
+            .get(0)
+            .unwrap()
+            .translate_to_string(trim, None, None, None)
+    };
+    assert_eq!(line(&t, false), a_run(70) + "1234567890");
+    // insert one char from params = [0]
+    for (param, tail) in [
+        (0, " 123456789"),
+        (1, "  12345678"),
+        (2, "    123456"),
+        (10, "          "),
+    ] {
+        t.set_cursor(70, 0);
+        t.handler.insert_chars(&params(&[param]));
+        assert_eq!(line(&t, false), a_run(70) + tail, "param {param}");
+    }
+    assert_eq!(line(&t, true), a_run(70));
+}
+
+#[test]
+fn regression_tests_delete_chars() {
+    let mut t = eighty_by_thirty();
+    t.parse_str(&a_run(70));
+    t.parse_str("1234567890");
+    t.parse_str(&a_run(70));
+    t.parse_str("1234567890");
+    let line = |t: &TestTerm, trim| {
+        t.buffer()
+            .lines
+            .get(0)
+            .unwrap()
+            .translate_to_string(trim, None, None, None)
+    };
+    assert_eq!(line(&t, false), a_run(70) + "1234567890");
+    for (param, full, trimmed) in [
+        (0, "234567890 ", "234567890"),
+        (1, "34567890  ", "34567890"),
+        (2, "567890    ", "567890"),
+        (10, "          ", ""),
+    ] {
+        t.set_cursor(70, 0);
+        t.handler.delete_chars(&params(&[param]));
+        assert_eq!(line(&t, false), a_run(70) + full, "param {param}");
+        assert_eq!(line(&t, true), a_run(70) + trimmed, "param {param}");
+    }
+}
+
+#[test]
+fn regression_tests_erase_in_line() {
+    let mut t = eighty_by_thirty();
+    // fill 6 lines to test 3 different states
+    for _ in 0..3 {
+        t.parse_str(&a_run(80));
+    }
+    let row = |t: &TestTerm, y| {
+        t.buffer()
+            .lines
+            .get(y)
+            .unwrap()
+            .translate_to_string(false, None, None, None)
+    };
+    // params[0] - right erase
+    t.set_cursor(70, 0);
+    t.handler.erase_in_line(&params(&[0]), false);
+    assert_eq!(row(&t, 0), a_run(70) + "          ");
+    // params[1] - left erase
+    t.set_cursor(70, 1);
+    t.handler.erase_in_line(&params(&[1]), false);
+    assert_eq!(row(&t, 1), " ".repeat(71) + "aaaaaaaaa");
+    // params[2] - erase all
+    t.set_cursor(70, 2);
+    t.handler.erase_in_line(&params(&[2]), false);
+    assert_eq!(row(&t, 2), " ".repeat(80));
+}
+
+#[test]
+fn regression_tests_erase_in_line_reflow() {
+    let mut t = eighty_by_thirty();
+    fn reset_to_base_state(t: &mut TestTerm) {
+        // reset and add a wrapped line
+        t.set_cursor(0, 0);
+        t.parse_str(&a_run(80)); // line 0
+        t.parse_str(&a_run(89)); // line 1 and 2
+        for _ in 3..30 {
+            t.parse_str(&a_run(80));
+        }
+        // confirm precondition that line 2 is wrapped
+        assert!(t.buffer().lines.get(2).unwrap().is_wrapped);
+    }
+    let wrapped = |t: &TestTerm| t.buffer().lines.get(2).unwrap().is_wrapped;
+
+    // params[0] - erase from the cursor through the end of the row.
+    reset_to_base_state(&mut t);
+    t.set_cursor(40, 2);
+    t.handler.erase_in_line(&params(&[0]), false);
+    assert!(wrapped(&t));
+    t.set_cursor(0, 2);
+    t.handler.erase_in_line(&params(&[0]), false);
+    assert!(!wrapped(&t));
+
+    // params[1] - erase from the beginning of the line through the cursor
+    reset_to_base_state(&mut t);
+    t.set_cursor(40, 2);
+    t.handler.erase_in_line(&params(&[1]), false);
+    assert!(wrapped(&t));
+
+    // params[2] - erase complete line
+    reset_to_base_state(&mut t);
+    t.set_cursor(40, 2);
+    t.handler.erase_in_line(&params(&[2]), false);
+    assert!(!wrapped(&t));
+}
+
+#[test]
+fn regression_tests_ed2_with_scroll_on_erase_in_display_turned_on() {
+    let mut t = test_handler(80, 30, [OptionValue::ScrollOnEraseInDisplay(true)]);
+    let a_line = a_run(80);
+    // add 2 full lines of text.
+    t.parse_str(&a_line);
+    t.parse_str(&a_line);
+
+    t.handler.erase_in_display(&params(&[2]), false);
+    // those 2 lines should have been pushed to scrollback.
+    assert_eq!(30 + 2, t.buffer().lines.len());
+    assert_eq!(t.buffer().ybase, 2);
+    for i in 0..2 {
+        let line = t.buffer().lines.get(i).unwrap();
+        assert_eq!(line.translate_to_string(false, None, None, None), a_line);
+    }
+
+    // Move to last line and add more text.
+    t.set_cursor(0, 29);
+    t.parse_str(&a_line);
+    t.handler.erase_in_display(&params(&[2]), false);
+    // Screen should have been scrolled by a full screen size.
+    assert_eq!(30 * 2 + 2, t.buffer().lines.len());
+}
+
+#[test]
+fn regression_tests_erase_in_display() {
+    let mut t = test_handler(80, 7, []);
+    let rows = |t: &TestTerm, trim| -> Vec<String> {
+        (0..7)
+            .map(|i| {
+                t.buffer()
+                    .lines
+                    .get(i)
+                    .unwrap()
+                    .translate_to_string(trim, None, None, None)
+            })
+            .collect()
+    };
+    let fill = |t: &mut TestTerm| {
+        t.set_cursor(0, 0);
+        for _ in 0..7 {
+            t.parse_str(&a_run(80));
+        }
+    };
+    let a = a_run(80);
+    let blank = " ".repeat(80);
+
+    // fill display with a's
+    fill(&mut t);
+    // params [0] - right and below erase
+    t.set_cursor(40, 5);
+    t.handler.erase_in_display(&params(&[0]), false);
+    let partial = a_run(40) + &" ".repeat(40);
+    assert_eq!(
+        rows(&t, false),
+        [&a, &a, &a, &a, &a, &partial, &blank].map(String::clone)
+    );
+    assert_eq!(
+        rows(&t, true),
+        [&a, &a, &a, &a, &a, &a_run(40), &String::new()].map(String::clone)
+    );
+
+    // params [1] - left and above
+    fill(&mut t);
+    t.set_cursor(40, 5);
+    t.handler.erase_in_display(&params(&[1]), false);
+    let partial = " ".repeat(41) + &a_run(39);
+    assert_eq!(
+        rows(&t, false),
+        [&blank, &blank, &blank, &blank, &blank, &partial, &a].map(String::clone)
+    );
+    assert_eq!(
+        rows(&t, true),
+        ["", "", "", "", "", &partial, &a].map(str::to_owned)
+    );
+
+    // params [2] - whole screen
+    fill(&mut t);
+    t.set_cursor(40, 5);
+    t.handler.erase_in_display(&params(&[2]), false);
+    assert_eq!(rows(&t, false), vec![blank.clone(); 7]);
+    assert_eq!(rows(&t, true), vec![String::new(); 7]);
+}
+
+#[test]
+fn cursor_positioning_should_clamp_cursor_into_addressible_range_dch() {
+    clamp_case("\x1b[P", [9, 9], [0, 0]);
+}
+
+#[test]
+fn cursor_positioning_should_clamp_cursor_into_addressible_range_dch_should_delete_last_cell() {
+    let mut t = cursor_handler();
+    t.parse_str("0123456789\x1b[P");
+    assert_eq!(t.lines(1), ["012345678"]);
+    let line = t.buffer().lines.get(0).unwrap();
+    assert_eq!(
+        line.translate_to_string(false, None, None, None),
+        "012345678 "
+    );
+}
+
+#[test]
+fn cursor_positioning_should_clamp_cursor_into_addressible_range_ech() {
+    clamp_case("\x1b[X", [9, 9], [0, 0]);
+}
+
+#[test]
+fn cursor_positioning_should_clamp_cursor_into_addressible_range_ech_should_delete_last_cell() {
+    let mut t = cursor_handler();
+    t.parse_str("0123456789\x1b[X");
+    let line = t.buffer().lines.get(0).unwrap();
+    assert_eq!(
+        line.translate_to_string(false, None, None, None),
+        "012345678 "
+    );
+}
+
+#[test]
+fn cursor_positioning_should_clamp_cursor_into_addressible_range_ich() {
+    clamp_case("\x1b[@", [9, 9], [0, 0]);
+}
+
+#[test]
+fn cursor_positioning_should_clamp_cursor_into_addressible_range_ich_should_delete_last_cell() {
+    let mut t = cursor_handler();
+    t.parse_str("0123456789\x1b[@");
+    let line = t.buffer().lines.get(0).unwrap();
+    assert_eq!(
+        line.translate_to_string(false, None, None, None),
+        "012345678 "
+    );
+}
+
+/// `describe('scroll margins')`: 10 x 10.
+fn margins_handler() -> TestTerm {
+    let mut t = upstream_handler();
+    t.resize(10, 10);
+    t
+}
+
+const TEN_LINES: &str = "0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9";
+
+#[test]
+fn scroll_margins_scroll_up() {
+    let mut t = margins_handler();
+    t.parse_str(&format!("{TEN_LINES}\x1b[2;4r\x1b[2Sm"));
+    assert_eq!(t.screen(), ["m", "3", "", "", "4", "5", "6", "7", "8", "9"]);
+}
+
+#[test]
+fn scroll_margins_scroll_down() {
+    let mut t = margins_handler();
+    t.parse_str(&format!("{TEN_LINES}\x1b[2;4r\x1b[2Tm"));
+    assert_eq!(t.screen(), ["m", "", "", "1", "4", "5", "6", "7", "8", "9"]);
+}
+
+/// The "out of margins" cases of IL (`L`) and DL (`M`): the expected screens are the same.
+fn lines_out_of_margins(final_byte: char) {
+    let mut t = margins_handler();
+    t.parse_str(&format!("{TEN_LINES}\x1b[3;6r"));
+    assert_eq!(t.buffer().scroll_top, 2);
+    assert_eq!(t.buffer().scroll_bottom, 5);
+    t.parse_str(&format!("\x1b[2{final_byte}m"));
+    assert_eq!(
+        t.screen(),
+        ["m", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+    );
+    t.parse_str(&format!("\x1b[2H\x1b[2{final_byte}n"));
+    assert_eq!(
+        t.screen(),
+        ["m", "n", "2", "3", "4", "5", "6", "7", "8", "9"]
+    );
+    // skip below scrollbottom
+    t.parse_str(&format!("\x1b[7H\x1b[2{final_byte}o"));
+    assert_eq!(
+        t.screen(),
+        ["m", "n", "2", "3", "4", "5", "o", "7", "8", "9"]
+    );
+    t.parse_str(&format!("\x1b[8H\x1b[2{final_byte}p"));
+    assert_eq!(
+        t.screen(),
+        ["m", "n", "2", "3", "4", "5", "o", "p", "8", "9"]
+    );
+    t.parse_str(&format!("\x1b[100H\x1b[2{final_byte}q"));
+    assert_eq!(
+        t.screen(),
+        ["m", "n", "2", "3", "4", "5", "o", "p", "8", "q"]
+    );
+}
+
+#[test]
+fn scroll_margins_insert_lines_out_of_margins() {
+    lines_out_of_margins('L');
+}
+
+#[test]
+fn scroll_margins_insert_lines_within_margins() {
+    let mut t = margins_handler();
+    t.parse_str(&format!("{TEN_LINES}\x1b[3;6r"));
+    assert_eq!(t.buffer().scroll_top, 2);
+    assert_eq!(t.buffer().scroll_bottom, 5);
+    t.parse_str("\x1b[3H\x1b[2Lm");
+    assert_eq!(
+        t.screen(),
+        ["0", "1", "m", "", "2", "3", "6", "7", "8", "9"]
+    );
+    t.parse_str("\x1b[6H\x1b[2Ln");
+    assert_eq!(
+        t.screen(),
+        ["0", "1", "m", "", "2", "n", "6", "7", "8", "9"]
+    );
+}
+
+#[test]
+fn scroll_margins_delete_lines_out_of_margins() {
+    lines_out_of_margins('M');
+}
+
+#[test]
+fn scroll_margins_delete_lines_within_margins() {
+    let mut t = margins_handler();
+    t.parse_str(&format!("{TEN_LINES}\x1b[3;6r"));
+    assert_eq!(t.buffer().scroll_top, 2);
+    assert_eq!(t.buffer().scroll_bottom, 5);
+    t.parse_str("\x1b[6H\x1b[2Mm");
+    assert_eq!(
+        t.screen(),
+        ["0", "1", "2", "3", "4", "m", "6", "7", "8", "9"]
+    );
+    t.parse_str("\x1b[3H\x1b[2Mn");
+    assert_eq!(t.screen(), ["0", "1", "n", "m", "", "", "6", "7", "8", "9"]);
+}
+
+/// `describe('should correctly reset cells taken by wide chars')`: 10 x 5, scrollback 1, 20 `￥`.
+fn wide_handler() -> TestTerm {
+    let mut t = upstream_handler();
+    t.resize(10, 5);
+    t.set_option(OptionValue::Scrollback(1));
+    t.parse_str(&"￥".repeat(20));
+    t
+}
+
+#[test]
+fn should_correctly_reset_cells_taken_by_wide_chars_el() {
+    let mut t = wide_handler();
+    t.parse_str("\x1b[1;6H\x1b[K#");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥ #", "￥￥￥￥￥", "￥￥￥￥￥", "￥￥￥￥￥", ""]
+    );
+    t.parse_str("\x1b[2;5H\x1b[1K");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥ #", "      ￥￥", "￥￥￥￥￥", "￥￥￥￥￥", ""]
+    );
+    t.parse_str("\x1b[3;6H\x1b[1K");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥ #", "      ￥￥", "      ￥￥", "￥￥￥￥￥", ""]
+    );
+}
+
+#[test]
+fn should_correctly_reset_cells_taken_by_wide_chars_ich() {
+    let mut t = wide_handler();
+    t.parse_str("\x1b[1;6H\x1b[@");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥   ￥", "￥￥￥￥￥", "￥￥￥￥￥", "￥￥￥￥￥", ""]
+    );
+    t.parse_str("\x1b[2;4H\x1b[2@");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥   ￥", "￥    ￥￥", "￥￥￥￥￥", "￥￥￥￥￥", ""]
+    );
+    t.parse_str("\x1b[3;4H\x1b[3@");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥   ￥", "￥    ￥￥", "￥     ￥", "￥￥￥￥￥", ""]
+    );
+    t.parse_str("\x1b[4;4H\x1b[4@");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥   ￥", "￥    ￥￥", "￥     ￥", "￥      ￥", ""]
+    );
+}
+
+#[test]
+fn should_correctly_reset_cells_taken_by_wide_chars_dch() {
+    let mut t = wide_handler();
+    t.parse_str("\x1b[1;6H\x1b[P");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥ ￥￥", "￥￥￥￥￥", "￥￥￥￥￥", "￥￥￥￥￥", ""]
+    );
+    t.parse_str("\x1b[2;6H\x1b[2P");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥ ￥￥", "￥￥  ￥", "￥￥￥￥￥", "￥￥￥￥￥", ""]
+    );
+    t.parse_str("\x1b[3;6H\x1b[3P");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥ ￥￥", "￥￥  ￥", "￥￥ ￥", "￥￥￥￥￥", ""]
+    );
+}
+
+#[test]
+fn should_correctly_reset_cells_taken_by_wide_chars_ech() {
+    let mut t = wide_handler();
+    t.parse_str("\x1b[1;6H\x1b[X");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥  ￥￥", "￥￥￥￥￥", "￥￥￥￥￥", "￥￥￥￥￥", ""]
+    );
+    t.parse_str("\x1b[2;6H\x1b[2X");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥  ￥￥", "￥￥    ￥", "￥￥￥￥￥", "￥￥￥￥￥", ""]
+    );
+    t.parse_str("\x1b[3;6H\x1b[3X");
+    assert_eq!(
+        t.lines(5),
+        ["￥￥  ￥￥", "￥￥    ￥", "￥￥    ￥", "￥￥￥￥￥", ""]
+    );
+}
+
+/// `describe('EL/ED cursor at buffer.cols')`: 10 x 5.
+fn at_cols_handler() -> TestTerm {
+    let mut t = upstream_handler();
+    t.resize(10, 5);
+    t
+}
+
+fn at_cols_case(final_seq: &str, expected_first_line: &str) {
+    let mut t = at_cols_handler();
+    t.parse_str(&format!("##########{final_seq}"));
+    assert_eq!(t.buffer().x, 10);
+    assert_eq!(t.screen(), [expected_first_line, "", "", "", ""]);
+}
+
+#[test]
+fn el_ed_cursor_at_cols_el0() {
+    at_cols_case("\x1b[0K", "##########");
+}
+
+#[test]
+fn el_ed_cursor_at_cols_el1() {
+    at_cols_case("\x1b[1K", "");
+}
+
+#[test]
+fn el_ed_cursor_at_cols_el2() {
+    at_cols_case("\x1b[2K", "");
+}
+
+#[test]
+fn el_ed_cursor_at_cols_ed0() {
+    at_cols_case("\x1b[0J", "##########");
+}
+
+#[test]
+fn el_ed_cursor_at_cols_ed1() {
+    at_cols_case("\x1b[1J", "");
+}
+
+#[test]
+fn el_ed_cursor_at_cols_ed2() {
+    at_cols_case("\x1b[2J", "");
+}
+
+#[test]
+fn el_ed_cursor_at_cols_ed3() {
+    at_cols_case("\x1b[3J", "##########");
+}
+
+#[test]
+fn el_ed_cursor_at_cols_following_sequence_keeps_working_cursor_never_advances_beyond_cols() {
+    let seqs = [
+        "\x1b[10@",
+        "\x1b[10 @",
+        "\x1b[10A",
+        "\x1b[10 A",
+        "\x1b[10B",
+        "\x1b[10C",
+        "\x1b[10D",
+        "\x1b[10E",
+        "\x1b[10F",
+        "\x1b[10G",
+        "\x1b[10;10H",
+        "\x1b[10I",
+        "\x1b[10L",
+        "\x1b[10M",
+        "\x1b[10P",
+        "\x1b[10S",
+        "\x1b[10T",
+        "\x1b[10X",
+        "\x1b[10Z",
+        "\x1b[10`",
+        "\x1b[10a",
+        "\x1b[10b",
+        "\x1b[10d",
+        "\x1b[10e",
+        "\x1b[10;10f",
+        "\x1b[0g",
+        "\x1b[s",
+        "\x1b[10'}",
+        "\x1b[10'~",
+    ];
+    let mut t = at_cols_handler();
+    for seq in seqs {
+        t.parse_str(&format!("##########\x1b[2J{seq}"));
+        assert!(t.buffer().x <= 10, "{seq:?}");
+        t.handler.reset();
+        t.reset_buffers();
+    }
+}
+
+#[test]
+fn decsca_and_decsed_decsel_default_is_unprotected() {
+    let mut t = upstream_handler();
+    t.parse_str("some text");
+    t.parse_str("\x1b[?2K");
+    assert_eq!(t.lines(2), ["", ""]);
+    t.parse_str("some text");
+    t.parse_str("\x1b[?2J");
+    assert_eq!(t.lines(2), ["", ""]);
+}
+
+#[test]
+fn decsca_and_decsed_decsel_decsca_1_with_decsel() {
+    let mut t = upstream_handler();
+    t.parse_str("###\x1b[1\"qlineerase\x1b[0\"q***");
+    t.parse_str("\x1b[?2K");
+    assert_eq!(t.lines(2), ["   lineerase", ""]);
+    // normal EL works as before
+    t.parse_str("\x1b[2K");
+    assert_eq!(t.lines(2), ["", ""]);
+}
+
+#[test]
+fn decsca_and_decsed_decsel_decsca_1_with_decsed() {
+    let mut t = upstream_handler();
+    t.parse_str("###\x1b[1\"qdisplayerase\x1b[0\"q***");
+    t.parse_str("\x1b[?2J");
+    assert_eq!(t.lines(2), ["   displayerase", ""]);
+    // normal ED works as before
+    t.parse_str("\x1b[2J");
+    assert_eq!(t.lines(2), ["", ""]);
+}
+
+// --- added: oracle cases (expected values from @xterm/headless 6.0.0, V6 widths) ---
+
+/// Replay `inputs` on a `cols` x `rows` terminal and compare every buffer line (`|` = row start,
+/// `~` = wrapped row, right-trimmed) and `[x, y, ybase, ydisp]` with the oracle's.
+fn oracle_case(
+    cols: usize,
+    rows: usize,
+    scroll_on_erase: bool,
+    inputs: &[&str],
+    expect_lines: &[&str],
+    expect_cursor: [usize; 4],
+) {
+    let options = if scroll_on_erase {
+        vec![OptionValue::ScrollOnEraseInDisplay(true)]
+    } else {
+        Vec::new()
+    };
+    let mut t = test_handler(cols, rows, options);
+    for input in inputs {
+        t.parse_str(input);
+    }
+    let buffer = t.buffer();
+    let lines: Vec<String> = (0..buffer.lines.len())
+        .filter_map(|i| buffer.lines.get(i))
+        .map(|line| {
+            format!(
+                "{}{}",
+                if line.is_wrapped { '~' } else { '|' },
+                line.translate_to_string(true, None, None, None)
+            )
+        })
+        .collect();
+    assert_eq!(lines, expect_lines);
+    assert_eq!(
+        [buffer.x, buffer.y, buffer.ybase, buffer.ydisp],
+        expect_cursor
+    );
+}
+
+#[test]
+fn oracle_il_huge() {
+    oracle_case(
+        5,
+        10,
+        false,
+        &[
+            "aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\r\nfffff\r\nggggg\r\nhhhhh\r\niiiii\r\njjjjj\x1b[4;7r\x1b[6;1H\x1b[100000L",
+        ],
+        &[
+            "|aaaaa", "|bbbbb", "|ccccc", "|ddddd", "|eeeee", "|", "|", "|hhhhh", "|iiiii",
+            "|jjjjj",
+        ],
+        [0, 5, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_dl_huge() {
+    oracle_case(
+        5,
+        10,
+        false,
+        &[
+            "aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\r\nfffff\r\nggggg\r\nhhhhh\r\niiiii\r\njjjjj\x1b[4;7r\x1b[5;1H\x1b[100000M",
+        ],
+        &[
+            "|aaaaa", "|bbbbb", "|ccccc", "|ddddd", "|", "|", "|", "|hhhhh", "|iiiii", "|jjjjj",
+        ],
+        [0, 4, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_su_huge() {
+    oracle_case(
+        5,
+        10,
+        false,
+        &[
+            "aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\r\nfffff\r\nggggg\r\nhhhhh\r\niiiii\r\njjjjj\x1b[4;7r\x1b[100000S",
+        ],
+        &[
+            "|aaaaa", "|bbbbb", "|ccccc", "|", "|", "|", "|", "|hhhhh", "|iiiii", "|jjjjj",
+        ],
+        [0, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_sd_huge() {
+    oracle_case(
+        5,
+        10,
+        false,
+        &[
+            "aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\r\nfffff\r\nggggg\r\nhhhhh\r\niiiii\r\njjjjj\x1b[4;7r\x1b[100000T",
+        ],
+        &[
+            "|aaaaa", "|bbbbb", "|ccccc", "|", "|", "|", "|", "|hhhhh", "|iiiii", "|jjjjj",
+        ],
+        [0, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_il_n() {
+    oracle_case(
+        5,
+        10,
+        false,
+        &[
+            "aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\r\nfffff\r\nggggg\r\nhhhhh\r\niiiii\r\njjjjj\x1b[4;7r\x1b[5;1H\x1b[2L",
+        ],
+        &[
+            "|aaaaa", "|bbbbb", "|ccccc", "|ddddd", "|", "|", "|eeeee", "|hhhhh", "|iiiii",
+            "|jjjjj",
+        ],
+        [0, 4, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_rep_basic() {
+    oracle_case(
+        10,
+        3,
+        false,
+        &["ab\x1b[3b"],
+        &["|abbbb", "|", "|"],
+        [5, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_rep_none_after_csi() {
+    oracle_case(
+        10,
+        3,
+        false,
+        &["ab\x1b[m\x1b[3b"],
+        &["|ab", "|", "|"],
+        [2, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_rep_wide() {
+    oracle_case(
+        10,
+        3,
+        false,
+        &["a中\x1b[2b"],
+        &["|a中中中", "|", "|"],
+        [7, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_rep_wrap() {
+    oracle_case(
+        5,
+        3,
+        false,
+        &["abc\x1b[7b"],
+        &["|abccc", "~ccccc", "|"],
+        [5, 1, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_rep_combining() {
+    oracle_case(
+        6,
+        3,
+        false,
+        &["xe\u{301}\x1b[2b"],
+        &["|xe\u{301}e\u{301}e\u{301}", "|", "|"],
+        [4, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_rep_at_line_start() {
+    oracle_case(
+        4,
+        3,
+        false,
+        &["abcd\x1b[2b"],
+        &["|abcd", "~dd", "|"],
+        [2, 1, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_rep_wide_wrap_edge() {
+    oracle_case(
+        5,
+        3,
+        false,
+        &["abc中\x1b[2b"],
+        &["|abc中", "~中中", "|"],
+        [4, 1, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_ed3_scrollback() {
+    oracle_case(
+        5,
+        3,
+        false,
+        &["aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\r\nfffff\x1b[3J"],
+        &["|ddddd", "|eeeee", "|fffff"],
+        [5, 2, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_ed3_no_scrollback() {
+    oracle_case(
+        5,
+        3,
+        false,
+        &["aaaaa\r\nbbbbb\x1b[3J"],
+        &["|aaaaa", "|bbbbb", "|"],
+        [5, 1, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_ed1_last_col() {
+    oracle_case(
+        5,
+        4,
+        false,
+        &["aaaaa\r\nbbbbb\r\nccccc\r\nddddd\x1b[2;5H\x1b[1J"],
+        &["|", "|", "|ccccc", "|ddddd"],
+        [4, 1, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_ed1_last_col_wrapped() {
+    oracle_case(
+        5,
+        4,
+        false,
+        &["abcdefghijklmnopqrst\x1b[2;5H\x1b[1J"],
+        &["|", "|", "|klmno", "~pqrst"],
+        [4, 1, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_ed1_at_ybase() {
+    oracle_case(
+        5,
+        3,
+        false,
+        &["aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\r\nfffff\x1b[2;5H\x1b[1J"],
+        &["|aaaaa", "|bbbbb", "|ccccc", "|", "|", "|fffff"],
+        [4, 1, 3, 3],
+    );
+}
+
+#[test]
+fn oracle_ed1_abs_quirk() {
+    oracle_case(
+        5,
+        3,
+        false,
+        &["aaaaabbbbbccccc\r\nddddd\r\neeeee\r\nfffff\x1b[2;5H\x1b[1J"],
+        &["|aaaaa", "~bbbbb", "|ccccc", "|", "|", "|fffff"],
+        [4, 1, 3, 3],
+    );
+}
+
+#[test]
+fn oracle_ed0_wrapped_x0() {
+    oracle_case(
+        5,
+        4,
+        false,
+        &["abcdefghijklmnopqrst\x1b[2;1H\x1b[0J"],
+        &["|abcde", "|", "|", "|"],
+        [0, 1, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_ed2_scroll_on_erase() {
+    oracle_case(
+        5,
+        3,
+        true,
+        &["aaaaa\r\nbbbbb\x1b[2J"],
+        &["|aaaaa", "|bbbbb", "|", "|", "|"],
+        [5, 1, 2, 2],
+    );
+}
+
+#[test]
+fn oracle_ed2_scroll_on_erase_blank() {
+    oracle_case(5, 3, true, &["\x1b[2J"], &["|", "|", "|"], [0, 0, 0, 0]);
+}
+
+#[test]
+fn oracle_ed2_scroll_on_erase_full() {
+    oracle_case(
+        5,
+        3,
+        true,
+        &["aaaaa\r\nbbbbb\r\nccccc\x1b[2J"],
+        &["|aaaaa", "|bbbbb", "|ccccc", "|", "|", "|"],
+        [5, 2, 3, 3],
+    );
+}
+
+#[test]
+fn oracle_decsed_protected() {
+    oracle_case(
+        6,
+        3,
+        false,
+        &["ab\x1b[1\"qCD\x1b[0\"qef\r\ngh\x1b[?2J"],
+        &["|  CD", "|", "|"],
+        [2, 1, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_decsel_1() {
+    oracle_case(
+        6,
+        3,
+        false,
+        &["ab\x1b[1\"qCD\x1b[0\"qef\x1b[1;4H\x1b[?1K"],
+        &["|  CDef", "|", "|"],
+        [3, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_decsca_two_is_unprotect() {
+    oracle_case(
+        6,
+        3,
+        false,
+        &["\x1b[1\"qA\x1b[2\"qB\x1b[?2K"],
+        &["|A", "|", "|"],
+        [2, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_decsca_no_param() {
+    oracle_case(
+        6,
+        3,
+        false,
+        &["\x1b[1\"qA\x1b[\"qB\x1b[?2K"],
+        &["|A", "|", "|"],
+        [2, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_ech_wide() {
+    oracle_case(
+        6,
+        3,
+        false,
+        &["a中b\x1b[1;3H\x1b[X"],
+        &["|a  b", "|", "|"],
+        [2, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_ech_huge() {
+    oracle_case(
+        6,
+        3,
+        false,
+        &["abcdef\x1b[1;3H\x1b[2147483647X"],
+        &["|ab", "|", "|"],
+        [2, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_ich_huge() {
+    oracle_case(
+        6,
+        3,
+        false,
+        &["abcdef\x1b[1;3H\x1b[2147483647@"],
+        &["|ab", "|", "|"],
+        [2, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_dch_huge() {
+    oracle_case(
+        6,
+        3,
+        false,
+        &["abcdef\x1b[1;3H\x1b[2147483647P"],
+        &["|ab", "|", "|"],
+        [2, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_sl_sr_decic_decdc_margin_outside() {
+    oracle_case(
+        5,
+        5,
+        false,
+        &[
+            "aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\x1b[2;4r\x1b[1;1H\x1b[2 @\x1b[2 A\x1b[2'}\x1b[2'~",
+        ],
+        &["|aaaaa", "|bbbbb", "|ccccc", "|ddddd", "|eeeee"],
+        [0, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_sl_inside() {
+    oracle_case(
+        5,
+        5,
+        false,
+        &["aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\x1b[2;4r\x1b[3;1H\x1b[2 @"],
+        &["|aaaaa", "|bbb", "|ccc", "|ddd", "|eeeee"],
+        [0, 2, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_sr_wrapped_flag() {
+    oracle_case(
+        5,
+        3,
+        false,
+        &["abcdefghijkl\x1b[ A"],
+        &["| abcd", "| fghi", "| kl"],
+        [2, 2, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_decaln() {
+    oracle_case(
+        4,
+        3,
+        false,
+        &["ab\r\ncdefgh\x1b#8"],
+        &["|EEEE", "|EEEE", "|EEEE"],
+        [0, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_decaln_scrolled() {
+    oracle_case(
+        4,
+        3,
+        false,
+        &["aaaa\r\nbbbb\r\ncccc\r\ndddd\r\neeee\x1b#8"],
+        &["|aaaa", "|bbbb", "|EEEE", "|EEEE", "|EEEE"],
+        [0, 0, 2, 2],
+    );
+}
+
+#[test]
+fn oracle_el_variants() {
+    oracle_case(
+        6,
+        4,
+        false,
+        &["abcdef\r\nabcdef\r\nabcdef\x1b[1;3H\x1b[K\x1b[2;3H\x1b[1K\x1b[3;3H\x1b[2K"],
+        &["|ab", "|   def", "|", "|"],
+        [2, 2, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_el_wrapped() {
+    oracle_case(
+        5,
+        3,
+        false,
+        &["abcdefgh\x1b[2;1H\x1b[K"],
+        &["|abcde", "|", "|"],
+        [0, 1, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_el_x0_unwrap() {
+    oracle_case(
+        5,
+        3,
+        false,
+        &["abcdefgh\x1b[2;1H\x1b[0K"],
+        &["|abcde", "|", "|"],
+        [0, 1, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_el_x_cols_pending() {
+    oracle_case(
+        5,
+        3,
+        false,
+        &["abcde\x1b[1K"],
+        &["|", "|", "|"],
+        [5, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_ed_x_cols_pending() {
+    oracle_case(
+        5,
+        3,
+        false,
+        &["abcde\r\nabcde\x1b[1;5H\x1b[0J"],
+        &["|abcd", "|", "|"],
+        [4, 0, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_il_cursor_outside() {
+    oracle_case(
+        5,
+        6,
+        false,
+        &["aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\r\nfffff\x1b[2;4r\x1b[6;3H\x1b[L"],
+        &["|aaaaa", "|bbbbb", "|ccccc", "|ddddd", "|eeeee", "|fffff"],
+        [2, 5, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_il_sets_x0() {
+    oracle_case(
+        5,
+        6,
+        false,
+        &["aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\r\nfffff\x1b[3;3H\x1b[L"],
+        &["|aaaaa", "|bbbbb", "|", "|ccccc", "|ddddd", "|eeeee"],
+        [0, 2, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_dl_sets_x0() {
+    oracle_case(
+        5,
+        6,
+        false,
+        &["aaaaa\r\nbbbbb\r\nccccc\r\nddddd\r\neeeee\r\nfffff\x1b[3;3H\x1b[M"],
+        &["|aaaaa", "|bbbbb", "|ddddd", "|eeeee", "|fffff", "|"],
+        [0, 2, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_su_scrollback() {
+    oracle_case(
+        5,
+        4,
+        false,
+        &["aaaaa\r\nbbbbb\r\nccccc\r\nddddd\x1b[2S"],
+        &["|ccccc", "|ddddd", "|", "|"],
+        [5, 3, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_sd_simple() {
+    oracle_case(
+        5,
+        4,
+        false,
+        &["aaaaa\r\nbbbbb\r\nccccc\r\nddddd\x1b[2T"],
+        &["|", "|", "|aaaaa", "|bbbbb"],
+        [5, 3, 0, 0],
+    );
+}
+
+#[test]
+fn oracle_su_sd_zero_param() {
+    oracle_case(
+        5,
+        4,
+        false,
+        &["aaaaa\r\nbbbbb\r\nccccc\r\nddddd\x1b[0S\x1b[0T\x1b[0L\x1b[0M"],
+        &["|", "|bbbbb", "|ccccc", "|"],
+        [0, 3, 0, 0],
+    );
+}
+
+// --- added: step 5 (bounds, damage, attributes, markers, missing lines) ---
+
+fn lettered(t: &mut TestTerm, rows: usize, cols: usize) {
+    let text: Vec<String> = (0..rows)
+        .map(|i| {
+            char::from(b'a' + u8::try_from(i).unwrap())
+                .to_string()
+                .repeat(cols)
+        })
+        .collect();
+    t.parse_str(&text.join("\r\n"));
+}
+
+/// IL, DL, SU and SD with a count far past the region equal the count of the region height
+/// (upstream loops `Ps` times; the Rust loops stop at the height, `// LUNETERM:` in the
+/// handlers). The count 100000 is the one the oracle cases above ran.
+#[test]
+fn huge_line_and_scroll_counts_equal_the_region_height() {
+    for seq in ["L", "M", "S", "T"] {
+        let run = |count: &str| {
+            let mut t = test_handler(5, 10, []);
+            lettered(&mut t, 10, 5);
+            t.parse_str(&format!("\x1b[4;7r\x1b[5;1H\x1b[{count}{seq}"));
+            t.snapshot()
+        };
+        assert_eq!(run("2147483647"), run("4"), "{seq}");
+        assert_eq!(run("99999999999"), run("4"), "{seq} (past i32)");
+    }
+}
+
+#[test]
+fn huge_character_counts_are_clamped_by_the_buffer_line() {
+    let mut t = test_handler(6, 3, []);
+    t.parse_str("abcdef\x1b[1;3H\x1b[2147483647@");
+    assert_eq!(t.lines(1), ["ab"]);
+    t.parse_str("abcdef\x1b[1;3H\x1b[2147483647P");
+    assert_eq!(t.lines(1), ["ab"]);
+    t.parse_str("abcdef\x1b[1;3H\x1b[2147483647X");
+    assert_eq!(t.lines(1), ["ab"]);
+}
+
+#[test]
+fn rep_repeats_the_preceding_print_and_is_a_no_op_after_other_sequences() {
+    let mut t = test_handler(10, 3, []);
+    t.parse_str("ab\x1b[3b");
+    assert_eq!(t.lines(1), ["abbbb"]);
+    // any sequence in between clears the carried character
+    let mut t = test_handler(10, 3, []);
+    t.parse_str("ab\x1b[m\x1b[3b");
+    assert_eq!(t.lines(1), ["ab"]);
+    // a combined cluster and a wide char repeat as a whole
+    let mut t = test_handler(6, 3, []);
+    t.parse_str("xe\u{301}\x1b[2b");
+    assert_eq!(t.lines(1), ["xe\u{301}e\u{301}e\u{301}"]);
+    let mut t = test_handler(10, 3, []);
+    t.parse_str("a中\x1b[2b");
+    assert_eq!(t.lines(1), ["a中中中"]);
+    // REP at the start of the buffer has nothing to repeat
+    let mut t = test_handler(10, 3, []);
+    t.parse_str("\x1b[3b");
+    assert_eq!(t.lines(1), [""]);
+}
+
+#[test]
+fn rep_with_a_huge_count_prints_a_bounded_amount() {
+    let mut t = test_handler(80, 24, []);
+    t.parse_str("a\x1b[2147483647b");
+    let rows = t.viewport();
+    assert!(rows.iter().all(|row| row.chars().all(|c| c == 'a')));
+    // the cap, not the count: MAX_REP_CODE_POINTS characters after the first one
+    let x = t.buffer().x;
+    assert_eq!(x, (1 + MAX_REP_CODE_POINTS) % 80);
+}
+
+#[test]
+fn rep_with_the_cursor_column_past_the_line_does_not_panic() {
+    let mut t = test_handler(5, 3, []);
+    t.parse_str("abcde\x1b[3b");
+    assert_eq!(t.lines(2), ["abcde", "eee"]);
+}
+
+#[test]
+fn erase_handlers_fill_with_the_erase_attributes() {
+    let mut t = test_handler(6, 3, []);
+    t.parse_str("abcdef\r\nabcdef\r\nabcdef");
+    t.handler.cur_attr_data.bg = BLUE;
+    t.parse_str("\x1b[1;2H\x1b[2X\x1b[2;2H\x1b[K\x1b[3;3H\x1b[1K");
+    assert_eq!(t.cell(0, 1), (String::new(), 1, 0, BLUE));
+    assert_eq!(t.cell(0, 2), (String::new(), 1, 0, BLUE));
+    assert_eq!(t.cell(0, 3).0, "d");
+    assert_eq!(t.cell(1, 0).0, "a");
+    assert_eq!(t.cell(1, 1), (String::new(), 1, 0, BLUE));
+    assert_eq!(t.cell(1, 5), (String::new(), 1, 0, BLUE));
+    assert_eq!(t.cell(2, 2), (String::new(), 1, 0, BLUE));
+    assert_eq!(t.cell(2, 3).0, "d");
+    // ED 2 and IL use them too
+    t.parse_str("\x1b[2J");
+    assert_eq!(t.cell(1, 0), (String::new(), 1, 0, BLUE));
+    t.parse_str("x\x1b[L");
+    assert_eq!(t.cell(0, 0), (String::new(), 1, 0, BLUE));
+}
+
+#[test]
+fn scroll_down_blank_lines_use_the_default_attributes() {
+    // upstream passes DEFAULT_ATTR_DATA for SD (not the erase attributes)
+    let mut t = test_handler(4, 3, []);
+    t.parse_str("a\r\nb\r\nc");
+    t.handler.cur_attr_data.bg = BLUE;
+    t.parse_str("\x1b[T");
+    assert_eq!(t.cell(0, 0), (String::new(), 1, 0, 0));
+    t.parse_str("\x1b[S");
+    assert_eq!(t.cell(2, 0), (String::new(), 1, 0, BLUE));
+}
+
+#[test]
+fn decsca_sets_and_clears_the_protected_flag() {
+    let mut t = test_handler(10, 3, []);
+    let protected = |t: &TestTerm| t.handler.get_attr_data().bg & BgFlags::PROTECTED;
+    t.parse_str("\x1b[1\"q");
+    assert_ne!(protected(&t), 0);
+    t.parse_str("\x1b[0\"q");
+    assert_eq!(protected(&t), 0);
+    t.parse_str("\x1b[1\"q\x1b[2\"q");
+    assert_eq!(protected(&t), 0);
+    // another value changes nothing
+    t.parse_str("\x1b[1\"q\x1b[7\"q");
+    assert_ne!(protected(&t), 0);
+}
+
+#[test]
+fn selective_erase_keeps_protected_cells_for_every_variant() {
+    let mut t = test_handler(6, 3, []);
+    t.parse_str("ab\x1b[1\"qCD\x1b[0\"qef\r\ngh\x1b[1\"qIJ\x1b[0\"q");
+    // DECSEL 1, 0 and 2
+    t.parse_str("\x1b[1;4H\x1b[?1K");
+    assert_eq!(t.lines(1), ["  CDef"]);
+    t.parse_str("\x1b[?0K");
+    assert_eq!(t.lines(1), ["  CD"]);
+    t.parse_str("\x1b[?2K");
+    assert_eq!(t.lines(1), ["  CD"]);
+    // DECSED 0 from the first row keeps CD and IJ
+    t.parse_str("\x1b[1;1H\x1b[?0J");
+    assert_eq!(t.lines(2), ["  CD", "  IJ"]);
+    // DECSED 1 up to the second row
+    t.parse_str("\x1b[2;6H\x1b[?1J");
+    assert_eq!(t.lines(2), ["  CD", "  IJ"]);
+    // DECSED 3 is the ordinary ED 3
+    t.parse_str("\x1b[?3J");
+    assert_eq!(t.lines(2), ["  CD", "  IJ"]);
+    // plain ED ignores the flag
+    t.parse_str("\x1b[2J");
+    assert_eq!(t.lines(2), ["", ""]);
+}
+
+#[test]
+fn ed_3_clears_the_scrollback_and_reports_scroll_damage() {
+    let mut t = test_handler(5, 3, []);
+    lettered(&mut t, 6, 5);
+    t.handler.take_damage();
+    assert_eq!((t.buffer().ybase, t.buffer().lines.len()), (3, 6));
+    t.parse_str("\x1b[3J");
+    assert_eq!(
+        (t.buffer().ybase, t.buffer().ydisp, t.buffer().lines.len()),
+        (0, 0, 3)
+    );
+    assert_eq!(t.viewport(), ["d", "e", "f"].map(|c| c.repeat(5)));
+    assert!(t.handler.take_damage().scrolled);
+    // with no scrollback there is nothing to clear and no scroll damage
+    t.parse_str("\x1b[3J");
+    assert!(!t.handler.take_damage().scrolled);
+}
+
+#[test]
+fn ed_2_with_scroll_on_erase_in_display_reports_scroll_damage() {
+    let mut t = test_handler(5, 3, [OptionValue::ScrollOnEraseInDisplay(true)]);
+    t.parse_str("ab");
+    t.handler.take_damage();
+    t.parse_str("\x1b[2J");
+    let damage = t.handler.take_damage();
+    assert!(damage.scrolled);
+    assert_eq!((t.buffer().ybase, t.buffer().lines.len()), (1, 4));
+    // a blank screen scrolls nothing
+    t.parse_str("\x1b[2J");
+    assert_eq!((t.buffer().ybase, t.buffer().lines.len()), (1, 4));
+}
+
+#[test]
+fn erasing_lines_disposes_their_markers() {
+    let mut t = test_handler(5, 4, []);
+    lettered(&mut t, 4, 5);
+    let on_row_1 = t.buffer_mut().add_marker(1);
+    let on_row_3 = t.buffer_mut().add_marker(3);
+    t.parse_str("\x1b[3;1H\x1b[1J");
+    // ED 1 resets rows 0 and 1; the marker on row 3 stays
+    assert!(t.buffer().marker(on_row_1).is_none());
+    assert_eq!(t.buffer().marker(on_row_3).map(|m| m.line), Some(3));
+    // IL moves the marker below the cursor down
+    t.parse_str("\x1b[1;1H\x1b[L");
+    assert_eq!(
+        t.buffer().marker(on_row_3).map(|m| m.line),
+        None,
+        "bottom line lost"
+    );
+}
+
+#[test]
+fn decaln_fills_the_viewport_with_e_in_the_current_colours() {
+    let mut t = test_handler(4, 3, []);
+    t.parse_str("ab\r\ncdefgh");
+    assert!(
+        t.buffer().lines.get(2).is_some_and(|line| line.is_wrapped),
+        "precondition"
+    );
+    t.handler.cur_attr_data.fg = RED;
+    t.handler.cur_attr_data.bg = BLUE;
+    t.parse_str("\x1b#8");
+    assert_eq!(t.viewport(), ["EEEE"; 3]);
+    assert_eq!(t.cell(0, 0), ("E".into(), 1, RED, BLUE));
+    assert_eq!(t.cell(2, 3), ("E".into(), 1, RED, BLUE));
+    assert_eq!(t.cursor(), [0, 0]);
+    // the wrapped flag of the continuation line is cleared
+    assert!(t.buffer().lines.get(2).is_some_and(|line| !line.is_wrapped));
+}
+
+#[test]
+fn decaln_follows_the_viewport_after_scrolling() {
+    let mut t = test_handler(4, 3, []);
+    lettered(&mut t, 5, 4);
+    t.parse_str("\x1b#8");
+    assert_eq!(t.lines(5), ["aaaa", "bbbb", "EEEE", "EEEE", "EEEE"]);
+}
+
+#[test]
+fn new_handlers_survive_a_missing_cursor_line() {
+    // the recipe of `missing_cursor_line_stops_the_handler_without_panic`
+    let mut t = test_handler(97, 9, [OptionValue::Scrollback(0)]);
+    for _ in 0..8 {
+        t.parse_str(&"a".repeat(97));
+        t.parse_str("\r\n");
+    }
+    t.parse_str(&"a".repeat(10));
+    t.resize(23, 15);
+    let buffer = t.buffer();
+    assert!(buffer.lines.get(abs_y(buffer)).is_none(), "recipe");
+    for seq in [
+        "\x1b[@",
+        "\x1b[P",
+        "\x1b[X",
+        "\x1b[K",
+        "\x1b[1K",
+        "\x1b[2K",
+        "\x1b[J",
+        "\x1b[1J",
+        "\x1b[2J",
+        "\x1b[3J",
+        "\x1b[?J",
+        "\x1b[?K",
+        "\x1b[L",
+        "\x1b[M",
+        "\x1b[S",
+        "\x1b[T",
+        "\x1b[ @",
+        "\x1b[ A",
+        "\x1b['}",
+        "\x1b['~",
+        "\x1b[b",
+        "\x1b#8",
+        "\x1b[1\"q",
+    ] {
+        t.parse_str(&format!("\x1b[15;1H{seq}"));
+    }
+    t.parse_str("\x1b[1;1Hok");
+    assert_eq!(
+        t.viewport().first().and_then(|row| row.get(..2)),
+        Some("ok")
     );
 }

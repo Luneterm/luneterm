@@ -7,7 +7,9 @@
 //! Ported so far (plan M6 step 2): the struct, `parse`, `print`, the register forwards (with the
 //! `t` window-option guard), BEL LF VT FF CR BS HT SO SI IND NEL HTS, CSI A B C D E F G H I Z
 //! `` ` `` a d e f g r s u, ESC 7 8 D E H M, the five fallbacks and the error handler, and
-//! `DirtyRowTracker`, `reset` (step 3). The other handler groups follow in steps 5 to 8.
+//! `DirtyRowTracker`, `reset` (step 3); step 5: CSI @ SP@ SPA J ?J K ?K L M P S T X b `"q`
+//! `'}` `'~` and ESC # 8 (erase, insert/delete, scrolling, columns, ECH, REP, DECSCA, DECALN).
+//! The other handler groups follow in steps 6 to 8.
 //!
 //! Rust shape (plan M6 D1, D2, D3, D8):
 //!  - The parser is generic over a `'static` host, so [`InputHandler`] owns the services
@@ -43,6 +45,14 @@
 //!    including the case where the recycled line is the new row (one row, no scrollback) and the
 //!    case where the old row leaves the list (upstream then writes to a detached object: no
 //!    visible effect).
+//!  - Differences (step 5): upstream loops `Ps` times in IL, DL, SU and SD (up to 2^31 - 1
+//!    splices); the loops stop after as many iterations as the region has rows, when every line
+//!    of it is blank and further iterations change nothing (state and markers are the same).
+//!    REP allocates `text length * Ps` code points upstream; here the repeated data is capped at
+//!    [`MAX_REP_CODE_POINTS`], so a larger count prints fewer repetitions.
+//!    ED 1 clears the wrapped flag of line `y + 1` counted from the start of the list, not from
+//!    `ybase` (upstream's index, kept). IL, DL, SU, SD, ICH, DCH, ECH and the column handlers
+//!    pass param-derived counts to the buffer line / list calls, which tolerate any count.
 //!  - Differences: CHT/CBT stop looping once the cursor no longer moves (upstream loops `Ps`
 //!    times, up to 2^31, with the same result). In `print`'s insert-mode path a negative insert
 //!    count (a joining character at column 0, reachable only with a join state that survived a
@@ -73,7 +83,8 @@ use std::mem;
 use crate::buffer::attribute_data::AttributeData;
 use crate::buffer::buffer::Buffer;
 use crate::buffer::buffer_line::{BufferLine, DEFAULT_ATTR_DATA};
-use crate::buffer::constants::{Attributes, NULL_CELL_CODE, NULL_CELL_WIDTH};
+use crate::buffer::cell_data::CellData;
+use crate::buffer::constants::{Attributes, BgFlags, Content, NULL_CELL_CODE, NULL_CELL_WIDTH};
 use crate::data::escape_sequences::{C0, C1};
 use crate::engine::{Damage, HostEvent};
 use crate::input::text_decoder::{Utf8ToUtf32, string_from_code_point, utf32_to_string};
@@ -97,6 +108,9 @@ use crate::windows_mode::update_windows_mode_wrapped_state;
 
 /// Max length of the UTF-32 input buffer; longer writes are parsed in chunks of this many bytes.
 pub const MAX_PARSEBUFFER_LENGTH: usize = 131_072;
+
+/// Most code points one REP (CSI Ps b) prints; upstream allocates `Ps` times the text.
+pub const MAX_REP_CODE_POINTS: usize = 1 << 20;
 
 /// The services every handler reads or writes (upstream's constructor arguments).
 #[derive(Debug)]
@@ -519,6 +533,38 @@ impl InputHandler {
         parser.register_csi_handler(csi('r'), |h, p| h.set_scroll_region(p))?;
         parser.register_csi_handler(csi('s'), |h, _| h.save_cursor())?;
         parser.register_csi_handler(csi('u'), |h, _| h.restore_cursor())?;
+        parser.register_csi_handler(csi('@'), |h, p| h.insert_chars(p))?;
+        parser.register_csi_handler(FunctionIdentifier::with_intermediates(" ", '@'), |h, p| {
+            h.scroll_left(p)
+        })?;
+        parser.register_csi_handler(FunctionIdentifier::with_intermediates(" ", 'A'), |h, p| {
+            h.scroll_right(p)
+        })?;
+        parser.register_csi_handler(csi('J'), |h, p| h.erase_in_display(p, false))?;
+        parser.register_csi_handler(FunctionIdentifier::with_prefix('?', 'J'), |h, p| {
+            h.erase_in_display(p, true)
+        })?;
+        parser.register_csi_handler(csi('K'), |h, p| h.erase_in_line(p, false))?;
+        parser.register_csi_handler(FunctionIdentifier::with_prefix('?', 'K'), |h, p| {
+            h.erase_in_line(p, true)
+        })?;
+        parser.register_csi_handler(csi('L'), |h, p| h.insert_lines(p))?;
+        parser.register_csi_handler(csi('M'), |h, p| h.delete_lines(p))?;
+        parser.register_csi_handler(csi('P'), |h, p| h.delete_chars(p))?;
+        parser.register_csi_handler(csi('S'), |h, p| h.scroll_up(p))?;
+        parser.register_csi_handler(csi('T'), |h, p| h.scroll_down(p))?;
+        parser.register_csi_handler(csi('X'), |h, p| h.erase_chars(p))?;
+        parser.register_csi_handler(csi('b'), |h, p| h.repeat_preceding_character(p))?;
+        parser.register_csi_handler(FunctionIdentifier::with_intermediates("'", '}'), |h, p| {
+            h.insert_columns(p)
+        })?;
+        parser.register_csi_handler(FunctionIdentifier::with_intermediates("'", '~'), |h, p| {
+            h.delete_columns(p)
+        })?;
+        parser
+            .register_csi_handler(FunctionIdentifier::with_intermediates("\"", 'q'), |h, p| {
+                h.select_protected(p)
+            })?;
 
         // execute handler
         parser.set_execute_handler(C0::BEL, |h| {
@@ -565,6 +611,9 @@ impl InputHandler {
         parser.register_esc_handler(csi('E'), |h| h.next_line())?;
         parser.register_esc_handler(csi('H'), |h| h.tab_set())?;
         parser.register_esc_handler(csi('M'), |h| h.reverse_index())?;
+        parser.register_esc_handler(FunctionIdentifier::with_intermediates("#", '8'), |h| {
+            h.screen_alignment_pattern()
+        })?;
 
         // error handler: log, never abort (upstream returns the state unchanged)
         parser.set_error_handler(|h, state| {
@@ -1323,6 +1372,475 @@ impl InputHandler {
             buffer.y = buffer.y.saturating_sub(1);
             self.restrict_cursor(None); // quickfix to not run out of bounds
         }
+        true
+    }
+
+    /// CSI Ps " q (DECSCA): whether DECSED and DECSEL can erase (0, 2) or not (1).
+    pub fn select_protected(&mut self, params: &Params) -> bool {
+        match params.get(0) {
+            Some(1) => self.cur_attr_data.bg |= BgFlags::PROTECTED,
+            Some(0 | 2) => self.cur_attr_data.bg &= !BgFlags::PROTECTED,
+            _ => {}
+        }
+        true
+    }
+
+    /// Erase the cells `start .. end` of the cursor-relative row `y` with the erase attributes
+    /// (upstream `_eraseInBufferLine`). `None` where upstream throws on a missing line.
+    fn erase_in_buffer_line(
+        &mut self,
+        y: usize,
+        start: usize,
+        end: usize,
+        clear_wrap: bool,
+        respect_protect: bool,
+    ) -> Option<()> {
+        let erase = self.erase_attr_data();
+        let buffer = self.services.buffer.buffer_mut();
+        let null_cell = buffer.get_null_cell(Some(&erase));
+        let row = buffer.ybase.saturating_add(y);
+        let line = line_mut(buffer, row)?;
+        line.replace_cells(start, end, &null_cell, respect_protect);
+        if clear_wrap {
+            line.is_wrapped = false;
+        }
+        Some(())
+    }
+
+    /// Fill the cursor-relative row `y` with the erase attributes, drop its markers and clear
+    /// its wrapped flag (upstream `_resetBufferLine`; a missing line is skipped).
+    fn reset_buffer_line(&mut self, y: usize, respect_protect: bool) {
+        let erase = self.erase_attr_data();
+        let buffer = self.services.buffer.buffer_mut();
+        let null_cell = buffer.get_null_cell(Some(&erase));
+        let row = buffer.ybase.saturating_add(y);
+        let Some(line) = line_mut(buffer, row) else {
+            return;
+        };
+        line.fill(&null_cell, respect_protect);
+        line.is_wrapped = false;
+        buffer.clear_markers(to_i64(row));
+    }
+
+    /// CSI Ps J (ED), CSI ? Ps J (DECSED, `respect_protect`): erase below (0), above (1), all
+    /// (2) or the scrollback (3).
+    pub fn erase_in_display(&mut self, params: &Params, respect_protect: bool) -> bool {
+        let cols = self.services.buffer.cols;
+        let rows = self.services.buffer.rows;
+        self.restrict_cursor(Some(cols));
+        match params.get(0) {
+            Some(0) => {
+                let (mut j, x) = {
+                    let buffer = self.services.buffer.buffer();
+                    (buffer.y, buffer.x)
+                };
+                self.dirty_row_tracker.mark_dirty(j);
+                if self
+                    .erase_in_buffer_line(j, x, cols, x == 0, respect_protect)
+                    .is_none()
+                {
+                    return true;
+                }
+                j += 1;
+                while j < rows {
+                    self.reset_buffer_line(j, respect_protect);
+                    j += 1;
+                }
+                self.dirty_row_tracker.mark_dirty(j);
+            }
+            Some(1) => {
+                let (mut j, x) = {
+                    let buffer = self.services.buffer.buffer();
+                    (buffer.y, buffer.x)
+                };
+                self.dirty_row_tracker.mark_dirty(j);
+                // Deleted front part of line and everything before. This line will no longer be
+                // wrapped.
+                if self
+                    .erase_in_buffer_line(j, 0, x.saturating_add(1), true, respect_protect)
+                    .is_none()
+                {
+                    return true;
+                }
+                if x.saturating_add(1) >= cols {
+                    // Deleted entire previous line. This next line can no longer be wrapped.
+                    // (Upstream indexes the list with `j + 1`, not relative to `ybase`.)
+                    let buffer = self.services.buffer.buffer_mut();
+                    match line_mut(buffer, j.saturating_add(1)) {
+                        Some(line) => line.is_wrapped = false,
+                        None => return true,
+                    }
+                }
+                while j > 0 {
+                    j -= 1;
+                    self.reset_buffer_line(j, respect_protect);
+                }
+                self.dirty_row_tracker.mark_dirty(0);
+            }
+            Some(2) => {
+                if self.services.options.options().scroll_on_erase_in_display {
+                    self.dirty_row_tracker
+                        .mark_range_dirty(0, to_i64(rows).saturating_sub(1));
+                    // `while (j--)`: the last row with content, -1 if there is none
+                    let mut j = to_i64(rows);
+                    loop {
+                        if j <= 0 {
+                            j = -1;
+                            break;
+                        }
+                        j -= 1;
+                        let buffer = self.services.buffer.buffer();
+                        let row = buffer.ybase.saturating_add(to_usize(j));
+                        if buffer
+                            .lines
+                            .get(row)
+                            .is_some_and(|line| line.get_trimmed_length() != 0)
+                        {
+                            break;
+                        }
+                    }
+                    while j >= 0 {
+                        self.scroll_buffer(false);
+                        j -= 1;
+                    }
+                } else {
+                    self.dirty_row_tracker.mark_dirty(rows.saturating_sub(1));
+                    let mut j = rows;
+                    while j > 0 {
+                        j -= 1;
+                        self.reset_buffer_line(j, respect_protect);
+                    }
+                    self.dirty_row_tracker.mark_dirty(0);
+                }
+            }
+            Some(3) => {
+                // Clear scrollback (everything not in viewport)
+                let buffer = self.services.buffer.buffer_mut();
+                let scrollback_size = buffer.lines.len().saturating_sub(rows);
+                if scrollback_size > 0 {
+                    buffer.lines.trim_start(scrollback_size);
+                    buffer.ybase = buffer.ybase.saturating_sub(scrollback_size);
+                    buffer.ydisp = buffer.ydisp.saturating_sub(scrollback_size);
+                    // Force a scroll event to refresh viewport
+                    self.on_scroll(0);
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// CSI Ps K (EL), CSI ? Ps K (DECSEL, `respect_protect`): erase to the right (0), to the
+    /// left (1) or the whole line (2).
+    pub fn erase_in_line(&mut self, params: &Params, respect_protect: bool) -> bool {
+        let cols = self.services.buffer.cols;
+        self.restrict_cursor(Some(cols));
+        let (x, y) = {
+            let buffer = self.services.buffer.buffer();
+            (buffer.x, buffer.y)
+        };
+        let erased = match params.get(0) {
+            Some(0) => self.erase_in_buffer_line(y, x, cols, x == 0, respect_protect),
+            Some(1) => self.erase_in_buffer_line(y, 0, x.saturating_add(1), false, respect_protect),
+            Some(2) => self.erase_in_buffer_line(y, 0, cols, true, respect_protect),
+            _ => Some(()),
+        };
+        if erased.is_none() {
+            return true;
+        }
+        self.dirty_row_tracker.mark_dirty(y);
+        true
+    }
+
+    /// Whether the cursor row is inside the scroll margins (the guard of IL, DL, SL, SR, DECIC
+    /// and DECDC).
+    fn cursor_in_scroll_region(&self) -> bool {
+        let buffer = self.services.buffer.buffer();
+        !(buffer.y > buffer.scroll_bottom || buffer.y < buffer.scroll_top)
+    }
+
+    /// CSI Ps L (IL): insert `Ps` blank lines at the active row; the lines at the bottom margin
+    /// are lost. No effect outside the margins. The cursor moves to the first column.
+    ///
+    /// LUNETERM: upstream loops `Ps` times (up to 2^31 - 1); once the region from the cursor row
+    /// to the bottom margin is blank further iterations change nothing, so the loop stops after
+    /// that many.
+    pub fn insert_lines(&mut self, params: &Params) -> bool {
+        self.restrict_cursor(None);
+        let param = param_or(params, 0, 1);
+        if !self.cursor_in_scroll_region() {
+            return true;
+        }
+        let erase = self.erase_attr_data();
+        let buffer = self.services.buffer.buffer_mut();
+        let row = abs_y(buffer);
+        let bottom_row = buffer.ybase.saturating_add(buffer.scroll_bottom);
+        let height = to_i64(buffer.scroll_bottom - buffer.y + 1);
+        // LUNETERM: upstream loops `param` times; the iterations past the height change nothing
+        let mut remaining = param.min(height);
+        while remaining > 0 {
+            remaining -= 1;
+            // blankLine(true) - xterm/linux behavior
+            buffer.lines.splice(bottom_row, 1, Vec::new());
+            let blank = buffer.get_blank_line(&erase, false);
+            buffer.lines.splice(row, 0, vec![blank]);
+        }
+        let (y, bottom) = (buffer.y, buffer.scroll_bottom);
+        buffer.x = 0; // see https://vt100.net/docs/vt220-rm/chapter4.html - vt220 only?
+        self.dirty_row_tracker
+            .mark_range_dirty(to_i64(y), to_i64(bottom));
+        true
+    }
+
+    /// CSI Ps M (DL): delete `Ps` lines at the active row, blank lines appear at the bottom
+    /// margin. No effect outside the margins. The cursor moves to the first column.
+    ///
+    /// LUNETERM: the loop is bounded as in [`InputHandler::insert_lines`].
+    pub fn delete_lines(&mut self, params: &Params) -> bool {
+        self.restrict_cursor(None);
+        let param = param_or(params, 0, 1);
+        if !self.cursor_in_scroll_region() {
+            return true;
+        }
+        let erase = self.erase_attr_data();
+        let buffer = self.services.buffer.buffer_mut();
+        let row = abs_y(buffer);
+        let bottom_row = buffer.ybase.saturating_add(buffer.scroll_bottom);
+        let height = to_i64(buffer.scroll_bottom - buffer.y + 1);
+        // LUNETERM: upstream loops `param` times; the iterations past the height change nothing
+        let mut remaining = param.min(height);
+        while remaining > 0 {
+            remaining -= 1;
+            // blankLine(true) - xterm/linux behavior
+            buffer.lines.splice(row, 1, Vec::new());
+            let blank = buffer.get_blank_line(&erase, false);
+            buffer.lines.splice(bottom_row, 0, vec![blank]);
+        }
+        let (y, bottom) = (buffer.y, buffer.scroll_bottom);
+        buffer.x = 0; // see https://vt100.net/docs/vt220-rm/chapter4.html - vt220 only?
+        self.dirty_row_tracker
+            .mark_range_dirty(to_i64(y), to_i64(bottom));
+        true
+    }
+
+    /// CSI Ps @ (ICH): insert `Ps` blank characters at the cursor; characters moved past the
+    /// right margin are lost.
+    pub fn insert_chars(&mut self, params: &Params) -> bool {
+        self.restrict_cursor(None);
+        let n = to_usize(param_or(params, 0, 1));
+        let erase = self.erase_attr_data();
+        let buffer = self.services.buffer.buffer_mut();
+        let null_cell = buffer.get_null_cell(Some(&erase));
+        let (row, x, y) = (abs_y(buffer), buffer.x, buffer.y);
+        if let Some(line) = line_mut(buffer, row) {
+            line.insert_cells(x, n, &null_cell);
+            self.dirty_row_tracker.mark_dirty(y);
+        }
+        true
+    }
+
+    /// CSI Ps P (DCH): delete `Ps` characters at the cursor; blank characters appear at the
+    /// right margin.
+    pub fn delete_chars(&mut self, params: &Params) -> bool {
+        self.restrict_cursor(None);
+        let n = to_usize(param_or(params, 0, 1));
+        let erase = self.erase_attr_data();
+        let buffer = self.services.buffer.buffer_mut();
+        let null_cell = buffer.get_null_cell(Some(&erase));
+        let (row, x, y) = (abs_y(buffer), buffer.x, buffer.y);
+        if let Some(line) = line_mut(buffer, row) {
+            line.delete_cells(x, n, &null_cell);
+            self.dirty_row_tracker.mark_dirty(y);
+        }
+        true
+    }
+
+    /// CSI Ps S (SU): scroll the region up `Ps` lines.
+    ///
+    /// LUNETERM: upstream loops `Ps` times; after as many iterations as the region has rows
+    /// every line is blank and further iterations change nothing, so the loop stops there.
+    pub fn scroll_up(&mut self, params: &Params) -> bool {
+        let param = param_or(params, 0, 1);
+        let erase = self.erase_attr_data();
+        let buffer = self.services.buffer.buffer_mut();
+        let top_row = buffer.ybase.saturating_add(buffer.scroll_top);
+        let bottom_row = buffer.ybase.saturating_add(buffer.scroll_bottom);
+        let height = to_i64(buffer.scroll_bottom.saturating_sub(buffer.scroll_top)) + 1;
+        // LUNETERM: upstream loops `param` times; the iterations past the height change nothing
+        let mut remaining = param.min(height);
+        while remaining > 0 {
+            remaining -= 1;
+            buffer.lines.splice(top_row, 1, Vec::new());
+            let blank = buffer.get_blank_line(&erase, false);
+            buffer.lines.splice(bottom_row, 0, vec![blank]);
+        }
+        let (top, bottom) = (to_i64(buffer.scroll_top), to_i64(buffer.scroll_bottom));
+        self.dirty_row_tracker.mark_range_dirty(top, bottom);
+        true
+    }
+
+    /// CSI Ps T (SD): scroll the region down `Ps` lines (the new lines use the default
+    /// attributes, as upstream).
+    ///
+    /// LUNETERM: the loop is bounded as in [`InputHandler::scroll_up`].
+    pub fn scroll_down(&mut self, params: &Params) -> bool {
+        let param = param_or(params, 0, 1);
+        let buffer = self.services.buffer.buffer_mut();
+        let top_row = buffer.ybase.saturating_add(buffer.scroll_top);
+        let bottom_row = buffer.ybase.saturating_add(buffer.scroll_bottom);
+        let height = to_i64(buffer.scroll_bottom.saturating_sub(buffer.scroll_top)) + 1;
+        // LUNETERM: upstream loops `param` times; the iterations past the height change nothing
+        let mut remaining = param.min(height);
+        while remaining > 0 {
+            remaining -= 1;
+            buffer.lines.splice(bottom_row, 1, Vec::new());
+            let blank = buffer.get_blank_line(&DEFAULT_ATTR_DATA, false);
+            buffer.lines.splice(top_row, 0, vec![blank]);
+        }
+        let (top, bottom) = (to_i64(buffer.scroll_top), to_i64(buffer.scroll_bottom));
+        self.dirty_row_tracker.mark_range_dirty(top, bottom);
+        true
+    }
+
+    /// Apply `edit` to every line of the scroll region and clear its wrapped flag (SL, SR,
+    /// DECIC, DECDC). Upstream throws on a missing line, abandoning the rest of the handler.
+    fn edit_region_cells(
+        &mut self,
+        n: usize,
+        edit: impl Fn(&mut BufferLine, usize, usize, &CellData),
+    ) -> bool {
+        let erase = self.erase_attr_data();
+        let buffer = self.services.buffer.buffer_mut();
+        let null_cell = buffer.get_null_cell(Some(&erase));
+        let (top, bottom, x) = (buffer.scroll_top, buffer.scroll_bottom, buffer.x);
+        for y in top..=bottom {
+            let row = buffer.ybase.saturating_add(y);
+            let Some(line) = line_mut(buffer, row) else {
+                return true;
+            };
+            edit(line, x, n, &null_cell);
+            line.is_wrapped = false;
+        }
+        self.dirty_row_tracker
+            .mark_range_dirty(to_i64(top), to_i64(bottom));
+        true
+    }
+
+    /// CSI Ps SP @ (SL): move the content of the region `Ps` columns to the left. No effect
+    /// outside the margins.
+    pub fn scroll_left(&mut self, params: &Params) -> bool {
+        if !self.cursor_in_scroll_region() {
+            return true;
+        }
+        let n = to_usize(param_or(params, 0, 1));
+        self.edit_region_cells(n, |line, _, n, fill| line.delete_cells(0, n, fill))
+    }
+
+    /// CSI Ps SP A (SR): move the content of the region `Ps` columns to the right. No effect
+    /// outside the margins.
+    pub fn scroll_right(&mut self, params: &Params) -> bool {
+        if !self.cursor_in_scroll_region() {
+            return true;
+        }
+        let n = to_usize(param_or(params, 0, 1));
+        self.edit_region_cells(n, |line, _, n, fill| line.insert_cells(0, n, fill))
+    }
+
+    /// CSI Ps ' } (DECIC): insert `Ps` blank columns at the cursor in every line of the region.
+    pub fn insert_columns(&mut self, params: &Params) -> bool {
+        if !self.cursor_in_scroll_region() {
+            return true;
+        }
+        let n = to_usize(param_or(params, 0, 1));
+        self.edit_region_cells(n, |line, x, n, fill| line.insert_cells(x, n, fill))
+    }
+
+    /// CSI Ps ' ~ (DECDC): delete `Ps` columns at the cursor in every line of the region.
+    pub fn delete_columns(&mut self, params: &Params) -> bool {
+        if !self.cursor_in_scroll_region() {
+            return true;
+        }
+        let n = to_usize(param_or(params, 0, 1));
+        self.edit_region_cells(n, |line, x, n, fill| line.delete_cells(x, n, fill))
+    }
+
+    /// CSI Ps X (ECH): erase `Ps` characters from the cursor to the right.
+    pub fn erase_chars(&mut self, params: &Params) -> bool {
+        self.restrict_cursor(None);
+        let n = to_usize(param_or(params, 0, 1));
+        let erase = self.erase_attr_data();
+        let buffer = self.services.buffer.buffer_mut();
+        let null_cell = buffer.get_null_cell(Some(&erase));
+        let (row, x, y) = (abs_y(buffer), buffer.x, buffer.y);
+        if let Some(line) = line_mut(buffer, row) {
+            line.replace_cells(x, x.saturating_add(n), &null_cell, false);
+            self.dirty_row_tracker.mark_dirty(y);
+        }
+        true
+    }
+
+    /// CSI Ps b (REP): repeat the preceding graphic character (the cluster before the cursor)
+    /// `Ps` times through `print`. Nothing if the last parser action was not a print.
+    ///
+    /// LUNETERM: upstream allocates `text.length * Ps` code points (up to 2^31 - 1 times the
+    /// text). The repeated data is capped at [`MAX_REP_CODE_POINTS`]; a larger count prints that
+    /// many fewer repetitions (the visible difference is only the cursor column and which
+    /// repetition ends the output).
+    pub fn repeat_preceding_character(&mut self, params: &Params) -> bool {
+        let join_state = self.preceding_join_state;
+        if join_state == 0 {
+            return true;
+        }
+        // call print to insert the chars and handle correct wrapping
+        let length = param_or(params, 0, 1);
+        let ch_width = UnicodeService::extract_width(join_state);
+        let buffer = self.services.buffer.buffer();
+        let x = to_i64(buffer.x) - i64::from(ch_width);
+        let Some(buffer_row) = buffer.lines.get(abs_y(buffer)) else {
+            return true;
+        };
+        // a negative index reads `undefined` upstream: the empty string
+        let text = usize::try_from(x)
+            .map(|x| buffer_row.get_string(x))
+            .unwrap_or_default();
+        let unit: Vec<u32> = text.chars().map(u32::from).collect();
+        let data: Vec<u32> = if unit.is_empty() {
+            Vec::new()
+        } else {
+            // LUNETERM: upstream allocates unit.len() * length code points; capped
+            let repeats = usize::try_from(length)
+                .unwrap_or(usize::MAX)
+                .min(MAX_REP_CODE_POINTS / unit.len());
+            unit.iter()
+                .copied()
+                .cycle()
+                .take(unit.len() * repeats)
+                .collect()
+        };
+        self.print(&data);
+        true
+    }
+
+    /// ESC # 8 (DECALN): fill the viewport with `E` in the current colours and home the cursor.
+    pub fn screen_alignment_pattern(&mut self) -> bool {
+        // prepare cell data
+        let mut cell = CellData::new();
+        cell.content = (1 << Content::WIDTH_SHIFT) | u32::from('E');
+        cell.fg = self.cur_attr_data.fg;
+        cell.bg = self.cur_attr_data.bg;
+
+        self.set_cursor(0, 0);
+        let rows = self.services.buffer.rows;
+        let buffer = self.services.buffer.buffer_mut();
+        let first = abs_y(buffer);
+        for y_offset in 0..rows {
+            if let Some(line) = line_mut(buffer, first.saturating_add(y_offset)) {
+                line.fill(&cell, false);
+                line.is_wrapped = false;
+            }
+        }
+        self.dirty_row_tracker.mark_all_dirty(rows);
+        self.set_cursor(0, 0);
         true
     }
 }

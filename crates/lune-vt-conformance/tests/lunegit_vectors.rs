@@ -19,18 +19,7 @@ use lune_vt_conformance::{Golden, Kind, load};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Vectors that fail until their handlers are ported (steps 5-8). Shrinks to empty.
-const PENDING: &[&str] = &[
-    "el_clearline_afterwrap",
-    "el_to_eol",
-    "erase_display_below",
-    "rep_csi_b",
-    "ich_insertchar",
-    "dch_deletechar",
-    "inplace_wrap_redraw",
-    "ech_erasechar",
-    "wrap_widechar_acct",
-    "el0_after_widechar",
-];
+const PENDING: &[&str] = &[];
 
 fn size_of(pair: Option<(u32, u32)>) -> Option<(usize, usize)> {
     pair.map(|(c, r)| (c as usize, r as usize))
