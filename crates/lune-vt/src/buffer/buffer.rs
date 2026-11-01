@@ -833,6 +833,12 @@ impl Buffer {
         self.lines.observer_mut().add(y)
     }
 
+    /// Disposes one marker (upstream `IMarker.dispose`); logged like every disposal. Unknown or
+    /// already disposed ids are ignored.
+    pub fn dispose_marker(&mut self, id: MarkerId) {
+        self.lines.observer_mut().dispose(id);
+    }
+
     /// The live marker, `None` once disposed.
     pub fn marker(&self, id: MarkerId) -> Option<&Marker> {
         self.lines.observer().get(id)
