@@ -540,16 +540,6 @@ pub fn param_to_window_option(n: Option<i32>, opts: &WindowOptions) -> bool {
 
 // Lazy log arguments: formatted only when the log level lets the message through.
 
-/// Bytes as Latin-1 characters (upstream `String.fromCharCode` per byte).
-struct Latin1<'a>(&'a [u8]);
-
-impl fmt::Display for Latin1<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use fmt::Write;
-        self.0.iter().try_for_each(|&b| f.write_char(char::from(b)))
-    }
-}
-
 /// `identToString`.
 struct Ident(u32);
 
@@ -967,13 +957,12 @@ impl InputHandler {
             (buffer.x, buffer.y)
         };
 
-        // Log debug data (formatted only when the level lets it through)
+        // LUNETERM: (user decision 2026-11-02, review S5) upstream logs the data at debug and
+        // its codes at trace; the data is the pty output (an OSC 52 payload, a password echoed
+        // by a program), so only its length is logged and the trace line is dropped.
         self.services
             .log
-            .debug(format_args!("parsing data \"{}\"", Latin1(data)));
-        self.services
-            .log
-            .trace(format_args!("parsing data (codes) {data:?}"));
+            .debug(format_args!("parsing data ({} bytes)", data.len()));
 
         // Clear the dirty row tracker so we know which lines changed as a result of parsing
         self.dirty_row_tracker
