@@ -18,6 +18,7 @@ pub mod data;
 pub mod engine;
 pub mod extension;
 pub mod input;
+pub mod input_handler;
 pub mod parser;
 pub mod services;
 pub mod windows_mode;
