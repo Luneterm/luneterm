@@ -20,6 +20,7 @@
 //!    markers of the normal and alternate buffers never collide.
 //!  - Marker lines are `i64`: a trimmed marker goes below 0 before it is disposed.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::circular_list::{DeleteEvent, InsertEvent, ListObserver};
@@ -51,6 +52,9 @@ pub struct MarkerSet {
     /// Creation order; ids strictly increase.
     entries: Vec<Entry>,
     disposed: Vec<MarkerId>,
+    /// Entries visited or moved by walks and removals (tests pin bulk operations to one walk).
+    #[cfg(test)]
+    pub(crate) visits: u64,
 }
 
 impl MarkerSet {
@@ -91,8 +95,21 @@ impl MarkerSet {
     /// Upstream `Marker.dispose`: idempotent; the marker leaves the set and is logged.
     pub fn dispose(&mut self, id: MarkerId) {
         if let Some(i) = self.index_of(id) {
+            #[cfg(test)]
+            {
+                self.visits += (self.entries.len() - i) as u64;
+            }
             self.entries.remove(i);
             self.disposed.push(id);
+        }
+    }
+
+    /// Disposes every marker in `ids` (unknown ones are ignored) in one walk, logged in creation
+    /// order. LUNETERM: (review F6) `dispose` per id costs a removal each, quadratic for a link
+    /// that marks every line of a long buffer.
+    pub fn dispose_all(&mut self, ids: &HashSet<MarkerId>) {
+        if !ids.is_empty() {
+            self.dispose_where(|m| ids.contains(&m.id));
         }
     }
 
@@ -125,6 +142,10 @@ impl MarkerSet {
 
     /// Disposes every marker matching `pred` in creation order, as one walk.
     fn dispose_where(&mut self, mut pred: impl FnMut(&Marker) -> bool) {
+        #[cfg(test)]
+        {
+            self.visits += self.entries.len() as u64;
+        }
         let disposed = &mut self.disposed;
         self.entries.retain(|e| {
             if pred(&e.marker) {
@@ -139,6 +160,10 @@ impl MarkerSet {
     /// Runs one listener over every attached marker in creation order; the markers it returns
     /// `true` for are disposed (removed and logged, in that order).
     fn apply(&mut self, mut listener: impl FnMut(&mut Marker) -> bool) {
+        #[cfg(test)]
+        {
+            self.visits += self.entries.len() as u64;
+        }
         let disposed = &mut self.disposed;
         self.entries.retain_mut(|e| {
             if e.attached && listener(&mut e.marker) {

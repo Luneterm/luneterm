@@ -34,7 +34,7 @@
 //!  - `_entriesWithId` keys are upstream's `` `${id};;${uri}` `` strings, so a `;;` inside an id
 //!    or uri can make two different links share a key, as upstream.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::buffer::marker::MarkerId;
 use crate::services::buffer_service::BufferService;
@@ -104,6 +104,10 @@ pub struct OscLinkService {
     /// same line).
     #[cfg(test)]
     pub(crate) marker_visits: u64,
+    /// Entries of links' marker lists `on_markers_disposed` looked at (tests pin one pass per
+    /// affected link per batch).
+    #[cfg(test)]
+    pub(crate) line_visits: u64,
 }
 
 impl Default for OscLinkService {
@@ -124,6 +128,8 @@ impl OscLinkService {
             next_age: 1,
             #[cfg(test)]
             marker_visits: 0,
+            #[cfg(test)]
+            line_visits: 0,
         }
     }
 
@@ -255,19 +261,30 @@ impl OscLinkService {
     /// Upstream `_removeMarkerFromLink` for each disposed marker (the host forwards
     /// `Buffer::take_disposed_markers()`; see the module notes). A link whose last marker is
     /// gone is freed.
+    ///
+    /// LUNETERM: (review F6) upstream removes each marker from its link's list on its own
+    /// dispose event, a search and a removal per marker: quadratic when ED 3, RIS or a trim
+    /// disposes the markers of a link over a long buffer at once. Here the batch is grouped by
+    /// link and each affected list is filtered once. The end state is the same; links freed
+    /// by one batch are freed in another order, which nothing observes.
     pub fn on_markers_disposed(&mut self, ids: &[MarkerId]) {
+        let mut gone: HashMap<u32, HashSet<MarkerId>> = HashMap::new();
         for &marker in ids {
-            let Some(link_id) = self.link_of_marker.remove(&marker) else {
-                continue;
-            };
+            if let Some(link_id) = self.link_of_marker.remove(&marker) {
+                gone.entry(link_id).or_default().insert(marker);
+            }
+        }
+        for (link_id, markers) in gone {
             let Some(entry) = self.data_by_link_id.get_mut(&link_id) else {
                 continue;
             };
-            let Some(index) = entry.lines.iter().position(|m| m.id == marker) else {
-                continue;
-            };
-            entry.lines.remove(index);
-            if entry.lines.is_empty() {
+            #[cfg(test)]
+            {
+                self.line_visits += entry.lines.len() as u64;
+            }
+            let before = entry.lines.len();
+            entry.lines.retain(|m| !markers.contains(&m.id));
+            if entry.lines.len() != before && entry.lines.is_empty() {
                 if let Some(key) = entry.key.take() {
                     self.entries_with_id.remove(&key);
                 }
@@ -335,7 +352,9 @@ impl OscLinkService {
     }
 
     /// LUNETERM: drops a link and disposes its markers. Their disposal is logged by the buffer
-    /// like any other; forwarded later, the ids are unknown here and ignored.
+    /// like any other; forwarded later, the ids are unknown here and ignored. The markers of
+    /// each buffer go in one walk of its marker list (review F6), logged in creation order,
+    /// which is the order the link added them.
     fn evict(&mut self, buffers: &mut BufferService, link_id: u32) {
         let Some(entry) = self.data_by_link_id.remove(&link_id) else {
             return;
@@ -344,15 +363,17 @@ impl OscLinkService {
         if let Some(key) = entry.key {
             self.entries_with_id.remove(&key);
         }
+        let (mut normal, mut alt) = (HashSet::new(), HashSet::new());
         for marker in entry.lines {
             self.link_of_marker.remove(&marker.id);
-            let buffer = if marker.alt {
-                buffers.buffers.alt_mut()
+            if marker.alt {
+                alt.insert(marker.id);
             } else {
-                buffers.buffers.normal_mut()
-            };
-            buffer.dispose_marker(marker.id);
+                normal.insert(marker.id);
+            }
         }
+        buffers.buffers.normal_mut().dispose_markers(&normal);
+        buffers.buffers.alt_mut().dispose_markers(&alt);
     }
 
     /// LUNETERM: (review F5) the next id not in use (module notes).
