@@ -3,7 +3,9 @@
 ```
 crates/
   lune-vt         VT engine (xterm.js port). No deps, no unsafe. Pure: bytes in, state + events out.
-                  Parser, decoders and charsets are ported; see "lune-vt parser".
+                  Parser, decoders, charsets, the buffer and the buffer-side services are ported
+                  (InputHandler and the engine API are not yet); see "lune-vt parser" and
+                  "lune-vt buffer".
   lune-vt-conformance  Unpublished test-data crate: corpus, xterm.js goldens, golden reader and
                   parser-trace runner for lune-vt. See "lune-vt parser".
   lune-pty        Pty / PtyBackend traits; PortablePtyBackend (portable-pty 0.9.0: ConPTY on Windows,
@@ -154,7 +156,8 @@ executables in the current directory and checks both the hole (portable-pty alon
 
 `crates/lune-vt/src/parser/`, `input/text_decoder.rs`, `input/x_parse_color.rs`, `data/` are ports
 of the xterm.js 6.0.0 files of the same names (`docs/porting-xterm.md` has the status of every
-`src/common` file). The rest of `lune-vt` is still the module skeleton.
+`src/common` file). The buffer slice is described under "lune-vt buffer"; `InputHandler`, `CoreTerminal`
+and the `VtEngine` implementation are not written yet.
 
 **Handler API.** `EscapeSequenceParser<C: ParserHost>` is generic over the host state `C` and
 never owns or references it. `parse(&mut self, host: &mut C, data: &[u32])` (and `reset`) borrow
@@ -191,6 +194,77 @@ the golden reader and the parser-trace runner. `lune-vt` itself keeps no `[depen
 `[dev-dependencies]`; its fuzz test includes the runner's `trace.rs` and `escape.rs` by path.
 Format and runners: `crates/lune-vt-conformance/FORMAT.md`. Screen-level goldens are only loaded and counted so
 far; no engine consumes them yet.
+
+## lune-vt buffer
+
+`crates/lune-vt/src/buffer/`, `circular_list.rs`, `color.rs`, `input/unicode_v6.rs`,
+`addons/unicode_v11.rs` and `services/{buffer,charset,options,osc_link,unicode}_service.rs` are
+ports of the xterm.js 6.0.0 files of the same names (status of every file:
+`docs/porting-xterm.md`, which also lists the conventions this section summarises).
+
+**Storage.** A `BufferLine` is `Vec<u32>` of `cols x CELL_SIZE (3)` words (content, fg, bg, with
+the `buffer/Constants.ts` bit layout) plus two ordered side maps, `combined` (cell index to a
+multi-code-point string) and `extended_attrs` (cell index to `ExtendedAttrs`, a `Copy` value).
+JS typed-array behaviour is reproduced where code relies on it: an out-of-range read is 0 and a
+write is a no-op, while the side maps are as unchecked as JS object writes. A `Buffer` holds
+`lines: CircularList<BufferLine, MarkerSet>`, the cursor (`x`, `y`), `ybase`/`ydisp`, the scroll
+region, `tabs: BTreeSet<usize>` and the saved-cursor fields. `BufferSet` owns the normal buffer
+(with scrollback) and the alt buffer (none); `BufferService` owns `cols`, `rows` and the
+`BufferSet`. `CircularList` stores `VecDeque<Option<T>>` and grows on demand: a terminal with
+`scrollback = 4_294_967_295` allocates nothing in proportion to it.
+
+**Observers and markers.** `CircularList<T, O: ListObserver>` calls `on_trim`, `on_insert` and
+`on_delete` synchronously where xterm.js fires `onTrim`, `onInsert` and `onDelete`. `MarkerSet`
+is the observer of `Buffer.lines`: it moves, shifts and disposes markers (`MarkerId`, ids from one
+process-wide counter) exactly as the three listeners of `Buffer.addMarker` do. A disposed marker
+is appended to a log that the host drains (`Buffer::take_disposed_markers()`); nothing in
+`lune-vt` holds a back-reference or a callback.
+
+**Events are return values.** `BufferSet::{reset, activate_normal_buffer, activate_alt_buffer}`
+return the `onBufferActivate` payload exactly when upstream fires it; `BufferService::resize`,
+`scroll` and `scroll_lines` return the `onResize` / `onScroll` payload; `OptionsService::set`
+returns `Some(key)` iff the value changed; `UnicodeService::set_active_version` returns the
+`onChange` payload.
+
+**Options by reference.** `TerminalOptions` is a typed struct of the 21 options the core reads
+(renderer and browser options belong to `lune-termview` and the app settings). Methods that read
+`rawOptions` upstream take `opts: &TerminalOptions`, so a read is as live as upstream's.
+
+**Unicode.** `UnicodeService` holds `UnicodeVersionProvider`s (`Send + Sync`); V6 is registered at
+construction, V11 (`addons/unicode_v11.rs`) by `register` plus `set_active_version("11")`.
+
+**Errors and limits.** Upstream `throw`s are `Result::Err` (`ListError`, `OptionError`,
+`UnicodeError`, `RangeError`). The module gate is the parser's plus `clippy::string_slice`, and
+arithmetic that goes negative in JS runs in `i64`. `crates/lune-vt/tests/buffer_ops.rs` drives the
+buffers with seeded random operations (cursor, resize both ways, scroll, splice, trim, cell edits,
+markers, links, alt buffer, memory cleanup) and asserts the size, side-table and disposal-log
+bounds after every operation.
+
+**Host duties (M6, written into the code docs too).** The engine has no timers, no listeners and
+no clamping of its own, so the owner of a `BufferService` must:
+- clamp `cols >= MINIMUM_COLS (2)` and `rows >= MINIMUM_ROWS (1)` before `BufferService::resize`
+  (`CoreTerminal.ts:175-176`; upstream's reflow does not terminate at one column);
+- drain `take_disposed_markers()` of **both** buffers after anything that can dispose markers
+  (scroll that trims, `clear_markers`, resize, activating the normal buffer) and pass the ids to
+  `OscLinkService::on_markers_disposed`;
+- call `Buffer::batched_memory_cleanup()` while idle until it returns `false` (the replacement of
+  `IdleTaskQueue`, after a resize sets `memory_cleanup_pending()`);
+- react to option changes as `BufferSet`'s upstream constructor does: a new `scrollback` calls
+  `BufferSet::resize` with the current size, a new `tab_stop_width` calls `setup_tab_stops(None)`;
+- forward `BufferActivate::active_ydisp` (and the value `reset` returns) as the `onScroll` event.
+
+**Known differences from xterm.js (each documented in the file header).**
+- `CircularList` has no ring: `splice` and a forward `shift_elements` give the logical result in
+  the two cases where upstream's ring overwrites elements it has not moved yet; `shift_elements`
+  refuses (`ListError::ShiftTooFar`) to grow the list by more than `max_length`, `set_len` and
+  `set_max_length` clamp.
+- Column shrink with a full scrollback: upstream overwrites the last row through a negative ring
+  index; the port keeps the correct row (`added_reflow_smaller_drops_trimmed_new_rows_instead_of_overwriting_the_last_row`).
+  The port does reproduce upstream's re-read of rows popped during the same shrink
+  (`added_reflow_smaller_reads_popped_rows_again_as_upstream_does`).
+- With `scrollback == 0`, `ybase + rows <= lines.len()` can fail after a column-shrink reflow;
+  real `@xterm/headless` 6.0.0 does the same (`reflow_without_scrollback_matches_xterm_js`), so
+  it is kept.
 
 ## Extension points
 

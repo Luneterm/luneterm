@@ -10,7 +10,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod addons;
 pub mod buffer;
+pub mod circular_list;
+pub mod color;
 pub mod data;
 pub mod engine;
 pub mod extension;
