@@ -77,7 +77,9 @@
 //!    splices); the loops stop after as many iterations as the region has rows, when every line
 //!    of it is blank and further iterations change nothing (state and markers are the same).
 //!    REP allocates `text length * Ps` code points upstream; here the repeated data is capped at
-//!    [`MAX_REP_CODE_POINTS`], so a larger count prints fewer repetitions.
+//!    [`MAX_REP_CODE_POINTS`], so a larger count prints fewer repetitions. Of those, REP
+//!    prints only as many as still change the state (review S3), a cut proven to leave the
+//!    same state as the full print where it applies (`rep_equivalent_repeats`).
 //!    ED 1 clears the wrapped flag of line `y + 1` counted from the start of the list, not from
 //!    `ybase` (upstream's index, kept). IL, DL, SU, SD, ICH, DCH, ECH and the column handlers
 //!    pass param-derived counts to the buffer line / list calls, which tolerate any count.
@@ -117,7 +119,7 @@ use crate::buffer::cell_data::CellData;
 use crate::buffer::constants::{
     Attributes, BgFlags, Content, FgFlags, NULL_CELL_CODE, NULL_CELL_WIDTH, UnderlineStyle,
 };
-use crate::data::charsets::charset;
+use crate::data::charsets::{Charset, charset};
 use crate::data::escape_sequences::{C0, C1};
 use crate::engine::{ColorIndex, ColorRequest, Damage, HostEvent, WindowReportKind};
 use crate::headless::terminal::reset_terminal;
@@ -362,6 +364,22 @@ fn param_or(params: &Params, i: usize, default: i64) -> i64 {
         Some(value) if value != 0 => i64::from(value),
         _ => default,
     }
+}
+
+/// `print`'s charset replacement: a code point below 127 maps through the active charset, to
+/// the first UTF-16 unit of its replacement (upstream `ch.charCodeAt(0)`).
+fn charset_replacement(charset: Option<&'static Charset>, code: u32) -> u32 {
+    if code < 127 {
+        if let Some(set) = charset {
+            if let Some(unit) = char::from_u32(code)
+                .and_then(|ch| set.get(ch))
+                .and_then(|ch| ch.encode_utf16().next())
+            {
+                return u32::from(unit);
+            }
+        }
+    }
+    code
 }
 
 /// The absolute row of the cursor (`ybase + y`).
@@ -1027,17 +1045,7 @@ impl InputHandler {
             let mut code = input;
 
             // get charset replacement character; charset is only defined for ASCII
-            if code < 127 {
-                if let Some(set) = charset {
-                    // upstream takes `ch.charCodeAt(0)`, the first UTF-16 unit
-                    if let Some(unit) = char::from_u32(code)
-                        .and_then(|ch| set.get(ch))
-                        .and_then(|ch| ch.encode_utf16().next())
-                    {
-                        code = u32::from(unit);
-                    }
-                }
-            }
+            code = charset_replacement(charset, code);
 
             let current_info = services.unicode.char_properties(code, preceding);
             let mut ch_width = UnicodeService::extract_width(current_info);
@@ -2052,7 +2060,9 @@ impl InputHandler {
     /// LUNETERM: upstream allocates `text.length * Ps` code points (up to 2^31 - 1 times the
     /// text). The repeated data is capped at [`MAX_REP_CODE_POINTS`]; a larger count prints that
     /// many fewer repetitions (the visible difference is only the cursor column and which
-    /// repetition ends the output).
+    /// repetition ends the output). Of those, only as many are printed as can still change the
+    /// state (about two buffers' worth of lines; [`Self::rep_equivalent_repeats`]), which
+    /// leaves the same state as printing all of them.
     pub fn repeat_preceding_character(&mut self, params: &Params) -> bool {
         let join_state = self.preceding_join_state;
         if join_state == 0 {
@@ -2078,6 +2088,8 @@ impl InputHandler {
             let repeats = usize::try_from(length)
                 .unwrap_or(usize::MAX)
                 .min(MAX_REP_CODE_POINTS / unit.len());
+            // LUNETERM: and cut to as many as still change the state (review S3)
+            let repeats = self.rep_equivalent_repeats(&unit, repeats);
             unit.iter()
                 .copied()
                 .cycle()
@@ -2086,6 +2098,85 @@ impl InputHandler {
         };
         self.print(&data);
         true
+    }
+
+    /// LUNETERM (review S3): the fewest repetitions of `unit` that leave the same state as
+    /// `repeats` repetitions printed by REP. Printing past what the buffer holds only rewrites
+    /// it, so once the printed lines have replaced every line the print can reach, the state
+    /// repeats with a period of one line's worth of units. Returns `repeats` unchanged where
+    /// that period is not proven (see the conditions below).
+    ///
+    /// Why the result is state-identical: printing `n` units is a prefix of printing
+    /// `n + k * per_line`. With wraparound on, every repetition after the first places its
+    /// first code point (non-joining, width `w`) and joins the rest onto it without moving the
+    /// cursor (the checks below), so every wrap after the first starts a line at column 0 in
+    /// the same state, and a fully printed line is the same line (the old row's cells from
+    /// the wrap column on are cleared, also in insert mode). After `rows + max_lines + 3`
+    /// wraps the cursor has reached the line it stays on (the scroll bottom, or the last row
+    /// below a region), the buffer is full (`ybase` and a user-scrolled `ydisp` no longer
+    /// move) and every line the print can reach holds that full line; `per_line` more units
+    /// then complete the current line, scroll or rewrite it, and print the same partial line
+    /// again. Lines outside the reach keep their content and markers. Damage, dirty rows and
+    /// the screen reader text (capped per drain; with screen reader mode on, the
+    /// `A11Y_TEXT_LIMIT` floor fills the cap in both) are the same; link markers on the reachable lines are created anew in both, so
+    /// only marker ids differ. Without wraparound the cursor stays on its row: once it reaches
+    /// the last column (`cols + 2` units), each single-code-point unit rewrites or skips the
+    /// same cell, a period of one unit.
+    fn rep_equivalent_repeats(&self, unit: &[u32], repeats: usize) -> usize {
+        let services = &self.services;
+        let unicode = &services.unicode;
+        let charset = services.charset.charset;
+        let cols = services.buffer.cols;
+        let rows = services.buffer.rows;
+        let max_lines = services.buffer.buffer().lines.max_length();
+
+        // The join state at the end of the first repetition, then the steady state check on a
+        // second one.
+        let mut preceding = self.preceding_join_state;
+        for &code in unit {
+            preceding = unicode.char_properties(charset_replacement(charset, code), preceding);
+        }
+        let after_first = preceding;
+        let mut width = 0;
+        for (i, &code) in unit.iter().enumerate() {
+            let info = unicode.char_properties(charset_replacement(charset, code), preceding);
+            let joins = UnicodeService::extract_should_join(info);
+            let w = UnicodeService::extract_width(info);
+            if i == 0 {
+                // the base: never joins, one or two cells that fit a line
+                if joins || w == 0 || w > 2 || to_usize(i64::from(w)) > cols {
+                    return repeats;
+                }
+                width = w;
+            } else if !joins || w != UnicodeService::extract_width(preceding) {
+                // a joining character that does not move the cursor
+                return repeats;
+            }
+            preceding = info;
+        }
+        if preceding != after_first || width == 0 {
+            return repeats;
+        }
+
+        let (period, floor) = if services.core.dec_private_modes.wraparound {
+            let per_line = cols / to_usize(i64::from(width));
+            let lines = rows.saturating_add(max_lines).saturating_add(3);
+            (per_line, per_line.saturating_mul(lines))
+        } else if unit.len() == 1 {
+            (1, cols.saturating_add(2))
+        } else {
+            return repeats;
+        };
+        // the screen reader text of the cut REP must reach the per-drain cap as the uncut does
+        let floor = if services.options.options().screen_reader_mode {
+            floor.max(A11Y_TEXT_LIMIT)
+        } else {
+            floor
+        };
+        if period == 0 || repeats <= floor {
+            return repeats;
+        }
+        floor + (repeats - floor) % period
     }
 
     /// ESC # 8 (DECALN): fill the viewport with `E` in the current colours and home the cursor.

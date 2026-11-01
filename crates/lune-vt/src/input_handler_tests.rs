@@ -2603,6 +2603,164 @@ fn rep_with_a_huge_count_prints_a_bounded_amount() {
     assert_eq!(x, (1 + MAX_REP_CODE_POINTS) % 80);
 }
 
+/// Everything REP can change, for comparing a capped REP with the uncapped print.
+#[derive(Debug, PartialEq)]
+struct RepState {
+    lines: Vec<BufferLine>,
+    cursor: [usize; 4],
+    scroll: (usize, usize, bool),
+    alt: bool,
+    join: u32,
+    damage: Damage,
+    dirty: DirtyRowTracker,
+    events: Vec<HostEvent>,
+    links: (usize, usize),
+    marker_lines: Vec<i64>,
+}
+
+fn rep_state(t: &mut TestTerm) -> RepState {
+    t.handler.forward_disposed_markers();
+    let events = t.handler.take_events();
+    let h = &t.handler;
+    let buffers = &h.services.buffer;
+    let buffer = buffers.buffer();
+    let mut marker_lines: Vec<i64> = buffers
+        .buffers
+        .normal()
+        .markers()
+        .iter()
+        .chain(buffers.buffers.alt().markers().iter())
+        .map(|m| m.line)
+        .collect();
+    marker_lines.sort_unstable();
+    RepState {
+        lines: (0..buffer.lines.len())
+            .filter_map(|i| buffer.lines.get(i).cloned())
+            .collect(),
+        cursor: [buffer.x, buffer.y, buffer.ybase, buffer.ydisp],
+        scroll: (
+            buffer.scroll_top,
+            buffer.scroll_bottom,
+            buffers.is_user_scrolling,
+        ),
+        alt: buffers.buffers.is_alt_active(),
+        join: h.preceding_join_state,
+        damage: h.damage,
+        dirty: h.dirty_row_tracker,
+        events,
+        links: (
+            h.services.osc_link.len(),
+            h.services.osc_link.marker_count(),
+        ),
+        marker_lines,
+    }
+}
+
+/// Review S3: REP prints at most what can still change the state. For each setup, REP with a
+/// count past the cut leaves exactly the state of printing all of the repetitions (the
+/// uncapped path: `print` of the whole repeated data, what REP did before the cut).
+#[test]
+fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
+    type Setup = fn(&mut TestTerm);
+    let cases: [(&str, Setup, &str, bool); 14] = [
+        ("plain", |_| {}, "a", true),
+        ("wide, odd cols", |_| {}, "\u{4e2d}", true),
+        ("cluster", |_| {}, "e\u{301}", true),
+        ("wide cluster", |_| {}, "\u{4e2d}\u{301}", true),
+        (
+            "insert mode",
+            |t| t.parse_str("xyz\r\n12345\x1b[H\x1b[4h"),
+            "a",
+            true,
+        ),
+        (
+            "region, cursor inside",
+            |t| t.parse_str("1\r\n2\r\n3\r\n4\x1b[2;3r\x1b[2;3H"),
+            "a",
+            true,
+        ),
+        (
+            "below the region",
+            |t| t.parse_str("1\r\n2\r\n3\x1b[1;2r\x1b[3;2H"),
+            "a",
+            true,
+        ),
+        ("no wraparound", |t| t.parse_str("\x1b[?7l"), "a", true),
+        (
+            "no wraparound, wide",
+            |t| t.parse_str("\x1b[?7l"),
+            "\u{4e2d}",
+            true,
+        ),
+        (
+            "alt buffer",
+            |t| t.parse_str("1\r\n2\x1b[?1049h"),
+            "a",
+            true,
+        ),
+        ("open link", |t| t.parse_str("\x1b]8;;u\x07"), "a", true),
+        (
+            "user scrolled",
+            |t| {
+                t.parse_str(&"x\r\n".repeat(9));
+                t.handler.services.buffer.scroll_lines(-2, false);
+            },
+            "a",
+            true,
+        ),
+        (
+            "screen reader, DEC graphics",
+            |t| {
+                t.set_option(OptionValue::ScreenReaderMode(true));
+                t.parse_str("\x1b(0");
+            },
+            "q",
+            true,
+        ),
+        // the cursor-moving join is not proven periodic: no cut
+        ("joiner that widens", with_vs16, "a\u{fe0f}", false),
+    ];
+    // sizes (cols, rows, scrollback) and counts around and past the cut
+    let sizes = [(7, 3, 4), (6, 4, 0), (2, 1, 0), (9, 2, 7)];
+    let counts = [40, 97, 211, 9_007, 9_008, 20_011];
+    for (name, setup, unit, cut) in cases {
+        for (cols, rows, scrollback) in sizes {
+            for count in counts {
+                let make = || {
+                    let mut t = test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
+                    setup(&mut t);
+                    t.parse_str(unit);
+                    t
+                };
+                let label = format!("{name} at {cols}x{rows}+{scrollback}, REP {count}");
+                // the cut REP
+                let mut capped = make();
+                let repeated = {
+                    let buffer = capped.buffer();
+                    let width = UnicodeService::extract_width(capped.handler.preceding_join_state);
+                    let x = buffer.x.saturating_sub(width as usize);
+                    buffer.lines.get(abs_y(buffer)).unwrap().get_string(x)
+                };
+                let units: Vec<u32> = repeated.chars().map(u32::from).collect();
+                let effective = capped.handler.rep_equivalent_repeats(&units, count);
+                assert!(effective <= count, "{label}");
+                if (cols, rows, scrollback, count) == (7, 3, 4, 9_007) {
+                    assert_eq!(effective < count, cut, "{label}: {effective} of {count}");
+                }
+                capped.parse_str(&format!("\x1b[{count}b"));
+                // the uncapped print of every repetition: one `print` call with all of them
+                // (one parse chunk), then a CSI with no handler, which ends the print as REP's
+                // CSI does
+                let mut uncapped = make();
+                let text = repeated.repeat(count);
+                assert!(text.len() < MAX_PARSEBUFFER_LENGTH);
+                uncapped.parse_str(&format!("{text}\x1b[}}"));
+                assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+            }
+        }
+    }
+}
+
 #[test]
 fn rep_with_the_cursor_column_past_the_line_does_not_panic() {
     let mut t = test_handler(5, 3, []);
