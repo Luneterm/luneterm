@@ -70,11 +70,16 @@ and the runners: `crates/lune-vt-conformance/FORMAT.md`.
   (`E2 80 | 99` loses U+2019). A `// LUNETERM:` block in `input/text_decoder.rs`; whole-buffer
   decoding is byte-for-byte upstream. Goldens whose upstream output depends on chunking are
   marked `divergent` and expect the unsplit trace.
-- **Faithful upstream quirk, pending a user decision.** xterm.js 6.0.0 drops a DEL (0x7F) that
-  starts a chunk inside a DCS payload and keeps one in the middle of a chunk (the table maps DEL
-  to IGNORE in DCS_PASSTHROUGH, but the DCS_PUT read-ahead includes it). The port is faithful;
-  `dcs_del_chunk_dependence_is_upstreams` pins it and the fuzz's chunk-invariance comparison
-  ignores DEL in `dcs put` lines. Whether to fix it in a `// LUNETERM:` block is an open question.
+- **Deliberate divergence (user decision Q8, ledger row 18).** xterm.js 6.0.0 drops a DEL (0x7F)
+  that is the first code after a DCS hook or starts a chunk inside a DCS payload, and keeps one
+  anywhere later: the table maps DEL to IGNORE in DCS_PASSTHROUGH, but the DCS_PUT read-ahead
+  loop includes it. `EscapeSequenceParser::parse` has a `// LUNETERM:` block that turns that one
+  table lookup into DCS_PUT, so the payload keeps DEL however the host splits its writes. Input
+  that has no DEL at such a position parses exactly as upstream. The other read-ahead loops
+  (print, OSC put, params) match their table entries code for code;
+  `every_code_in_every_state_is_chunk_invariant` shows it for every state and code. The upstream
+  test `state dcs_passthrough / ignore` is adapted (`state_dcs_passthrough_del_is_put_not_ignored`),
+  and the generator marks goldens the quirk touches `divergent` (FORMAT.md).
 - **Parser tests.** `cargo test -p lune-vt-conformance --test parser_trace` replays every parser
   golden chunked and unsplit; `cargo test -p lune-vt --test no_panic` is the seeded random-input
   fuzz (debug, so overflow checks fire) with chunk invariance and size bounds; `--test

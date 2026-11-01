@@ -782,6 +782,22 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
                 NON_ASCII_PRINTABLE
             };
             let mut transition = self.transitions.lookup(self.current_state, lookup);
+            // LUNETERM: DEL (0x7F) inside a DCS payload is kept wherever it falls. Upstream's table
+            // maps it to IGNORE in DCS_PASSTHROUGH, but its DCS_PUT read-ahead loop does not stop
+            // at it (the comment there says it should), so the same DEL was dropped when it was
+            // the first code after the hook or the first of a `parse` call and kept anywhere
+            // later in a run; the payload then depended on how the host split its writes (see
+            // ledger row 18 and `dcs_del_is_chunk_invariant`). Routing the table's IGNORE
+            // for this one entry to DCS_PUT makes the lookup agree with the read-ahead loop. An
+            // entry that is not IGNORE (a custom table) is left alone. Every other read-ahead
+            // loop (print, OSC put, params) already matches its table entries code for code.
+            if code == 0x7f
+                && self.current_state == ParserState::DcsPassthrough
+                && action_of(transition) == Some(ParserAction::Ignore)
+            {
+                transition =
+                    TransitionTable::pack(ParserAction::DcsPut, ParserState::DcsPassthrough);
+            }
             match action_of(transition) {
                 Some(ParserAction::Print) => {
                     // read ahead: 0x20 (SP) is included, 0x7F (DEL) and 0x80 - 0x9F are excluded

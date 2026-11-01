@@ -19,6 +19,7 @@ const CORPUS = join(ROOT, 'corpus');
 const GOLDENS = join(ROOT, 'goldens');
 
 const UPSTREAM_BUG = 'upstream Utf8ToUtf32 split-sequence bug (TextDecoder.ts:161)';
+const UPSTREAM_DEL_QUIRK = 'upstream DCS passthrough DEL quirk (EscapeSequenceParser.ts:346, :744)';
 
 // ---------------------------------------------------------------------------------------------
 // String escaping (FORMAT.md "String escaping"; the Rust side implements the same rule).
@@ -219,9 +220,33 @@ const { EscapeSequenceParser, Utf8ToUtf32 } = parserInternals();
 const identHex = n => hex(n >>> 0, 8);
 const oscId = id => (id === -1 || id === undefined || id === null ? '-1' : id > 2147483646 ? 'max' : String(id));
 
-/** Feeds the chunks through a fresh parser + decoder and returns the normalised trace lines. */
-function traceParser(chunks) {
-  const parser = new EscapeSequenceParser();
+// ParserState.DCS_PASSTHROUGH (constants.ts) and the table index `state << 8 | code`.
+const DCS_PASSTHROUGH = 13;
+
+/**
+ * Upstream's table with the one entry lune-vt changes (ledger row 18): DEL in DCS_PASSTHROUGH is
+ * DCS_PUT (as the read-ahead loop already treats it) instead of IGNORE. Built from upstream's own
+ * table object, so everything else is upstream's. Used only to derive the expected trace of the
+ * cases the quirk touches; the stock oracle output is never altered.
+ */
+function dcsDelFixedTable() {
+  const stock = new EscapeSequenceParser()._transitions;
+  const table = new stock.constructor(stock.table.length);
+  table.table.set(stock.table);
+  const put = stock.table[(DCS_PASSTHROUGH << 8) | 0x41]; // 'A': DCS_PUT -> DCS_PASSTHROUGH
+  if ((put & 0x0f) !== DCS_PASSTHROUGH || stock.table[(DCS_PASSTHROUGH << 8) | 0x7f] === put) {
+    throw new Error('oracle: unexpected DCS_PASSTHROUGH table layout');
+  }
+  table.table[(DCS_PASSTHROUGH << 8) | 0x7f] = put;
+  return table;
+}
+
+/**
+ * Feeds the chunks through a fresh parser + decoder and returns the normalised trace lines.
+ * `fixDel` swaps in the table of `dcsDelFixedTable()`.
+ */
+function traceParser(chunks, fixDel = false) {
+  const parser = fixDel ? new EscapeSequenceParser(dcsDelFixedTable()) : new EscapeSequenceParser();
   const decoder = new Utf8ToUtf32();
   const ev = [];
   const add = (kind, text) => {
@@ -267,15 +292,17 @@ const sameLines = (a, b) => a.length === b.length && a.every((l, i) => l === b[i
 
 function parserGolden(c) {
   const chunked = traceParser(c.input);
-  let expect = chunked;
-  let divergent = null;
-  if (c.input.length > 1) {
-    const whole = traceParser([c.input.flat()]);
-    if (!sameLines(whole, chunked)) {
-      expect = whole;
-      divergent = UPSTREAM_BUG;
-    }
+  const flat = [c.input.flat()];
+  // `expect` is what lune-vt must produce for any chunking: the unsplit trace of upstream with the
+  // DEL entry fixed (equal to the stock trace unless one of the two quirks shows).
+  const expect = traceParser(flat, true);
+  const reasons = [];
+  if (c.input.length > 1 && !sameLines(traceParser(flat), chunked)) reasons.push(UPSTREAM_BUG);
+  if (!sameLines(traceParser(c.input, true), chunked)) reasons.push(UPSTREAM_DEL_QUIRK);
+  if (reasons.length === 0 && !sameLines(expect, chunked)) {
+    throw new Error(`oracle: ${c.name}: chunked trace differs from the unsplit trace for an unknown reason`);
   }
+  const divergent = reasons.length ? reasons.join('; ') : null;
   return { kind: 'parser', name: c.name, source: c.source, size: null, resize: null, divergent, chunks: c.input, expect };
 }
 

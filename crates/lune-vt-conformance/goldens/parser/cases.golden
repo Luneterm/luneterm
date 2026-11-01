@@ -705,10 +705,11 @@ end
 kind parser
 name dcs_del_inside
 source parser.cases:228
+divergent upstream DCS passthrough DEL quirk (EscapeSequenceParser.ts:346, :744)
 chunk 1b503124717f6d7f1b5c
 expect
 dcs 00002471 hook [1]
-dcs put "m\u{7F}"
+dcs put "\u{7F}m\u{7F}"
 dcs unhook 1
 end
 kind parser

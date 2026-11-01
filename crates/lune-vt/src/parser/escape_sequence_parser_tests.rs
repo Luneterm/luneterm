@@ -1402,9 +1402,65 @@ fn state_dcs_passthrough_put_action() {
     }
 }
 
+// LUNETERM: upstream's `state dcs_passthrough / ignore` test asserts that 0x7f is ignored here
+// (`check_ignore_7f`). That is the table entry, but it is the quirk the lookup override in
+// `parse` removes: DEL is DCS payload wherever it falls (ledger row 18). The adapted test pins
+// the new behaviour; the table entry itself is still asserted by `transition_table_matches_upstream_dump`.
 #[test]
-fn state_dcs_passthrough_ignore() {
-    check_ignore_7f(ParserState::DcsPassthrough);
+fn state_dcs_passthrough_del_is_put_not_ignored() {
+    let mut p = test_parser();
+    let mut h = Host::default();
+    p.current_state = ParserState::DcsPassthrough;
+    parse_cp(&mut p, &mut h, 0x7f);
+    assert_eq!(p.current_state, ParserState::DcsPassthrough);
+    assert_eq!(h.calls, [Call::DcsPut("\x7f".into())]);
+}
+
+/// Every way of cutting `\x1bPqab\x7fcd` (DEL right after the hook included) yields the same
+/// DCS payload, DEL kept. Joins adjacent puts, as the trace normalisation does.
+#[test]
+fn dcs_del_is_chunk_invariant() {
+    fn payload(chunks: &[&str]) -> String {
+        let (mut p, mut h) = (test_parser(), Host::default());
+        for chunk in chunks {
+            parse(&mut p, &mut h, chunk);
+        }
+        h.calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::DcsPut(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+    let whole = "\x1bPqab\x7fcd";
+    assert_eq!(payload(&[whole]), "ab\x7fcd");
+    for cut in 1..whole.len() {
+        let (a, b) = whole.split_at(cut);
+        assert_eq!(payload(&[a, b]), "ab\x7fcd", "cut at {cut}");
+    }
+    // DEL first after the hook, and several in a row across chunk starts
+    assert_eq!(payload(&["\x1bPq\x7fa"]), "\x7fa");
+    assert_eq!(payload(&["\x1bPq", "\x7f\x7f", "\x7fx"]), "\x7f\x7f\x7fx");
+}
+
+/// The override applies only to an IGNORE entry: a custom table that gives DEL another action in
+/// DCS_PASSTHROUGH keeps it.
+#[test]
+fn dcs_del_override_leaves_custom_table_entries_alone() {
+    let mut table = build_vt500_transition_table();
+    table.add(
+        0x7f,
+        ParserState::DcsPassthrough,
+        ParserAction::Execute,
+        ParserState::DcsPassthrough,
+    );
+    let mut p = P::with_transitions(table);
+    let mut h = Host::default();
+    p.set_execute_handler_fallback(|h: &mut Host, code| h.calls.push(Call::Exe(code)));
+    p.current_state = ParserState::DcsPassthrough;
+    parse_cp(&mut p, &mut h, 0x7f);
+    assert_eq!(h.calls, [Call::Exe(0x7f)]);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2524,8 +2580,8 @@ fn osc_put_read_ahead_includes_del_and_stops_at_controls_and_c1() {
 #[test]
 fn dcs_put_read_ahead_includes_del_and_stops_at_cancel_esc_and_c1() {
     let (mut p, mut h) = (test_parser(), Host::default());
-    // DEL is in the chunk (the table ignores it only as a chunk's first code point); 0x85 is a
-    // C1 execute that leaves DCS_PASSTHROUGH
+    // DEL is in the chunk (and, since the lookup override, also as a chunk's first code
+    // point, see `dcs_del_is_chunk_invariant`); 0x85 is a C1 execute that leaves DCS_PASSTHROUGH
     parse(&mut p, &mut h, "\x1bPqab\x7fcd\u{85}ef");
     assert_eq!(
         h.calls,

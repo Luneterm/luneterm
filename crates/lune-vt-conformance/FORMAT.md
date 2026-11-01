@@ -15,10 +15,10 @@ directories; the reader also tolerates a trailing `\r`.
   `tests/parser_trace.rs` replays every parser golden (chunked and unsplit) and compares it with
   `expect`. `lune-vt/tests/no_panic.rs` includes `trace.rs` and `escape.rs` by path (the engine
   crate cannot depend on this one) for its seeded fuzz and chunk-invariance check.
-- Known upstream chunk dependence: xterm.js 6.0.0 drops a DEL (0x7F) that starts a chunk inside a
-  DCS payload and keeps one in the middle of a chunk. The port is faithful, so the fuzz's
-  chunk-invariance comparison ignores DEL in `dcs put` lines (see `no_panic.rs`); the goldens
-  themselves are unaffected.
+- Known upstream chunk dependence: xterm.js 6.0.0 drops a DEL (0x7F) that is the first code after
+  a DCS hook or starts a chunk inside a DCS payload and keeps one anywhere later. `lune-vt` keeps
+  it everywhere (ledger row 18), so the fuzz's chunk-invariance comparison needs no exception
+  (`no_panic.rs`), and goldens the quirk touches are marked `divergent` (below).
 
 ## Golden files
 
@@ -65,6 +65,13 @@ several chunks is fed chunk by chunk to one parser or terminal (state carries ac
   character when a UTF-8 sequence is split right after a `0x80` continuation byte (`E2 80 | 99`
   loses U+2019). `lune-vt` fixes this (ledger entry 3), so `expect` holds the trace or dump of the
   **unsplit** input, which is what a correct decoder produces for any chunking.
+- Parser goldens, second reason: `upstream DCS passthrough DEL quirk (EscapeSequenceParser.ts:346,
+  :744)`: upstream's table makes DEL a no-op in DCS passthrough while its put loop keeps it, so a
+  DEL straight after the hook (or at a chunk start) vanishes. `lune-vt` keeps it (ledger row 18).
+  The generator derives `expect` from the oracle's own parser constructed with upstream's table
+  plus that one entry changed (DEL in DCS passthrough = DCS put), unsplit, so everything else is
+  upstream's. The oracle's stock output is never edited. A case showing both bugs carries both
+  reasons joined by `; `. Single-chunk cases can be divergent for this reason.
 - Grid goldens (the 6 Lunegit vectors listed in the corpus): xterm.js does not reflow the cursor's
   own wrapped line, so the oracle's grid differs from tmux's; `expect` stays the tmux grid and the
   paired `screen` golden records what xterm.js actually produces.
