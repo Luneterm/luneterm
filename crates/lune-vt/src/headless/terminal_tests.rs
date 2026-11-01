@@ -31,7 +31,9 @@ use super::*;
 use crate::buffer::attribute_data::AttributeData;
 use crate::buffer::constants::UnderlineStyle as RawUnderline;
 use crate::engine::CursorStyle;
+use crate::input_handler::A11Y_TEXT_LIMIT;
 use crate::parser::escape_sequence_parser::EscapeSequenceParser;
+use crate::services::options_service::WindowOptions;
 use crate::services::osc_link_service::OscLinkData;
 
 fn term(options: impl IntoIterator<Item = OptionValue>) -> Terminal {
@@ -822,10 +824,10 @@ fn events_keep_fire_order_and_responses_are_not_merged() {
     assert_eq!(
         t.drain_events(),
         [
-            HostEvent::A11yChar("a".to_owned()),
+            HostEvent::A11yText("a".to_owned()),
             HostEvent::Bell,
             HostEvent::A11yTab(7),
-            HostEvent::A11yChar("b".to_owned()),
+            HostEvent::A11yText("b".to_owned()),
             HostEvent::Response(b"x".to_vec()),
             HostEvent::Response(b"y".to_vec()),
         ]
@@ -990,4 +992,126 @@ fn the_alternate_screen_is_reported_by_the_viewport() {
     assert!(t.viewport().alt_screen);
     t.write_str("\x1b[?1049l");
     assert!(!t.viewport().alt_screen);
+}
+
+// --- event coalescing (plan M6 D2 amendment, user decision Q10) ---
+
+fn push_pop_term() -> Terminal {
+    let mut t = sized(10, 4);
+    t.set_option(OptionValue::WindowOptions(WindowOptions {
+        push_title: true,
+        pop_title: true,
+        ..WindowOptions::default()
+    }))
+    .unwrap();
+    t
+}
+
+/// Bytes the events weigh (payload bytes; the engine fuzz's measure without per-event costs).
+fn payload_bytes(events: &[HostEvent]) -> usize {
+    events
+        .iter()
+        .map(|event| match event {
+            HostEvent::Response(bytes) => bytes.len(),
+            HostEvent::Title(text) | HostEvent::A11yText(text) => text.len(),
+            _ => 1,
+        })
+        .sum()
+}
+
+#[test]
+fn title_storm_queues_one_title_per_drain_and_keeps_other_events() {
+    let mut t = push_pop_term();
+    let big = "x".repeat(60_000);
+    t.write_str(&format!("\x1b]0;{big}\x07"));
+    assert_eq!(t.drain_events(), [HostEvent::Title(big.clone())]);
+
+    // 100 push/pop pairs, each followed by a DSR and a BEL: one title, every other event as
+    // fired and in order.
+    let storm = "\x1b[22;2t\x1b[23;2t\x1b[5n\x07".repeat(100);
+    t.write_str(&storm);
+    let events = t.drain_events();
+    let mut expected = vec![HostEvent::Title(big.clone())];
+    for _ in 0..100 {
+        expected.push(HostEvent::Response(b"\x1b[0n".to_vec()));
+        expected.push(HostEvent::Bell);
+    }
+    assert_eq!(events, expected);
+    assert!(payload_bytes(&events) <= 16 * storm.len() + 4096 + big.len());
+    assert!(t.drain_events().is_empty(), "the title is not queued again");
+
+    // The title event sits where the first change fired and carries the latest title.
+    t.write_str("\x07\x1b]2;a\x07\x1b[5n\x1b]2;b\x07\x07");
+    assert_eq!(
+        t.drain_events(),
+        [
+            HostEvent::Bell,
+            HostEvent::Title("b".to_owned()),
+            HostEvent::Response(b"\x1b[0n".to_vec()),
+            HostEvent::Bell,
+        ]
+    );
+    assert_eq!(t.viewport().title, "b");
+
+    // One per drain: a pop after a drain fires again, with the popped title.
+    t.write_str("\x1b[22;2t\x1b]2;c\x07");
+    assert_eq!(t.drain_events(), [HostEvent::Title("c".to_owned())]);
+    t.write_str("\x1b[23;2t");
+    assert_eq!(t.drain_events(), [HostEvent::Title("b".to_owned())]);
+}
+
+#[test]
+fn rep_with_screen_reader_mode_queues_capped_merged_a11y_text() {
+    let mut t = term([
+        OptionValue::Cols(10),
+        OptionValue::Rows(4),
+        OptionValue::ScreenReaderMode(true),
+    ]);
+    let input = b"a\x1b[100000b";
+    t.write(input);
+    let events = t.drain_events();
+    assert_eq!(events, [HostEvent::A11yText("a".repeat(A11Y_TEXT_LIMIT))]);
+    assert!(payload_bytes(&events) <= 16 * input.len() + 4096);
+    // The screen still got every repetition (only the voicing is capped).
+    assert_eq!(line(&t, 3), "a".repeat(10));
+    assert_eq!(cursor(&t), (1, 3));
+
+    // The cap is per drain.
+    t.write(b"\r\nbc");
+    assert_eq!(t.drain_events(), [HostEvent::A11yText("bc".to_owned())]);
+}
+
+#[test]
+fn a11y_text_merges_runs_and_stops_at_the_first_character_past_the_cap() {
+    let mut t = term([
+        OptionValue::Cols(80),
+        OptionValue::Rows(4),
+        OptionValue::ScreenReaderMode(true),
+    ]);
+    // Runs merge; any other event splits them; tabs keep their own event.
+    t.write_str("ab\x07cd\tef");
+    assert_eq!(
+        t.drain_events(),
+        [
+            HostEvent::A11yText("ab".to_owned()),
+            HostEvent::Bell,
+            HostEvent::A11yText("cd".to_owned()),
+            HostEvent::A11yTab(4),
+            HostEvent::A11yText("ef".to_owned()),
+        ]
+    );
+
+    // One byte short of the cap, then a three-byte character that does not fit: it and every
+    // later character of the drain are dropped (no out-of-order voicing), other events are not.
+    let fill = "a".repeat(A11Y_TEXT_LIMIT - 1);
+    t.write_str(&format!("{fill}\u{65e5}b\x07c"));
+    assert_eq!(
+        t.drain_events(),
+        [HostEvent::A11yText(fill), HostEvent::Bell]
+    );
+    t.write_str("\u{65e5}");
+    assert_eq!(
+        t.drain_events(),
+        [HostEvent::A11yText("\u{65e5}".to_owned())]
+    );
 }

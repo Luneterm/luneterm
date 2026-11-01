@@ -18,7 +18,9 @@ pub use crate::services::options_service::CursorStyle;
 ///
 /// Lunegit fires these as synchronous events inside `Write`; here the engine queues them and the
 /// host drains them after each write, which keeps the engine free of callbacks into the host.
-/// Events are queued in the order upstream fires them; two responses are never merged.
+/// Events are queued in the order upstream fires them; two responses are never merged. The two
+/// exceptions keep one write's events proportional to its bytes: [`HostEvent::Title`] (one per
+/// drain) and [`HostEvent::A11yText`] (merged, capped per drain).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostEvent {
     /// Bytes to send back to the application: the UTF-8 of an upstream `onData` string, or one
@@ -26,7 +28,9 @@ pub enum HostEvent {
     Response(Vec<u8>),
     /// BEL (upstream `onRequestBell`).
     Bell,
-    /// Window title changed (OSC 0/2, upstream `onTitleChange`).
+    /// Window title changed (OSC 0/2, XTWINOPS 23; upstream `onTitleChange`). At most one per
+    /// drain: it sits where the first change since the last drain fired and carries the title at
+    /// drain time, so a title storm (push/pop of a large title) costs one event.
     Title(String),
     /// Colour requests from OSC 4, 10, 11, 12, 104, 110, 111 and 112 (upstream `onColor`). The
     /// engine never answers a [`ColorRequest::Report`]; the host knows the theme and may.
@@ -36,8 +40,12 @@ pub enum HostEvent {
     FocusReportRequested,
     /// A window report the host has to answer (upstream `onRequestWindowsOptionsReport`).
     WindowReport(WindowReportKind),
-    /// A printed character, fired only with `screen_reader_mode` on (upstream `onA11yChar`).
-    A11yChar(String),
+    /// Printed characters, fired only with `screen_reader_mode` on (upstream `onA11yChar`, one
+    /// event per character). Consecutive characters are merged into one event, and at most
+    /// [`crate::input_handler::A11Y_TEXT_LIMIT`] bytes are queued per drain; characters past
+    /// it are not voiced (upstream's `AccessibilityManager` likewise stops announcing long
+    /// output).
+    A11yText(String),
     /// HT moved the cursor by this many cells, fired only with `screen_reader_mode` on (upstream
     /// `onA11yTab`).
     A11yTab(usize),
