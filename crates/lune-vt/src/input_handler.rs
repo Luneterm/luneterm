@@ -118,7 +118,7 @@ use std::sync::Arc;
 
 use crate::buffer::attribute_data::AttributeData;
 use crate::buffer::buffer::Buffer;
-use crate::buffer::buffer_line::{BufferLine, DEFAULT_ATTR_DATA};
+use crate::buffer::buffer_line::{BufferLine, DEFAULT_ATTR_DATA, MAX_COMBINED_CODE_POINTS};
 use crate::buffer::buffer_set::BufferActivate;
 use crate::buffer::cell_data::CellData;
 use crate::buffer::constants::{
@@ -295,6 +295,12 @@ impl EventQueue {
         }
     }
 
+    /// No more [`HostEvent::A11yText`] text is taken until the next drain: every later
+    /// [`EventQueue::a11y_char`] is a no-op.
+    fn a11y_full(&self) -> bool {
+        self.a11y_bytes >= A11Y_TEXT_LIMIT
+    }
+
     fn push_a11y_text(&mut self, text: &str) {
         if text.is_empty() {
             return;
@@ -412,6 +418,27 @@ fn forward_disposed(services: &mut CoreServices) {
     if !alt.is_empty() {
         services.osc_link.on_markers_disposed(&alt);
     }
+}
+
+/// `print`'s link step (`InputHandler.ts:553-555`): the cursor's line joins the open link,
+/// after the pending marker disposals are forwarded.
+fn add_cursor_line_to_link(services: &mut CoreServices, link_id: u32) {
+    forward_disposed(services);
+    let y = abs_y(services.buffer.buffer());
+    services
+        .osc_link
+        .add_line_to_link(&mut services.buffer, link_id, y);
+}
+
+/// LUNETERM: (review S3, S7) how a REP unit prints when every repetition prints alike
+/// ([`InputHandler::rep_fill`]).
+struct RepFill {
+    /// The unit's code points with the charset applied: the base, then its joiners.
+    codes: Vec<u32>,
+    /// The base's width in cells (1 or 2); the joiners keep it.
+    width: u32,
+    /// The join state each repetition leaves.
+    end_state: u32,
 }
 
 /// JS `String.prototype.trim`: strips the ECMAScript WhiteSpace and LineTerminator characters
@@ -1060,11 +1087,7 @@ impl InputHandler {
             }
             let link_id = cur_attr.extended.url_id();
             if link_id != 0 {
-                forward_disposed(services);
-                let y = abs_y(services.buffer.buffer());
-                services
-                    .osc_link
-                    .add_line_to_link(&mut services.buffer, link_id, y);
+                add_cursor_line_to_link(services, link_id);
             }
 
             // goto next line if ch would overflow (the terminal does not allow cols < 2)
@@ -2085,13 +2108,12 @@ impl InputHandler {
                 .min(MAX_REP_CODE_POINTS / unit.len());
             // LUNETERM: and cut to as many as still change the state (review S3)
             let repeats = self.rep_equivalent_repeats(&unit, repeats);
-            // LUNETERM: (review S3, user decision Q16) a single character that prints the same
-            // way every time fills whole lines instead of going through `print` per character
-            if let [code] = unit.as_slice() {
-                if let Some((code, width)) = self.rep_fill(*code).filter(|_| repeats > 0) {
-                    self.print_repeated(code, width, repeats);
-                    return true;
-                }
+            // LUNETERM: (review S3 and S7, user decisions Q16 and Q17) a unit that prints the
+            // same way every time fills whole lines instead of going through `print` per code
+            // point
+            if let Some(fill) = self.rep_fill(&unit).filter(|_| repeats > 0) {
+                self.print_repeated(&fill, repeats);
+                return true;
             }
             unit.iter()
                 .copied()
@@ -2124,7 +2146,13 @@ impl InputHandler {
     /// `A11Y_TEXT_LIMIT` floor fills the cap in both) are the same; link markers on the reachable lines are created anew in both, so
     /// only marker ids differ. Without wraparound the cursor stays on its row: once it reaches
     /// the last column (`cols + 2` units), each single-code-point unit rewrites or skips the
-    /// same cell, a period of one unit.
+    /// same cell, a period of one unit. A unit with joiners (review S7) reaches the last column
+    /// within `cols / w + 1` units too; then a narrow unit rewrites the last cell with a fresh
+    /// base and the same joiners, and a wide one skips its base and stacks its joiners onto the
+    /// same cell (the one before the cursor), whose combined string stops growing at
+    /// [`MAX_COMBINED_CODE_POINTS`] code points (at most that many units more, plus one for a
+    /// cell that had no text); from then on every unit leaves the state as it found it, so
+    /// `cols + MAX_COMBINED_CODE_POINTS + 3` units suffice.
     fn rep_equivalent_repeats(&self, unit: &[u32], repeats: usize) -> usize {
         let services = &self.services;
         let unicode = &services.unicode;
@@ -2168,7 +2196,13 @@ impl InputHandler {
         } else if unit.len() == 1 {
             (1, cols.saturating_add(2))
         } else {
-            return repeats;
+            // LUNETERM: (review S7) see the doc comment: the joiners of a stuck wide unit
+            // stack onto one cell until its combined string is full
+            (
+                1,
+                cols.saturating_add(MAX_COMBINED_CODE_POINTS)
+                    .saturating_add(3),
+            )
         };
         // the screen reader text of the cut REP must reach the per-drain cap as the uncut does
         let floor = if services.options.options().screen_reader_mode {
@@ -2182,44 +2216,80 @@ impl InputHandler {
         floor + (repeats - floor) % period
     }
 
-    /// LUNETERM: (review S3) whether REP of the single code point `code` can take
-    /// [`InputHandler::print_repeated`], and with which code point (charset applied) and width.
-    /// It can when every repetition prints alike: the code point never joins, is one or two
-    /// cells wide (no wider than a line), and leaves the join state it found after the first
-    /// repetition (so every repetition sees the same state); and when `print` has no per
-    /// character side effect beyond the cell: wraparound on, insert mode off, screen reader
-    /// mode off, no open link.
-    fn rep_fill(&self, code: u32) -> Option<(u32, u32)> {
+    /// LUNETERM: (review S3, S7) whether REP of `unit` (the repeated cell's code points) can
+    /// take [`InputHandler::print_repeated`], and how it prints. It can when every repetition
+    /// prints alike: with the charset applied, the code points get the same properties in
+    /// every repetition (the first one's from the current join state equal the second one's
+    /// from the state the first leaves, so by induction all are equal); the first never joins
+    /// and is one or two cells wide (no wider than a line); every other joins without changing
+    /// that width (onto the first, without moving the cursor); and wraparound is on. Insert
+    /// mode, an open link and screen reader mode are handled there.
+    fn rep_fill(&self, unit: &[u32]) -> Option<RepFill> {
         let services = &self.services;
-        let options = services.options.options();
-        if !services.core.dec_private_modes.wraparound
-            || services.core.modes.insert_mode
-            || options.screen_reader_mode
-            || self.cur_attr_data.extended.url_id() != 0
-        {
+        if !services.core.dec_private_modes.wraparound {
             return None;
         }
-        let code = charset_replacement(services.charset.charset, code);
+        let charset = services.charset.charset;
         let unicode = &services.unicode;
-        let first = unicode.char_properties(code, self.preceding_join_state);
-        let width = UnicodeService::extract_width(first);
-        if UnicodeService::extract_should_join(first)
+        let codes: Vec<u32> = unit
+            .iter()
+            .map(|&code| charset_replacement(charset, code))
+            .collect();
+        let properties = |mut preceding: u32| -> Vec<u32> {
+            codes
+                .iter()
+                .map(|&code| {
+                    preceding = unicode.char_properties(code, preceding);
+                    preceding
+                })
+                .collect()
+        };
+        let first = properties(self.preceding_join_state);
+        let (&base, joiners) = first.split_first()?;
+        let end_state = *first.last()?;
+        let width = UnicodeService::extract_width(base);
+        if UnicodeService::extract_should_join(base)
             || width == 0
             || width > 2
             || to_usize(i64::from(width)) > services.buffer.cols
-            || unicode.char_properties(code, first) != first
+            || joiners.iter().any(|&info| {
+                !UnicodeService::extract_should_join(info)
+                    || UnicodeService::extract_width(info) != width
+            })
+            || properties(end_state) != first
         {
             return None;
         }
-        Some((code, width))
+        Some(RepFill {
+            codes,
+            width,
+            end_state,
+        })
     }
 
-    /// LUNETERM: (review S3) `print` of `count` copies of `code` under the conditions of
-    /// [`InputHandler::rep_fill`], line by line: the same cell writes, wraps (`print_wrap`
-    /// with no joined width), dirty rows and join state as `print`, without `print`'s per
-    /// character lookups (`rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print`
-    /// compares the two).
-    fn print_repeated(&mut self, code: u32, width: u32, count: usize) {
+    /// LUNETERM: (review S3, S7) `print` of `count` repetitions of `fill.codes` under the
+    /// conditions of [`InputHandler::rep_fill`], line by line: the same cells, wraps
+    /// (`print_wrap` with no joined width), dirty rows, join state, insert-mode shifts, link
+    /// lines and screen reader text as `print`, without `print`'s per code point work
+    /// (`rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print` and
+    /// `rep_fill_leaves_the_state_of_print_over_existing_content` compare the two). How each
+    /// per code point effect of `print` is batched:
+    ///  - Cells: every repetition writes the same head cell (the base and its joiners, built
+    ///    once on a scratch line by the calls `print` makes) and, when wide, a stub.
+    ///  - Insert mode: one [`BufferLine::insert_cells_repeatedly`] per line, the inserts of all
+    ///    the line's repetitions; the written cells are left of every later insert, so writing
+    ///    them after the inserts changes nothing. `print`'s own fix-up of a wide last cell
+    ///    never fires after `insert_cells`' when the line is `cols` long; a line of another
+    ///    length takes the per-repetition calls.
+    ///  - Link: `print` adds the cursor's line before each code point, so a repetition that
+    ///    wraps adds the line it leaves. A second add of the same line with only cell writes in
+    ///    between finds the marker the first one cached and changes nothing (the first add may
+    ///    evict other links; forwarding their disposals later finds them gone either way), so
+    ///    one add per line and wrap is the same.
+    ///  - Screen reader: the only events `print` fires are its characters' text, which the
+    ///    queue stops taking at its per-drain cap; they are queued up front in order until the
+    ///    queue is full.
+    fn print_repeated(&mut self, fill: &RepFill, count: usize) {
         #[cfg(test)]
         {
             self.rep_fills += 1;
@@ -2230,15 +2300,43 @@ impl InputHandler {
             erase_attr_data_internal,
             dirty_row_tracker,
             preceding_join_state,
+            events,
             damage,
             ..
         } = self;
         let cols = services.buffer.cols;
+        let insert_mode = services.core.modes.insert_mode;
         let cur_attr = *cur_attr_data;
-        let state = services
-            .unicode
-            .char_properties(code, *preceding_join_state);
+        let link_id = cur_attr.extended.url_id();
+        let width = fill.width;
         let w = to_usize(i64::from(width));
+        let null_cell = services.buffer.buffer().get_null_cell(Some(&cur_attr));
+
+        if services.options.options().screen_reader_mode {
+            'voice: for _ in 0..count {
+                for &code in &fill.codes {
+                    if events.a11y_full() {
+                        break 'voice;
+                    }
+                    events.a11y_char(code);
+                }
+            }
+        }
+
+        // the head cell every repetition writes, made by `print`'s calls
+        let head = {
+            let mut scratch = BufferLine::new(w, None, false);
+            let mut codes = fill.codes.iter().copied();
+            if let Some(base) = codes.next() {
+                scratch.set_cell_from_codepoint(0, base, width, &cur_attr);
+            }
+            for code in codes {
+                scratch.add_codepoint_to_cell(0, code, width);
+            }
+            let mut cell = CellData::new();
+            scratch.load_cell(0, &mut cell);
+            cell
+        };
 
         let buffer = services.buffer.buffer_mut();
         let mut row = abs_y(buffer);
@@ -2256,7 +2354,12 @@ impl InputHandler {
         let mut left = count;
         while left > 0 {
             // goto next line if ch would overflow
-            if services.buffer.buffer().x.saturating_add(w) > cols {
+            let wraps = services.buffer.buffer().x.saturating_add(w) > cols;
+            if link_id != 0 {
+                // the first code point's line: the line it leaves when it wraps
+                add_cursor_line_to_link(services, link_id);
+            }
+            if wraps {
                 match print_wrap(
                     services,
                     dirty_row_tracker,
@@ -2271,14 +2374,34 @@ impl InputHandler {
                     None => return,
                 }
             }
+            // as many as fit on the line: at least one (after a wrap x is 0 and w <= cols)
+            let fit = (cols.saturating_sub(services.buffer.buffer().x) / w).min(left);
+            if link_id != 0 && wraps && (fit > 1 || fill.codes.len() > 1) {
+                // the other code points' line, after the wrap
+                add_cursor_line_to_link(services, link_id);
+            }
             let Buffer { lines, x, .. } = services.buffer.buffer_mut();
             let Some(buffer_row) = lines.get_mut(row) else {
                 return;
             };
-            // as many as fit on the line: at least one (after a wrap x is 0 and w <= cols)
-            let fit = (cols.saturating_sub(*x) / w).min(left);
+            let batched = insert_mode && buffer_row.len() == cols;
+            if batched {
+                buffer_row.insert_cells_repeatedly(*x, w, fit, &null_cell);
+            }
             for _ in 0..fit {
-                buffer_row.set_cell_from_codepoint(*x, code, width, &cur_attr);
+                if insert_mode && !batched {
+                    // `print`'s insert-mode path, per repetition
+                    buffer_row.insert_cells(*x, w, &null_cell);
+                    if buffer_row.get_width(cols.saturating_sub(1)) == 2 {
+                        buffer_row.set_cell_from_codepoint(
+                            cols.saturating_sub(1),
+                            NULL_CELL_CODE,
+                            NULL_CELL_WIDTH,
+                            &cur_attr,
+                        );
+                    }
+                }
+                buffer_row.set_cell(*x, &head);
                 *x += 1;
                 for _ in 1..w {
                     buffer_row.set_cell_from_codepoint(*x, 0, 0, &cur_attr);
@@ -2288,7 +2411,7 @@ impl InputHandler {
             left -= fit;
         }
 
-        *preceding_join_state = state;
+        *preceding_join_state = fill.end_state;
 
         // handle wide chars: reset cell to the right if it is second cell of a wide char
         let buffer = services.buffer.buffer_mut();

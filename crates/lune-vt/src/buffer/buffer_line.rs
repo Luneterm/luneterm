@@ -408,6 +408,134 @@ impl BufferLine {
         }
     }
 
+    /// LUNETERM: (review S7) `for j in 0..times { self.insert_cells(pos + j * n, n, fill) }`
+    /// in one pass, for REP in insert mode (one insert per printed character). It leaves the
+    /// same cells and the same `combined` and `extended_attrs` entries, including the stale
+    /// ones each step's shift leaves behind (`copy_cells_from` can carry a stale combined
+    /// string back into view, so they are state). Costs O(len) plus the entries written,
+    /// where the loop costs O(times × len).
+    ///
+    /// Why it is the loop: with `pos + times × n <= len`, step `j` inserts at
+    /// `pos_j = pos + j × n`. At its start the cells from `pos_j` on are the old cells from
+    /// `pos` on, shifted by `j × n` (a step's line-end fix-up rewrites the last cell, which the
+    /// next step shifts out), so the cells end as one insert of `times × n` (one call below
+    /// does that, with the same fix-ups at `pos - 1` and at the end). Each step's shift copies
+    /// old cell `c`'s entries to `c + (j + 1) × n`, so key `k` was last written by the
+    /// largest step, the smallest `c` on `k`'s residue class in the window the steps reach
+    /// (`k - J × n ..= k - n`, `J` = the steps whose shift reaches `k`), that carries the
+    /// entry's flag; the fill of a later step at `k` comes after (`k < pos + times × n`), and
+    /// the last cell also takes the line-end fix-up's entry at every step that shifts a wide
+    /// cell onto it. The fill cell must not be wide: a wide fill would fire the `pos - 1`
+    /// fix-up of every later step. Outside these conditions this runs the loop itself.
+    pub fn insert_cells_repeatedly(
+        &mut self,
+        pos: usize,
+        n: usize,
+        times: usize,
+        fill_cell_data: &CellData,
+    ) {
+        let len = self.length;
+        let total = n.checked_mul(times);
+        let end = total.and_then(|total| pos.checked_add(total));
+        let Some((total, end)) = total
+            .zip(end)
+            .filter(|&(total, end)| total != 0 && end <= len && fill_cell_data.get_width() != 2)
+        else {
+            for j in 0..times {
+                self.insert_cells(pos.saturating_add(j.saturating_mul(n)), n, fill_cell_data);
+            }
+            return;
+        };
+        // the old cells a step can shift: `pos..sources_end` (n <= total <= len - pos)
+        let sources_end = len - n;
+        let leaves_entries = (pos..sources_end).any(|c| {
+            self.read(c, CELL_CONTENT) & Content::IS_COMBINED_MASK != 0
+                || self.read(c, CELL_BG) & BgFlags::HAS_EXTENDED != 0
+                || self.read(c, CELL_CONTENT) >> Content::WIDTH_SHIFT == 2
+        });
+        if !leaves_entries {
+            // no step copies an entry or fixes up a wide last cell: only the fills write
+            // entries, at the keys the one insert fills
+            self.insert_cells(pos, total, fill_cell_data);
+            return;
+        }
+        // per source `pos + i`, as `load_cell` reads them: its combined string and extended
+        // attributes where flagged, and whether it is wide
+        let mut combined = Vec::with_capacity(sources_end - pos);
+        let mut extended = Vec::with_capacity(sources_end - pos);
+        let mut wide = Vec::with_capacity(sources_end - pos);
+        for c in pos..sources_end {
+            let content = self.read(c, CELL_CONTENT);
+            let bg = self.read(c, CELL_BG);
+            combined.push(
+                (content & Content::IS_COMBINED_MASK != 0)
+                    .then(|| self.combined.get(&c).cloned().unwrap_or_default()),
+            );
+            extended.push(
+                (bg & BgFlags::HAS_EXTENDED != 0)
+                    .then(|| self.extended_attrs.get(&c).copied().unwrap_or_default()),
+            );
+            wide.push(content >> Content::WIDTH_SHIFT == 2);
+        }
+
+        self.insert_cells(pos, total, fill_cell_data);
+
+        let fill_combined = fill_cell_data.content & Content::IS_COMBINED_MASK != 0;
+        let fill_extended = fill_cell_data.bg & BgFlags::HAS_EXTENDED != 0;
+        // per source `pos + i`: the first source at or after it on its residue class (mod n)
+        // that holds an entry, as an index
+        let next_held = |held: &dyn Fn(usize) -> bool| {
+            let mut next = vec![usize::MAX; sources_end - pos];
+            for i in (0..next.len()).rev() {
+                let found = if held(i) {
+                    i
+                } else {
+                    next.get(i + n).copied().unwrap_or(usize::MAX)
+                };
+                if let Some(slot) = next.get_mut(i) {
+                    *slot = found;
+                }
+            }
+            next
+        };
+        let next_combined = next_held(&|i| combined.get(i).is_some_and(Option::is_some));
+        let next_extended = next_held(&|i| extended.get(i).is_some_and(Option::is_some));
+        for k in pos + n..len {
+            // the steps whose shift reaches key k, and the window of their sources: indexes
+            // `low..=high` on k's residue class
+            let steps = times.min((k - pos) / n);
+            let (low, high) = (k - steps * n - pos, k - n - pos);
+            let in_fill = k < end;
+            let last = |next: &[usize]| next.get(low).copied().filter(|&i| i <= high);
+            if !(in_fill && fill_combined) {
+                if let Some(Some(chars)) = last(&next_combined).and_then(|i| combined.get(i)) {
+                    // (an equal entry is left in place: the same state without a copy)
+                    if self.combined.get(&k) != Some(chars) {
+                        self.combined.insert(k, chars.clone());
+                    }
+                }
+            }
+            if in_fill && fill_extended {
+                continue;
+            }
+            let value = if k == len - 1 && !in_fill {
+                // the line-end fix-up also writes here, after the shift, when it is wide
+                (low..=high).step_by(n).find_map(|i| {
+                    if fill_extended && wide.get(i) == Some(&true) {
+                        Some(fill_cell_data.extended)
+                    } else {
+                        extended.get(i).copied().flatten()
+                    }
+                })
+            } else {
+                last(&next_extended).and_then(|i| extended.get(i).copied().flatten())
+            };
+            if let Some(value) = value {
+                self.extended_attrs.insert(k, value);
+            }
+        }
+    }
+
     pub fn delete_cells(&mut self, pos: usize, n: usize, fill_cell_data: &CellData) {
         if self.length == 0 {
             return;
