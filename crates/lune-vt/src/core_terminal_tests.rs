@@ -147,6 +147,39 @@ fn an_alt_buffer_link_is_dropped_when_the_normal_buffer_is_activated() {
     assert!(links.get_link_data(normal_link).is_some());
 }
 
+/// Step 7: the same through the escape sequences, inside one `write`: the alt buffer's link is
+/// freed by `CSI ? 1049 l`, the normal buffer's stays.
+#[test]
+fn leaving_the_alt_screen_through_a_write_frees_the_alt_buffer_links() {
+    let mut t = core(10, 3, []);
+    let normal_link = register_link(&mut t, link(None, "https://normal"));
+    t.write(b"\x1b[?1049h");
+    let alt_link = register_link(&mut t, link(None, "https://alt"));
+    assert_eq!(link_count(&t), 2);
+    t.write(b"\x1b[?1049l");
+    let links = &t.input_handler().services().osc_link;
+    assert!(links.get_link_data(alt_link).is_none());
+    assert!(links.get_link_data(normal_link).is_some());
+    // and in one write with the entry
+    t.write(b"\x1b[?47h");
+    let alt_link = register_link(&mut t, link(None, "https://alt2"));
+    t.write(b"x\x1b[?47l");
+    let links = &t.input_handler().services().osc_link;
+    assert!(links.get_link_data(alt_link).is_none());
+}
+
+/// Step 7: RIS inside a write frees the links of both buffers (assumed decision Q9).
+#[test]
+fn ris_inside_a_write_frees_the_links() {
+    let mut t = core(10, 3, []);
+    register_link(&mut t, link(None, "https://normal"));
+    t.write(b"\x1b[?1049h");
+    register_link(&mut t, link(None, "https://alt"));
+    assert_eq!(link_count(&t), 2);
+    t.write(b"\x1bc");
+    assert_eq!(link_count(&t), 0);
+}
+
 #[test]
 fn every_public_mutation_forwards_disposed_markers() {
     type Mutation = fn(&mut CoreTerminal);
