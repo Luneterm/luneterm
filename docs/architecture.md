@@ -286,7 +286,7 @@ are closures registered once by `InputHandler::register_handlers`; `Extension`s 
 same parser afterwards and run first (newest first).
 
 **Write path.** `Terminal::write(&[u8])` calls `InputHandler::parse`, which decodes UTF-8
-(`Utf8ToUtf32`, streaming), splits input at 131072 code points and feeds the parser. It is
+(`Utf8ToUtf32`, streaming), splits input into 131072-byte chunks and feeds the parser. It is
 synchronous: when it returns, every byte has been applied. Nothing in `lune-vt` blocks, sleeps,
 spawns or calls back.
 
@@ -305,10 +305,24 @@ The input encoders (key and mouse encoding) are M7.
   `screen_reader_mode`), and `UnknownOsc` and `ClipboardWrite`, which the core never produces
   (M7). OSC 52, queries included, reaches only the fallback that logs (ledger row 13).
 - **Bounded queues** (user decisions Q10 and Q11). `TitleChanged` has no payload and at most one
-  is queued per drain (read the title from `Viewport::title`); `A11yText` merges consecutive
-  characters and stops at `A11Y_TEXT_LIMIT` (2048 bytes) per drain. Everything else is exact.
-  With these, `drain_events` carries at most 16 bytes per byte written plus 4 KiB (checked on
-  every fuzz seed); without them a few bytes of XTWINOPS 22/23 or REP queued gigabytes.
+  is queued per drain (read the title from `Viewport::title`, an `Arc<str>` shared with the
+  engine, so a snapshot never copies it); `A11yText` merges consecutive characters and stops at
+  `A11Y_TEXT_LIMIT` (2048 bytes) per drain. Everything else is exact. With these, the events
+  of one drain weigh at most 16 units per byte written plus 4 KiB (checked on every fuzz seed,
+  `engine_fuzz.rs` `event_cost`: a payload byte weighs 1, a payload-free event 1); without
+  them a few bytes of XTWINOPS 22/23 or REP queued gigabytes. The weight is not the memory: a
+  queued `HostEvent` is 48 bytes, so 1 MiB of BEL holds about 48 MiB until drained (measured,
+  48.5x). M9 sizes its drain cadence for about 50x the bytes of one write.
+- **Bounded work per input byte** (fix round 1 of the M6 review). Where upstream's cost per
+  byte grows with the buffer, the engine caps it, each in a `// LUNETERM:` block:
+  `OscLinkService` checks the link's last marker before walking all of them (printing inside a
+  link open across the buffer is no longer O(scrollback) per character), keeps at most
+  `MAX_LINKS` (4096) links and `MAX_LINK_MARKERS` (8192) link markers, evicting the least
+  recently extended link (its cells keep their attributes and lose the link); a cell's
+  combined string holds at most `MAX_COMBINED_CODE_POINTS` (64, `buffer_line.rs`); REP prints
+  only the repetitions that still change the state (`rep_equivalent_repeats`, tested equal to
+  the full print). Unknown OSC and DCS log their identifier and payload length, never the
+  payload.
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as
