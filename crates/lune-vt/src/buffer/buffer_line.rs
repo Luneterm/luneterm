@@ -130,6 +130,17 @@ impl BufferLine {
         self.length == 0
     }
 
+    /// The number of combined strings held (upstream `Object.keys(_combined).length`); for
+    /// bounding the side tables in tests.
+    pub fn combined_len(&self) -> usize {
+        self.combined.len()
+    }
+
+    /// The number of extended attribute entries held (upstream `Object.keys(_extendedAttrs).length`).
+    pub fn extended_attrs_len(&self) -> usize {
+        self.extended_attrs.len()
+    }
+
     /// `_data[index * CELL_SIZE + field]` with `Uint32Array` read semantics: 0 out of range.
     fn read(&self, index: usize, field: usize) -> u32 {
         index

@@ -25,4 +25,5 @@
 pub mod buffer_service;
 pub mod charset_service;
 pub mod options_service;
+pub mod osc_link_service;
 pub mod unicode_service;
