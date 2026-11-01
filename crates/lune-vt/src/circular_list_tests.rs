@@ -505,7 +505,7 @@ fn splice_delete_count_past_the_end_shrinks_the_length_like_upstream() {
 
 #[test]
 fn splice_insert_that_trims_past_start_keeps_the_logical_result() {
-    // LUNETERM deviation (module doc): upstream's ring clobbers [1, 2, 3] here.
+    // deviation from upstream (module doc): upstream's ring clobbers [1, 2, 3] here.
     let mut list = rec_list(3, &[1, 2, 3]);
     list.splice(0, 0, vec![10, 11]);
     assert_eq!(nums(&list), vec![Some(1), Some(2), Some(3)]);
