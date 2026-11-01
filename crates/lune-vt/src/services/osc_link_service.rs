@@ -18,8 +18,10 @@
 //!    its id.
 //!  - `registerLink` returns the link id, a `u32` (it is stored in a cell's `urlId`, a 32-bit
 //!    field). Ids start at 1. After 2^32 - 1 registrations the counter wraps to 1 (upstream's
-//!    JS number keeps counting but `urlId` would truncate it as well); an id still in use is not
-//!    skipped.
+//!    JS number keeps counting but `urlId` would truncate it as well). `// LUNETERM:` (review
+//!    F5) an id still in use is skipped, so a wrap never replaces a live link (the caps keep at
+//!    most `MAX_LINKS + 1` ids in use, so the search ends); ids after a wrap differ from
+//!    upstream's, which would overwrite the live entry.
 //!  - `// LUNETERM:` (review S2) upstream frees a link only when every line it marks is trimmed, so
 //!    a program that repeats `ESC ] 8 ; ; uri BEL` on one line grows the table (and the
 //!    buffer's marker list, which every scroll, insert and delete walks) without bound. Here
@@ -317,9 +319,17 @@ impl OscLinkService {
     fn enforce_caps(&mut self, buffers: &mut BufferService, keep: u32) {
         while self.data_by_link_id.len() > MAX_LINKS || self.link_of_marker.len() > MAX_LINK_MARKERS
         {
-            let Some(victim) = self.by_age.values().copied().find(|&id| id != keep) else {
+            let Some((age, victim)) = self
+                .by_age
+                .iter()
+                .map(|(&age, &id)| (age, id))
+                .find(|&(_, id)| id != keep)
+            else {
                 return;
             };
+            // Taken out here, not only by `evict`: every iteration removes a key, so the loop
+            // ends even if a key outlived its entry (review F5).
+            self.by_age.remove(&age);
             self.evict(buffers, victim);
         }
     }
@@ -345,10 +355,15 @@ impl OscLinkService {
         }
     }
 
+    /// LUNETERM: (review F5) the next id not in use (module notes).
     fn take_id(&mut self) -> u32 {
-        let id = self.next_id;
-        self.next_id = self.next_id.checked_add(1).unwrap_or(1);
-        id
+        loop {
+            let id = self.next_id;
+            self.next_id = self.next_id.checked_add(1).unwrap_or(1);
+            if !self.data_by_link_id.contains_key(&id) {
+                return id;
+            }
+        }
     }
 }
 
