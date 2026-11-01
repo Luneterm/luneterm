@@ -9,6 +9,17 @@ Regenerate with `scripts/regen-vt-goldens.sh` (needs Node and pnpm; runs
 `git diff -- crates/lune-vt-conformance/goldens` empty. `.gitattributes` forces LF for both
 directories; the reader also tolerates a trailing `\r`.
 
+## Runners
+
+- `src/trace.rs` renders a `lune-vt` decoder + parser run in the parser-trace format above;
+  `tests/parser_trace.rs` replays every parser golden (chunked and unsplit) and compares it with
+  `expect`. `lune-vt/tests/no_panic.rs` includes `trace.rs` and `escape.rs` by path (the engine
+  crate cannot depend on this one) for its seeded fuzz and chunk-invariance check.
+- Known upstream chunk dependence: xterm.js 6.0.0 drops a DEL (0x7F) that starts a chunk inside a
+  DCS payload and keeps one in the middle of a chunk. The port is faithful, so the fuzz's
+  chunk-invariance comparison ignores DEL in `dcs put` lines (see `no_panic.rs`); the goldens
+  themselves are unaffected.
+
 ## Golden files
 
 A golden file starts with the line `lune-vt-golden 1` and holds one or more records. All files in

@@ -3,12 +3,17 @@
 //!
 //! The formats are specified in `FORMAT.md` next to this crate's `Cargo.toml`; the goldens are
 //! generated from the reference xterm.js by `scripts/regen-vt-goldens.sh` and committed, so
-//! nothing here needs Node. The `lune-vt` dependency is declared now and first used by the
-//! parser differential runner (M4 step 6).
+//! nothing here needs Node. [`trace`] is the parser-trace runner (`tests/parser_trace.rs`; the
+//! `lune-vt` fuzz test includes the same file by path, see its header).
 
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+pub mod escape;
+pub mod trace;
+
+pub use escape::{escape_code_points, escape_str};
 
 /// Magic first line of every golden file.
 pub const MAGIC: &str = "lune-vt-golden 1";
@@ -418,25 +423,6 @@ fn relative_label(path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
-}
-
-/// Quotes code points with the golden string escaping: 0x20 to 0x7E except `"` and `\` verbatim,
-/// everything else as `\u{X}` (uppercase hex, no padding).
-pub fn escape_code_points<I: IntoIterator<Item = u32>>(code_points: I) -> String {
-    let mut out = String::from("\"");
-    for cp in code_points {
-        match char::from_u32(cp) {
-            Some(c) if (' '..='~').contains(&c) && c != '"' && c != '\\' => out.push(c),
-            _ => out.push_str(&format!("\\u{{{cp:X}}}")),
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// [`escape_code_points`] for a `&str`.
-pub fn escape_str(s: &str) -> String {
-    escape_code_points(s.chars().map(u32::from))
 }
 
 /// The case names and generated-case count declared by a corpus file (`corpus/<file>`).
