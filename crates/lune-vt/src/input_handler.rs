@@ -82,7 +82,9 @@
 //!    REP allocates `text length * Ps` code points upstream; here the repeated data is capped at
 //!    [`MAX_REP_CODE_POINTS`], so a larger count prints fewer repetitions. Of those, REP
 //!    prints only as many as still change the state (review S3), a cut proven to leave the
-//!    same state as the full print where it applies (`rep_equivalent_repeats`).
+//!    same state as the full print where it applies (`rep_equivalent_repeats`). A single
+//!    character that prints alike every time is written line by line (`print_repeated`,
+//!    review S3 residual), the same writes as `print` without its per-character lookups.
 //!    ED 1 clears the wrapped flag of line `y + 1` counted from the start of the list, not from
 //!    `ybase` (upstream's index, kept). IL, DL, SU, SD, ICH, DCH, ECH and the column handlers
 //!    pass param-derived counts to the buffer line / list calls, which tolerate any count.
@@ -344,6 +346,9 @@ pub struct InputHandler {
     /// Upstream's `onLineFeed` listener for the Windows wrapping heuristics (`CoreTerminal`'s
     /// `_handleWindowsPtyOptionChange`, plan M6 D6). Off until the host turns it on.
     pub(crate) windows_heuristics: bool,
+    /// REPs printed by the line-fill path (tests check which path a case takes).
+    #[cfg(test)]
+    pub(crate) rep_fills: u64,
 }
 
 impl ParserHost for InputHandler {
@@ -581,6 +586,8 @@ impl InputHandler {
             window_title_stack: Vec::new(),
             icon_name_stack: Vec::new(),
             windows_heuristics: false,
+            #[cfg(test)]
+            rep_fills: 0,
         }
     }
 
@@ -2049,7 +2056,8 @@ impl InputHandler {
     /// many fewer repetitions (the visible difference is only the cursor column and which
     /// repetition ends the output). Of those, only as many are printed as can still change the
     /// state (about two buffers' worth of lines; `rep_equivalent_repeats`), which
-    /// leaves the same state as printing all of them.
+    /// leaves the same state as printing all of them. A single character that prints alike
+    /// every time takes the line-fill path (`rep_fill`, `print_repeated`).
     pub fn repeat_preceding_character(&mut self, params: &Params) -> bool {
         let join_state = self.preceding_join_state;
         if join_state == 0 {
@@ -2077,6 +2085,14 @@ impl InputHandler {
                 .min(MAX_REP_CODE_POINTS / unit.len());
             // LUNETERM: and cut to as many as still change the state (review S3)
             let repeats = self.rep_equivalent_repeats(&unit, repeats);
+            // LUNETERM: (review S3, user decision Q16) a single character that prints the same
+            // way every time fills whole lines instead of going through `print` per character
+            if let [code] = unit.as_slice() {
+                if let Some((code, width)) = self.rep_fill(*code).filter(|_| repeats > 0) {
+                    self.print_repeated(code, width, repeats);
+                    return true;
+                }
+            }
             unit.iter()
                 .copied()
                 .cycle()
@@ -2164,6 +2180,127 @@ impl InputHandler {
             return repeats;
         }
         floor + (repeats - floor) % period
+    }
+
+    /// LUNETERM: (review S3) whether REP of the single code point `code` can take
+    /// [`InputHandler::print_repeated`], and with which code point (charset applied) and width.
+    /// It can when every repetition prints alike: the code point never joins, is one or two
+    /// cells wide (no wider than a line), and leaves the join state it found after the first
+    /// repetition (so every repetition sees the same state); and when `print` has no per
+    /// character side effect beyond the cell: wraparound on, insert mode off, screen reader
+    /// mode off, no open link.
+    fn rep_fill(&self, code: u32) -> Option<(u32, u32)> {
+        let services = &self.services;
+        let options = services.options.options();
+        if !services.core.dec_private_modes.wraparound
+            || services.core.modes.insert_mode
+            || options.screen_reader_mode
+            || self.cur_attr_data.extended.url_id() != 0
+        {
+            return None;
+        }
+        let code = charset_replacement(services.charset.charset, code);
+        let unicode = &services.unicode;
+        let first = unicode.char_properties(code, self.preceding_join_state);
+        let width = UnicodeService::extract_width(first);
+        if UnicodeService::extract_should_join(first)
+            || width == 0
+            || width > 2
+            || to_usize(i64::from(width)) > services.buffer.cols
+            || unicode.char_properties(code, first) != first
+        {
+            return None;
+        }
+        Some((code, width))
+    }
+
+    /// LUNETERM: (review S3) `print` of `count` copies of `code` under the conditions of
+    /// [`InputHandler::rep_fill`], line by line: the same cell writes, wraps (`print_wrap`
+    /// with no joined width), dirty rows and join state as `print`, without `print`'s per
+    /// character lookups (`rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print`
+    /// compares the two).
+    fn print_repeated(&mut self, code: u32, width: u32, count: usize) {
+        #[cfg(test)]
+        {
+            self.rep_fills += 1;
+        }
+        let InputHandler {
+            services,
+            cur_attr_data,
+            erase_attr_data_internal,
+            dirty_row_tracker,
+            preceding_join_state,
+            damage,
+            ..
+        } = self;
+        let cols = services.buffer.cols;
+        let cur_attr = *cur_attr_data;
+        let state = services
+            .unicode
+            .char_properties(code, *preceding_join_state);
+        let w = to_usize(i64::from(width));
+
+        let buffer = services.buffer.buffer_mut();
+        let mut row = abs_y(buffer);
+        let x = buffer.x;
+        let Some(buffer_row) = line_mut(buffer, row) else {
+            return;
+        };
+        // handle wide chars: reset start_cell-1 if we would overwrite the second cell of a wide
+        // char
+        if x != 0 && buffer_row.get_width(x - 1) == 2 {
+            buffer_row.set_cell_from_codepoint(x - 1, 0, 1, &cur_attr);
+        }
+        dirty_row_tracker.mark_dirty(buffer.y);
+
+        let mut left = count;
+        while left > 0 {
+            // goto next line if ch would overflow
+            if services.buffer.buffer().x.saturating_add(w) > cols {
+                match print_wrap(
+                    services,
+                    dirty_row_tracker,
+                    damage,
+                    erase_attr_data_internal,
+                    &cur_attr,
+                    row,
+                    0,
+                ) {
+                    Some(new_row) => row = new_row,
+                    // upstream throws on the missing line
+                    None => return,
+                }
+            }
+            let Buffer { lines, x, .. } = services.buffer.buffer_mut();
+            let Some(buffer_row) = lines.get_mut(row) else {
+                return;
+            };
+            // as many as fit on the line: at least one (after a wrap x is 0 and w <= cols)
+            let fit = (cols.saturating_sub(*x) / w).min(left);
+            for _ in 0..fit {
+                buffer_row.set_cell_from_codepoint(*x, code, width, &cur_attr);
+                *x += 1;
+                for _ in 1..w {
+                    buffer_row.set_cell_from_codepoint(*x, 0, 0, &cur_attr);
+                    *x += 1;
+                }
+            }
+            left -= fit;
+        }
+
+        *preceding_join_state = state;
+
+        // handle wide chars: reset cell to the right if it is second cell of a wide char
+        let buffer = services.buffer.buffer_mut();
+        let x = buffer.x;
+        if x < cols {
+            if let Some(buffer_row) = line_mut(buffer, row) {
+                if buffer_row.get_width(x) == 0 && buffer_row.has_content(x) == 0 {
+                    buffer_row.set_cell_from_codepoint(x, 0, 1, &cur_attr);
+                }
+            }
+        }
+        dirty_row_tracker.mark_dirty(buffer.y);
     }
 
     /// ESC # 8 (DECALN): fill the viewport with `E` in the current colours and home the cursor.
