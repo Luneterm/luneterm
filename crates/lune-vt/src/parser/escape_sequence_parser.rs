@@ -26,8 +26,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::LazyLock;
 
-use super::constants::ParserState;
+use super::constants::{ParserAction, ParserState};
 use super::dcs_parser::DcsParser;
 use super::osc_parser::OscParser;
 use super::params::Params;
@@ -41,6 +42,376 @@ use super::types::{
 pub const CSI_FINAL_RANGE: [u32; 2] = [0x40, 0x7e];
 /// Final byte range of ESC function identifiers.
 pub const ESC_FINAL_RANGE: [u32; 2] = [0x30, 0x7e];
+
+/// Shift of the action in a packed table value (`action << 4 | next_state`).
+const TRANSITION_ACTION_SHIFT: u8 = 4;
+/// Mask of the next state in a packed table value.
+const TRANSITION_STATE_MASK: u8 = 15;
+/// Shift of the state in a table index (`state << 8 | code`).
+const INDEX_STATE_SHIFT: usize = 8;
+
+/// Pseudo-character placeholder for printable non-ASCII characters (unicode).
+const NON_ASCII_PRINTABLE: u32 = 0xa0;
+
+/// Transition table of the [`EscapeSequenceParser`] (upstream `TransitionTable`).
+///
+/// Values are `action << 4 | next_state`, indexed `current_state << 8 | code`.
+///
+/// Upstream writes through a `Uint8Array`, where an out-of-range index is silently dropped; here
+/// [`TransitionTable::add`] does the same (no panic).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransitionTable {
+    /// The packed values.
+    pub table: Vec<u8>,
+}
+
+impl TransitionTable {
+    /// A table of `length` entries, all `0` (IGNORE, GROUND).
+    pub fn new(length: usize) -> Self {
+        TransitionTable {
+            table: vec![0; length],
+        }
+    }
+
+    /// Number of entries.
+    pub fn len(&self) -> usize {
+        self.table.len()
+    }
+
+    /// Whether the table has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.table.is_empty()
+    }
+
+    fn pack(action: ParserAction, next: ParserState) -> u8 {
+        (action as u8) << TRANSITION_ACTION_SHIFT | next as u8
+    }
+
+    fn index(state: ParserState, code: u32) -> usize {
+        // `state << 8 | code`; a `code` above 255 overlaps the state bits, as in upstream
+        (state as usize) << INDEX_STATE_SHIFT | code as usize
+    }
+
+    /// Set the default transition.
+    pub fn set_default(&mut self, action: ParserAction, next: ParserState) {
+        self.table.fill(Self::pack(action, next));
+    }
+
+    /// Add a transition for `code` in `state`.
+    pub fn add(&mut self, code: u32, state: ParserState, action: ParserAction, next: ParserState) {
+        if let Some(slot) = self.table.get_mut(Self::index(state, code)) {
+            *slot = Self::pack(action, next);
+        }
+    }
+
+    /// Add transitions for multiple input character codes.
+    pub fn add_many(
+        &mut self,
+        codes: &[u32],
+        state: ParserState,
+        action: ParserAction,
+        next: ParserState,
+    ) {
+        for &code in codes {
+            self.add(code, state, action, next);
+        }
+    }
+
+    /// The packed value for `state` and `code`; `0` (IGNORE, GROUND) outside the table, which is
+    /// what a read past a `Uint8Array` yields once shifted and masked.
+    fn lookup(&self, state: ParserState, code: u32) -> u8 {
+        self.table
+            .get(Self::index(state, code))
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// `blueprint.slice(start, end)`: the code points `start .. end`.
+fn r(start: u32, end: u32) -> Vec<u32> {
+    (start..end).collect()
+}
+
+fn build_vt500_transition_table() -> TransitionTable {
+    use ParserAction as A;
+    use ParserState as S;
+    let mut table = TransitionTable::new(4095);
+
+    // Default definitions.
+    let printables = r(0x20, 0x7f); // 0x20 (SP) included, 0x7F (DEL) excluded
+    let mut executables = r(0x00, 0x18);
+    executables.push(0x19);
+    executables.extend(r(0x1c, 0x20));
+
+    let states = [
+        S::Ground,
+        S::Escape,
+        S::EscapeIntermediate,
+        S::CsiEntry,
+        S::CsiParam,
+        S::CsiIntermediate,
+        S::CsiIgnore,
+        S::SosPmApcString,
+        S::OscString,
+        S::DcsEntry,
+        S::DcsParam,
+        S::DcsIgnore,
+        S::DcsIntermediate,
+        S::DcsPassthrough,
+    ];
+
+    // set default transition
+    table.set_default(A::Error, S::Ground);
+    // printables
+    table.add_many(&printables, S::Ground, A::Print, S::Ground);
+    // global anywhere rules
+    for state in states {
+        table.add_many(&[0x18, 0x1a, 0x99, 0x9a], state, A::Execute, S::Ground);
+        table.add_many(&r(0x80, 0x90), state, A::Execute, S::Ground);
+        table.add_many(&r(0x90, 0x98), state, A::Execute, S::Ground);
+        table.add(0x9c, state, A::Ignore, S::Ground); // ST as terminator
+        table.add(0x1b, state, A::Clear, S::Escape); // ESC
+        table.add(0x9d, state, A::OscStart, S::OscString); // OSC
+        table.add_many(&[0x98, 0x9e, 0x9f], state, A::Ignore, S::SosPmApcString);
+        table.add(0x9b, state, A::Clear, S::CsiEntry); // CSI
+        table.add(0x90, state, A::Clear, S::DcsEntry); // DCS
+    }
+    // rules for executables and 7f
+    table.add_many(&executables, S::Ground, A::Execute, S::Ground);
+    table.add_many(&executables, S::Escape, A::Execute, S::Escape);
+    table.add(0x7f, S::Escape, A::Ignore, S::Escape);
+    table.add_many(&executables, S::OscString, A::Ignore, S::OscString);
+    table.add_many(&executables, S::CsiEntry, A::Execute, S::CsiEntry);
+    table.add(0x7f, S::CsiEntry, A::Ignore, S::CsiEntry);
+    table.add_many(&executables, S::CsiParam, A::Execute, S::CsiParam);
+    table.add(0x7f, S::CsiParam, A::Ignore, S::CsiParam);
+    table.add_many(&executables, S::CsiIgnore, A::Execute, S::CsiIgnore);
+    table.add_many(
+        &executables,
+        S::CsiIntermediate,
+        A::Execute,
+        S::CsiIntermediate,
+    );
+    table.add(0x7f, S::CsiIntermediate, A::Ignore, S::CsiIntermediate);
+    table.add_many(
+        &executables,
+        S::EscapeIntermediate,
+        A::Execute,
+        S::EscapeIntermediate,
+    );
+    table.add(
+        0x7f,
+        S::EscapeIntermediate,
+        A::Ignore,
+        S::EscapeIntermediate,
+    );
+    // osc
+    table.add(0x5d, S::Escape, A::OscStart, S::OscString);
+    table.add_many(&printables, S::OscString, A::OscPut, S::OscString);
+    table.add(0x7f, S::OscString, A::OscPut, S::OscString);
+    table.add_many(
+        &[0x9c, 0x1b, 0x18, 0x1a, 0x07],
+        S::OscString,
+        A::OscEnd,
+        S::Ground,
+    );
+    table.add_many(&r(0x1c, 0x20), S::OscString, A::Ignore, S::OscString);
+    // sos/pm/apc does nothing
+    table.add_many(&[0x58, 0x5e, 0x5f], S::Escape, A::Ignore, S::SosPmApcString);
+    table.add_many(&printables, S::SosPmApcString, A::Ignore, S::SosPmApcString);
+    table.add_many(
+        &executables,
+        S::SosPmApcString,
+        A::Ignore,
+        S::SosPmApcString,
+    );
+    table.add(0x9c, S::SosPmApcString, A::Ignore, S::Ground);
+    table.add(0x7f, S::SosPmApcString, A::Ignore, S::SosPmApcString);
+    // csi entries
+    table.add(0x5b, S::Escape, A::Clear, S::CsiEntry);
+    table.add_many(&r(0x40, 0x7f), S::CsiEntry, A::CsiDispatch, S::Ground);
+    table.add_many(&r(0x30, 0x3c), S::CsiEntry, A::Param, S::CsiParam);
+    table.add_many(
+        &[0x3c, 0x3d, 0x3e, 0x3f],
+        S::CsiEntry,
+        A::Collect,
+        S::CsiParam,
+    );
+    table.add_many(&r(0x30, 0x3c), S::CsiParam, A::Param, S::CsiParam);
+    table.add_many(&r(0x40, 0x7f), S::CsiParam, A::CsiDispatch, S::Ground);
+    table.add_many(
+        &[0x3c, 0x3d, 0x3e, 0x3f],
+        S::CsiParam,
+        A::Ignore,
+        S::CsiIgnore,
+    );
+    table.add_many(&r(0x20, 0x40), S::CsiIgnore, A::Ignore, S::CsiIgnore);
+    table.add(0x7f, S::CsiIgnore, A::Ignore, S::CsiIgnore);
+    table.add_many(&r(0x40, 0x7f), S::CsiIgnore, A::Ignore, S::Ground);
+    table.add_many(&r(0x20, 0x30), S::CsiEntry, A::Collect, S::CsiIntermediate);
+    table.add_many(
+        &r(0x20, 0x30),
+        S::CsiIntermediate,
+        A::Collect,
+        S::CsiIntermediate,
+    );
+    table.add_many(&r(0x30, 0x40), S::CsiIntermediate, A::Ignore, S::CsiIgnore);
+    table.add_many(
+        &r(0x40, 0x7f),
+        S::CsiIntermediate,
+        A::CsiDispatch,
+        S::Ground,
+    );
+    table.add_many(&r(0x20, 0x30), S::CsiParam, A::Collect, S::CsiIntermediate);
+    // esc_intermediate
+    table.add_many(&r(0x20, 0x30), S::Escape, A::Collect, S::EscapeIntermediate);
+    table.add_many(
+        &r(0x20, 0x30),
+        S::EscapeIntermediate,
+        A::Collect,
+        S::EscapeIntermediate,
+    );
+    table.add_many(
+        &r(0x30, 0x7f),
+        S::EscapeIntermediate,
+        A::EscDispatch,
+        S::Ground,
+    );
+    table.add_many(&r(0x30, 0x50), S::Escape, A::EscDispatch, S::Ground);
+    table.add_many(&r(0x51, 0x58), S::Escape, A::EscDispatch, S::Ground);
+    table.add_many(&[0x59, 0x5a, 0x5c], S::Escape, A::EscDispatch, S::Ground);
+    table.add_many(&r(0x60, 0x7f), S::Escape, A::EscDispatch, S::Ground);
+    // dcs entry
+    table.add(0x50, S::Escape, A::Clear, S::DcsEntry);
+    table.add_many(&executables, S::DcsEntry, A::Ignore, S::DcsEntry);
+    table.add(0x7f, S::DcsEntry, A::Ignore, S::DcsEntry);
+    table.add_many(&r(0x1c, 0x20), S::DcsEntry, A::Ignore, S::DcsEntry);
+    table.add_many(&r(0x20, 0x30), S::DcsEntry, A::Collect, S::DcsIntermediate);
+    table.add_many(&r(0x30, 0x3c), S::DcsEntry, A::Param, S::DcsParam);
+    table.add_many(
+        &[0x3c, 0x3d, 0x3e, 0x3f],
+        S::DcsEntry,
+        A::Collect,
+        S::DcsParam,
+    );
+    table.add_many(&executables, S::DcsIgnore, A::Ignore, S::DcsIgnore);
+    table.add_many(&r(0x20, 0x80), S::DcsIgnore, A::Ignore, S::DcsIgnore);
+    table.add_many(&r(0x1c, 0x20), S::DcsIgnore, A::Ignore, S::DcsIgnore);
+    table.add_many(&executables, S::DcsParam, A::Ignore, S::DcsParam);
+    table.add(0x7f, S::DcsParam, A::Ignore, S::DcsParam);
+    table.add_many(&r(0x1c, 0x20), S::DcsParam, A::Ignore, S::DcsParam);
+    table.add_many(&r(0x30, 0x3c), S::DcsParam, A::Param, S::DcsParam);
+    table.add_many(
+        &[0x3c, 0x3d, 0x3e, 0x3f],
+        S::DcsParam,
+        A::Ignore,
+        S::DcsIgnore,
+    );
+    table.add_many(&r(0x20, 0x30), S::DcsParam, A::Collect, S::DcsIntermediate);
+    table.add_many(
+        &executables,
+        S::DcsIntermediate,
+        A::Ignore,
+        S::DcsIntermediate,
+    );
+    table.add(0x7f, S::DcsIntermediate, A::Ignore, S::DcsIntermediate);
+    table.add_many(
+        &r(0x1c, 0x20),
+        S::DcsIntermediate,
+        A::Ignore,
+        S::DcsIntermediate,
+    );
+    table.add_many(
+        &r(0x20, 0x30),
+        S::DcsIntermediate,
+        A::Collect,
+        S::DcsIntermediate,
+    );
+    table.add_many(&r(0x30, 0x40), S::DcsIntermediate, A::Ignore, S::DcsIgnore);
+    table.add_many(
+        &r(0x40, 0x7f),
+        S::DcsIntermediate,
+        A::DcsHook,
+        S::DcsPassthrough,
+    );
+    table.add_many(&r(0x40, 0x7f), S::DcsParam, A::DcsHook, S::DcsPassthrough);
+    table.add_many(&r(0x40, 0x7f), S::DcsEntry, A::DcsHook, S::DcsPassthrough);
+    table.add_many(
+        &executables,
+        S::DcsPassthrough,
+        A::DcsPut,
+        S::DcsPassthrough,
+    );
+    table.add_many(&printables, S::DcsPassthrough, A::DcsPut, S::DcsPassthrough);
+    table.add(0x7f, S::DcsPassthrough, A::Ignore, S::DcsPassthrough);
+    table.add_many(
+        &[0x1b, 0x9c, 0x18, 0x1a],
+        S::DcsPassthrough,
+        A::DcsUnhook,
+        S::Ground,
+    );
+    // special handling of unicode chars
+    table.add(NON_ASCII_PRINTABLE, S::Ground, A::Print, S::Ground);
+    table.add(NON_ASCII_PRINTABLE, S::OscString, A::OscPut, S::OscString);
+    table.add(NON_ASCII_PRINTABLE, S::CsiIgnore, A::Ignore, S::CsiIgnore);
+    table.add(NON_ASCII_PRINTABLE, S::DcsIgnore, A::Ignore, S::DcsIgnore);
+    table.add(
+        NON_ASCII_PRINTABLE,
+        S::DcsPassthrough,
+        A::DcsPut,
+        S::DcsPassthrough,
+    );
+    table
+}
+
+/// VT500 compatible transition table, taken from <https://vt100.net/emu/dec_ansi_parser>.
+pub static VT500_TRANSITION_TABLE: LazyLock<TransitionTable> =
+    LazyLock::new(build_vt500_transition_table);
+
+/// The action of a packed table value; `None` for a value outside [`ParserAction`] (only a
+/// custom table can hold one), which upstream's `switch` treats as no action.
+fn action_of(transition: u8) -> Option<ParserAction> {
+    Some(match transition >> TRANSITION_ACTION_SHIFT {
+        0 => ParserAction::Ignore,
+        1 => ParserAction::Error,
+        2 => ParserAction::Print,
+        3 => ParserAction::Execute,
+        4 => ParserAction::OscStart,
+        5 => ParserAction::OscPut,
+        6 => ParserAction::OscEnd,
+        7 => ParserAction::CsiDispatch,
+        8 => ParserAction::Param,
+        9 => ParserAction::Collect,
+        10 => ParserAction::EscDispatch,
+        11 => ParserAction::Clear,
+        12 => ParserAction::DcsHook,
+        13 => ParserAction::DcsPut,
+        14 => ParserAction::DcsUnhook,
+        _ => return None,
+    })
+}
+
+/// The next state of a packed table value. Values 14 and 15 are not states; only a custom
+/// table can hold them, and they map to GROUND (upstream would index the table's default
+/// entries, which are `ERROR -> GROUND`).
+fn state_of(transition: u8) -> ParserState {
+    match transition & TRANSITION_STATE_MASK {
+        1 => ParserState::Escape,
+        2 => ParserState::EscapeIntermediate,
+        3 => ParserState::CsiEntry,
+        4 => ParserState::CsiParam,
+        5 => ParserState::CsiIntermediate,
+        6 => ParserState::CsiIgnore,
+        7 => ParserState::SosPmApcString,
+        8 => ParserState::OscString,
+        9 => ParserState::DcsEntry,
+        10 => ParserState::DcsParam,
+        11 => ParserState::DcsIgnore,
+        12 => ParserState::DcsIntermediate,
+        13 => ParserState::DcsPassthrough,
+        _ => ParserState::Ground,
+    }
+}
 
 /// Numeric function identifier of `id` (upstream `_identifier`): prefix, intermediates and
 /// final byte packed one byte each, most significant first. Every upstream `throw` is an
@@ -111,6 +482,7 @@ type EscEntry<C> = (HandlerId, EscFn<C>);
 pub struct EscapeSequenceParser<C: ParserHost> {
     initial_state: ParserState,
     current_state: ParserState,
+    transitions: TransitionTable,
 
     // buffers over several parse calls
     params: Params,
@@ -169,13 +541,22 @@ fn zdm_params(params: &mut Params) {
 }
 
 impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
-    /// A parser in GROUND state with default (no-op) handlers. Swallows 7-bit ST (`ESC \`).
+    /// A parser in GROUND state with default (no-op) handlers and the VT500 transition table.
+    /// Swallows 7-bit ST (`ESC \`).
     pub fn new() -> Self {
+        Self::with_transitions(VT500_TRANSITION_TABLE.clone())
+    }
+
+    /// Like [`EscapeSequenceParser::new`] with a custom transition table (upstream's optional
+    /// `transitions` constructor argument). A value outside the table reads as `0` (no action,
+    /// GROUND).
+    pub fn with_transitions(transitions: TransitionTable) -> Self {
         let mut params = Params::new(); // defaults to 32 storable params/subparams
         zdm_params(&mut params);
         let mut parser = EscapeSequenceParser {
             initial_state: ParserState::Ground,
             current_state: ParserState::Ground,
+            transitions,
             params,
             collect: 0,
             print_handler: default_print_handler(),
@@ -386,9 +767,136 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     }
 
     /// Parse UTF-32 code points in `data`, dispatching to the registered handlers.
+    ///
+    /// Handlers are synchronous (plan decision D3), so one call parses all of `data` unless the
+    /// error handler asks to abort. Any `u32` is accepted: values from 0xA0 up (including those
+    /// above U+10FFFF) look up the NON_ASCII_PRINTABLE column of the table.
     pub fn parse(&mut self, host: &mut C, data: &[u32]) {
-        // The transition table and parse loop are ported in a later step of this milestone.
-        let _ = (host, data);
+        let mut i = 0;
+        while let Some(&first) = data.get(i) {
+            let mut code = first;
+            // normal transition & action lookup
+            let lookup = if code < NON_ASCII_PRINTABLE {
+                code
+            } else {
+                NON_ASCII_PRINTABLE
+            };
+            let mut transition = self.transitions.lookup(self.current_state, lookup);
+            match action_of(transition) {
+                Some(ParserAction::Print) => {
+                    // read ahead: 0x20 (SP) is included, 0x7F (DEL) and 0x80 - 0x9F are excluded
+                    // (upstream unrolls this loop four times; same exit condition)
+                    let mut j = i + 1;
+                    while data
+                        .get(j)
+                        .is_some_and(|&c| c >= 0x20 && !(c > 0x7e && c < NON_ASCII_PRINTABLE))
+                    {
+                        j += 1;
+                    }
+                    if let Some(chunk) = data.get(i..j) {
+                        self.print(host, chunk);
+                    }
+                    i = j - 1;
+                }
+                Some(ParserAction::Execute) => self.execute(host, code),
+                Some(ParserAction::Ignore) | None => {}
+                Some(ParserAction::Error) => {
+                    if self.error(host, i, code) {
+                        return;
+                    }
+                    // inject values: currently not implemented
+                }
+                Some(ParserAction::CsiDispatch) => self.csi_dispatch(host, code),
+                Some(ParserAction::Param) => {
+                    // inner loop: digits (0x30 - 0x39) and ; (0x3b) and : (0x3a)
+                    let mut j = i;
+                    loop {
+                        match code {
+                            0x3b => {
+                                let _ = self.params.add_param(0); // ZDM
+                            }
+                            0x3a => {
+                                let _ = self.params.add_sub_param(-1);
+                            }
+                            // 0x30 - 0x39 (saturating: a custom table may route any code here)
+                            _ => self.params.add_digit(
+                                i32::try_from(code).unwrap_or(i32::MAX).saturating_sub(48),
+                            ),
+                        }
+                        j += 1;
+                        match data.get(j) {
+                            Some(&next) if next > 0x2f && next < 0x3c => code = next,
+                            _ => break,
+                        }
+                    }
+                    i = j - 1;
+                }
+                Some(ParserAction::Collect) => {
+                    self.collect = self.collect.wrapping_shl(8) | code;
+                }
+                Some(ParserAction::EscDispatch) => self.esc_dispatch(host, code),
+                Some(ParserAction::Clear) => {
+                    zdm_params(&mut self.params);
+                    self.collect = 0;
+                }
+                Some(ParserAction::DcsHook) => {
+                    let ident = self.collect.wrapping_shl(8) | code;
+                    self.dcs_parser.hook(host, ident, &self.params);
+                }
+                Some(ParserAction::DcsPut) => {
+                    // inner loop - exit DCS_PUT: 0x18, 0x1a, 0x1b, 0x7f, 0x80 - 0x9f
+                    // unhook triggered by: 0x1b, 0x9c (success) and 0x18, 0x1a (abort)
+                    let mut j = i + 1;
+                    while data.get(j).is_some_and(|&c| {
+                        !(c == 0x18
+                            || c == 0x1a
+                            || c == 0x1b
+                            || (c > 0x7f && c < NON_ASCII_PRINTABLE))
+                    }) {
+                        j += 1;
+                    }
+                    if let Some(chunk) = data.get(i..j) {
+                        self.dcs_parser.put(host, chunk);
+                    }
+                    i = j - 1;
+                }
+                Some(ParserAction::DcsUnhook) => {
+                    self.dcs_parser.unhook(host, code != 0x18 && code != 0x1a);
+                    if code == 0x1b {
+                        transition |= ParserState::Escape as u8;
+                    }
+                    zdm_params(&mut self.params);
+                    self.collect = 0;
+                    *host.preceding_join_state() = 0;
+                }
+                Some(ParserAction::OscStart) => self.osc_parser.start(host),
+                Some(ParserAction::OscPut) => {
+                    // inner loop: 0x20 (SP) included, 0x7F (DEL) included
+                    let mut j = i + 1;
+                    while data
+                        .get(j)
+                        .is_some_and(|&c| c >= 0x20 && !(c > 0x7f && c < NON_ASCII_PRINTABLE))
+                    {
+                        j += 1;
+                    }
+                    if let Some(chunk) = data.get(i..j) {
+                        self.osc_parser.put(host, chunk);
+                    }
+                    i = j - 1;
+                }
+                Some(ParserAction::OscEnd) => {
+                    self.osc_parser.end(host, code != 0x18 && code != 0x1a);
+                    if code == 0x1b {
+                        transition |= ParserState::Escape as u8;
+                    }
+                    zdm_params(&mut self.params);
+                    self.collect = 0;
+                    *host.preceding_join_state() = 0;
+                }
+            }
+            self.current_state = state_of(transition);
+            i += 1;
+        }
     }
 
     // Dispatch of one action of the parse loop. Each matches one `case` of upstream's
@@ -396,13 +904,11 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     // loop can call it without holding other borrows of `self`.
 
     /// `ParserAction.PRINT`.
-    #[allow(dead_code, reason = "called by the parse loop, ported in M4 step 5")]
     fn print(&mut self, host: &mut C, data: &[u32]) {
         (self.print_handler)(host, data);
     }
 
     /// `ParserAction.EXECUTE`.
-    #[allow(dead_code, reason = "called by the parse loop, ported in M4 step 5")]
     fn execute(&mut self, host: &mut C, code: u32) {
         match self.execute_handlers.get_mut(&code) {
             Some(handler) => handler(host),
@@ -412,7 +918,6 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     }
 
     /// `ParserAction.CSI_DISPATCH` for the final byte `code`.
-    #[allow(dead_code, reason = "called by the parse loop, ported in M4 step 5")]
     fn csi_dispatch(&mut self, host: &mut C, code: u32) {
         // JS: `this._collect << 8 | code` (bits shifted out of 32 are lost, as in int32)
         let ident = self.collect.wrapping_shl(8) | code;
@@ -432,7 +937,6 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     }
 
     /// `ParserAction.ESC_DISPATCH` for the final byte `code`.
-    #[allow(dead_code, reason = "called by the parse loop, ported in M4 step 5")]
     fn esc_dispatch(&mut self, host: &mut C, code: u32) {
         let ident = self.collect.wrapping_shl(8) | code;
         let mut handled = false;
@@ -451,7 +955,6 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     }
 
     /// `ParserAction.ERROR`: returns whether to abort the `parse` call.
-    #[allow(dead_code, reason = "called by the parse loop, ported in M4 step 5")]
     fn error(&mut self, host: &mut C, position: usize, code: u32) -> bool {
         let state = ParsingState {
             position,
