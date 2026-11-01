@@ -520,6 +520,12 @@ impl InputHandler {
         mem::take(&mut self.damage)
     }
 
+    /// The lengths of the window title and icon name stacks (XTWINOPS 22/23); each is capped at
+    /// ten entries (read by the engine fuzz).
+    pub fn title_stack_lens(&self) -> (usize, usize) {
+        (self.window_title_stack.len(), self.icon_name_stack.len())
+    }
+
     /// The window title (OSC 0/2).
     pub fn window_title(&self) -> &str {
         &self.window_title
