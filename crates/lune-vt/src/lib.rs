@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod buffer;
+pub mod data;
 pub mod engine;
 pub mod extension;
 pub mod input;
@@ -18,7 +19,7 @@ pub mod parser;
 pub mod services;
 
 pub use engine::{HostEvent, VtEngine};
-pub use extension::{Extension, HandlerRegistry};
+pub use extension::Extension;
 
 /// xterm.js release this crate ports.
 pub const XTERM_JS_TAG: &str = "6.0.0";
