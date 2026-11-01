@@ -10,12 +10,13 @@
 //!  - The service reads the buffer, the options and the log service upstream through injected
 //!    services; here the caller passes `&Buffer`, `&TerminalOptions` and `&LogService`.
 //!  - Strings are Rust `String`s: the binary event's characters are all `<= U+00FF`, one per byte.
+//!  - `// LUNETERM:` (user decision 2026-11-02) the data and binary events log their length at
+//!    debug, never the data (upstream logs it at debug and its codes at trace): it is user input.
 //!  - `clone(DEFAULT_MODES)` is a plain `Default`/`Clone` (`Clone.ts` is replaced by `Clone`).
 
 use crate::buffer::buffer::Buffer;
 use crate::services::log_service::LogService;
 use crate::services::options_service::{CursorStyle, TerminalOptions};
-use std::fmt;
 
 /// `IModes` (`Types.ts:263`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -69,21 +70,6 @@ pub struct DataEvent {
     pub user_input: bool,
 }
 
-/// Lazily formats a string as its UTF-16 code units (upstream's `data.split('').map(charCodeAt)`).
-struct Codes<'a>(&'a str);
-
-impl fmt::Display for Codes<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, unit) in self.0.encode_utf16().enumerate() {
-            if i > 0 {
-                f.write_str(", ")?;
-            }
-            write!(f, "{unit}")?;
-        }
-        Ok(())
-    }
-}
-
 /// Modes, the cursor flags, and the data/binary events towards the pty.
 #[derive(Debug, Default)]
 pub struct CoreService {
@@ -123,8 +109,10 @@ impl CoreService {
         let scroll_to_bottom =
             was_user_input && opts.scroll_on_user_input && buffer.ybase != buffer.ydisp;
 
-        log.debug(format_args!("sending data \"{data}\""));
-        log.trace(format_args!("sending data (codes) {}", Codes(data)));
+        // LUNETERM: (user decision 2026-11-02, review S5/F8) upstream logs the data at debug and
+        // its codes at trace; the data is user input (keystrokes, a typed password, a paste),
+        // so only its length is logged and the trace line is dropped.
+        log.debug(format_args!("sending data ({} bytes)", data.len()));
         Some(DataEvent {
             data: data.to_string(),
             scroll_to_bottom,
@@ -142,8 +130,11 @@ impl CoreService {
         if opts.disable_stdin {
             return None;
         }
-        log.debug(format_args!("sending binary \"{data}\""));
-        log.trace(format_args!("sending binary (codes) {}", Codes(data)));
+        // LUNETERM: length only, as in `trigger_data_event` (one byte per character)
+        log.debug(format_args!(
+            "sending binary ({} bytes)",
+            data.chars().count()
+        ));
         Some(data.to_string())
     }
 }

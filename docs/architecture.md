@@ -321,8 +321,8 @@ The input encoders (key and mouse encoding) are M7.
   recently extended link (its cells keep their attributes and lose the link); a cell's
   combined string holds at most `MAX_COMBINED_CODE_POINTS` (64, `buffer_line.rs`); REP prints
   only the repetitions that still change the state (`rep_equivalent_repeats`, tested equal to
-  the full print). Unknown OSC and DCS log their identifier and payload length, never the
-  payload.
+  the full print). No log line carries pty output or user input: unknown OSC and DCS log their
+  identifier and payload length, the parse and the data/binary events log lengths only.
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as

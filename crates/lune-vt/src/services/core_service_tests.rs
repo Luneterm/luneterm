@@ -128,8 +128,32 @@ fn binary_event_passes_the_string_through() {
     );
 }
 
+/// `// LUNETERM:` (user decision 2026-11-02): the events log the length, never the data.
 #[test]
-fn codes_display_is_utf16_units() {
-    assert_eq!(Codes("a\u{1F600}").to_string(), "97, 55357, 56832");
-    assert_eq!(Codes("").to_string(), "");
+fn events_log_the_length_never_the_data() {
+    use crate::services::log_service::Logger;
+    use crate::services::options_service::LogLevel;
+    use std::sync::{Arc, Mutex};
+
+    struct Capture(Arc<Mutex<Vec<String>>>);
+    impl Logger for Capture {
+        fn log(&self, _level: LogLevel, message: &str) {
+            self.0.lock().unwrap().push(message.to_string());
+        }
+    }
+    let opts = TerminalOptions::default();
+    let (mut core, bs, mut log) = fixture(&opts);
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    log.set_logger(Some(Box::new(Capture(Arc::clone(&messages)))));
+    log.set_level(LogLevel::Trace);
+    core.trigger_data_event("hunter2\u{e9}", true, bs.buffer(), &opts, &log);
+    core.trigger_binary_event("\x1b[Msecret\u{ff}", &opts, &log);
+    let messages = messages.lock().unwrap();
+    assert_eq!(
+        *messages,
+        vec![
+            "sending data (9 bytes)".to_string(),
+            "sending binary (10 bytes)".to_string()
+        ]
+    );
 }

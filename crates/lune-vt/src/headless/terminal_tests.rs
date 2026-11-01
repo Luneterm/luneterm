@@ -1127,3 +1127,36 @@ fn a11y_text_merges_runs_and_stops_at_the_first_character_past_the_cap() {
         [HostEvent::A11yText("\u{65e5}".to_owned())]
     );
 }
+
+/// `// LUNETERM:` (user decision 2026-11-02, review S5/F8): with a sink at `Trace`, no log line
+/// carries pty output or user input, only lengths.
+#[test]
+fn trace_logging_never_carries_output_or_input_payloads() {
+    use crate::services::log_service::Logger;
+    use crate::services::options_service::LogLevel;
+
+    struct Capture(Rc<RefCell<Vec<String>>>);
+    impl Logger for Capture {
+        fn log(&self, _level: LogLevel, message: &str) {
+            self.0.borrow_mut().push(message.to_string());
+        }
+    }
+    let mut t = sized(80, 24);
+    let messages = Rc::new(RefCell::new(Vec::new()));
+    t.set_logger(Some(Box::new(Capture(Rc::clone(&messages)))));
+    t.set_option(OptionValue::LogLevel(LogLevel::Trace))
+        .unwrap();
+    t.write(b"\x1b]52;c;U0VDUkVUX0NMSVA=\x07\x1bP1$zsecret-dcs\x1b\\echoed-secret");
+    t.input("hunter2-password\r", true);
+    let messages = messages.borrow();
+    assert!(!messages.is_empty(), "the sink saw the log lines");
+    for secret in ["U0VDUkVUX0NMSVA", "secret-dcs", "echoed-secret", "hunter2"] {
+        assert!(
+            messages.iter().all(|m| !m.contains(secret)),
+            "{secret} logged: {messages:?}"
+        );
+    }
+    let len = "\x1b]52;c;U0VDUkVUX0NMSVA=\x07\x1bP1$zsecret-dcs\x1b\\echoed-secret".len();
+    assert!(messages.contains(&format!("parsing data ({len} bytes)")));
+    assert!(messages.contains(&"sending data (17 bytes)".to_string()));
+}
