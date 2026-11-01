@@ -54,28 +54,56 @@ fn all_parser_goldens_match() -> Result<()> {
     Ok(())
 }
 
+const UTF8_SPLIT: &str = "upstream Utf8ToUtf32 split-sequence bug (TextDecoder.ts:161)";
+const DCS_DEL: &str = "upstream DCS passthrough DEL quirk (EscapeSequenceParser.ts:346, :744)";
+
+/// The two kinds of divergence from upstream (ledger rows 3 and 18) are the only ones, and
+/// `expect` of each is what the port gives for any chunking.
 #[test]
-fn divergent_goldens_are_the_split_sequence_cases() -> Result<()> {
+fn divergent_goldens_are_the_known_upstream_bugs() -> Result<()> {
     let goldens = load(Kind::Parser)?;
     let divergent: Vec<&Golden> = goldens.iter().filter(|g| g.divergent.is_some()).collect();
-    assert!(
-        divergent.iter().any(|g| g.name == "utf8_split_after_80"),
+    let reason_of = |name: &str| {
+        divergent
+            .iter()
+            .find(|g| g.name == name)
+            .and_then(|g| g.divergent.as_deref())
+    };
+    assert_eq!(
+        reason_of("utf8_split_after_80"),
+        Some(UTF8_SPLIT),
         "utf8_split_after_80 must be marked divergent"
     );
+    assert_eq!(
+        reason_of("dcs_del_inside"),
+        Some(DCS_DEL),
+        "dcs_del_inside must be marked divergent"
+    );
     for golden in divergent {
-        assert_eq!(
-            golden.divergent.as_deref(),
-            Some("upstream Utf8ToUtf32 split-sequence bug (TextDecoder.ts:161)"),
-            "{}",
+        let reason = golden.divergent.as_deref().unwrap_or_default();
+        assert!(
+            reason == UTF8_SPLIT
+                || reason == DCS_DEL
+                || reason == format!("{UTF8_SPLIT}; {DCS_DEL}"),
+            "{}: unknown divergence reason {reason:?}",
             golden.name
         );
+        if reason.contains(UTF8_SPLIT) {
+            assert!(
+                golden.chunks.len() > 1,
+                "{} is divergent but has one chunk",
+                golden.name
+            );
+        }
+        if reason.contains(DCS_DEL) {
+            assert!(
+                golden.expect.iter().any(|l| l.contains("\\u{7F}")),
+                "{}: DEL divergence without a DEL in expect",
+                golden.name
+            );
+        }
         // The point of the divergence: chunking changes nothing.
         let chunked = trace_chunks(golden.chunks.iter().map(Vec::as_slice));
-        assert!(
-            golden.chunks.len() > 1,
-            "{} is divergent but has one chunk",
-            golden.name
-        );
         assert_eq!(
             first_difference(&chunked, &golden.expect),
             None,

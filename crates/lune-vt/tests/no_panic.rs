@@ -358,28 +358,6 @@ fn run_with_handlers(rng: &mut Rng, input: &[u8], lengths: &[usize]) {
 
 // ------------------------------------------------------------------------------------------
 
-/// Upstream xterm.js 6.0.0 is not chunk-invariant for DEL inside a DCS payload: in
-/// DCS_PASSTHROUGH the table maps 0x7F to IGNORE, but the DCS_PUT read-ahead loop includes it,
-/// so a DEL that starts a chunk is dropped and one in the middle of a chunk is kept (verified
-/// against the oracle: `ESC P $ q a DEL b` gives `a DEL b`, split before DEL gives `a b`). The
-/// port is faithful, so the invariance check removes DEL from `dcs put` lines on both sides.
-/// `dcs_del_chunk_dependence_is_upstreams` pins the quirk; delete this function and that test
-/// together if the parser ever stops having it.
-fn without_dcs_del(lines: Vec<String>) -> Vec<String> {
-    const PREFIX: &str = "dcs put \"";
-    const DEL: &str = "\\u{7F}";
-    lines
-        .into_iter()
-        .filter_map(|line| match line.strip_prefix(PREFIX) {
-            Some(rest) => {
-                let kept = rest.replace(DEL, "");
-                (kept != "\"").then(|| format!("{PREFIX}{kept}"))
-            }
-            None => Some(line),
-        })
-        .collect()
-}
-
 fn run_seed(seed: u64) {
     let mut rng = Rng(seed);
     let input = generate(&mut rng, INPUT_BYTES);
@@ -396,10 +374,7 @@ fn run_seed(seed: u64) {
     }
     let mut unsplit = Tracer::new();
     unsplit.feed(&input);
-    let (a, b) = (
-        without_dcs_del(chunked.lines()),
-        without_dcs_del(unsplit.lines()),
-    );
+    let (a, b) = (chunked.lines(), unsplit.lines());
     if let Some(index) = first_difference(&a, &b) {
         panic!(
             "chunked and unsplit traces differ at line {index}\n  chunked: {}\n  unsplit: {}",
@@ -449,9 +424,11 @@ fn random_streams_never_panic_and_chunking_changes_nothing() {
     );
 }
 
-/// The upstream quirk `without_dcs_del` hides, pinned so it is noticed if it goes away.
+/// Ledger row 18: upstream drops a DEL that starts a chunk inside a DCS payload and keeps one in
+/// the middle of a chunk (`ESC P $ q a | DEL b` gave `a b`, unsplit `a DEL b`). The port keeps it
+/// either way, so the payload no longer depends on how the host splits its writes.
 #[test]
-fn dcs_del_chunk_dependence_is_upstreams() {
+fn dcs_del_is_chunk_invariant() {
     let head = b"\x1bP$qa";
     let tail = b"\x7fb\x1b\\";
     let mut whole = head.to_vec();
@@ -461,23 +438,81 @@ fn dcs_del_chunk_dependence_is_upstreams() {
     let mut split = Tracer::new();
     split.feed(head);
     split.feed(tail);
-    assert!(
-        unsplit
-            .lines()
-            .contains(&"dcs put \"a\\u{7F}b\"".to_string()),
-        "{:?}",
-        unsplit.lines()
-    );
-    assert!(
-        split.lines().contains(&"dcs put \"ab\"".to_string()),
-        "{:?}",
-        split.lines()
-    );
-    // And the normalisation makes them equal.
-    assert_eq!(
-        without_dcs_del(unsplit.lines()),
-        without_dcs_del(split.lines())
-    );
+    let expected = "dcs put \"a\\u{7F}b\"".to_string();
+    assert!(unsplit.lines().contains(&expected), "{:?}", unsplit.lines());
+    assert!(split.lines().contains(&expected), "{:?}", split.lines());
+    assert_eq!(unsplit.lines(), split.lines());
+}
+
+/// The whole class: a code that opens a chunk must act as the same code does mid-chunk, in every
+/// parser state. For each state (reached by a prefix), every C0 byte, DEL, C1 as UTF-8 and a few
+/// non-ASCII characters are placed (a) at the start of the second chunk and (b) mid-chunk, and
+/// every cut position plus byte-by-byte feeding must trace the same as the unsplit input. The
+/// instrument check is that `dcs_del_is_chunk_invariant`'s case is among these inputs: without
+/// the lookup override in `EscapeSequenceParser::parse` the `ESC P q` rows fail on DEL.
+#[test]
+fn every_code_in_every_state_is_chunk_invariant() {
+    const PREFIXES: &[&str] = &[
+        "",
+        "\x1b",
+        "\x1b(",
+        "\x1b[",
+        "\x1b[1",
+        "\x1b[1;2:3",
+        "\x1b[ ",
+        "\x1b[1<",
+        "\x1b]0;",
+        "\x1b]",
+        "\x1bX",
+        "\x1bP",
+        "\x1bP1",
+        "\x1bP$",
+        "\x1bP1<",
+        "\x1bP$q",
+        "\x1bP$qab",
+    ];
+    let mut codes: Vec<Vec<u8>> = (0u8..=0x7f).map(|b| vec![b]).collect();
+    codes.extend((0x80u8..=0xbf).map(|b| vec![0xc2, b])); // U+0080 - U+00BF
+    codes.push("\u{e9}".as_bytes().to_vec());
+    codes.push("\u{20ac}".as_bytes().to_vec());
+    codes.push("\u{1f600}".as_bytes().to_vec());
+    let mut checked = 0;
+    for prefix in PREFIXES {
+        for code in &codes {
+            let mut whole = prefix.as_bytes().to_vec();
+            whole.extend_from_slice(code);
+            whole.extend_from_slice(b"a1;b");
+            whole.extend_from_slice(code);
+            whole.extend_from_slice(b"c\x1b\\d");
+            let mut unsplit = Tracer::new();
+            unsplit.feed(&whole);
+            let expected = unsplit.lines();
+            for cut in 1..whole.len() {
+                let mut split = Tracer::new();
+                split.feed(whole.get(..cut).unwrap_or(&[]));
+                split.feed(whole.get(cut..).unwrap_or(&[]));
+                if let Some(index) = first_difference(&split.lines(), &expected) {
+                    panic!(
+                        "prefix {prefix:?}, code {code:02x?}, cut {cut}: trace differs at line \
+                         {index}\n  split:   {}\n  unsplit: {}",
+                        clip(split.lines().get(index), 120),
+                        clip(expected.get(index), 120)
+                    );
+                }
+                checked += 1;
+            }
+            let mut bytewise = Tracer::new();
+            for byte in &whole {
+                bytewise.feed(std::slice::from_ref(byte));
+            }
+            assert_eq!(
+                first_difference(&bytewise.lines(), &expected),
+                None,
+                "prefix {prefix:?}, code {code:02x?}, byte-by-byte"
+            );
+        }
+    }
+    assert!(checked > 20_000, "only {checked} splits checked");
 }
 
 /// The generator itself: deterministic per seed, and it does produce the shapes the fuzz relies
