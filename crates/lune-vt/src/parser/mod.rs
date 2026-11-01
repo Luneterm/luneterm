@@ -21,4 +21,8 @@
 )]
 
 pub mod constants;
+pub mod dcs_parser;
+pub mod escape_sequence_parser;
+pub mod osc_parser;
 pub mod params;
+pub mod types;
