@@ -23,6 +23,7 @@
 )]
 
 pub mod attribute_data;
+pub mod buffer_line;
 pub mod buffer_range;
 pub mod cell_data;
 pub mod constants;
