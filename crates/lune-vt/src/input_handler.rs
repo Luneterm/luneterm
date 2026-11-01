@@ -22,7 +22,7 @@
 //!    `CoreTerminal`); [`InputHandler::parse`] takes it as an argument and lends `self` to it.
 //!    Handlers are closures registered by [`InputHandler::register_handlers`].
 //!  - Upstream's emitters become a queue of [`HostEvent`]s (in fire order) plus a coalesced
-//!    [`Damage`]: `onRequestBell` -> `Bell`, `onA11yChar`/`onA11yTab` -> `A11yChar`/`A11yTab`,
+//!    [`Damage`]: `onRequestBell` -> `Bell`, `onA11yChar`/`onA11yTab` -> `A11yText`/`A11yTab`,
 //!    `onRequestRefreshRows` -> `Damage::rows`, `onCursorMove` -> `Damage::cursor_moved`,
 //!    `bufferService.onScroll` (forwarded by `CoreTerminal`) -> [`InputHandler::on_scroll`].
 //!    `onLineFeed` has no public consumer: it drives only the Windows wrapping heuristic, which
@@ -43,6 +43,10 @@
 //!    The engine never answers a report: the host knows the theme. OSC 52 and every other OSC
 //!    without a handler reach the fallback, which only logs (ledger row 13). `onTitleChange` is
 //!    [`HostEvent::Title`]; the icon name (OSC 1) is stored and fires nothing, as headless.
+//!  - Event coalescing (D2 amendment, Q10; [`EventQueue`]): one `Title` per drain carrying the
+//!    current title, and `onA11yChar` characters merged into one `A11yText` capped at
+//!    [`A11Y_TEXT_LIMIT`] bytes per drain. Upstream hands listeners shared strings, one event per
+//!    fire; queued copies would let a few bytes of XTWINOPS 22/23 or REP queue gigabytes.
 //!  - JS string functions: `String.trim` is `js_trim` (ECMAScript WhiteSpace, not Rust's), and
 //!    the `/^\d+$/` + `parseInt` of the colour indexes is `parse_js_index`. The decoder drops
 //!    U+FEFF before the parser sees it (upstream's `Utf8ToUtf32`), so that trim case is only
@@ -103,6 +107,7 @@
 
 use std::fmt;
 use std::mem;
+use std::sync::Arc;
 
 use crate::buffer::attribute_data::AttributeData;
 use crate::buffer::buffer::Buffer;
@@ -152,6 +157,13 @@ const CHARSET_INTERMEDIATES: [char; 7] = ['(', ')', '*', '+', '-', '.', '/'];
 
 /// Most code points one REP (CSI Ps b) prints; upstream allocates `Ps` times the text.
 pub const MAX_REP_CODE_POINTS: usize = 1 << 20;
+
+/// Most bytes of [`HostEvent::A11yText`] text queued per drain (plan M6 D2 amendment, Q10).
+/// Characters printed past it are not voiced, as upstream's `AccessibilityManager` stops
+/// announcing after `MAX_ROWS_TO_READ` (20) rows. Half the engine fuzz's flat event allowance
+/// (4 KiB), so a write that hits it (REP with screen reader mode on) stays within the bound
+/// `events <= 16 x bytes written + 4 KiB`.
+pub const A11Y_TEXT_LIMIT: usize = 2048;
 
 /// The services every handler reads or writes (upstream's constructor arguments).
 #[derive(Debug)]
@@ -233,6 +245,80 @@ impl DirtyRowTracker {
     }
 }
 
+/// The host event queue (plan M6 D2, amended by Q10). Events keep upstream's fire order, with
+/// two coalescing rules that keep one write's events proportional to its bytes:
+///  - at most one [`HostEvent::Title`] per drain: it stays where the first title change since the
+///    last drain fired and carries the window title at drain time (the latest title set; the
+///    title changes only through `set_title`, which queues the event);
+///  - consecutive printed characters merge into one [`HostEvent::A11yText`], and at most
+///    [`A11Y_TEXT_LIMIT`] bytes of such text are queued per drain; the first character that does
+///    not fit ends voicing until the next drain.
+///
+/// Every other event is queued as fired.
+#[derive(Debug, Default)]
+struct EventQueue {
+    events: Vec<HostEvent>,
+    /// Index of the queued [`HostEvent::Title`], if any.
+    title_slot: Option<usize>,
+    /// Bytes of [`HostEvent::A11yText`] text queued since the last drain.
+    a11y_bytes: usize,
+}
+
+impl EventQueue {
+    fn push(&mut self, event: HostEvent) {
+        match event {
+            HostEvent::Title(_) => self.title_changed(),
+            HostEvent::A11yText(text) => self.push_a11y_text(&text),
+            event => self.events.push(event),
+        }
+    }
+
+    /// The window title changed; the event's text is filled in by [`EventQueue::take`].
+    fn title_changed(&mut self) {
+        if self.title_slot.is_none() {
+            self.title_slot = Some(self.events.len());
+            self.events.push(HostEvent::Title(String::new()));
+        }
+    }
+
+    /// A printed character, with screen reader mode on (upstream `onA11yChar`).
+    fn a11y_char(&mut self, code: u32) {
+        if self.a11y_bytes < A11Y_TEXT_LIMIT {
+            self.push_a11y_text(&string_from_code_point(code));
+        }
+    }
+
+    fn push_a11y_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let total = self.a11y_bytes.saturating_add(text.len());
+        if total > A11Y_TEXT_LIMIT {
+            // stop here rather than voice a later, shorter character out of order
+            self.a11y_bytes = A11Y_TEXT_LIMIT;
+            return;
+        }
+        self.a11y_bytes = total;
+        if let Some(HostEvent::A11yText(queued)) = self.events.last_mut() {
+            queued.push_str(text);
+        } else {
+            self.events.push(HostEvent::A11yText(text.to_owned()));
+        }
+    }
+
+    /// The queued events, the title event carrying `window_title`; starts a new drain.
+    fn take(&mut self, window_title: &str) -> Vec<HostEvent> {
+        let mut events = mem::take(&mut self.events);
+        if let Some(slot) = self.title_slot.take() {
+            if let Some(HostEvent::Title(title)) = events.get_mut(slot) {
+                window_title.clone_into(title);
+            }
+        }
+        self.a11y_bytes = 0;
+        events
+    }
+}
+
 /// The terminal's standard implementation of the parser's handlers (upstream `InputHandler`).
 #[derive(Debug)]
 pub struct InputHandler {
@@ -244,16 +330,17 @@ pub struct InputHandler {
     dirty_row_tracker: DirtyRowTracker,
     /// The parser's `precedingJoinState` ([`ParserHost`]).
     preceding_join_state: u32,
-    events: Vec<HostEvent>,
+    events: EventQueue,
     damage: Damage,
-    /// The window title (upstream `_windowTitle`).
-    window_title: String,
+    /// The window title (upstream `_windowTitle`). Titles are shared (`Arc`) so XTWINOPS 22/23
+    /// move them between the stack and here without copying (a title can be 10 MB).
+    window_title: Arc<str>,
     /// The icon name (upstream `_iconName`, OSC 1).
-    icon_name: String,
+    icon_name: Arc<str>,
     /// Titles saved by XTWINOPS 22, newest last (upstream `_windowTitleStack`).
-    window_title_stack: Vec<String>,
+    window_title_stack: Vec<Arc<str>>,
     /// Icon names saved by XTWINOPS 22 (upstream `_iconNameStack`).
-    icon_name_stack: Vec<String>,
+    icon_name_stack: Vec<Arc<str>>,
     /// Upstream's `onLineFeed` listener for the Windows wrapping heuristics (`CoreTerminal`'s
     /// `_handleWindowsPtyOptionChange`, plan M6 D6). Off until the host turns it on.
     pub(crate) windows_heuristics: bool,
@@ -490,10 +577,10 @@ impl InputHandler {
             erase_attr_data_internal: DEFAULT_ATTR_DATA,
             dirty_row_tracker: DirtyRowTracker::new(y),
             preceding_join_state: 0,
-            events: Vec::new(),
+            events: EventQueue::default(),
             damage: Damage::default(),
-            window_title: String::new(),
-            icon_name: String::new(),
+            window_title: Arc::from(""),
+            icon_name: Arc::from(""),
             window_title_stack: Vec::new(),
             icon_name_stack: Vec::new(),
             windows_heuristics: false,
@@ -510,9 +597,11 @@ impl InputHandler {
         &self.cur_attr_data
     }
 
-    /// The events fired since the last call, in fire order.
+    /// The events fired since the last call, in fire order, coalesced as [`EventQueue`]
+    /// describes: one [`HostEvent::Title`] (the current title), printed characters merged into
+    /// [`HostEvent::A11yText`] up to [`A11Y_TEXT_LIMIT`] bytes.
     pub fn take_events(&mut self) -> Vec<HostEvent> {
-        mem::take(&mut self.events)
+        self.events.take(&self.window_title)
     }
 
     /// The damage accumulated since the last call.
@@ -966,7 +1055,7 @@ impl InputHandler {
             preceding = current_info;
 
             if screen_reader_mode {
-                events.push(HostEvent::A11yChar(string_from_code_point(code)));
+                events.a11y_char(code);
             }
             let link_id = cur_attr.extended.url_id();
             if link_id != 0 {
@@ -2503,13 +2592,13 @@ impl InputHandler {
             // PushTitle
             Some(22) => {
                 if second == Some(0) || second == Some(2) {
-                    self.window_title_stack.push(self.window_title.clone());
+                    self.window_title_stack.push(Arc::clone(&self.window_title));
                     if self.window_title_stack.len() > STACK_LIMIT {
                         self.window_title_stack.remove(0);
                     }
                 }
                 if second == Some(0) || second == Some(1) {
-                    self.icon_name_stack.push(self.icon_name.clone());
+                    self.icon_name_stack.push(Arc::clone(&self.icon_name));
                     if self.icon_name_stack.len() > STACK_LIMIT {
                         self.icon_name_stack.remove(0);
                     }
@@ -2519,12 +2608,13 @@ impl InputHandler {
             Some(23) => {
                 if second == Some(0) || second == Some(2) {
                     if let Some(title) = self.window_title_stack.pop() {
-                        self.set_title(&title);
+                        self.window_title = title;
+                        self.events.title_changed();
                     }
                 }
                 if second == Some(0) || second == Some(1) {
                     if let Some(name) = self.icon_name_stack.pop() {
-                        self.set_icon_name(&name);
+                        self.icon_name = name;
                     }
                 }
             }
@@ -2535,14 +2625,14 @@ impl InputHandler {
 
     /// OSC 0 and 2: set the window title and tell the host (`HostEvent::Title`).
     pub fn set_title(&mut self, data: &str) -> bool {
-        self.window_title = data.to_owned();
-        self.events.push(HostEvent::Title(data.to_owned()));
+        self.window_title = Arc::from(data);
+        self.events.title_changed();
         true
     }
 
     /// OSC 0 and 1: set the icon name (not exposed to the host).
     pub fn set_icon_name(&mut self, data: &str) -> bool {
-        self.icon_name = data.to_owned();
+        self.icon_name = Arc::from(data);
         true
     }
 

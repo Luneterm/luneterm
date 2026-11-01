@@ -18,8 +18,11 @@
 //!    operations as generated, at a few checkpoints and at the end.
 //!
 //! The event bound is the one check that fails on the engine today: `PENDING_EVENT_BOUND` lists
-//! the seeds (two amplifiers, a title pop and REP with screen reader mode on) and the test asserts
-//! that exactly those fail it; each is re-run without the bound so nothing hides behind it.
+//! the seeds and the test asserts that exactly those fail it; each is re-run without the bound so
+//! nothing hides behind it. The engine coalesces events per drain (plan M6 D2 amendment, user
+//! decision Q10: one `Title` per drain, merged `A11yText` capped per drain), which fixed the REP
+//! class and the in-write title storms; the seeds left re-emit, in a later drain, a large title
+//! stored by an earlier write (XTWINOPS 23 pops it: one title of up to 10 MB for a few bytes).
 //!
 //! Known upstream chunk dependence (step 9 hand-off (b), root cause found here): with autowrap off
 //! (`CSI ? 7 l`) a wide character that does not fit at the right margin is skipped and leaves
@@ -651,7 +654,7 @@ fn event_cost(event: &HostEvent) -> u64 {
     let n = |len: usize| len as u64 + 1;
     match event {
         HostEvent::Response(bytes) => n(bytes.len()),
-        HostEvent::Title(text) | HostEvent::A11yChar(text) => n(text.len()),
+        HostEvent::Title(text) | HostEvent::A11yText(text) => n(text.len()),
         HostEvent::Color(requests) => 8 * requests.len() as u64 + 1,
         HostEvent::A11yTab(_) | HostEvent::UnknownOsc { .. } => 16,
         HostEvent::ClipboardWrite { selection, data } => n(selection.len() + data.len()),
@@ -666,7 +669,7 @@ fn event_slot(event: &HostEvent) -> usize {
         HostEvent::Title(_) => 2,
         HostEvent::Color(_) => 3,
         HostEvent::FocusReportRequested | HostEvent::WindowReport(_) => 4,
-        HostEvent::A11yChar(_) => 5,
+        HostEvent::A11yText(_) => 5,
         HostEvent::A11yTab(_) => 6,
         HostEvent::UnknownOsc { .. } | HostEvent::ClipboardWrite { .. } => 7,
     }
@@ -715,7 +718,7 @@ impl Sim {
             assert!(
                 cost <= allowed,
                 "drain_events weighed {cost} bytes for {} bytes written (allowed {allowed}); by \
-                 kind [response, bell, title, color, report, a11y char, a11y tab, other] = \
+                 kind [response, bell, title, color, report, a11y text, a11y tab, other] = \
                  {by_kind:?}",
                 self.since_drain
             );
@@ -1020,20 +1023,18 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// Seeds below 2400 whose events outweigh their input (`drain_events` bound), found by this test
-/// and not fixed in M6 step 10: the event queue is a design decision (plan D2), see
+/// Seeds below 2400 whose events outweigh their input (`drain_events` bound), left after the Q10
+/// coalescing: the event queue is a design decision (plan D2), see
 /// `known_event_amplifiers_still_amplify`. The test asserts that the seeds failing the event
 /// bound are exactly these (within the run's seeds), so a fix must empty the list. Each of
 /// these seeds, replayed without the event bound, passes every other check. After a change to
 /// the generator the list is regenerated: `LUNE_VT_ENGINE_FUZZ_SEEDS=2400 cargo test -p lune-vt
 /// --release --test engine_fuzz` prints the failing seeds.
 ///
-/// Title class: XTWINOPS 22/23 with `push_title`/`pop_title` on re-emits a stored title of up to
-/// 10 MB per pop. A11y class: with `screen_reader_mode` on, REP (up to 1 << 20 repeats) fires
-/// one `A11yChar` per repeated character.
-const PENDING_EVENT_BOUND: &[u64] = &[
-    34, 521, 569, 581, 606, 637, 1034, 1049, 1119, 1319, 1331, 1757, 1762, 2036, 2204, 2276,
-];
+/// Title replay class: XTWINOPS 23 with `pop_title` on restores a title stored by an earlier
+/// write and the drain after it carries that title (one per drain since Q10), up to 10 MB for a
+/// few bytes written. Awaiting a decision (step 10 follow-up notes).
+const PENDING_EVENT_BOUND: &[u64] = &[569, 606, 637, 1049, 1331, 2036, 2204];
 
 const EVENT_BOUND_MESSAGE: &str = "drain_events weighed";
 
@@ -1081,7 +1082,7 @@ fn random_operations_never_panic_stay_bounded_and_ignore_chunking() {
     }
     println!(
         "engine fuzz: {} seeds, {} failed, {wrap_off_skips} wrap-off skips, event bound seeds \
-         {event_bound_seeds:?}, events seen [response, bell, title, color, report, a11y char, \
+         {event_bound_seeds:?}, events seen [response, bell, title, color, report, a11y text, \
          a11y tab, other] = {saw:?}",
         seeds.len(),
         failures.len()
@@ -1117,7 +1118,7 @@ fn random_operations_never_panic_stay_bounded_and_ignore_chunking() {
             "title",
             "color",
             "report",
-            "a11y char",
+            "a11y text",
             "a11y tab",
         ]
         .iter()
@@ -1128,9 +1129,10 @@ fn random_operations_never_panic_stay_bounded_and_ignore_chunking() {
     }
 }
 
-/// The two amplifiers behind `PENDING_EVENT_BOUND`, as small deterministic inputs, and the
-/// instrument check that the event bound sees real amplification. These assert the current
-/// (bad) behaviour: when the engine is fixed they fail, and the fix removes them with the list.
+/// The amplifier behind `PENDING_EVENT_BOUND` as a small deterministic input, and the
+/// instrument check that the event bound sees real amplification: it asserts the current (bad)
+/// behaviour and fails once the title replay is fixed (then delete it with the list). The two
+/// shapes Q10 fixed are asserted bounded.
 #[test]
 fn known_event_amplifiers_still_amplify() {
     fn weight(sim: &mut Sim, input: &[u8]) -> (u64, u64) {
@@ -1144,31 +1146,35 @@ fn known_event_amplifiers_still_amplify() {
             .sum::<u64>();
         (cost, EVENT_RATIO * input.len() as u64 + EVENT_SLACK)
     }
-    // Title: a 60 KB title, then ten push/pop pairs (windowOptions pushTitle/popTitle on).
-    let mut sim = Sim::new(10, 4, Chunking::AsIs, false);
-    sim.apply(&Op::SetOption(OptionValue::WindowOptions(
-        all_window_options(),
-    )));
-    let mut input = b"\x1b]0;".to_vec();
-    input.extend(std::iter::repeat_n(b'x', 60_000));
-    input.push(0x07);
+    let title_sim = || {
+        let mut sim = Sim::new(10, 4, Chunking::AsIs, false);
+        sim.apply(&Op::SetOption(OptionValue::WindowOptions(
+            all_window_options(),
+        )));
+        sim
+    };
+    let mut big_title = b"\x1b]0;".to_vec();
+    big_title.extend(std::iter::repeat_n(b'x', 60_000));
+    big_title.push(0x07);
+    // Fixed by Q10: a 60 KB title and ten push/pop pairs in one write queue one title.
+    let mut sim = title_sim();
+    let mut input = big_title.clone();
+    input.extend(b"\x1b[22;2t\x1b[23;2t".repeat(10));
+    let (cost, allowed) = weight(&mut sim, &input);
+    assert!(cost <= allowed, "{cost} > {allowed}");
+    // Still open: the title pushed in one write, popped in the next.
+    let mut sim = title_sim();
+    let mut input = big_title.clone();
+    input.extend(b"\x1b[22;2t\x1b]2;y\x07");
     let _ = weight(&mut sim, &input);
-    let pairs = b"\x1b[22;2t\x1b[23;2t".repeat(10);
-    let (cost, allowed) = weight(&mut sim, &pairs);
+    let (cost, allowed) = weight(&mut sim, b"\x1b[23;2t");
     assert!(
         cost > allowed,
-        "title pop no longer amplifies: {cost} <= {allowed}"
+        "title replay no longer amplifies: {cost} <= {allowed}"
     );
-    // A11y: REP with screen reader mode on.
+    // Fixed by Q10: REP with screen reader mode on.
     let mut sim = Sim::new(10, 4, Chunking::AsIs, false);
     sim.apply(&Op::SetOption(OptionValue::ScreenReaderMode(true)));
-    let (cost, allowed) = weight(&mut sim, b"a\x1b[100000b");
-    assert!(
-        cost > allowed,
-        "REP no longer amplifies a11y events: {cost} <= {allowed}"
-    );
-    // And the same input with screen reader mode off stays small.
-    let mut sim = Sim::new(10, 4, Chunking::AsIs, false);
     let (cost, allowed) = weight(&mut sim, b"a\x1b[100000b");
     assert!(cost <= allowed, "{cost} > {allowed}");
 }

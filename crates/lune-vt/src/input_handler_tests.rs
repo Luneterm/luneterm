@@ -953,10 +953,10 @@ fn screen_reader_mode_fires_a11y_char_and_tab_events() {
     assert_eq!(
         t.handler.take_events(),
         [
-            HostEvent::A11yChar("a".into()),
-            HostEvent::A11yChar("b".into()),
+            // consecutive characters merge into one event (D2 amendment, Q10)
+            HostEvent::A11yText("ab".into()),
             HostEvent::A11yTab(6),
-            HostEvent::A11yChar("￥".into()),
+            HostEvent::A11yText("￥".into()),
             HostEvent::A11yTab(6),
         ]
     );
@@ -3430,7 +3430,9 @@ fn extract_color_survives_every_truncation_of_a_long_sequence() {
 //  - `windowOptions` `22/23 - PushTitle/PopTitle` (3 cases): `inputHandler.onTitleChange` is the
 //    `HostEvent::Title` events. Step 7 set the title by calling `set_title`/`set_icon_name`
 //    (OSC was not ported yet); step 8 runs the real `ESC ] 0 ; Pt BEL` (`osc_0_*` below and
-//    `set_title_and_icon`).
+//    `set_title_and_icon`). Titles coalesce to one per drain (D2 amendment, Q10), so the cases
+//    drain after every write, as a host does (`titles_after`); the storm without draining is
+//    `title_events_coalesce_to_the_latest_per_drain`.
 //  - `windowOptions` `14` and `16`: upstream's test terminal has no renderer and reports nothing;
 //    here they are the `HostEvent::WindowReport` events (the host answers them).
 //  - `DECRQM`, `DECSTR` and `windowOptions` read replies from `coreService.onData`; here they
@@ -3820,6 +3822,17 @@ fn set_title_and_icon(t: &mut TestTerm, name: &str) {
     t.parse_str(&format!("\x1b]0;{name}\x07"));
 }
 
+/// A title stack as string slices (the stacks hold shared `Arc<str>` titles).
+fn strs(stack: &[std::sync::Arc<str>]) -> Vec<&str> {
+    stack.iter().map(|title| &**title).collect()
+}
+
+/// Parse `input` and drain: the titles one write produced (the host drains after each write).
+fn titles_after(t: &mut TestTerm, input: &str) -> Vec<String> {
+    t.parse_str(input);
+    titles(t)
+}
+
 fn titles(t: &mut TestTerm) -> Vec<String> {
     t.handler
         .take_events()
@@ -3834,32 +3847,35 @@ fn titles(t: &mut TestTerm) -> Vec<String> {
 #[test]
 fn window_options_22_23_push_title_pop_title() {
     let mut t = push_pop_handler();
+    let mut seen = Vec::new();
     for name in ["1", "2", "3"] {
         set_title_and_icon(&mut t, name);
-        t.parse_str("\x1b[22t");
+        seen.extend(titles_after(&mut t, "\x1b[22t"));
     }
-    assert_eq!(t.handler.window_title_stack, ["1", "2", "3"]);
-    assert_eq!(t.handler.icon_name_stack, ["1", "2", "3"]);
-    assert_eq!(titles(&mut t), ["1", "2", "3"]);
+    assert_eq!(strs(&t.handler.window_title_stack), ["1", "2", "3"]);
+    assert_eq!(strs(&t.handler.icon_name_stack), ["1", "2", "3"]);
+    assert_eq!(seen, ["1", "2", "3"]);
+    let mut seen = Vec::new();
     for _ in 0..4 {
         // the fourth one tests "overflow"
-        t.parse_str("\x1b[23t");
+        seen.extend(titles_after(&mut t, "\x1b[23t"));
     }
     assert!(t.handler.window_title_stack.is_empty());
     assert!(t.handler.icon_name_stack.is_empty());
-    assert_eq!(titles(&mut t), ["3", "2", "1"]);
+    assert_eq!(seen, ["3", "2", "1"]);
 }
 
 #[test]
 fn window_options_22_23_push_title_pop_title_with_1() {
     let mut t = push_pop_handler();
+    let mut seen = Vec::new();
     for name in ["1", "2", "3"] {
         set_title_and_icon(&mut t, name);
-        t.parse_str("\x1b[22;1t");
+        seen.extend(titles_after(&mut t, "\x1b[22;1t"));
     }
     assert!(t.handler.window_title_stack.is_empty());
-    assert_eq!(t.handler.icon_name_stack, ["1", "2", "3"]);
-    assert_eq!(titles(&mut t), ["1", "2", "3"]);
+    assert_eq!(strs(&t.handler.icon_name_stack), ["1", "2", "3"]);
+    assert_eq!(seen, ["1", "2", "3"]);
     for _ in 0..4 {
         t.parse_str("\x1b[23;1t");
     }
@@ -3871,19 +3887,21 @@ fn window_options_22_23_push_title_pop_title_with_1() {
 #[test]
 fn window_options_22_23_push_title_pop_title_with_2() {
     let mut t = push_pop_handler();
+    let mut seen = Vec::new();
     for name in ["1", "2", "3"] {
         set_title_and_icon(&mut t, name);
-        t.parse_str("\x1b[22;2t");
+        seen.extend(titles_after(&mut t, "\x1b[22;2t"));
     }
-    assert_eq!(t.handler.window_title_stack, ["1", "2", "3"]);
+    assert_eq!(strs(&t.handler.window_title_stack), ["1", "2", "3"]);
     assert!(t.handler.icon_name_stack.is_empty());
-    assert_eq!(titles(&mut t), ["1", "2", "3"]);
+    assert_eq!(seen, ["1", "2", "3"]);
+    let mut seen = Vec::new();
     for _ in 0..4 {
-        t.parse_str("\x1b[23;2t");
+        seen.extend(titles_after(&mut t, "\x1b[23;2t"));
     }
     assert!(t.handler.window_title_stack.is_empty());
     assert!(t.handler.icon_name_stack.is_empty());
-    assert_eq!(titles(&mut t), ["3", "2", "1"]);
+    assert_eq!(seen, ["3", "2", "1"]);
 }
 
 #[test]
@@ -4996,15 +5014,16 @@ fn window_options_title_stacks_keep_the_ten_newest() {
         t.parse_str("\x1b[22t");
     }
     let expected: Vec<String> = (2..12).map(|i| i.to_string()).collect();
-    assert_eq!(t.handler.window_title_stack, expected);
-    assert_eq!(t.handler.icon_name_stack, expected);
+    assert_eq!(strs(&t.handler.window_title_stack), expected);
+    assert_eq!(strs(&t.handler.icon_name_stack), expected);
     t.handler.take_events();
+    let mut seen = Vec::new();
     for _ in 0..12 {
-        t.parse_str("\x1b[23t");
+        seen.extend(titles_after(&mut t, "\x1b[23t"));
     }
     assert!(t.handler.window_title_stack.is_empty());
     let popped: Vec<String> = (2..12).rev().map(|i| i.to_string()).collect();
-    assert_eq!(titles(&mut t), popped);
+    assert_eq!(seen, popped);
     assert_eq!(t.handler.window_title(), "2");
 }
 
@@ -5605,19 +5624,19 @@ fn osc_0_sets_title_and_icon_name_osc_1_the_icon_name_only_osc_2_the_title_only(
     let mut t = upstream_handler();
     parse_osc(&mut t, "0;both");
     assert_eq!(
-        (t.handler.window_title(), t.handler.icon_name.as_str()),
+        (t.handler.window_title(), &*t.handler.icon_name),
         ("both", "both")
     );
     assert_eq!(titles(&mut t), ["both"]);
     parse_osc(&mut t, "1;icon");
     assert_eq!(
-        (t.handler.window_title(), t.handler.icon_name.as_str()),
+        (t.handler.window_title(), &*t.handler.icon_name),
         ("both", "icon")
     );
     assert!(t.handler.take_events().is_empty(), "OSC 1 fires no event");
     parse_osc(&mut t, "2;title");
     assert_eq!(
-        (t.handler.window_title(), t.handler.icon_name.as_str()),
+        (t.handler.window_title(), &*t.handler.icon_name),
         ("title", "icon")
     );
     assert_eq!(titles(&mut t), ["title"]);
@@ -6069,6 +6088,40 @@ fn osc_and_decrqss_equal_the_oracle() {
                 .replace("\\s", "\x1b\\");
             t.parse_str(&input);
         }
-        assert_eq!(&oracle_summary(&mut t), expected, "inputs {inputs:?}");
+        let expected = coalesce_oracle_titles(expected);
+        assert_eq!(oracle_summary(&mut t), expected, "inputs {inputs:?}");
     }
+}
+
+/// The oracle's events with Q10's title rule applied (D2 amendment): one `T(..)` per drain, at
+/// the first title's place, carrying the last title. Upstream fires one `onTitleChange` per
+/// change; the oracle rows keep that record. (No title in `OSC_ORACLE` contains `|`.)
+fn coalesce_oracle_titles(expected: &str) -> String {
+    let Some(rest) = expected.strip_prefix("ev=") else {
+        return expected.to_owned();
+    };
+    let (events, tail) = rest.split_once(";url=").unwrap();
+    let mut events: Vec<&str> = events.split('|').collect();
+    let titles: Vec<usize> = (0..events.len())
+        .filter(|&i| events[i].starts_with("T("))
+        .collect();
+    if let (Some(&first), Some(&last)) = (titles.first(), titles.last()) {
+        events[first] = events[last];
+        for &i in titles.iter().skip(1).rev() {
+            events.remove(i);
+        }
+    }
+    format!("ev={};url={tail}", events.join("|"))
+}
+
+#[test]
+fn coalesce_oracle_titles_keeps_the_last_title_at_the_first_place() {
+    assert_eq!(
+        coalesce_oracle_titles("ev=T(a)|D(x)|T(b)|T(c);url=0;links=;title=c;icon="),
+        "ev=T(c)|D(x);url=0;links=;title=c;icon="
+    );
+    assert_eq!(
+        coalesce_oracle_titles("ev=D(x);url=0;links=;title=;icon="),
+        "ev=D(x);url=0;links=;title=;icon="
+    );
 }
