@@ -81,7 +81,7 @@ impl ListObserver for () {
     fn on_delete(&mut self, _e: DeleteEvent) {}
 }
 
-/// Failures upstream reports by throwing (plus the two Luneterm guards named in the module doc).
+/// Failures upstream reports by throwing (plus the two guards added here named in the module doc).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListError {
     /// `recycle` on a list that is not at `max_length`.
