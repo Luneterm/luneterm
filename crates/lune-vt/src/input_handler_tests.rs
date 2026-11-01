@@ -30,6 +30,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
+use crate::buffer::attribute_data::ExtendedAttrs;
 use crate::buffer::constants::Attributes;
 use crate::data::charsets::charset;
 use crate::input::unicode_v6::UnicodeV6;
@@ -2796,4 +2797,623 @@ fn new_handlers_survive_a_missing_cursor_line() {
         t.viewport().first().and_then(|row| row.get(..2)),
         Some("ok")
     );
+}
+
+// --- step 6: SGR (CSI m) ---
+
+/// `inputHandler.curAttrData` after parsing `\x1b[` + `seq` on a fresh handler.
+fn sgr(seq: &str) -> TestTerm {
+    let mut t = upstream_handler();
+    t.parse_str(&format!("\x1b[{seq}"));
+    t
+}
+
+impl TestTerm {
+    fn attr(&self) -> AttributeData {
+        self.handler.cur_attr_data
+    }
+}
+
+// upstream: `text attributes`
+
+#[test]
+fn text_attributes_bold() {
+    let mut t = sgr("1m");
+    assert!(t.attr().is_bold() != 0);
+    t.parse_str("\x1b[22m");
+    assert!(t.attr().is_bold() == 0);
+}
+
+#[test]
+fn text_attributes_dim() {
+    let mut t = sgr("2m");
+    assert!(t.attr().is_dim() != 0);
+    t.parse_str("\x1b[22m");
+    assert!(t.attr().is_dim() == 0);
+}
+
+#[test]
+fn text_attributes_italic() {
+    let mut t = sgr("3m");
+    assert!(t.attr().is_italic() != 0);
+    t.parse_str("\x1b[23m");
+    assert!(t.attr().is_italic() == 0);
+}
+
+#[test]
+fn text_attributes_underline() {
+    let mut t = sgr("4m");
+    assert!(t.attr().is_underline() != 0);
+    t.parse_str("\x1b[24m");
+    assert!(t.attr().is_underline() == 0);
+}
+
+#[test]
+fn text_attributes_blink() {
+    let mut t = sgr("5m");
+    assert!(t.attr().is_blink() != 0);
+    t.parse_str("\x1b[25m");
+    assert!(t.attr().is_blink() == 0);
+}
+
+#[test]
+fn text_attributes_inverse() {
+    let mut t = sgr("7m");
+    assert!(t.attr().is_inverse() != 0);
+    t.parse_str("\x1b[27m");
+    assert!(t.attr().is_inverse() == 0);
+}
+
+#[test]
+fn text_attributes_invisible() {
+    let mut t = sgr("8m");
+    assert!(t.attr().is_invisible() != 0);
+    t.parse_str("\x1b[28m");
+    assert!(t.attr().is_invisible() == 0);
+}
+
+#[test]
+fn text_attributes_strikethrough() {
+    let mut t = sgr("9m");
+    assert!(t.attr().is_strikethrough() != 0);
+    t.parse_str("\x1b[29m");
+    assert!(t.attr().is_strikethrough() == 0);
+}
+
+#[test]
+fn text_attributes_overline() {
+    let mut t = sgr("53m");
+    assert!(t.attr().is_overline() != 0);
+    t.parse_str("\x1b[55m");
+    assert!(t.attr().is_overline() == 0);
+}
+
+#[test]
+fn colormode_palette_16() {
+    let mut t = upstream_handler();
+    assert_eq!(t.attr().get_fg_color_mode(), 0);
+    assert_eq!(t.attr().get_bg_color_mode(), 0);
+    // lower 8 colors
+    for i in 0..8 {
+        t.parse_str(&format!("\x1b[{};{}m", i + 30, i + 40));
+        assert_eq!(t.attr().get_fg_color_mode(), Attributes::CM_P16);
+        assert_eq!(t.attr().get_fg_color(), i);
+        assert_eq!(t.attr().get_bg_color_mode(), Attributes::CM_P16);
+        assert_eq!(t.attr().get_bg_color(), i);
+    }
+    // reset to DEFAULT
+    t.parse_str("\x1b[39;49m");
+    assert_eq!(t.attr().get_fg_color_mode(), 0);
+    assert_eq!(t.attr().get_bg_color_mode(), 0);
+}
+
+#[test]
+fn colormode_palette_256() {
+    let mut t = upstream_handler();
+    assert_eq!(t.attr().get_fg_color_mode(), 0);
+    assert_eq!(t.attr().get_bg_color_mode(), 0);
+    for i in 0..256 {
+        t.parse_str(&format!("\x1b[38;5;{i};48;5;{i}m"));
+        assert_eq!(t.attr().get_fg_color_mode(), Attributes::CM_P256);
+        assert_eq!(t.attr().get_fg_color(), i);
+        assert_eq!(t.attr().get_bg_color_mode(), Attributes::CM_P256);
+        assert_eq!(t.attr().get_bg_color(), i);
+    }
+    // reset to DEFAULT
+    t.parse_str("\x1b[39;49m");
+    assert_eq!(t.attr().get_fg_color_mode(), 0);
+    assert_eq!(t.attr().get_fg_color(), -1);
+    assert_eq!(t.attr().get_bg_color_mode(), 0);
+    assert_eq!(t.attr().get_bg_color(), -1);
+}
+
+#[test]
+fn colormode_rgb() {
+    let mut t = upstream_handler();
+    t.parse_str("\x1b[38;2;1;2;3;48;2;4;5;6m");
+    assert_eq!(t.attr().get_fg_color_mode(), Attributes::CM_RGB);
+    assert_eq!(t.attr().get_fg_color(), 1 << 16 | 2 << 8 | 3);
+    assert_eq!(AttributeData::to_color_rgb(t.attr().fg), [1, 2, 3]);
+    assert_eq!(t.attr().get_bg_color_mode(), Attributes::CM_RGB);
+    assert_eq!(AttributeData::to_color_rgb(t.attr().bg), [4, 5, 6]);
+    // reset to DEFAULT
+    t.parse_str("\x1b[39;49m");
+    assert_eq!(t.attr().get_fg_color_mode(), 0);
+    assert_eq!(t.attr().get_fg_color(), -1);
+    assert_eq!(t.attr().get_bg_color_mode(), 0);
+    assert_eq!(t.attr().get_bg_color(), -1);
+}
+
+#[test]
+fn colormode_transitions() {
+    // RGB -> 256, RGB -> 16, 16 -> 256, 256 -> 16
+    for (first, second, mode, color) in [
+        (
+            "\x1b[38;2;1;2;3;48;2;4;5;6m",
+            "\x1b[38;5;255;48;5;255m",
+            Attributes::CM_P256,
+            255,
+        ),
+        (
+            "\x1b[38;2;1;2;3;48;2;4;5;6m",
+            "\x1b[37;47m",
+            Attributes::CM_P16,
+            7,
+        ),
+        (
+            "\x1b[37;47m",
+            "\x1b[38;5;255;48;5;255m",
+            Attributes::CM_P256,
+            255,
+        ),
+        (
+            "\x1b[38;5;255;48;5;255m",
+            "\x1b[37;47m",
+            Attributes::CM_P16,
+            7,
+        ),
+    ] {
+        let mut t = upstream_handler();
+        t.parse_str(first);
+        t.parse_str(second);
+        assert_eq!(t.attr().get_fg_color_mode(), mode);
+        assert_eq!(t.attr().get_fg_color(), color);
+        assert_eq!(t.attr().get_bg_color_mode(), mode);
+        assert_eq!(t.attr().get_bg_color(), color);
+    }
+}
+
+#[test]
+fn should_zero_missing_rgb_values() {
+    let mut t = upstream_handler();
+    t.parse_str("\x1b[38;2;1;2;3m");
+    t.parse_str("\x1b[38;2;5m");
+    assert_eq!(AttributeData::to_color_rgb(t.attr().fg), [5, 0, 0]);
+}
+
+// upstream: `colon notation`
+
+/// Upstream's two handlers with `fg = 0xFFFFFFFF`: `colon` and `semicolon` give the same `fg`,
+/// and `fg & mask == expected`.
+fn colon_equals_semicolon(colon: &str, semicolon: &str, mask: u32, expected: u32) {
+    let mut a = upstream_handler();
+    let mut b = upstream_handler();
+    a.handler.cur_attr_data.fg = 0xFFFF_FFFF;
+    b.handler.cur_attr_data.fg = 0xFFFF_FFFF;
+    b.parse_str(&format!("\x1b[{semicolon}m"));
+    a.parse_str(&format!("\x1b[{colon}m"));
+    assert_eq!(b.attr().fg & mask, expected, "{semicolon}");
+    assert_eq!(a.attr().fg, b.attr().fg, "{colon} vs {semicolon}");
+}
+
+#[test]
+fn colon_notation_equals_semicolon() {
+    let rgb = Attributes::RGB_MASK;
+    colon_equals_semicolon(
+        "38:2::50:100:150",
+        "38;2;50;100;150",
+        rgb,
+        50 << 16 | 100 << 8 | 150,
+    );
+    colon_equals_semicolon("38:2::50:100:", "38;2;50;100;", rgb, 50 << 16 | 100 << 8);
+    colon_equals_semicolon("38:2::50::", "38;2;50;;", rgb, 50 << 16);
+    colon_equals_semicolon("38:2::::", "38;2;;;", rgb, 0);
+    colon_equals_semicolon(
+        "38;2::50:100:150",
+        "38;2;50;100;150",
+        rgb,
+        50 << 16 | 100 << 8 | 150,
+    );
+    colon_equals_semicolon(
+        "38;2;50:100:150",
+        "38;2;50;100;150",
+        rgb,
+        50 << 16 | 100 << 8 | 150,
+    );
+    colon_equals_semicolon(
+        "38;2;50;100:150",
+        "38;2;50;100;150",
+        rgb,
+        50 << 16 | 100 << 8 | 150,
+    );
+    colon_equals_semicolon("38:5:50", "38;5;50", 0xFF, 50);
+    colon_equals_semicolon("38:5:", "38;5;", 0xFF, 0);
+    colon_equals_semicolon("38;5:50", "38;5;50", 0xFF, 50);
+}
+
+#[test]
+fn colon_notation_fills_an_early_sequence_end_with_zero() {
+    colon_equals_semicolon("38:2", "38;2", Attributes::RGB_MASK, 0);
+    colon_equals_semicolon("38:5", "38;5", 0xFF, 0);
+}
+
+#[test]
+fn colon_notation_does_not_interfere_with_leading_and_following_attributes() {
+    for (colon, semicolon, rgb) in [
+        (
+            "1;38:2::50:100:150;4",
+            "1;38;2;50;100;150;4",
+            50 << 16 | 100 << 8 | 150,
+        ),
+        ("1;38:2::50:100:;4", "1;38;2;50;100;;4", 50 << 16 | 100 << 8),
+        ("1;38:2::50:100;4", "1;38;2;50;100;;4", 50 << 16 | 100 << 8),
+        ("1;38:2::;4", "1;38;2;;;;4", 0),
+        ("1;38;2::;4", "1;38;2;;;;4", 0),
+    ] {
+        let a = sgr(&format!("{colon}m"));
+        let b = sgr(&format!("{semicolon}m"));
+        assert!(b.attr().is_bold() != 0 && b.attr().is_underline() != 0);
+        assert_eq!(b.attr().fg & Attributes::RGB_MASK, rgb, "{semicolon}");
+        assert_eq!(a.attr().fg, b.attr().fg, "{colon}");
+    }
+}
+
+// upstream: `reset text attributes (SGR 0)`
+
+#[test]
+fn sgr0_resets_all_attributes_if_there_is_no_url() {
+    let mut t = sgr("30m\x1b[40m\x1b[4m");
+    assert_ne!(t.attr().fg, 0);
+    assert_ne!(t.attr().bg, 0);
+    assert!(!t.attr().extended.is_empty());
+    t.parse_str("\x1b[m");
+    assert_eq!(t.attr().fg, 0);
+    assert_eq!(t.attr().bg, 0);
+    assert!(t.attr().extended.is_empty());
+}
+
+/// adapted: upstream sets the url with `OSC 8` (step 8); the id is put on the attributes
+/// directly, which is what that handler does (`InputHandler.ts` `_createHyperlink`).
+#[test]
+fn sgr0_resets_all_attributes_except_for_the_url() {
+    let mut t = sgr("30m\x1b[40m\x1b[4m");
+    let url_id = 5;
+    t.handler.cur_attr_data.extended.set_url_id(url_id);
+    t.handler.cur_attr_data.update_extended();
+    assert_ne!(t.attr().fg, 0);
+    assert_ne!(t.attr().bg, 0);
+    assert_ne!(t.attr().extended.ext(), 0);
+    t.parse_str("\x1b[m");
+    assert_eq!(t.attr().fg, 0);
+    assert_eq!(t.attr().bg, BgFlags::HAS_EXTENDED);
+    let mut expected = ExtendedAttrs::default();
+    expected.set_url_id(url_id);
+    assert_eq!(t.attr().extended, expected);
+    // also through the multi-param path
+    t.parse_str("\x1b[1;4;0;3m");
+    assert_eq!(t.attr().extended.url_id(), url_id);
+    assert!(t.attr().is_italic() != 0 && t.attr().is_bold() == 0);
+}
+
+// upstream: `extended underline style support (SGR 4)`
+
+#[test]
+fn extended_underline_style_roundtrips() {
+    let style = |t: &TestTerm| t.attr().get_underline_style();
+    let mut t = upstream_handler();
+    t.resize(10, 5);
+    t.parse_str("\x1b[4m");
+    assert_eq!(style(&t), UnderlineStyle::SINGLE);
+    t.parse_str("\x1b[24m");
+    assert_eq!(style(&t), UnderlineStyle::NONE);
+    t.parse_str("\x1b[21m");
+    assert_eq!(style(&t), UnderlineStyle::DOUBLE);
+    t.parse_str("\x1b[24m");
+    assert_eq!(style(&t), UnderlineStyle::NONE);
+    for (n, expected) in [
+        (1, UnderlineStyle::SINGLE),
+        (2, UnderlineStyle::DOUBLE),
+        (3, UnderlineStyle::CURLY),
+        (4, UnderlineStyle::DOTTED),
+        (5, UnderlineStyle::DASHED),
+    ] {
+        t.parse_str(&format!("\x1b[4:{n}m"));
+        assert_eq!(style(&t), expected, "4:{n}");
+        t.parse_str("\x1b[4:0m");
+        assert_eq!(style(&t), UnderlineStyle::NONE, "4:{n} | 4:0");
+        t.parse_str(&format!("\x1b[4:{n}m"));
+        assert_eq!(style(&t), expected, "4:{n} again");
+        t.parse_str("\x1b[24m");
+        assert_eq!(style(&t), UnderlineStyle::NONE, "4:{n} | 24");
+    }
+}
+
+#[test]
+fn extended_underline_style_4_after_4_x_reverts_to_single() {
+    let mut t = sgr("4:5m");
+    assert_eq!(t.attr().get_underline_style(), UnderlineStyle::DASHED);
+    t.parse_str("\x1b[4m");
+    assert_eq!(t.attr().get_underline_style(), UnderlineStyle::SINGLE);
+}
+
+// upstream: `underline colors (SGR 58 & SGR 59)`
+
+fn assert_underline_color_follows_fg(a: &AttributeData) {
+    assert_eq!(a.get_underline_color(), a.get_fg_color());
+    assert_eq!(a.get_underline_color_mode(), a.get_fg_color_mode());
+    assert_eq!(a.is_underline_color_rgb(), a.is_fg_rgb());
+    assert_eq!(a.is_underline_color_palette(), a.is_fg_palette());
+    assert_eq!(a.is_underline_color_default(), a.is_fg_default());
+}
+
+fn assert_underline_color(a: &AttributeData, color: i32, mode: u32) {
+    assert_eq!(a.get_underline_color(), color);
+    assert_eq!(a.get_underline_color_mode(), mode);
+    assert_eq!(a.is_underline_color_rgb(), mode == Attributes::CM_RGB);
+    assert_eq!(a.is_underline_color_palette(), mode == Attributes::CM_P256);
+    assert!(!a.is_underline_color_default());
+}
+
+#[test]
+fn underline_colors_default_to_the_fg_color() {
+    let mut t = upstream_handler();
+    t.resize(10, 5);
+    for s in ["", "\x1b[30m", "\x1b[38;510m", "\x1b[38;2;1;2;3m"] {
+        t.parse_str(s);
+        assert_underline_color_follows_fg(&t.attr());
+    }
+}
+
+#[test]
+fn underline_colors_set_p256_and_rgb() {
+    let mut t = upstream_handler();
+    t.resize(10, 5);
+    t.parse_str("\x1b[4m");
+    t.parse_str("\x1b[58;5;123m");
+    assert_underline_color(&t.attr(), 123, Attributes::CM_P256);
+    t.parse_str("\x1b[58;2::1:2:3m");
+    assert_underline_color(&t.attr(), 1 << 16 | 2 << 8 | 3, Attributes::CM_RGB);
+}
+
+#[test]
+fn underline_colors_persist_in_cells() {
+    let mut t = upstream_handler();
+    t.resize(10, 5);
+    let mut cell = CellData::new();
+    let mut load = |t: &TestTerm, x: usize| {
+        t.buffer().lines.get(0).unwrap().load_cell(x, &mut cell);
+        *cell
+    };
+    t.parse_str("\x1b[4m");
+    t.parse_str("\x1b[58;5;123m");
+    assert_underline_color(&t.attr(), 123, Attributes::CM_P256);
+    t.parse_str("ab");
+    assert_underline_color(&load(&t, 1), 123, Attributes::CM_P256);
+
+    t.parse_str("\x1b[4:0m");
+    assert_underline_color_follows_fg(&t.attr());
+    t.parse_str("a");
+    assert_underline_color(&load(&t, 1), 123, Attributes::CM_P256);
+    assert_underline_color_follows_fg(&load(&t, 2));
+
+    t.parse_str("\x1b[4m");
+    t.parse_str("\x1b[58;2::1:2:3m");
+    assert_underline_color(&t.attr(), 1 << 16 | 2 << 8 | 3, Attributes::CM_RGB);
+    t.parse_str("a");
+    t.parse_str("\x1b[24m");
+    assert_underline_color(&load(&t, 1), 123, Attributes::CM_P256);
+    assert_underline_color(&load(&t, 3), 1 << 16 | 2 << 8 | 3, Attributes::CM_RGB);
+
+    // upstream compares object identity of the extended attrs of cells 0/1 and 1/3: values here
+    assert_eq!(load(&t, 0).extended, load(&t, 1).extended);
+    // no extended attrs were written for cell 2
+    assert_eq!(load(&t, 2).bg & BgFlags::HAS_EXTENDED, 0);
+    assert_ne!(load(&t, 1).extended, load(&t, 3).extended);
+}
+
+// added: SGR 59, 58 quirks and handler behaviour
+
+#[test]
+fn sgr_59_resets_the_underline_colour() {
+    let mut t = sgr("4;58;5;9m");
+    assert_underline_color(&t.attr(), 9, Attributes::CM_P256);
+    t.parse_str("\x1b[59m");
+    // upstream stores -1, which the setter masks to all colour bits: the colour then reads as
+    // RGB 0xFFFFFF, not as "follow fg" (`~underlineColor` is non-zero for every stored value);
+    // @xterm/headless 6.0.0 gives the same `_ext` (see `sgr_matches_the_oracle`).
+    assert_eq!(t.attr().extended.underline_color(), 0x3FF_FFFF);
+    assert_underline_color(&t.attr(), 0xFF_FFFF, Attributes::CM_RGB);
+    assert_eq!(t.attr().get_underline_style(), UnderlineStyle::SINGLE);
+}
+
+#[test]
+fn sgr_58_does_not_update_has_extended_by_itself() {
+    // upstream's `_extractColor` writes the colour without `updateExtended` (kept)
+    let t = sgr("58;5;9m");
+    assert_eq!(t.attr().bg & BgFlags::HAS_EXTENDED, 0);
+    assert_eq!(t.attr().extended.underline_color(), Attributes::CM_P256 | 9);
+}
+
+#[test]
+fn single_sgr0_and_sgr0_in_a_list_agree() {
+    let setup = "1;3;4:3;38;2;1;2;3;48;5;7;58;5;9";
+    let mut a = sgr(&format!("{setup}m"));
+    let mut b = sgr(&format!("{setup}m"));
+    a.parse_str("\x1b[0m");
+    b.parse_str("\x1b[0;0m");
+    assert_eq!(a.attr(), b.attr());
+    assert_eq!(a.attr(), AttributeData::default());
+    a.parse_str("\x1b[m");
+    assert_eq!(a.attr(), AttributeData::default());
+}
+
+#[test]
+fn sgr_writes_nothing_but_the_current_attributes() {
+    let mut t = upstream_handler();
+    t.parse_str("ab");
+    let before = t.snapshot();
+    t.parse_str("\x1b[1;31;38;2;1;2;3;4:3;58;5;9;0m");
+    assert_eq!(t.snapshot(), before);
+}
+
+#[test]
+fn unknown_sgr_values_are_logged_and_ignored() {
+    use crate::services::log_service::Logger;
+    use crate::services::options_service::LogLevel;
+    struct Sink(Rc<RefCell<Vec<String>>>);
+    impl Logger for Sink {
+        fn log(&self, _level: LogLevel, message: &str) {
+            self.0.borrow_mut().push(message.to_owned());
+        }
+    }
+    let messages = Rc::new(RefCell::new(Vec::new()));
+    let mut t = upstream_handler();
+    t.handler
+        .services
+        .log
+        .set_logger(Some(Box::new(Sink(messages.clone()))));
+    t.handler.services.log.set_level(LogLevel::Debug);
+    t.parse_str("\x1b[10;56;60;108;200m");
+    assert_eq!(t.attr(), AttributeData::default());
+    let logged = messages.borrow().join("|");
+    for n in [10, 56, 60, 108, 200] {
+        assert!(
+            logged.contains(&format!("Unknown SGR attribute: {n}.")),
+            "{logged}"
+        );
+    }
+}
+
+/// Expected values from `@xterm/headless` 6.0.0: `[fg, bg, extended._ext]` of the current
+/// attributes (as unsigned 32-bit values) after `ESC [ <seq>` on a fresh terminal. The run
+/// exercises `_extractColor`'s index walk (semicolon / colon mixes, early ends, the sixth-param
+/// edge, the 32-param limit), the underline style defaults and unknown values.
+#[test]
+fn sgr_matches_the_oracle() {
+    #[rustfmt::skip]
+    let cases: &[(&str, u32, u32, u32)] = &[
+        ("1;31;42;3;4;5;7;8;9;2;53m", 0xFD000001, 0x5D000002, 0x04000000),
+        ("38;2;1;2;3;48;5;9m", 0x03010203, 0x02000009, 0x00000000),
+        ("38;5m", 0x02000000, 0x00000000, 0x00000000),
+        ("38m", 0x00000000, 0x00000000, 0x00000000),
+        ("48m", 0x00000000, 0x00000000, 0x00000000),
+        ("38;2m", 0x03000000, 0x00000000, 0x00000000),
+        ("38;2;1m", 0x03010000, 0x00000000, 0x00000000),
+        ("38;2;1;2m", 0x03010200, 0x00000000, 0x00000000),
+        ("38;5;1;2;3m", 0x02000001, 0x0C000000, 0x00000000),
+        ("38:5:1:2:3m", 0x02000001, 0x00000000, 0x00000000),
+        ("38:2:1:2:3:4m", 0x03020304, 0x00000000, 0x00000000),
+        ("38:2::1:2:3:4m", 0x03010203, 0x00000000, 0x00000000),
+        ("48:2:1:2:3:4m", 0x00000000, 0x03020304, 0x00000000),
+        ("38;0;1;2;3;4;5m", 0x00000000, 0x00000000, 0x00000000),
+        ("38;0;0;0;0;0:7m", 0x00000000, 0x00000000, 0x00000000),
+        ("38;0;0;0;0;0:7:8:9m", 0x00000000, 0x00000000, 0x00000000),
+        ("38;0;0;0;0;1m", 0x00000000, 0x00000000, 0x00000000),
+        ("38;1;2;3;4;5;6m", 0x00000000, 0x00000000, 0x00000000),
+        ("38;-1m", 0x00000000, 0x00000000, 0x00000000),
+        ("38;5;300m", 0x0200002C, 0x00000000, 0x00000000),
+        ("38:5:300m", 0x0200002C, 0x00000000, 0x00000000),
+        ("38;2;300;400;500m", 0x032C90F4, 0x00000000, 0x00000000),
+        ("38:2::300:400:500m", 0x032C90F4, 0x00000000, 0x00000000),
+        ("38;5;1;48;5;2;58;5;3m", 0x02000001, 0x02000002, 0x02000003),
+        ("58;5;1m", 0x00000000, 0x00000000, 0x02000001),
+        ("58;2;1;2;3m", 0x00000000, 0x00000000, 0x03010203),
+        ("58:2::1:2:3m", 0x00000000, 0x00000000, 0x03010203),
+        ("58:5:9m", 0x00000000, 0x00000000, 0x02000009),
+        ("4;58;5;9m", 0x10000000, 0x10000000, 0x06000009),
+        ("4;58;5;9;59m", 0x10000000, 0x10000000, 0x07FFFFFF),
+        ("58;5;9;24m", 0x00000000, 0x00000000, 0x02000009),
+        ("58;5;9;4:0m", 0x00000000, 0x00000000, 0x02000009),
+        ("4:3;58;2;9;8;7;0m", 0x00000000, 0x00000000, 0x00000000),
+        ("4:9m", 0x10000000, 0x10000000, 0x04000000),
+        ("4:6m", 0x10000000, 0x10000000, 0x04000000),
+        ("4::m", 0x10000000, 0x10000000, 0x04000000),
+        ("4:m", 0x10000000, 0x10000000, 0x04000000),
+        ("4:;1m", 0x18000000, 0x10000000, 0x04000000),
+        ("4:3:4m", 0x10000000, 0x10000000, 0x0C000000),
+        ("4:0m", 0x00000000, 0x00000000, 0x00000000),
+        ("4:5;4m", 0x10000000, 0x10000000, 0x04000000),
+        ("21;24m", 0x00000000, 0x00000000, 0x00000000),
+        ("4:2;24m", 0x00000000, 0x00000000, 0x00000000),
+        ("4:3;21m", 0x10000000, 0x10000000, 0x08000000),
+        ("10m", 0x00000000, 0x00000000, 0x00000000),
+        ("56m", 0x00000000, 0x00000000, 0x00000000),
+        ("60m", 0x00000000, 0x00000000, 0x00000000),
+        ("100m", 0x00000000, 0x01000008, 0x00000000),
+        ("107m", 0x00000000, 0x0100000F, 0x00000000),
+        ("108m", 0x00000000, 0x00000000, 0x00000000),
+        ("200m", 0x00000000, 0x00000000, 0x00000000),
+        ("99999999999m", 0x00000000, 0x00000000, 0x00000000),
+        ("m", 0x00000000, 0x00000000, 0x00000000),
+        ("0m", 0x00000000, 0x00000000, 0x00000000),
+        (";m", 0x00000000, 0x00000000, 0x00000000),
+        ("0;1m", 0x08000000, 0x00000000, 0x00000000),
+        ("1;0m", 0x00000000, 0x00000000, 0x00000000),
+        ("1;;3m", 0x00000000, 0x04000000, 0x00000000),
+        ("1;31;0;42m", 0x00000000, 0x01000002, 0x00000000),
+        ("22m", 0x00000000, 0x00000000, 0x00000000),
+        ("1;2;22m", 0x00000000, 0x00000000, 0x00000000),
+        ("3;23m", 0x00000000, 0x00000000, 0x00000000),
+        ("5;25m", 0x00000000, 0x00000000, 0x00000000),
+        ("7;27m", 0x00000000, 0x00000000, 0x00000000),
+        ("8;28m", 0x00000000, 0x00000000, 0x00000000),
+        ("9;29m", 0x00000000, 0x00000000, 0x00000000),
+        ("53;55m", 0x00000000, 0x00000000, 0x00000000),
+        ("38;5;1;39m", 0x00000000, 0x00000000, 0x00000000),
+        ("48;2;1;2;3;49m", 0x00000000, 0x00000000, 0x00000000),
+        ("31;39;41;49m", 0x00000000, 0x00000000, 0x00000000),
+        ("91;101m", 0x01000009, 0x01000009, 0x00000000),
+        ("97;107m", 0x0100000F, 0x0100000F, 0x00000000),
+        ("1;4:3;38:2::1:2:3;48;5;7;58:2:9:8:7:6m", 0x1B010203, 0x12000007, 0x0F080706),
+        ("38;2;1;2;3;4;5;6;7m", 0x37010203, 0x10000000, 0x04000000),
+        ("38:2:1:2:3:4:5:6:7:8:9:10m", 0x03020304, 0x00000000, 0x00000000),
+        ("38;2;1;2;3;48;2;4;5;6;58;2;7;8;9m", 0x03010203, 0x03040506, 0x03070809),
+        ("59m", 0x00000000, 0x00000000, 0x03FFFFFF),
+        ("4;59m", 0x10000000, 0x10000000, 0x07FFFFFF),
+        ("4;58;5;3;59m", 0x10000000, 0x10000000, 0x07FFFFFF),
+        ("38;5;102;38;5;105;38;5;101;38;5;104;38;5;100;38;5;103;38;5;106;38;5;102;38;5;105;38;5;101;38;5;104;38;5;100;38;5;103;38m", 0x02000000, 0x00000000, 0x00000000),
+        ("1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;31m", 0x08000000, 0x00000000, 0x00000000),
+    ];
+    for &(seq, fg, bg, ext) in cases {
+        let t = sgr(seq);
+        let a = t.attr();
+        assert_eq!(
+            (a.fg, a.bg, a.extended.ext(), a.extended.url_id()),
+            (fg, bg, ext, 0),
+            "ESC [ {seq}"
+        );
+    }
+}
+
+#[test]
+fn sgr_params_past_the_stored_ones_are_not_read() {
+    // 32 params are stored; the 33rd `31` is dropped, so the colour stays default
+    let ones = vec!["1"; 40].join(";");
+    let t = sgr(&format!("{ones};31m"));
+    assert!(t.attr().is_bold() != 0);
+    assert_eq!(t.attr().get_fg_color_mode(), 0);
+}
+
+#[test]
+fn extract_color_survives_every_truncation_of_a_long_sequence() {
+    // no panic for any prefix of a sequence that mixes 38/48/58 with sub params, and the
+    // handler keeps running afterwards
+    let full = "38;2;1;2;3;48:5:7;58:2::9:8:7;38;5;1:2:3:4:5:6:7;4:3;38:2:1:2:3:4:5:6:7:8:9";
+    for end in 0..=full.len() {
+        let mut t = upstream_handler();
+        t.parse_str(&format!("\x1b[{}m", &full[..end]));
+        t.parse_str("\x1b[0mok");
+        assert_eq!(t.attr(), AttributeData::default());
+        assert_eq!(t.screen().first().map(String::as_str), Some("ok"));
+    }
 }

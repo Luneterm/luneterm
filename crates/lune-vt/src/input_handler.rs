@@ -8,8 +8,9 @@
 //! `t` window-option guard), BEL LF VT FF CR BS HT SO SI IND NEL HTS, CSI A B C D E F G H I Z
 //! `` ` `` a d e f g r s u, ESC 7 8 D E H M, the five fallbacks and the error handler, and
 //! `DirtyRowTracker`, `reset` (step 3); step 5: CSI @ SP@ SPA J ?J K ?K L M P S T X b `"q`
-//! `'}` `'~` and ESC # 8 (erase, insert/delete, scrolling, columns, ECH, REP, DECSCA, DECALN).
-//! The other handler groups follow in steps 6 to 8.
+//! `'}` `'~` and ESC # 8 (erase, insert/delete, scrolling, columns, ECH, REP, DECSCA, DECALN);
+//! step 6: CSI m (SGR with colon notation, 256/RGB colours, underline styles and colours).
+//! The other handler groups follow in steps 7 and 8.
 //!
 //! Rust shape (plan M6 D1, D2, D3, D8):
 //!  - The parser is generic over a `'static` host, so [`InputHandler`] owns the services
@@ -84,7 +85,9 @@ use crate::buffer::attribute_data::AttributeData;
 use crate::buffer::buffer::Buffer;
 use crate::buffer::buffer_line::{BufferLine, DEFAULT_ATTR_DATA};
 use crate::buffer::cell_data::CellData;
-use crate::buffer::constants::{Attributes, BgFlags, Content, NULL_CELL_CODE, NULL_CELL_WIDTH};
+use crate::buffer::constants::{
+    Attributes, BgFlags, Content, FgFlags, NULL_CELL_CODE, NULL_CELL_WIDTH, UnderlineStyle,
+};
 use crate::data::escape_sequences::{C0, C1};
 use crate::engine::{Damage, HostEvent};
 use crate::input::text_decoder::{Utf8ToUtf32, string_from_code_point, utf32_to_string};
@@ -565,6 +568,7 @@ impl InputHandler {
             .register_csi_handler(FunctionIdentifier::with_intermediates("\"", 'q'), |h, p| {
                 h.select_protected(p)
             })?;
+        parser.register_csi_handler(csi('m'), |h, p| h.char_attributes(p))?;
 
         // execute handler
         parser.set_execute_handler(C0::BEL, |h| {
@@ -1842,6 +1846,287 @@ impl InputHandler {
         self.dirty_row_tracker.mark_all_dirty(rows);
         self.set_cursor(0, 0);
         true
+    }
+
+    /// CSI Pm m (SGR): select graphic rendition. Applies the params left to right to the
+    /// current attributes (`charAttributes`, `InputHandler.ts:2510`). `38`/`48`/`58` hand the
+    /// params from there on to [`extract_color`] and skip what it consumed. Unknown values are
+    /// logged at debug level. (Upstream's `p === 100` branch is dead: `100..=107` is matched
+    /// first; it is not ported.)
+    pub fn char_attributes(&mut self, params: &Params) -> bool {
+        // Optimize a single SGR0.
+        if params.length() == 1 && params.get(0) == Some(0) {
+            process_sgr0(&mut self.cur_attr_data);
+            return true;
+        }
+
+        let l = params.length();
+        let attr = &mut self.cur_attr_data;
+        let mut i = 0;
+        while i < l {
+            // `params.params[i]`: `None` is JS `undefined`, which matches no branch below.
+            match params.get(i) {
+                // fg color 8
+                Some(p @ 30..=37) => {
+                    attr.fg &= !(Attributes::CM_MASK | Attributes::PCOLOR_MASK);
+                    attr.fg |= Attributes::CM_P16 | (p - 30) as u32;
+                }
+                // bg color 8
+                Some(p @ 40..=47) => {
+                    attr.bg &= !(Attributes::CM_MASK | Attributes::PCOLOR_MASK);
+                    attr.bg |= Attributes::CM_P16 | (p - 40) as u32;
+                }
+                // fg color 16
+                Some(p @ 90..=97) => {
+                    attr.fg &= !(Attributes::CM_MASK | Attributes::PCOLOR_MASK);
+                    attr.fg |= Attributes::CM_P16 | (p - 90) as u32 | 8;
+                }
+                // bg color 16
+                Some(p @ 100..=107) => {
+                    attr.bg &= !(Attributes::CM_MASK | Attributes::PCOLOR_MASK);
+                    attr.bg |= Attributes::CM_P16 | (p - 100) as u32 | 8;
+                }
+                // default
+                Some(0) => process_sgr0(attr),
+                // bold text
+                Some(1) => attr.fg |= FgFlags::BOLD,
+                // italic text
+                Some(3) => attr.bg |= BgFlags::ITALIC,
+                // underlined text: `4:x` carries the style
+                Some(4) => {
+                    attr.fg |= FgFlags::UNDERLINE;
+                    let style = if params.has_sub_params(i) {
+                        // `getSubParams(i)![0]`
+                        params
+                            .get_sub_params(i)
+                            .and_then(|sub| sub.first())
+                            .copied()
+                    } else {
+                        Some(UnderlineStyle::SINGLE as i32)
+                    };
+                    process_underline(style, attr);
+                }
+                // blink
+                Some(5) => attr.fg |= FgFlags::BLINK,
+                // inverse and positive
+                Some(7) => attr.fg |= FgFlags::INVERSE,
+                // invisible
+                Some(8) => attr.fg |= FgFlags::INVISIBLE,
+                // strikethrough
+                Some(9) => attr.fg |= FgFlags::STRIKETHROUGH,
+                // dimmed text
+                Some(2) => attr.bg |= BgFlags::DIM,
+                // double underline
+                Some(21) => process_underline(Some(UnderlineStyle::DOUBLE as i32), attr),
+                // not bold nor faint
+                Some(22) => {
+                    attr.fg &= !FgFlags::BOLD;
+                    attr.bg &= !BgFlags::DIM;
+                }
+                // not italic
+                Some(23) => attr.bg &= !BgFlags::ITALIC,
+                // not underlined
+                Some(24) => {
+                    attr.fg &= !FgFlags::UNDERLINE;
+                    process_underline(Some(UnderlineStyle::NONE as i32), attr);
+                }
+                // not blink
+                Some(25) => attr.fg &= !FgFlags::BLINK,
+                // not inverse
+                Some(27) => attr.fg &= !FgFlags::INVERSE,
+                // not invisible
+                Some(28) => attr.fg &= !FgFlags::INVISIBLE,
+                // not strikethrough
+                Some(29) => attr.fg &= !FgFlags::STRIKETHROUGH,
+                // reset fg
+                Some(39) => {
+                    attr.fg &= !(Attributes::CM_MASK | Attributes::RGB_MASK);
+                    attr.fg |=
+                        DEFAULT_ATTR_DATA.fg & (Attributes::PCOLOR_MASK | Attributes::RGB_MASK);
+                }
+                // reset bg
+                Some(49) => {
+                    attr.bg &= !(Attributes::CM_MASK | Attributes::RGB_MASK);
+                    attr.bg |=
+                        DEFAULT_ATTR_DATA.bg & (Attributes::PCOLOR_MASK | Attributes::RGB_MASK);
+                }
+                // fg / bg / underline color 256 and RGB
+                Some(38 | 48 | 58) => i += extract_color(params, i, attr),
+                // overline
+                Some(53) => attr.bg |= BgFlags::OVERLINE,
+                // not overline
+                Some(55) => attr.bg &= !BgFlags::OVERLINE,
+                // reset the underline colour
+                Some(59) => {
+                    attr.extended
+                        .set_underline_color(Attributes::CM_MASK | Attributes::RGB_MASK);
+                    attr.update_extended();
+                }
+                Some(p) => self
+                    .services
+                    .log
+                    .debug(format_args!("Unknown SGR attribute: {p}.")),
+                None => self
+                    .services
+                    .log
+                    .debug(format_args!("Unknown SGR attribute: NaN.")),
+            }
+            i += 1;
+        }
+        true
+    }
+}
+
+/// SGR 0 (`_processSGR0`): default colours, no underline style and underline colour; the
+/// other extended fields (the url id) stay.
+fn process_sgr0(attr: &mut AttributeData) {
+    attr.fg = DEFAULT_ATTR_DATA.fg;
+    attr.bg = DEFAULT_ATTR_DATA.bg;
+    // Reset underline style and color. Note that we don't want to reset other
+    // fields such as the url id. (Upstream clones `extended` first; it is `Copy` here.)
+    attr.extended.set_underline_style(UnderlineStyle::NONE);
+    let color = attr.extended.underline_color();
+    attr.extended
+        .set_underline_color(color & !(Attributes::CM_MASK | Attributes::RGB_MASK));
+    attr.update_extended();
+}
+
+/// SGR 4 / 21 / 24 (`_processUnderline`). `style` is the `4:x` sub param, `None` for JS
+/// `undefined`. `4:0` equals SGR 24, `4:1` SGR 4, `4:2` SGR 21, `4:3` curly, `4:4` dotted,
+/// `4:5` dashed.
+fn process_underline(style: Option<i32>, attr: &mut AttributeData) {
+    // default to 1 == single underline: `!~style || style > 5` (`-1`, or above 5)
+    let style = match style {
+        Some(-1) => Some(UnderlineStyle::SINGLE),
+        Some(s) if s > 5 => Some(UnderlineStyle::SINGLE),
+        Some(s) => Some(u32::try_from(s).unwrap_or(UnderlineStyle::SINGLE)),
+        // `undefined` stores as 0 and is not `=== 0`
+        None => None,
+    };
+    attr.extended
+        .set_underline_style(style.unwrap_or(UnderlineStyle::NONE));
+    attr.fg |= FgFlags::UNDERLINE;
+
+    // 0 deactivates underline
+    if style == Some(0) {
+        attr.fg &= !FgFlags::UNDERLINE;
+    }
+
+    // update HAS_EXTENDED in BG
+    attr.update_extended();
+}
+
+/// A JS value in a bit operation: `undefined` is 0, an int32 keeps its bits.
+fn js_bits(value: Option<i32>) -> u32 {
+    u32::from_ne_bytes(value.unwrap_or(0).to_ne_bytes())
+}
+
+/// Helper to write color information packed with color mode (`_updateAttrColor`).
+fn update_attr_color(
+    mut color: u32,
+    mode: Option<i32>,
+    c1: Option<i32>,
+    c2: Option<i32>,
+    c3: Option<i32>,
+) -> u32 {
+    if mode == Some(2) {
+        color |= Attributes::CM_RGB;
+        color &= !Attributes::RGB_MASK;
+        color |= AttributeData::from_color_rgb([js_bits(c1), js_bits(c2), js_bits(c3)]);
+    } else if mode == Some(5) {
+        color &= !(Attributes::CM_MASK | Attributes::PCOLOR_MASK);
+        color |= Attributes::CM_P256 | (js_bits(c1) & 0xff);
+    }
+    color
+}
+
+/// Helper to extract and apply color params/subparams (`_extractColor`). Returns the advance
+/// for the params index.
+fn extract_color(params: &Params, pos: usize, attr: &mut AttributeData) -> usize {
+    // normalize params
+    // meaning: [target, CM, ign, val, val, val]
+    // RGB    : [ 38/48,  2, ign,   r,   g,   b]
+    // P256   : [ 38/48,  5, ign,   v, ign, ign]
+    // (`None` is a JS `undefined`; the array is never longer than 6 where it matters: writes
+    // past index 5 are never read.)
+    let mut accu: [Option<i32>; 6] = [Some(0), Some(0), Some(-1), Some(0), Some(0), Some(0)];
+
+    // alignment placeholder for non color space sequences
+    let mut c_space = 0_usize;
+
+    // return advance we took in params
+    let mut advance = 0_usize;
+
+    loop {
+        set_slot(&mut accu, advance + c_space, params.get(pos + advance));
+        if params.has_sub_params(pos + advance) {
+            // `getSubParams(..)!`
+            let subparams = params.get_sub_params(pos + advance).unwrap_or(&[]);
+            let mut i = 0;
+            loop {
+                if cm(&accu) == Some(5) {
+                    c_space = 1;
+                }
+                set_slot(
+                    &mut accu,
+                    advance + i + 1 + c_space,
+                    subparams.get(i).copied(),
+                );
+                i += 1;
+                // upstream's `accu.length` grows with writes past index 5; those are never read
+                if !(i < subparams.len() && i + advance + 1 + c_space < 6) {
+                    break;
+                }
+            }
+            break;
+        }
+        // exit early if can decide color mode with semicolons
+        if (cm(&accu) == Some(5) && advance + c_space >= 2)
+            || (cm(&accu) == Some(2) && advance + c_space >= 5)
+        {
+            break;
+        }
+        // offset colorSpace slot for semicolon mode
+        if matches!(cm(&accu), Some(v) if v != 0) {
+            c_space = 1;
+        }
+        advance += 1;
+        if !(advance + pos < params.length() && advance + c_space < 6) {
+            break;
+        }
+    }
+
+    // set default values to 0
+    for slot in accu.iter_mut().skip(2) {
+        if *slot == Some(-1) {
+            *slot = Some(0);
+        }
+    }
+
+    // apply colors
+    let [target, mode, _, c1, c2, c3] = accu;
+    match target {
+        Some(38) => attr.fg = update_attr_color(attr.fg, mode, c1, c2, c3),
+        Some(48) => attr.bg = update_attr_color(attr.bg, mode, c1, c2, c3),
+        Some(58) => {
+            let color = update_attr_color(attr.extended.underline_color(), mode, c1, c2, c3);
+            attr.extended.set_underline_color(color);
+        }
+        _ => {}
+    }
+
+    advance
+}
+
+/// `accu[1]`, the colour mode slot.
+fn cm(accu: &[Option<i32>; 6]) -> Option<i32> {
+    accu.get(1).copied().flatten()
+}
+
+/// `accu[index] = value` where a write past the fixed array is dropped (see [`extract_color`]).
+fn set_slot(accu: &mut [Option<i32>; 6], index: usize, value: Option<i32>) {
+    if let Some(slot) = accu.get_mut(index) {
+        *slot = value;
     }
 }
 
