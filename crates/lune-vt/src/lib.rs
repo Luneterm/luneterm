@@ -20,6 +20,7 @@ pub mod extension;
 pub mod input;
 pub mod parser;
 pub mod services;
+pub mod windows_mode;
 
 pub use engine::{HostEvent, VtEngine};
 pub use extension::Extension;

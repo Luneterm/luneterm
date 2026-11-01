@@ -5,10 +5,10 @@
 //!
 //! Ported: `OptionsService` (`options_service.rs`, over a typed `TerminalOptions`),
 //! `UnicodeService` (`unicode_service.rs`; the `@xterm/addon-unicode11` 0.9.0 provider is
-//! `crate::addons::unicode_v11`), `CharsetService`, `BufferService` and `OscLinkService`.
-//! Upstream's events are return values; where a service needs options it takes
-//! `&TerminalOptions`. Not yet ported (pending M6): `CoreService`, `CoreMouseService`,
-//! `LogService`, `DecorationService`.
+//! `crate::addons::unicode_v11`), `CharsetService`, `BufferService`, `OscLinkService`,
+//! `CoreService`, `CoreMouseService` and `LogService`. Upstream's events are return values;
+//! where a service needs options it takes `&TerminalOptions`. Not ported: `DecorationService`
+//! (renderer-side; plan M6 D5).
 
 // No-panic gate (plan M5, extending M4's with `string_slice`): ported non-test code must not
 // index, slice a string, unwrap or panic. Tests are exempt; every other lint stays at the
@@ -29,6 +29,9 @@
 
 pub mod buffer_service;
 pub mod charset_service;
+pub mod core_mouse_service;
+pub mod core_service;
+pub mod log_service;
 pub mod options_service;
 pub mod osc_link_service;
 pub mod unicode_service;
