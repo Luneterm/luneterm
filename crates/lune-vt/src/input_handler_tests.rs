@@ -5768,6 +5768,18 @@ fn osc_8_links_repeated_on_one_line_stay_capped() {
     );
 }
 
+/// Review S4: combining marks printed onto one cell stop at the cap; the cursor is unaffected.
+#[test]
+fn print_caps_the_combining_marks_of_one_cell() {
+    use crate::buffer::buffer_line::MAX_COMBINED_CODE_POINTS;
+    let mut t = test_handler(10, 3, []);
+    t.parse_str(&format!("a{}b", "\u{301}".repeat(10_000)));
+    let text = t.cell(0, 0).0;
+    assert_eq!(text.chars().count(), MAX_COMBINED_CODE_POINTS);
+    assert_eq!(t.cell(0, 1).0, "b");
+    assert_eq!(t.cursor(), [2, 0]);
+}
+
 #[test]
 fn decrqss_unknown_requests_get_the_invalid_reply_and_stdin_can_be_disabled() {
     let mut t = upstream_handler();

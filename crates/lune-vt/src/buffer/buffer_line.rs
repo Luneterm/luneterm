@@ -23,6 +23,13 @@
 //!    `undefined` (and throws on `.charCodeAt`); here that string is empty and its code is 0.
 //!  - `insert_cells` and `delete_cells` return early on a zero-length line (upstream computes
 //!    `pos %= 0` = `NaN` and ends up writing at most a `"NaN"` map key, which nothing reads).
+//!  - LUNETERM (review S4): [`add_codepoint_to_cell`](BufferLine::add_codepoint_to_cell) stores
+//!    at most [`MAX_COMBINED_CODE_POINTS`] code points per cell. Upstream appends every combining
+//!    character, so `a` followed by any number of U+0301 grows one cell without bound, beyond
+//!    what the scrollback limit bounds, and every read of the cell copies it. A code point past
+//!    the cap is dropped; the width it asks for is still applied, so layout and the cursor are
+//!    as upstream and only the cell's text is shorter. `get_string` (and so REP and the
+//!    renderer) sees the capped text.
 //!  - A width above 2 (never stored by the input handler) is kept as is; `content >> 22` is an
 //!    unsigned shift here where JS sign-extends a value with bit 31 set.
 
@@ -58,6 +65,11 @@ pub const CLEANUP_THRESHOLD: usize = 2;
 fn last_code_unit(s: &str) -> u32 {
     s.encode_utf16().last().map_or(0, u32::from)
 }
+
+/// LUNETERM: most code points one cell's combined string holds (module notes, review S4).
+/// The longest real grapheme clusters (emoji ZWJ sequences, stacked diacritics) use about a
+/// dozen; Unicode's stream-safe format allows a base plus 30 non-starters.
+pub const MAX_COMBINED_CODE_POINTS: usize = 64;
 
 /// Typed array based bufferline implementation.
 ///
@@ -338,10 +350,11 @@ impl BufferLine {
         let mut content = self.read(index, CELL_CONTENT);
         if content & Content::IS_COMBINED_MASK != 0 {
             // we already have a combined string, simply add
-            self.combined
-                .entry(index)
-                .or_default()
-                .push_str(&string_from_code_point(code_point));
+            let combined = self.combined.entry(index).or_default();
+            // LUNETERM: capped (module notes); the width below still applies
+            if combined.chars().count() < MAX_COMBINED_CODE_POINTS {
+                combined.push_str(&string_from_code_point(code_point));
+            }
         } else if content & Content::CODEPOINT_MASK != 0 {
             // normal case for combining chars:
             //  - move current leading char + new one into combined string

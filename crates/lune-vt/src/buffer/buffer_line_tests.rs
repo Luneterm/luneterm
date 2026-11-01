@@ -1124,4 +1124,22 @@ mod edge_semantics {
         assert_eq!(DEFAULT_ATTR_DATA, AttributeData::default());
         assert_eq!(CELL_SIZE, 3);
     }
+
+    /// LUNETERM (review S4): a cell holds at most `MAX_COMBINED_CODE_POINTS` code points; the
+    /// rest are dropped, but a width they ask for still applies.
+    #[test]
+    fn combining_code_points_past_the_cap_are_dropped_and_their_width_still_applies() {
+        let mut line = null_line(3);
+        line.set_cell_from_codepoint(0, u32::from('a'), 1, &DEFAULT_ATTR_DATA);
+        for _ in 0..1000 {
+            line.add_codepoint_to_cell(0, 0x301, 0);
+        }
+        let s = line.get_string(0);
+        assert_eq!(s.chars().count(), MAX_COMBINED_CODE_POINTS);
+        assert!(s.starts_with("a\u{301}"));
+        assert_eq!(line.get_width(0), 1);
+        line.add_codepoint_to_cell(0, 0xFE0F, 2);
+        assert_eq!(line.get_string(0).chars().count(), MAX_COMBINED_CODE_POINTS);
+        assert_eq!(line.get_width(0), 2);
+    }
 }
