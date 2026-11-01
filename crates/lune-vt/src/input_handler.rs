@@ -7,7 +7,7 @@
 //! Ported so far (plan M6 step 2): the struct, `parse`, `print`, the register forwards (with the
 //! `t` window-option guard), BEL LF VT FF CR BS HT SO SI IND NEL HTS, CSI A B C D E F G H I Z
 //! `` ` `` a d e f g r s u, ESC 7 8 D E H M, the five fallbacks and the error handler, and
-//! `DirtyRowTracker`. The other handler groups follow in steps 5 to 8.
+//! `DirtyRowTracker`, `reset` (step 3). The other handler groups follow in steps 5 to 8.
 //!
 //! Rust shape (plan M6 D1, D2, D3, D8):
 //!  - The parser is generic over a `'static` host, so [`InputHandler`] owns the services
@@ -21,6 +21,11 @@
 //!    `onLineFeed` has no public consumer: it drives only the Windows wrapping heuristic, which
 //!    runs inside `line_feed` when `windows_heuristics` is set (D6, set by `CoreTerminal`).
 //!    `onRequestSyncScrollBar` (keypad mode switches, step 7) has no consumer and is dropped.
+//!  - Marker disposal (M5 host duty): upstream frees an OSC 8 link the moment the last marker
+//!    of its lines is disposed. Here the buffers log disposals, and
+//!    [`InputHandler::forward_disposed_markers`] hands them to the `OscLinkService`. It runs
+//!    before every `OscLinkService` call (so a link trimmed earlier in the same write is gone
+//!    when the next call looks for it) and at the end of every public mutation (`CoreTerminal`).
 //!  - No async handlers (M4 D3): the parse stack, `_preserveStack` and `_logSlowResolvingAsync`
 //!    are not ported. String input (`StringToUtf32`) is not ported: `parse` takes UTF-8 bytes.
 //!  - D8, JS throws and `undefined`:
@@ -186,6 +191,8 @@ pub struct InputHandler {
     preceding_join_state: u32,
     events: Vec<HostEvent>,
     damage: Damage,
+    /// The window title (upstream `_windowTitle`).
+    window_title: String,
     /// Upstream's `onLineFeed` listener for the Windows wrapping heuristics (`CoreTerminal`'s
     /// `_handleWindowsPtyOptionChange`, plan M6 D6). Off until the host turns it on.
     pub(crate) windows_heuristics: bool,
@@ -223,6 +230,19 @@ fn abs_y(buffer: &Buffer) -> usize {
 /// Every such lookup in this file goes through here.
 fn line_mut(buffer: &mut Buffer, row: usize) -> Option<&mut BufferLine> {
     buffer.lines.get_mut(row)
+}
+
+/// [`InputHandler::forward_disposed_markers`] on the services alone.
+fn forward_disposed(services: &mut CoreServices) {
+    let buffers = &mut services.buffer.buffers;
+    let normal = buffers.normal_mut().take_disposed_markers();
+    let alt = buffers.alt_mut().take_disposed_markers();
+    if !normal.is_empty() {
+        services.osc_link.on_markers_disposed(&normal);
+    }
+    if !alt.is_empty() {
+        services.osc_link.on_markers_disposed(&alt);
+    }
 }
 
 /// back_color_erase feature for xterm (upstream `_eraseAttrData`).
@@ -369,6 +389,7 @@ impl InputHandler {
             preceding_join_state: 0,
             events: Vec::new(),
             damage: Damage::default(),
+            window_title: String::new(),
             windows_heuristics: false,
         }
     }
@@ -391,6 +412,34 @@ impl InputHandler {
     /// The damage accumulated since the last call.
     pub fn take_damage(&mut self) -> Damage {
         mem::take(&mut self.damage)
+    }
+
+    /// The window title (OSC 0/2).
+    pub fn window_title(&self) -> &str {
+        &self.window_title
+    }
+
+    /// Queue an event for the host (an upstream `fire` whose listener is the host).
+    pub(crate) fn push_event(&mut self, event: HostEvent) {
+        self.events.push(event);
+    }
+
+    /// The damage accumulated so far, for the host duties of `CoreTerminal` and `Terminal`.
+    pub(crate) fn damage_mut(&mut self) -> &mut Damage {
+        &mut self.damage
+    }
+
+    /// Hand the markers both buffers disposed since the last call to the `OscLinkService`
+    /// (upstream `marker.onDispose(() => _removeMarkerFromLink)`). Call before every
+    /// `OscLinkService` call and at the end of every public mutation.
+    pub fn forward_disposed_markers(&mut self) {
+        forward_disposed(&mut self.services);
+    }
+
+    /// Reset the text attributes (upstream `reset`, called by `CoreTerminal.reset`).
+    pub fn reset(&mut self) {
+        self.cur_attr_data = DEFAULT_ATTR_DATA;
+        self.erase_attr_data_internal = DEFAULT_ATTR_DATA;
     }
 
     /// The constructor's handler registrations (`InputHandler.ts:189-381`) for the handlers
@@ -689,6 +738,7 @@ impl InputHandler {
             }
             let link_id = cur_attr.extended.url_id();
             if link_id != 0 {
+                forward_disposed(services);
                 let y = abs_y(services.buffer.buffer());
                 services
                     .osc_link

@@ -1184,3 +1184,46 @@ fn fallbacks_log_unknown_sequences() {
     }
     assert_eq!(t.lines(1), ["ok"]);
 }
+
+/// `print` forwards disposed markers before `addLineToLink`: upstream freed the link the moment
+/// its line was trimmed, so printing with its url id afterwards adds nothing.
+#[test]
+fn print_with_a_link_trimmed_earlier_in_the_same_parse_does_not_revive_it() {
+    use crate::buffer::constants::BgFlags;
+    use crate::services::osc_link_service::OscLinkData;
+
+    let mut t = test_handler(10, 3, [OptionValue::Scrollback(2)]);
+    let services = &mut t.handler.services;
+    let id = services.osc_link.register_link(
+        &mut services.buffer,
+        OscLinkData {
+            id: None,
+            uri: "https://a".to_owned(),
+        },
+    );
+    t.handler.cur_attr_data.bg |= BgFlags::HAS_EXTENDED;
+    t.handler.cur_attr_data.extended.set_url_id(id);
+    // the fifth line feed trims line 0 (3 rows + 2 scrollback); nothing forwards in between
+    // except print itself
+    t.parse_str("\n\n\n\n\nb");
+    assert!(t.handler.services.osc_link.get_link_data(id).is_none());
+    assert_eq!(t.handler.services.osc_link.marker_count(), 0);
+
+    // control: without the trim the printed line joins the link
+    let mut t = test_handler(10, 3, [OptionValue::Scrollback(2)]);
+    let services = &mut t.handler.services;
+    let id = services.osc_link.register_link(
+        &mut services.buffer,
+        OscLinkData {
+            id: None,
+            uri: "https://a".to_owned(),
+        },
+    );
+    t.handler.cur_attr_data.bg |= BgFlags::HAS_EXTENDED;
+    t.handler.cur_attr_data.extended.set_url_id(id);
+    t.parse_str("\nb");
+    assert_eq!(
+        t.handler.services.osc_link.link_markers(id).unwrap().len(),
+        2
+    );
+}
