@@ -324,8 +324,9 @@ The input encoders (key and mouse encoding) are M7.
   quadratic); IL, DL, SU and SD move the markers once per sequence (`splice_rotate`), not once
   per shifted line; a cell's combined string holds at most `MAX_COMBINED_CODE_POINTS` (64,
   `buffer_line.rs`); REP prints only the repetitions that still change the state
-  (`rep_equivalent_repeats`, tested equal to the full print), and a single character that
-  prints alike fills whole lines (`print_repeated`). No log line carries pty output or user
+  (`rep_equivalent_repeats`, tested equal to the full print), and a unit that prints alike
+  (a character with its joiners, also in insert mode, inside an open link or with screen reader
+  mode) fills whole lines (`print_repeated`, review S7). No log line carries pty output or user
   input: unknown OSC and DCS log their identifier and payload length, the parse and the
   data/binary events log lengths only.
 
@@ -338,7 +339,13 @@ The input encoders (key and mouse encoding) are M7.
   and 5.4 µs at 10,000, against about 30 ns with no link; one IL with 8192 markers outside the
   region costs about 7 µs at 80x24 and 39 µs at 300x100. So the work of a chunk is
   O(bytes x (rows + scrollback)) with a long link, not O(bytes): **M9's flow control must bound
-  the work per slice (time or line changes), not only the bytes.**
+  the work per slice (time or line changes), not only the bytes.** REP multiplies this: one
+  15-byte REP inside an open link prints up to a buffer's worth of lines (2^20 code points, or
+  `cols x (rows + scrollback + 3)` cells), so with a link open it costs O((rows + scrollback)^2)
+  marker visits and cannot be sliced (review S7, open: about 3 ms per input byte at 300x100
+  with scrollback 10,000, 14 ms at 80x24 with 10,000). A REP of a grapheme cluster stores one
+  combined string per cell, about 13x the work of a plain cell (about 1.9 ms per input byte at
+  300x100 with scrollback 10,000).
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as

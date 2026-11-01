@@ -82,9 +82,10 @@
 //!    REP allocates `text length * Ps` code points upstream; here the repeated data is capped at
 //!    [`MAX_REP_CODE_POINTS`], so a larger count prints fewer repetitions. Of those, REP
 //!    prints only as many as still change the state (review S3), a cut proven to leave the
-//!    same state as the full print where it applies (`rep_equivalent_repeats`). A single
-//!    character that prints alike every time is written line by line (`print_repeated`,
-//!    review S3 residual), the same writes as `print` without its per-character lookups.
+//!    same state as the full print where it applies (`rep_equivalent_repeats`). A unit that
+//!    prints alike every time (a character with its joiners) is written line by line
+//!    (`print_repeated`, reviews S3 residual and S7): the same cells, side-table entries,
+//!    insert-mode shifts, link lines and screen reader text as `print`, batched per line.
 //!    ED 1 clears the wrapped flag of line `y + 1` counted from the start of the list, not from
 //!    `ybase` (upstream's index, kept). IL, DL, SU, SD, ICH, DCH, ECH and the column handlers
 //!    pass param-derived counts to the buffer line / list calls, which tolerate any count.
@@ -2079,8 +2080,8 @@ impl InputHandler {
     /// many fewer repetitions (the visible difference is only the cursor column and which
     /// repetition ends the output). Of those, only as many are printed as can still change the
     /// state (about two buffers' worth of lines; `rep_equivalent_repeats`), which
-    /// leaves the same state as printing all of them. A single character that prints alike
-    /// every time takes the line-fill path (`rep_fill`, `print_repeated`).
+    /// leaves the same state as printing all of them. A unit that prints alike every time
+    /// takes the line-fill path (`rep_fill`, `print_repeated`).
     pub fn repeat_preceding_character(&mut self, params: &Params) -> bool {
         let join_state = self.preceding_join_state;
         if join_state == 0 {

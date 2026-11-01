@@ -6231,6 +6231,31 @@ fn osc_8_print_inside_a_long_open_link_looks_up_markers_once_per_line() {
     assert_eq!(t.handler.services.osc_link.marker_count(), 1024);
 }
 
+/// Review S7: REP inside an open link adds each line it prints on once (per wrap), not once per
+/// code point: the marker lookups of a REP over 20 lines stay at a few per line where the
+/// per code point adds of `print` cost one per code point (12,000 here).
+#[test]
+fn rep_inside_an_open_link_looks_up_markers_once_per_line() {
+    let mut t = test_handler(300, 5, [OptionValue::Scrollback(0)]);
+    t.parse_str("\x1b]8;;http://x\x07e\u{301}");
+    t.handler.services.osc_link.marker_visits = 0;
+    let count = 300 * 20;
+    t.parse_str(&format!("\x1b[{count}b"));
+    assert_eq!(t.handler.rep_fills, 1);
+    let visits = t.handler.services.osc_link.marker_visits;
+    let markers = t.handler.services.osc_link.marker_count() as u64;
+    let lines = (count / 300 + 1) as u64;
+    // two adds per line at most, each the cached marker and at most one scan of the markers
+    assert!(
+        visits <= 2 * lines * (markers + 2),
+        "{visits} marker visits for {lines} lines over {markers} markers"
+    );
+    assert!(
+        (5..=6).contains(&markers),
+        "every line of the buffer is in the link: {markers}"
+    );
+}
+
 /// Review S2: links without an id repeated on one line (and overwritten) stay capped, with
 /// their markers; the newest link still works and an evicted one's cells lose only the link.
 #[test]
