@@ -313,16 +313,32 @@ The input encoders (key and mouse encoding) are M7.
   them a few bytes of XTWINOPS 22/23 or REP queued gigabytes. The weight is not the memory: a
   queued `HostEvent` is 48 bytes, so 1 MiB of BEL holds about 48 MiB until drained (measured,
   48.5x). M9 sizes its drain cadence for about 50x the bytes of one write.
-- **Bounded work per input byte** (fix round 1 of the M6 review). Where upstream's cost per
-  byte grows with the buffer, the engine caps it, each in a `// LUNETERM:` block:
-  `OscLinkService` checks the link's last marker before walking all of them (printing inside a
-  link open across the buffer is no longer O(scrollback) per character), keeps at most
-  `MAX_LINKS` (4096) links and `MAX_LINK_MARKERS` (8192) link markers, evicting the least
-  recently extended link (its cells keep their attributes and lose the link); a cell's
-  combined string holds at most `MAX_COMBINED_CODE_POINTS` (64, `buffer_line.rs`); REP prints
-  only the repetitions that still change the state (`rep_equivalent_repeats`, tested equal to
-  the full print). No log line carries pty output or user input: unknown OSC and DCS log their
-  identifier and payload length, the parse and the data/binary events log lengths only.
+- **Work per input byte** (fix rounds 1 and 2 of the M6 review). Where upstream's cost per
+  byte grows with a count the input controls, the engine caps or batches it, each in a
+  `// LUNETERM:` block: `OscLinkService` checks the link's last marker before walking all of
+  them (printing inside a link open across the buffer is no longer O(scrollback) per
+  character), keeps at most `MAX_LINKS` (4096) links and `MAX_LINK_MARKERS` (8192) link markers,
+  evicting the least recently extended link (its cells keep their attributes and lose the
+  link), disposes an evicted link's markers in one walk per buffer and filters a link's marker
+  list once per disposal batch (ED 3 and RIS after a buffer-long link are linear, not
+  quadratic); IL, DL, SU and SD move the markers once per sequence (`splice_rotate`), not once
+  per shifted line; a cell's combined string holds at most `MAX_COMBINED_CODE_POINTS` (64,
+  `buffer_line.rs`); REP prints only the repetitions that still change the state
+  (`rep_equivalent_repeats`, tested equal to the full print), and a single character that
+  prints alike fills whole lines (`print_repeated`). No log line carries pty output or user
+  input: unknown OSC and DCS log their identifier and payload length, the parse and the
+  data/binary events log lengths only.
+
+  **Residual, accepted (not capped):** every line change (a scroll, a trim, one IL/DL/SU/SD
+  sequence, a print onto a new line inside an open link) walks the buffer's live markers, as
+  upstream's per-marker listeners do. Link markers are bounded by `MAX_LINK_MARKERS` plus the
+  link being extended, which can mark every line (rows + scrollback), so the walk is
+  O(`MAX_LINK_MARKERS` + rows + scrollback) per line change. Measured (release, 80x24,
+  `a CR LF` inside one link open across the buffer): about 0.55 µs per byte at scrollback 1,000
+  and 5.4 µs at 10,000, against about 30 ns with no link; one IL with 8192 markers outside the
+  region costs about 7 µs at 80x24 and 39 µs at 300x100. So the work of a chunk is
+  O(bytes x (rows + scrollback)) with a long link, not O(bytes): **M9's flow control must bound
+  the work per slice (time or line changes), not only the bytes.**
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as
