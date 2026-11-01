@@ -28,6 +28,9 @@ pub enum HostEvent {
     Bell,
     /// Window title changed (OSC 0/2, upstream `onTitleChange`).
     Title(String),
+    /// Colour requests from OSC 4, 10, 11, 12, 104, 110, 111 and 112 (upstream `onColor`). The
+    /// engine never answers a [`ColorRequest::Report`]; the host knows the theme and may.
+    Color(Vec<ColorRequest>),
     /// Focus reporting was turned on (`CSI ? 1004 h`, upstream `onRequestSendFocus`): the host
     /// should report the current focus state.
     FocusReportRequested,
@@ -43,6 +46,31 @@ pub enum HostEvent {
     /// OSC 52 clipboard write. Queries are deliberately never answered. The core never produces
     /// it (ledger row 13); the gated write is an extension.
     ClipboardWrite { selection: String, data: String },
+}
+
+/// A palette or special colour index (upstream `AllColorIndex`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorIndex {
+    /// An entry of the 256-colour palette (upstream `ColorIndex`, 0..=255).
+    Palette(u8),
+    /// The default foreground (upstream `SpecialColorIndex.FOREGROUND`, 256).
+    Foreground,
+    /// The default background (`SpecialColorIndex.BACKGROUND`, 257).
+    Background,
+    /// The cursor colour (`SpecialColorIndex.CURSOR`, 258).
+    Cursor,
+}
+
+/// One request of a [`HostEvent::Color`] (upstream `IColorReportRequest`, `IColorSetRequest` and
+/// `IColorRestoreRequest`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorRequest {
+    /// `?` in the sequence: report the current colour.
+    Report(ColorIndex),
+    /// Set the colour to this RGB value.
+    Set(ColorIndex, [u8; 3]),
+    /// Restore the themed colour; `None` restores the whole palette (`OSC 104` without params).
+    Restore(Option<ColorIndex>),
 }
 
 /// Upstream `WindowsOptionsReportType`: which report `CSI 14 t` / `CSI 16 t` asked for.

@@ -13,7 +13,8 @@
 //! step 7: CSI c > c h ? h l ? l n ? n ! p SP q t $ p ? $ p (DA1, DA2, SM, DECSET, RM, DECRST,
 //! DSR, DECDSR, DECSTR, DECSCUSR, XTWINOPS, DECRQM), ESC = > c n o | } ~ % @ % G and the charset
 //! designators (keypad, RIS, locking shifts, charsets), and `set_title`/`set_icon_name` (the
-//! stacks of XTWINOPS 22/23). The OSC and DCS handlers follow in step 8.
+//! stacks of XTWINOPS 22/23); step 8: OSC 0 1 2 4 8 10 11 12 104 110 111 112 (titles, colour
+//! requests, hyperlinks) and DCS `$ q` (DECRQSS). That is every handler upstream registers.
 //!
 //! Rust shape (plan M6 D1, D2, D3, D8):
 //!  - The parser is generic over a `'static` host, so [`InputHandler`] owns the services
@@ -38,6 +39,14 @@
 //!    params are cleared when the next sequence starts, the OSC and DCS parsers are idle, and the
 //!    join state is cleared by the parser itself before it dispatches the ESC. Tests pin it
 //!    against the oracle.
+//!  - Colours: upstream's `onColor` event is [`HostEvent::Color`] (a list of [`ColorRequest`]s).
+//!    The engine never answers a report: the host knows the theme. OSC 52 and every other OSC
+//!    without a handler reach the fallback, which only logs (ledger row 13). `onTitleChange` is
+//!    [`HostEvent::Title`]; the icon name (OSC 1) is stored and fires nothing, as headless.
+//!  - JS string functions: `String.trim` is `js_trim` (ECMAScript WhiteSpace, not Rust's), and
+//!    the `/^\d+$/` + `parseInt` of the colour indexes is `parse_js_index`. The decoder drops
+//!    U+FEFF before the parser sees it (upstream's `Utf8ToUtf32`), so that trim case is only
+//!    reachable through a direct call.
 //!  - Marker disposal (M5 host duty): upstream frees an OSC 8 link the moment the last marker
 //!    of its lines is disposed. Here the buffers log disposals, and
 //!    [`InputHandler::forward_disposed_markers`] hands them to the `OscLinkService`. It runs
@@ -105,9 +114,10 @@ use crate::buffer::constants::{
 };
 use crate::data::charsets::charset;
 use crate::data::escape_sequences::{C0, C1};
-use crate::engine::{Damage, HostEvent, WindowReportKind};
+use crate::engine::{ColorIndex, ColorRequest, Damage, HostEvent, WindowReportKind};
 use crate::headless::terminal::reset_terminal;
 use crate::input::text_decoder::{Utf8ToUtf32, string_from_code_point, utf32_to_string};
+use crate::input::x_parse_color::parse_color;
 use crate::parser::dcs_parser::DcsStringHandler;
 use crate::parser::escape_sequence_parser::{EscapeSequenceParser, ident_to_string};
 use crate::parser::osc_parser::OscStringHandler;
@@ -122,7 +132,7 @@ use crate::services::core_mouse_service::CoreMouseService;
 use crate::services::core_service::CoreService;
 use crate::services::log_service::LogService;
 use crate::services::options_service::{CursorStyle, OptionValue, OptionsService, WindowOptions};
-use crate::services::osc_link_service::OscLinkService;
+use crate::services::osc_link_service::{OscLinkData, OscLinkService};
 use crate::services::unicode_service::UnicodeService;
 use crate::windows_mode::update_windows_mode_wrapped_state;
 
@@ -294,6 +304,48 @@ fn forward_disposed(services: &mut CoreServices) {
     if !alt.is_empty() {
         services.osc_link.on_markers_disposed(&alt);
     }
+}
+
+/// JS `String.prototype.trim`: strips the ECMAScript WhiteSpace and LineTerminator characters
+/// (not Rust's `White_Space`: U+FEFF counts, U+0085 does not).
+fn js_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| {
+        matches!(
+            c,
+            '\u{9}'..='\u{d}'
+                | ' '
+                | '\u{a0}'
+                | '\u{1680}'
+                | '\u{2000}'..='\u{200a}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{3000}'
+                | '\u{feff}'
+        )
+    })
+}
+
+/// `/^\d+$/.exec(s)` then `parseInt(s)`, saturating at 1000 (anything past 255 is an invalid
+/// colour index anyway, and a longer digit string would overflow).
+fn parse_js_index(s: &str) -> Option<u32> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut value: u32 = 0;
+    for b in s.bytes() {
+        value = value
+            .saturating_mul(10)
+            .saturating_add(u32::from(b.saturating_sub(b'0')))
+            .min(1000);
+    }
+    Some(value)
+}
+
+/// `isValidColorIndex(value)` as a palette index.
+fn valid_color_index(value: u32) -> Option<ColorIndex> {
+    u8::try_from(value).ok().map(ColorIndex::Palette)
 }
 
 /// back_color_erase feature for xterm (upstream `_eraseAttrData`).
@@ -708,6 +760,37 @@ impl InputHandler {
         parser.register_esc_handler(FunctionIdentifier::with_intermediates("#", '8'), |h| {
             h.screen_alignment_pattern()
         })?;
+
+        // OSC handler
+        InputHandler::register_osc_handler(parser, 0, |h, data| h.set_title_and_icon_name(data));
+        InputHandler::register_osc_handler(parser, 1, |h, data| h.set_icon_name(data));
+        InputHandler::register_osc_handler(parser, 2, |h, data| h.set_title(data));
+        InputHandler::register_osc_handler(parser, 4, |h, data| {
+            h.set_or_report_indexed_color(data)
+        });
+        InputHandler::register_osc_handler(parser, 8, |h, data| h.set_hyperlink(data));
+        InputHandler::register_osc_handler(parser, 10, |h, data| h.set_or_report_fg_color(data));
+        InputHandler::register_osc_handler(parser, 11, |h, data| h.set_or_report_bg_color(data));
+        InputHandler::register_osc_handler(parser, 12, |h, data| {
+            h.set_or_report_cursor_color(data)
+        });
+        InputHandler::register_osc_handler(parser, 104, |h, data| h.restore_indexed_color(data));
+        InputHandler::register_osc_handler(parser, 110, |h, _| {
+            h.restore_special_color(ColorIndex::Foreground)
+        });
+        InputHandler::register_osc_handler(parser, 111, |h, _| {
+            h.restore_special_color(ColorIndex::Background)
+        });
+        InputHandler::register_osc_handler(parser, 112, |h, _| {
+            h.restore_special_color(ColorIndex::Cursor)
+        });
+
+        // DCS handler
+        InputHandler::register_dcs_handler(
+            parser,
+            FunctionIdentifier::with_intermediates("$", 'q'),
+            |h, data, _| h.request_status_string(data),
+        )?;
 
         // error handler: log, never abort (upstream returns the state unchanged)
         parser.set_error_handler(|h, state| {
@@ -2454,6 +2537,176 @@ impl InputHandler {
     /// OSC 0 and 1: set the icon name (not exposed to the host).
     pub fn set_icon_name(&mut self, data: &str) -> bool {
         self.icon_name = data.to_owned();
+        true
+    }
+
+    /// OSC 0: set the title and the icon name.
+    pub fn set_title_and_icon_name(&mut self, data: &str) -> bool {
+        self.set_title(data);
+        self.set_icon_name(data)
+    }
+
+    /// OSC 4 ; c ; spec: set (`spec` is a colour) or report (`spec` is `?`) the palette colour
+    /// `c`, any number of pairs. Pairs with an invalid index or colour are skipped; one
+    /// [`HostEvent::Color`] holds the valid ones.
+    pub fn set_or_report_indexed_color(&mut self, data: &str) -> bool {
+        let mut event = Vec::new();
+        let mut slots = data.split(';');
+        while let (Some(idx), Some(spec)) = (slots.next(), slots.next()) {
+            let Some(index) = parse_js_index(idx).and_then(valid_color_index) else {
+                continue;
+            };
+            if spec == "?" {
+                event.push(ColorRequest::Report(index));
+            } else if let Some(color) = parse_color(spec) {
+                event.push(ColorRequest::Set(index, color));
+            }
+        }
+        if !event.is_empty() {
+            self.events.push(HostEvent::Color(event));
+        }
+        true
+    }
+
+    /// OSC 8 ; params ; uri: start a hyperlink (or finish it, with an empty `uri` and empty
+    /// `params`). The `;` inside the uri is kept (xterm.js #4944).
+    pub fn set_hyperlink(&mut self, data: &str) -> bool {
+        let Some((params, uri)) = data.split_once(';') else {
+            // malformed sequence, just return as handled
+            return true;
+        };
+        let params = js_trim(params);
+        if !uri.is_empty() {
+            return self.create_hyperlink(params, uri);
+        }
+        if !params.is_empty() {
+            return false;
+        }
+        self.finish_hyperlink()
+    }
+
+    fn create_hyperlink(&mut self, params: &str, uri: &str) -> bool {
+        // It's legal to open a new hyperlink without explicitly finishing the previous one
+        if self.cur_attr_data.extended.url_id() != 0 {
+            self.finish_hyperlink();
+        }
+        let id = params
+            .split(':')
+            .find_map(|part| part.strip_prefix("id="))
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
+        // The step-3 invariant: a link trimmed earlier in this write is gone before the
+        // service looks for it.
+        self.forward_disposed_markers();
+        let link_id = self.services.osc_link.register_link(
+            &mut self.services.buffer,
+            OscLinkData {
+                id,
+                uri: uri.to_owned(),
+            },
+        );
+        self.cur_attr_data.extended.set_url_id(link_id);
+        self.cur_attr_data.update_extended();
+        true
+    }
+
+    fn finish_hyperlink(&mut self) -> bool {
+        self.cur_attr_data.extended.set_url_id(0);
+        self.cur_attr_data.update_extended();
+        true
+    }
+
+    /// Apply the colour requests of OSC 10, 11 and 12: the slots map to the foreground,
+    /// background and cursor colours starting at `offset` (10 -> 0, 11 -> 1, 12 -> 2); slots past
+    /// the cursor colour are ignored. Each slot is its own [`HostEvent::Color`].
+    fn set_or_report_special_color(&mut self, data: &str, offset: usize) -> bool {
+        const SPECIAL: [ColorIndex; 3] = [
+            ColorIndex::Foreground,
+            ColorIndex::Background,
+            ColorIndex::Cursor,
+        ];
+        for (slot, index) in data.split(';').zip(SPECIAL.iter().skip(offset)) {
+            if slot == "?" {
+                self.events
+                    .push(HostEvent::Color(vec![ColorRequest::Report(*index)]));
+            } else if let Some(color) = parse_color(slot) {
+                self.events
+                    .push(HostEvent::Color(vec![ColorRequest::Set(*index, color)]));
+            }
+        }
+        true
+    }
+
+    /// OSC 10: set or query the default foreground colour.
+    pub fn set_or_report_fg_color(&mut self, data: &str) -> bool {
+        self.set_or_report_special_color(data, 0)
+    }
+
+    /// OSC 11: set or query the default background colour.
+    pub fn set_or_report_bg_color(&mut self, data: &str) -> bool {
+        self.set_or_report_special_color(data, 1)
+    }
+
+    /// OSC 12: set or query the cursor colour.
+    pub fn set_or_report_cursor_color(&mut self, data: &str) -> bool {
+        self.set_or_report_special_color(data, 2)
+    }
+
+    /// OSC 104 ; c: restore the palette colours listed (all of them without params).
+    pub fn restore_indexed_color(&mut self, data: &str) -> bool {
+        if data.is_empty() {
+            self.events
+                .push(HostEvent::Color(vec![ColorRequest::Restore(None)]));
+            return true;
+        }
+        let event: Vec<ColorRequest> = data
+            .split(';')
+            .filter_map(|slot| parse_js_index(slot).and_then(valid_color_index))
+            .map(|index| ColorRequest::Restore(Some(index)))
+            .collect();
+        if !event.is_empty() {
+            self.events.push(HostEvent::Color(event));
+        }
+        true
+    }
+
+    /// OSC 110, 111, 112: restore one special colour.
+    fn restore_special_color(&mut self, index: ColorIndex) -> bool {
+        self.events
+            .push(HostEvent::Color(vec![ColorRequest::Restore(Some(index))]));
+        true
+    }
+
+    /// DCS $ q Pt ST (DECRQSS): report the setting selected by `data` (the text of the
+    /// sequence that sets it, without the final parameters) as `DCS 1 $ r Pt ST`, or
+    /// `DCS 0 $ r ST` for a setting that is not known. The SGR report is always `0m`
+    /// (upstream's FIXME).
+    pub fn request_status_string(&mut self, data: &str) -> bool {
+        let buffer = self.services.buffer.buffer();
+        let opts = self.services.options.options();
+        let reply = match data {
+            "\"q" => format!(
+                "P1$r{}\"q",
+                u8::from(self.cur_attr_data.is_protected() != 0)
+            ),
+            "\"p" => "P1$r61;1\"p".to_owned(),
+            "r" => format!(
+                "P1$r{};{}r",
+                buffer.scroll_top.saturating_add(1),
+                buffer.scroll_bottom.saturating_add(1)
+            ),
+            "m" => "P1$r0m".to_owned(),
+            " q" => {
+                let style = match opts.cursor_style {
+                    CursorStyle::Block => 2,
+                    CursorStyle::Underline => 4,
+                    CursorStyle::Bar => 6,
+                };
+                format!("P1$r{} q", style - u8::from(opts.cursor_blink))
+            }
+            _ => "P0$r".to_owned(),
+        };
+        self.send_data(&format!("\x1b{reply}\x1b\\"));
         true
     }
 

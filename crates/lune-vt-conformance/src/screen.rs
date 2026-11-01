@@ -14,7 +14,7 @@ use lune_vt::HostEvent;
 use lune_vt::Terminal;
 use lune_vt::buffer::buffer::Buffer;
 use lune_vt::buffer::cell_data::CellData;
-use lune_vt::buffer::constants::{Attributes, BgFlags, FgFlags};
+use lune_vt::buffer::constants::{Attributes, BgFlags};
 use lune_vt::services::options_service::{CursorStyle, OptionValue};
 
 use crate::escape::escape_str;
@@ -247,7 +247,8 @@ fn cell_tokens(cell: &CellData) -> (String, u32) {
     } else {
         (0, 0, 0)
     };
-    if cell.fg & FgFlags::UNDERLINE != 0 || ubits != 0 {
+    // `isUnderline()` is also true for a cell with a link (the public style reads DASHED).
+    if cell.is_underline() != 0 || ubits != 0 {
         tokens.push(format!("u={ubits}"));
     }
     if let Some(c) = colour(ucword & Attributes::CM_MASK, ucword) {

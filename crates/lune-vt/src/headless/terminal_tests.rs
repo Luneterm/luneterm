@@ -16,7 +16,6 @@
 //!    the replacement.
 //!  - replaced: `onLineFeed` — no public consumer (D2).
 //!  - replaced: `dispose` — `Drop`.
-//!  - ignored until its handler lands: `onTitleChange` (OSC 2, step 8).
 //!
 //! WriteBuffer.test.ts (D3): `string`, `bytes`, `string/bytes mixed` and `write callback works
 //! for empty chunks` are `Terminal::write` cases below; `writeSync`, `writeSync called from
@@ -232,7 +231,6 @@ fn on_resize() {
 }
 
 #[test]
-#[ignore = "needs OSC 2 (M6 step 8)"]
 fn on_title_change() {
     let mut t = term([]);
     t.write_str("\x1b]2;foo\u{9c}");
