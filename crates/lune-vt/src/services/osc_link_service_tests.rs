@@ -300,3 +300,57 @@ fn markers_past_the_cap_evict_other_links_but_never_the_link_being_extended() {
     );
     assert_eq!(osc.len(), 1);
 }
+
+// ---- id wrap, `// LUNETERM:` (review F5) ----
+
+/// Runs `f` on a thread and fails if it does not finish in time (the bug was an endless loop).
+fn finishes(f: impl FnOnce() + Send + 'static) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        f();
+        tx.send(()).unwrap();
+    });
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_secs(20)).is_ok(),
+        "did not finish (endless loop in enforce_caps?)"
+    );
+}
+
+#[test]
+fn a_wrapped_id_counter_skips_ids_still_in_use() {
+    finishes(|| {
+        let (mut buffers, mut osc) = setup();
+        let a = osc.register_link(&mut buffers, link("a", "u"));
+        assert_eq!(a, 1);
+        // inject the counter instead of registering 2^32 links
+        osc.next_id = u32::MAX;
+        let b = osc.register_link(&mut buffers, no_id("b"));
+        assert_eq!(b, u32::MAX);
+        let c = osc.register_link(&mut buffers, no_id("c"));
+        assert_eq!(c, 2, "1 is still in use");
+        assert_eq!(osc.get_link_data(a).map(|d| d.uri.as_str()), Some("u"));
+        assert_eq!(osc.get_link_data(c).map(|d| d.uri.as_str()), Some("c"));
+        // the cap evicts past the wrap (the endless loop of review F5)
+        for i in 0..MAX_LINKS + 10 {
+            osc.register_link(&mut buffers, no_id(&format!("x{i}")));
+        }
+        assert_eq!(osc.len(), MAX_LINKS);
+        assert_eq!(osc.by_age.len(), osc.len(), "one age key per live link");
+        assert_eq!(buffers.buffers.normal().markers().len(), osc.marker_count());
+    });
+}
+
+#[test]
+fn enforce_caps_ends_even_when_an_age_key_outlived_its_entry() {
+    finishes(|| {
+        let (mut buffers, mut osc) = setup();
+        let a = osc.register_link(&mut buffers, no_id("a"));
+        // a stale key, older than every live one, for a live id and for a gone one
+        osc.by_age.insert(0, a);
+        osc.by_age.insert(u64::MAX - 1, 999_999);
+        for i in 0..MAX_LINKS + 10 {
+            osc.register_link(&mut buffers, no_id(&format!("x{i}")));
+        }
+        assert_eq!(osc.len(), MAX_LINKS);
+    });
+}
