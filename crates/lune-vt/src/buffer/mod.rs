@@ -23,8 +23,11 @@
 )]
 
 pub mod attribute_data;
+#[allow(clippy::module_inception)] // `Buffer.ts` in `buffer/`: one TS file, one Rust file
+pub mod buffer;
 pub mod buffer_line;
 pub mod buffer_range;
+pub mod buffer_set;
 pub mod cell_data;
 pub mod constants;
 pub mod marker;
