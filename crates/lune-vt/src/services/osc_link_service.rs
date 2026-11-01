@@ -49,6 +49,13 @@ struct Entry {
     /// `Some` for a link with an id: the `_entriesWithId` key.
     key: Option<String>,
     lines: Vec<LinkMarker>,
+    /// LUNETERM: the marker [`OscLinkService::add_line_to_link`] last found on, or added to,
+    /// the line it was asked about. `print` asks once per character for the cursor line, so
+    /// checking this marker first answers almost every call with one lookup instead of a walk
+    /// over every marker of the link (a link open across the buffer holds one per line;
+    /// review F1/S1). The answer is the same as the walk's: a hit is a live marker of this
+    /// link on that line.
+    last: Option<LinkMarker>,
 }
 
 /// Maps OSC 8 hyperlinks to the link ids stored in cells and frees them when the lines that
@@ -63,6 +70,9 @@ pub struct OscLinkService {
     data_by_link_id: HashMap<u32, Entry>,
     /// The link each marker keeps alive (upstream: the closure of `marker.onDispose`).
     link_of_marker: HashMap<MarkerId, u32>,
+    /// Marker lookups done by `add_line_to_link` (tests pin that it stays O(1) per call).
+    #[cfg(test)]
+    pub(crate) marker_lookups: u64,
 }
 
 impl Default for OscLinkService {
@@ -78,6 +88,8 @@ impl OscLinkService {
             entries_with_id: HashMap::new(),
             data_by_link_id: HashMap::new(),
             link_of_marker: HashMap::new(),
+            #[cfg(test)]
+            marker_lookups: 0,
         }
     }
 
@@ -100,6 +112,7 @@ impl OscLinkService {
                     data,
                     key: None,
                     lines: vec![LinkMarker { id: marker, alt }],
+                    last: Some(LinkMarker { id: marker, alt }),
                 },
             );
             return link_id;
@@ -123,6 +136,7 @@ impl OscLinkService {
                 data,
                 key: Some(key),
                 lines: vec![LinkMarker { id: marker, alt }],
+                last: Some(LinkMarker { id: marker, alt }),
             },
         );
         link_id
@@ -135,7 +149,13 @@ impl OscLinkService {
             return;
         };
         let y = to_i64(y);
-        let holds_line = entry.lines.iter().any(|m| {
+        #[cfg(test)]
+        let lookups = &mut self.marker_lookups;
+        let mut on_line = |m: &LinkMarker| {
+            #[cfg(test)]
+            {
+                *lookups += 1;
+            }
             // A marker disposed but not yet forwarded is already gone upstream.
             let buffer = if m.alt {
                 buffers.buffers.alt()
@@ -143,13 +163,20 @@ impl OscLinkService {
                 buffers.buffers.normal()
             };
             buffer.marker(m.id).is_some_and(|marker| marker.line == y)
-        });
-        if !holds_line {
-            let alt = buffers.buffers.is_alt_active();
-            let marker = buffers.buffer_mut().add_marker(y);
-            entry.lines.push(LinkMarker { id: marker, alt });
-            self.link_of_marker.insert(marker, link_id);
+        };
+        // LUNETERM: the cached marker first (see `Entry::last`), then upstream's walk.
+        if entry.last.as_ref().is_some_and(&mut on_line) {
+            return;
         }
+        if let Some(found) = entry.lines.iter().find(|m| on_line(m)) {
+            entry.last = Some(*found);
+            return;
+        }
+        let alt = buffers.buffers.is_alt_active();
+        let marker = buffers.buffer_mut().add_marker(y);
+        entry.lines.push(LinkMarker { id: marker, alt });
+        entry.last = Some(LinkMarker { id: marker, alt });
+        self.link_of_marker.insert(marker, link_id);
     }
 
     /// The data of a link id, `None` if unknown or freed.

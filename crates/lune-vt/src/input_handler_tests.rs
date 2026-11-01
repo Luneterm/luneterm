@@ -5721,6 +5721,33 @@ fn osc_8_print_adds_the_line_to_the_link() {
     assert_eq!(cell_url(&t, 1, 2), 0);
 }
 
+/// Review F1/S1: with a link open across the whole buffer (one marker per line), printing a
+/// line inside it walks the link's markers once, when the cursor reaches the new line, not once
+/// per character. Counts marker lookups, not time.
+#[test]
+fn osc_8_print_inside_a_long_open_link_looks_up_markers_once_per_line() {
+    let mut t = test_handler(80, 24, [OptionValue::Scrollback(1000)]);
+    t.parse_str("\x1b]8;;http://x\x07");
+    let line = format!("{}\r\n", "a".repeat(79));
+    t.parse_str(&line.repeat(1100));
+    let markers = t.handler.services.osc_link.marker_count();
+    assert_eq!(markers, 1024, "one marker per live line");
+    t.handler.services.osc_link.marker_lookups = 0;
+    t.parse_str(&"b".repeat(79));
+    let lookups = t.handler.services.osc_link.marker_lookups;
+    // the first character walks every marker (the new line holds none yet); the other 78 hit
+    // the marker it added (upstream's walk: 79 x 1024)
+    assert!(
+        lookups <= 2 + markers as u64 + 78,
+        "{lookups} lookups for 79 characters over {markers} markers"
+    );
+    // and the line is in the link, once
+    assert_eq!(t.handler.services.osc_link.marker_count(), 1024);
+    // printing on a line the link already holds, after the cache moved elsewhere, still finds it
+    t.parse_str("\x1b[1Ac\x1b[1Bd");
+    assert_eq!(t.handler.services.osc_link.marker_count(), 1024);
+}
+
 #[test]
 fn decrqss_unknown_requests_get_the_invalid_reply_and_stdin_can_be_disabled() {
     let mut t = upstream_handler();
