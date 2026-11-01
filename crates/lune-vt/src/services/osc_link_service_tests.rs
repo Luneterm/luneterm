@@ -231,3 +231,72 @@ fn link_ids_enumerate_the_live_links() {
     ids.sort_unstable();
     assert_eq!(ids, vec![a, b]);
 }
+
+// ---- LUNETERM caps (review S2) ----
+
+#[test]
+fn links_past_the_cap_evict_the_least_recently_extended_and_dispose_its_markers() {
+    let (mut buffers, mut osc) = setup();
+    let first = osc.register_link(&mut buffers, link("keep", "k"));
+    let second = osc.register_link(&mut buffers, no_id("old"));
+    // extending `first` to another line makes `second` the least recently extended
+    osc.add_line_to_link(&mut buffers, first, 1);
+    for i in 0..MAX_LINKS - 2 {
+        osc.register_link(&mut buffers, no_id(&format!("u{i}")));
+    }
+    assert_eq!(osc.len(), MAX_LINKS);
+    assert!(osc.get_link_data(second).is_some());
+    let newest = osc.register_link(&mut buffers, no_id("new"));
+    assert_eq!(osc.len(), MAX_LINKS);
+    assert!(osc.get_link_data(second).is_none(), "evicted");
+    assert!(osc.get_link_data(first).is_some());
+    assert!(osc.get_link_data(newest).is_some());
+    // the evicted link's marker is gone from the buffer and the table holds no stale marker
+    let live = buffers.buffers.normal().markers().len();
+    assert_eq!(live, osc.marker_count());
+    // forwarding the eviction's disposal changes nothing
+    forward(&mut buffers, &mut osc);
+    assert_eq!(osc.len(), MAX_LINKS);
+}
+
+#[test]
+fn an_evicted_link_with_an_id_is_registered_anew() {
+    let (mut buffers, mut osc) = setup();
+    let a = osc.register_link(&mut buffers, link("a", "u"));
+    for i in 0..MAX_LINKS {
+        osc.register_link(&mut buffers, no_id(&format!("u{i}")));
+    }
+    assert!(osc.get_link_data(a).is_none());
+    let again = osc.register_link(&mut buffers, link("a", "u"));
+    assert_ne!(again, a);
+    assert_eq!(osc.get_link_data(again).map(|d| d.uri.as_str()), Some("u"));
+}
+
+#[test]
+fn markers_past_the_cap_evict_other_links_but_never_the_link_being_extended() {
+    let options = OptionsService::new([
+        OptionValue::Rows(3),
+        OptionValue::Cols(10),
+        OptionValue::Scrollback(MAX_LINK_MARKERS + 100),
+    ]);
+    let mut buffers = BufferService::new(options.options());
+    let mut osc = OscLinkService::new();
+    for _ in 0..MAX_LINK_MARKERS + 50 {
+        buffers.scroll(&AttributeData::default(), false);
+    }
+    let other = osc.register_link(&mut buffers, no_id("other"));
+    let long = osc.register_link(&mut buffers, link("l", "long"));
+    // one link over more lines than the marker cap keeps every line
+    for y in 0..MAX_LINK_MARKERS + 20 {
+        osc.add_line_to_link(&mut buffers, long, y);
+    }
+    assert!(
+        osc.get_link_data(other).is_none(),
+        "evicted for the long link"
+    );
+    assert_eq!(
+        osc.link_markers(long).map(<[_]>::len),
+        Some(MAX_LINK_MARKERS + 20 + 1)
+    );
+    assert_eq!(osc.len(), 1);
+}

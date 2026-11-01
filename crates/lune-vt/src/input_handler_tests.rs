@@ -5723,7 +5723,7 @@ fn osc_8_print_adds_the_line_to_the_link() {
 
 /// Review F1/S1: with a link open across the whole buffer (one marker per line), printing a
 /// line inside it walks the link's markers once, when the cursor reaches the new line, not once
-/// per character. Counts marker lookups, not time.
+/// per character. Counts marker visits, not time.
 #[test]
 fn osc_8_print_inside_a_long_open_link_looks_up_markers_once_per_line() {
     let mut t = test_handler(80, 24, [OptionValue::Scrollback(1000)]);
@@ -5732,20 +5732,40 @@ fn osc_8_print_inside_a_long_open_link_looks_up_markers_once_per_line() {
     t.parse_str(&line.repeat(1100));
     let markers = t.handler.services.osc_link.marker_count();
     assert_eq!(markers, 1024, "one marker per live line");
-    t.handler.services.osc_link.marker_lookups = 0;
+    t.handler.services.osc_link.marker_visits = 0;
     t.parse_str(&"b".repeat(79));
-    let lookups = t.handler.services.osc_link.marker_lookups;
+    let visits = t.handler.services.osc_link.marker_visits;
     // the first character walks every marker (the new line holds none yet); the other 78 hit
     // the marker it added (upstream's walk: 79 x 1024)
     assert!(
-        lookups <= 2 + markers as u64 + 78,
-        "{lookups} lookups for 79 characters over {markers} markers"
+        visits <= 2 + markers as u64 + 79,
+        "{visits} marker visits for 79 characters over {markers} markers"
     );
     // and the line is in the link, once
     assert_eq!(t.handler.services.osc_link.marker_count(), 1024);
     // printing on a line the link already holds, after the cache moved elsewhere, still finds it
     t.parse_str("\x1b[1Ac\x1b[1Bd");
     assert_eq!(t.handler.services.osc_link.marker_count(), 1024);
+}
+
+/// Review S2: links without an id repeated on one line (and overwritten) stay capped, with
+/// their markers; the newest link still works and an evicted one's cells lose only the link.
+#[test]
+fn osc_8_links_repeated_on_one_line_stay_capped() {
+    use crate::services::osc_link_service::{MAX_LINK_MARKERS, MAX_LINKS};
+    let mut t = test_handler(80, 24, []);
+    t.parse_str("\x1b]8;;first\x07x\r");
+    t.parse_str(&"\x1b]8;;a\x07x\r".repeat(MAX_LINKS + 500));
+    let osc = &t.handler.services.osc_link;
+    assert_eq!(osc.len(), MAX_LINKS);
+    assert!(osc.marker_count() <= MAX_LINK_MARKERS);
+    assert_eq!(t.buffer().markers().len(), osc.marker_count());
+    assert!(osc.get_link_data(1).is_none(), "the first link was evicted");
+    let current = t.attr().extended.url_id();
+    assert_eq!(
+        osc.get_link_data(current).map(|d| d.uri.as_str()),
+        Some("a")
+    );
 }
 
 #[test]

@@ -51,6 +51,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use lune_vt::services::options_service::{
     CursorStyle, OptionValue, PtyBackendKind, WindowOptions, WindowsPty,
 };
+use lune_vt::services::osc_link_service::{MAX_LINK_MARKERS, MAX_LINKS};
 use lune_vt::{HostEvent, Terminal, VtEngine};
 
 use screen::{Run, SplitRng, dump_run};
@@ -872,6 +873,14 @@ fn check_bounds(sim: &Sim) {
     assert!(
         osc_link.marker_count() <= live,
         "links hold {} markers, {live} are live",
+        osc_link.marker_count()
+    );
+    // The LUNETERM caps (review S2): links, and their markers unless one link holds them all.
+    assert!(osc_link.len() <= MAX_LINKS, "{} links", osc_link.len());
+    assert!(
+        osc_link.marker_count() <= MAX_LINK_MARKERS || osc_link.len() == 1,
+        "{} links hold {} markers",
+        osc_link.len(),
         osc_link.marker_count()
     );
     for id in osc_link.link_ids() {

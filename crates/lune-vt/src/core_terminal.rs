@@ -290,8 +290,8 @@ pub(crate) fn core_reset(input_handler: &mut InputHandler) {
     // LUNETERM: upstream drops the old buffers without disposing their markers, so an OSC 8
     // link alive at the reset stays in the OscLinkService forever (and a later link with the
     // same id and uri reuses its id). Disposing the markers first frees those links (the plan's
-    // invariant: no link entry whose markers are all gone), which keeps the link table bounded
-    // under repeated OSC 8 + RIS input.
+    // invariant: no link entry whose markers are all gone). Without a reset, the caps in
+    // `osc_link_service` (MAX_LINKS, MAX_LINK_MARKERS) bound the table.
     services.buffer.buffers.normal_mut().clear_all_markers();
     services.buffer.buffers.alt_mut().clear_all_markers();
     // before the buffers (and their disposal logs) are replaced
