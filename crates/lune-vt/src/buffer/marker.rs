@@ -104,9 +104,9 @@ impl MarkerSet {
         }
     }
 
-    /// Disposes every marker in `ids` (unknown ones are ignored) in one walk, logged in creation
-    /// order. LUNETERM: (review F6) `dispose` per id costs a removal each, quadratic for a link
-    /// that marks every line of a long buffer.
+    /// LUNETERM: (review F6) disposes every marker in `ids` (unknown ones are ignored) in one
+    /// walk, logged in creation order; `dispose` per id costs a removal each, quadratic for a
+    /// link that marks every line of a long buffer.
     pub fn dispose_all(&mut self, ids: &HashSet<MarkerId>) {
         if !ids.is_empty() {
             self.dispose_where(|m| ids.contains(&m.id));
