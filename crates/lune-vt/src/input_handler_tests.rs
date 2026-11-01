@@ -6358,3 +6358,56 @@ fn coalesce_oracle_titles_keeps_the_last_title_at_the_first_place() {
         "ev=D(x);url=0;links=;title=;icon="
     );
 }
+
+/// Review S6: IL, DL, SU and SD move the markers once per sequence, not once per shifted line
+/// (one walk of the marker list instead of `2 * height`), and the markers end where the
+/// per-line splices put them.
+#[test]
+fn line_insert_delete_and_scroll_walk_the_markers_once_per_sequence() {
+    let rows = 20;
+    let mut t = test_handler(10, rows, []);
+    t.parse_str(&format!("\x1b[2;{}r", rows - 1));
+    let markers = 300;
+    let buffer = t.handler.services.buffer.buffer_mut();
+    for i in 0..markers {
+        buffer.add_marker(i64::from(i % rows as u32));
+    }
+    let before: Vec<i64> = t.buffer().markers().iter().map(|m| m.line).collect();
+    for (seq, expect) in [
+        // IL 99 at row 5 (index 4): 15 lines of the region shift down, the region is blanked
+        // from the cursor; markers on rows 5..19 (indices 4..=18) are all disposed
+        ("\x1b[5;1H\x1b[99L", 4..=18),
+        ("\x1b[5;1H\x1b[99M", 4..=18),
+        ("\x1b[99S", 1..=18),
+        ("\x1b[99T", 1..=18),
+    ] {
+        let mut t2 = test_handler(10, rows, []);
+        t2.parse_str(&format!("\x1b[2;{}r", rows - 1));
+        for &line in &before {
+            t2.handler.services.buffer.buffer_mut().add_marker(line);
+        }
+        t2.handler
+            .services
+            .buffer
+            .buffer_mut()
+            .lines
+            .observer_mut()
+            .visits = 0;
+        t2.parse_str(seq);
+        let set = t2.buffer().markers();
+        assert!(
+            set.visits <= markers as u64,
+            "{seq:?}: {} visits for {markers} markers",
+            set.visits
+        );
+        assert!(
+            set.iter().all(|m| !expect.contains(&m.line)),
+            "{seq:?}: a marker survived in the cleared rows"
+        );
+        let outside = before.iter().filter(|l| !(1..=18).contains(*l)).count();
+        assert!(
+            set.len() >= outside,
+            "{seq:?}: markers outside the region survive"
+        );
+    }
+}

@@ -214,6 +214,45 @@ impl ListObserver for MarkerSet {
             false
         });
     }
+
+    /// LUNETERM: (review S6) `n` times `on_delete(delete_at, 1)` then `on_insert(insert_at, 1)`
+    /// in one walk (IL, DL, SU and SD make one such pair per line, and each event walks every
+    /// marker). Per pair, a marker outside the lines between `delete_at` and `insert_at` (both
+    /// included) does not move: below both it is untouched, above both the delete moves it up
+    /// and the insert down again. Inside, it moves one line towards `delete_at` per pair
+    /// (down when `insert_at` is above, up when below) and is disposed by the pair that finds
+    /// it on `delete_at`: pair `k = |delete_at - line|` (0-based). So it is disposed by pair
+    /// `k` when `k < n`, else it moves `n` lines. Disposals are logged in pair order, creation
+    /// order within a pair, as the per-event calls log them; detached markers are skipped.
+    fn on_rotate(&mut self, delete_at: usize, insert_at: usize, n: usize) {
+        #[cfg(test)]
+        {
+            self.visits += self.entries.len() as u64;
+        }
+        let (d, i, n) = (to_i64(delete_at), to_i64(insert_at), to_i64(n));
+        let (low, high) = (d.min(i), d.max(i));
+        let mut gone: Vec<(i64, MarkerId)> = Vec::new();
+        self.entries.retain_mut(|e| {
+            let m = e.marker.line;
+            if !e.attached || m < low || m > high {
+                return true;
+            }
+            let k = (d - m).abs();
+            if k < n {
+                gone.push((k, e.marker.id));
+                return false;
+            }
+            e.marker.line = if d >= i {
+                m.saturating_add(n)
+            } else {
+                m.saturating_sub(n)
+            };
+            true
+        });
+        // stable: creation order within a pair
+        gone.sort_by_key(|&(k, _)| k);
+        self.disposed.extend(gone.into_iter().map(|(_, id)| id));
+    }
 }
 
 #[cfg(test)]
