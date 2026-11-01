@@ -20,7 +20,13 @@
 //!    handler methods with `Params::fromArray`; here too, through `params`. `MockBufferService`
 //!    is a `test_handler` of the same size. `ED2 with scrollOnEraseInDisplay` builds its handler
 //!    over the same `bufferService` with a mock option; here the option is passed to the
-//!    constructor. `DECSCA and DECSED/DECSEL`'s `DECRQSS reports correct DECSCA state` is step 8's.
+//!    constructor.
+//!  - Step 8 (OSC, DCS): the `OSC` describe (12) reads the `onColor` stack as
+//!    [`HostEvent::Color`] events and `inputHandler.curAttrData.extended.urlId` /
+//!    `oscLinkService.getLinkData` as `cur_attr_data` / `services.osc_link`; `DECRQSS reports
+//!    correct DECSCA state` reads `coreService.onData` as [`HostEvent::Response`].
+//!  - replaced: `InputHandler - async handlers` (3 cases: `async CUP with CPR check`, `async OSC
+//!    between`, `async DCS between`): the port has no async handlers (plan M4 D3).
 //!  - `print`/`should not cause an infinite loop` calls `print` with the one-element slice
 //!    (upstream passes a 10-element array with `start = 0, end = 1`).
 
@@ -33,7 +39,7 @@ use super::*;
 use crate::buffer::attribute_data::ExtendedAttrs;
 use crate::buffer::constants::Attributes;
 use crate::data::charsets::charset;
-use crate::engine::WindowReportKind;
+use crate::engine::{ColorIndex, ColorRequest, WindowReportKind};
 use crate::input::unicode_v6::UnicodeV6;
 use crate::parser::params::ParamsArrayItem;
 use crate::services::options_service::{OptionValue, WindowOptions};
@@ -3084,17 +3090,15 @@ fn sgr0_resets_all_attributes_if_there_is_no_url() {
     assert!(t.attr().extended.is_empty());
 }
 
-/// adapted: upstream sets the url with `OSC 8` (step 8); the id is put on the attributes
-/// directly, which is what that handler does (`InputHandler.ts` `_createHyperlink`).
 #[test]
 fn sgr0_resets_all_attributes_except_for_the_url() {
     let mut t = sgr("30m\x1b[40m\x1b[4m");
-    let url_id = 5;
-    t.handler.cur_attr_data.extended.set_url_id(url_id);
-    t.handler.cur_attr_data.update_extended();
+    t.parse_str("\x1b]8;;http://example.com\x1b\\");
     assert_ne!(t.attr().fg, 0);
     assert_ne!(t.attr().bg, 0);
     assert_ne!(t.attr().extended.ext(), 0);
+    let url_id = t.attr().extended.url_id();
+    assert_ne!(url_id, 0);
     t.parse_str("\x1b[m");
     assert_eq!(t.attr().fg, 0);
     assert_eq!(t.attr().bg, BgFlags::HAS_EXTENDED);
@@ -3423,10 +3427,10 @@ fn extract_color_survives_every_truncation_of_a_long_sequence() {
 // --- upstream: InputHandler.test.ts, step 7 (modes, reports, DECSTR, DECSCUSR, XTWINOPS) ---
 //
 // adapted (step 7):
-//  - `windowOptions` `22/23 - PushTitle/PopTitle` (3 cases) set the title with `ESC ] 0 ; Pt BEL`;
-//    OSC is step 8, so these call `set_title`/`set_icon_name` (what the OSC handlers call)
-//    directly; step 8 adds the escape sequence version. `inputHandler.onTitleChange` is the
-//    `HostEvent::Title` events.
+//  - `windowOptions` `22/23 - PushTitle/PopTitle` (3 cases): `inputHandler.onTitleChange` is the
+//    `HostEvent::Title` events. Step 7 set the title by calling `set_title`/`set_icon_name`
+//    (OSC was not ported yet); step 8 runs the real `ESC ] 0 ; Pt BEL` (`osc_0_*` below and
+//    `set_title_and_icon`).
 //  - `windowOptions` `14` and `16`: upstream's test terminal has no renderer and reports nothing;
 //    here they are the `HostEvent::WindowReport` events (the host answers them).
 //  - `DECRQM`, `DECSTR` and `windowOptions` read replies from `coreService.onData`; here they
@@ -3813,8 +3817,7 @@ fn push_pop_handler() -> TestTerm {
 
 /// Upstream's `ESC ] 0 ; Pt BEL`: the title and the icon name.
 fn set_title_and_icon(t: &mut TestTerm, name: &str) {
-    t.handler.set_title(name);
-    t.handler.set_icon_name(name);
+    t.parse_str(&format!("\x1b]0;{name}\x07"));
 }
 
 fn titles(t: &mut TestTerm) -> Vec<String> {
@@ -5350,4 +5353,722 @@ fn decscusr_without_params_is_blinking_block_and_other_params_keep_the_style() {
     let modes = &t.handler.services.core.dec_private_modes;
     assert_eq!(modes.cursor_style, Some(CursorStyle::Underline));
     assert_eq!(modes.cursor_blink, Some(true));
+}
+
+// --- upstream: InputHandler.test.ts, step 8 (OSC, DECRQSS) ---
+
+/// The `HostEvent::Color` events since the last call (upstream's `onColor` stack).
+fn color_events(t: &mut TestTerm) -> Vec<Vec<ColorRequest>> {
+    t.handler
+        .take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            HostEvent::Color(requests) => Some(requests),
+            _ => None,
+        })
+        .collect()
+}
+
+use ColorIndex::{Background, Cursor, Foreground, Palette};
+use ColorRequest::{Report, Restore, Set};
+
+fn parse_osc(t: &mut TestTerm, body: &str) {
+    t.parse_str(&format!("\x1b]{body}\x07"));
+}
+
+#[test]
+fn osc_4_query_color_events() {
+    let mut t = upstream_handler();
+    parse_osc(&mut t, "4;0;?");
+    assert_eq!(color_events(&mut t), [vec![Report(Palette(0))]]);
+    parse_osc(&mut t, "4;123;?");
+    assert_eq!(color_events(&mut t), [vec![Report(Palette(123))]]);
+    // multiple queries
+    parse_osc(&mut t, "4;0;?;123;?");
+    assert_eq!(
+        color_events(&mut t),
+        [vec![Report(Palette(0)), Report(Palette(123))]]
+    );
+}
+
+#[test]
+fn osc_4_set_color_events() {
+    let mut t = upstream_handler();
+    parse_osc(&mut t, "4;0;rgb:01/02/03");
+    assert_eq!(color_events(&mut t), [vec![Set(Palette(0), [1, 2, 3])]]);
+    parse_osc(&mut t, "4;123;#aabbcc");
+    assert_eq!(
+        color_events(&mut t),
+        [vec![Set(Palette(123), [170, 187, 204])]]
+    );
+    // multiple pairs
+    parse_osc(&mut t, "4;0;rgb:aa/bb/cc;123;#001122");
+    assert_eq!(
+        color_events(&mut t),
+        [vec![
+            Set(Palette(0), [170, 187, 204]),
+            Set(Palette(123), [0, 17, 34])
+        ]]
+    );
+}
+
+#[test]
+fn osc_4_should_ignore_invalid_values() {
+    let mut t = upstream_handler();
+    parse_osc(&mut t, "4;0;rgb:aa/bb/cc;45;rgb:1/22/333;123;#001122");
+    assert_eq!(
+        color_events(&mut t),
+        [vec![
+            Set(Palette(0), [170, 187, 204]),
+            Set(Palette(123), [0, 17, 34])
+        ]]
+    );
+}
+
+#[test]
+fn osc_8_hyperlink_with_id() {
+    let mut t = upstream_handler();
+    parse_osc(&mut t, "8;id=100;http://localhost:3000");
+    let url_id = t.attr().extended.url_id();
+    assert_ne!(url_id, 0);
+    assert_eq!(
+        t.handler.services.osc_link.get_link_data(url_id),
+        Some(&OscLinkData {
+            id: Some("100".to_owned()),
+            uri: "http://localhost:3000".to_owned(),
+        })
+    );
+    parse_osc(&mut t, "8;;");
+    assert_eq!(t.attr().extended.url_id(), 0);
+}
+
+#[test]
+fn osc_8_hyperlink_with_semi_colon() {
+    let mut t = upstream_handler();
+    parse_osc(&mut t, "8;;http://localhost:3000;abc=def");
+    let url_id = t.attr().extended.url_id();
+    assert_ne!(url_id, 0);
+    assert_eq!(
+        t.handler.services.osc_link.get_link_data(url_id),
+        Some(&OscLinkData {
+            id: None,
+            uri: "http://localhost:3000;abc=def".to_owned(),
+        })
+    );
+    parse_osc(&mut t, "8;;");
+    assert_eq!(t.attr().extended.url_id(), 0);
+}
+
+#[test]
+fn osc_104_restore_events() {
+    let mut t = upstream_handler();
+    t.parse_str("\x1b]104;0\x07\x1b]104;43\x07");
+    assert_eq!(
+        color_events(&mut t),
+        [
+            vec![Restore(Some(Palette(0)))],
+            vec![Restore(Some(Palette(43)))]
+        ]
+    );
+    // multiple in one command
+    parse_osc(&mut t, "104;0;43");
+    assert_eq!(
+        color_events(&mut t),
+        [vec![Restore(Some(Palette(0))), Restore(Some(Palette(43)))]]
+    );
+    // full ANSI table restore
+    parse_osc(&mut t, "104");
+    assert_eq!(color_events(&mut t), [vec![Restore(None)]]);
+}
+
+#[test]
+fn osc_10_fg_set_and_query_events() {
+    let mut t = upstream_handler();
+    // single foreground query
+    parse_osc(&mut t, "10;?");
+    assert_eq!(color_events(&mut t), [vec![Report(Foreground)]]);
+    // OSC with multiple values maps to OSC 10 & OSC 11 & OSC 12
+    parse_osc(&mut t, "10;?;?;?;?");
+    assert_eq!(
+        color_events(&mut t),
+        [
+            vec![Report(Foreground)],
+            vec![Report(Background)],
+            vec![Report(Cursor)]
+        ]
+    );
+    // set foreground color events
+    parse_osc(&mut t, "10;rgb:01/02/03");
+    assert_eq!(color_events(&mut t), [vec![Set(Foreground, [1, 2, 3])]]);
+    parse_osc(&mut t, "10;#aabbcc");
+    assert_eq!(
+        color_events(&mut t),
+        [vec![Set(Foreground, [170, 187, 204])]]
+    );
+    // set FG, BG and cursor color at once
+    parse_osc(&mut t, "10;rgb:aa/bb/cc;#001122;rgb:12/34/56");
+    assert_eq!(
+        color_events(&mut t),
+        [
+            vec![Set(Foreground, [170, 187, 204])],
+            vec![Set(Background, [0, 17, 34])],
+            vec![Set(Cursor, [18, 52, 86])]
+        ]
+    );
+}
+
+#[test]
+fn osc_110_restore_fg_color() {
+    let mut t = upstream_handler();
+    parse_osc(&mut t, "110");
+    assert_eq!(color_events(&mut t), [vec![Restore(Some(Foreground))]]);
+}
+
+#[test]
+fn osc_11_bg_set_and_query_events() {
+    let mut t = upstream_handler();
+    parse_osc(&mut t, "11;?");
+    assert_eq!(color_events(&mut t), [vec![Report(Background)]]);
+    // OSC 11 with multiple values creates only BG and cursor event
+    parse_osc(&mut t, "11;?;?;?;?");
+    assert_eq!(
+        color_events(&mut t),
+        [vec![Report(Background)], vec![Report(Cursor)]]
+    );
+    parse_osc(&mut t, "11;rgb:01/02/03");
+    assert_eq!(color_events(&mut t), [vec![Set(Background, [1, 2, 3])]]);
+    parse_osc(&mut t, "11;#aabbcc");
+    assert_eq!(
+        color_events(&mut t),
+        [vec![Set(Background, [170, 187, 204])]]
+    );
+    // set BG and cursor color at once
+    parse_osc(&mut t, "11;#001122;rgb:12/34/56");
+    assert_eq!(
+        color_events(&mut t),
+        [
+            vec![Set(Background, [0, 17, 34])],
+            vec![Set(Cursor, [18, 52, 86])]
+        ]
+    );
+}
+
+#[test]
+fn osc_111_restore_bg_color() {
+    let mut t = upstream_handler();
+    parse_osc(&mut t, "111");
+    assert_eq!(color_events(&mut t), [vec![Restore(Some(Background))]]);
+}
+
+#[test]
+fn osc_12_cursor_color_set_and_query_events() {
+    let mut t = upstream_handler();
+    parse_osc(&mut t, "12;?");
+    assert_eq!(color_events(&mut t), [vec![Report(Cursor)]]);
+    // OSC 12 with multiple values creates only cursor event
+    parse_osc(&mut t, "12;?;?;?;?");
+    assert_eq!(color_events(&mut t), [vec![Report(Cursor)]]);
+    parse_osc(&mut t, "12;rgb:01/02/03");
+    assert_eq!(color_events(&mut t), [vec![Set(Cursor, [1, 2, 3])]]);
+    parse_osc(&mut t, "12;#aabbcc");
+    assert_eq!(color_events(&mut t), [vec![Set(Cursor, [170, 187, 204])]]);
+}
+
+#[test]
+fn osc_112_restore_cursor_color() {
+    let mut t = upstream_handler();
+    parse_osc(&mut t, "112");
+    assert_eq!(color_events(&mut t), [vec![Restore(Some(Cursor))]]);
+}
+
+#[test]
+fn decrqss_reports_correct_decsca_state() {
+    let mut t = upstream_handler();
+    // DCS $ q " q ST
+    t.parse_str("\x1bP$q\"q\x1b\\");
+    // default - DECSCA unset (0 or 2)
+    assert_eq!(responses(&mut t), ["\x1bP1$r0\"q\x1b\\"]);
+    // DECSCA 1 - protected set
+    t.parse_str("###\x1b[1\"q");
+    t.parse_str("\x1bP$q\"q\x1b\\");
+    assert_eq!(responses(&mut t), ["\x1bP1$r1\"q\x1b\\"]);
+    // DECSCA 2 - protected reset (same as 0)
+    t.parse_str("###\x1b[2\"q");
+    t.parse_str("\x1bP$q\"q\x1b\\");
+    assert_eq!(responses(&mut t), ["\x1bP1$r0\"q\x1b\\"]); // reported as DECSCA 0
+}
+
+// --- added: step 8 ---
+
+#[test]
+fn osc_0_sets_title_and_icon_name_osc_1_the_icon_name_only_osc_2_the_title_only() {
+    let mut t = upstream_handler();
+    parse_osc(&mut t, "0;both");
+    assert_eq!(
+        (t.handler.window_title(), t.handler.icon_name.as_str()),
+        ("both", "both")
+    );
+    assert_eq!(titles(&mut t), ["both"]);
+    parse_osc(&mut t, "1;icon");
+    assert_eq!(
+        (t.handler.window_title(), t.handler.icon_name.as_str()),
+        ("both", "icon")
+    );
+    assert!(t.handler.take_events().is_empty(), "OSC 1 fires no event");
+    parse_osc(&mut t, "2;title");
+    assert_eq!(
+        (t.handler.window_title(), t.handler.icon_name.as_str()),
+        ("title", "icon")
+    );
+    assert_eq!(titles(&mut t), ["title"]);
+    // a title keeps its semicolons and its non-ASCII text; ST terminates like BEL
+    t.parse_str("\x1b]2;a;b \u{65e5}\u{672c}\x1b\\");
+    assert_eq!(titles(&mut t), ["a;b \u{65e5}\u{672c}"]);
+}
+
+#[test]
+fn colour_requests_never_produce_a_response() {
+    let mut t = upstream_handler();
+    t.parse_str("\x1b]4;1;?\x07\x1b]10;?;?;?\x07\x1b]104\x07\x1b]110\x07");
+    let events = t.handler.take_events();
+    assert!(
+        events.iter().all(|e| matches!(e, HostEvent::Color(_))),
+        "{events:?}"
+    );
+    assert_eq!(events.len(), 1 + 3 + 1 + 1);
+}
+
+#[test]
+fn osc_52_and_other_unregistered_oscs_produce_nothing() {
+    let mut t = upstream_handler();
+    t.parse_str("\x1b]52;c;aGk=\x07\x1b]52;c;?\x07\x1b]999;x\x07\x1b]7;file:///tmp\x07");
+    assert!(t.handler.take_events().is_empty());
+    t.parse_str("ok");
+    assert_eq!(t.screen().first().map(String::as_str), Some("ok"));
+}
+
+#[test]
+fn osc_8_stores_a_long_uri_untruncated() {
+    let mut t = upstream_handler();
+    let uri = format!("http://x/{}", "a".repeat(300_000));
+    t.parse_str(&format!("\x1b]8;;{uri}\x07"));
+    let url_id = t.attr().extended.url_id();
+    assert_ne!(url_id, 0);
+    assert_eq!(
+        t.handler
+            .services
+            .osc_link
+            .get_link_data(url_id)
+            .map(|d| d.uri.len()),
+        Some(uri.len())
+    );
+}
+
+#[test]
+fn osc_8_registers_after_forwarding_the_markers_disposed_earlier_in_the_parse() {
+    // Upstream frees a link the moment the last marker of its lines is disposed, so an OSC 8
+    // with the same id and uri afterwards creates a new link. Without the forward the stale
+    // entry would be found and its id reused.
+    let mut t = test_handler(10, 3, [OptionValue::Scrollback(2)]);
+    t.parse_str("\x1b]8;id=a;u\x07x\x1b]8;;\x07");
+    let first = t.attr().extended.url_id();
+    assert_eq!(first, 0);
+    t.parse_str("\n\n\n\n\n");
+    t.parse_str("\x1b]8;id=a;u\x07");
+    let second = t.attr().extended.url_id();
+    assert_eq!(second, 2, "the first link was trimmed and freed");
+    assert!(t.handler.services.osc_link.get_link_data(1).is_none());
+    // control: without the trim the same id and uri is the same link
+    let mut t = test_handler(10, 3, [OptionValue::Scrollback(2)]);
+    t.parse_str("\x1b]8;id=a;u\x07x\x1b]8;;\x07\n");
+    t.parse_str("\x1b]8;id=a;u\x07");
+    assert_eq!(t.attr().extended.url_id(), 1);
+}
+
+#[test]
+fn osc_8_print_adds_the_line_to_the_link() {
+    let mut t = test_handler(5, 4, []);
+    t.parse_str("\x1b]8;;u\x07ab\r\ncd\x1b]8;;\x07ef");
+    let id = 1;
+    assert_eq!(
+        t.handler.services.osc_link.link_markers(id).map(<[_]>::len),
+        Some(2)
+    );
+    let cell_url = |t: &TestTerm, row: usize, x: usize| {
+        let mut cell = CellData::new();
+        t.buffer().lines.get(row).unwrap().load_cell(x, &mut cell);
+        cell.extended.url_id()
+    };
+    assert_eq!((cell_url(&t, 0, 0), cell_url(&t, 1, 1)), (1, 1));
+    assert_eq!(cell_url(&t, 1, 2), 0);
+}
+
+#[test]
+fn decrqss_unknown_requests_get_the_invalid_reply_and_stdin_can_be_disabled() {
+    let mut t = upstream_handler();
+    for body in ["x", "", "rr", "$", "\"q\"q", "1;2r", "0m", "  q"] {
+        t.parse_str(&format!("\x1bP$q{body}\x1b\\"));
+    }
+    assert_eq!(responses(&mut t), ["\x1bP0$r\x1b\\"; 8]);
+    // DECSCL always reports 61;1
+    t.parse_str("\x1bP$q\"p\x1b\\");
+    assert_eq!(responses(&mut t), ["\x1bP1$r61;1\"p\x1b\\"]);
+    // not a DECRQSS: a DCS with another final byte or intermediates reaches the fallback only
+    t.parse_str("\x1bP+q\x1b\\\x1bPq\x1b\\\x1bP$p\x1b\\");
+    assert!(t.handler.take_events().is_empty());
+    let mut t = test_handler(10, 4, [OptionValue::DisableStdin(true)]);
+    t.parse_str("\x1bP$q\"q\x1b\\");
+    assert!(t.handler.take_events().is_empty());
+}
+
+#[test]
+fn decrqss_reports_the_cursor_style_option_and_the_margins() {
+    use crate::services::options_service::CursorStyle as Style;
+    for (style, blink, expected) in [
+        (Style::Block, false, "2"),
+        (Style::Block, true, "1"),
+        (Style::Underline, false, "4"),
+        (Style::Underline, true, "3"),
+        (Style::Bar, false, "6"),
+        (Style::Bar, true, "5"),
+    ] {
+        let mut t = test_handler(
+            10,
+            4,
+            [
+                OptionValue::CursorStyle(style),
+                OptionValue::CursorBlink(blink),
+            ],
+        );
+        t.parse_str("\x1bP$q q\x1b\\");
+        assert_eq!(responses(&mut t), [format!("\x1bP1$r{expected} q\x1b\\")]);
+    }
+    let mut t = test_handler(10, 6, []);
+    t.parse_str("\x1b[2;4r\x1bP$qr\x1b\\");
+    assert_eq!(responses(&mut t), ["\x1bP1$r2;4r\x1b\\"]);
+    t.parse_str("\x1b[1m\x1bP$qm\x1b\\");
+    assert_eq!(responses(&mut t), ["\x1bP1$r0m\x1b\\"]);
+}
+
+#[test]
+fn osc_and_dcs_split_at_every_byte_equal_the_unsplit_run() {
+    let input = "\x1b]0;ti\u{65e5}tle\x07\x1b]4;1;?;2;rgb:1/2/3\x07\x1b]8;id=x;http://a;b\x07ab\x1b]8;;\x07\x1b]104\x07\
+                 \x1bP$q\"q\x1b\\\x1b]11;?;#fff\x1b\\\x1b]2;end\x07";
+    let bytes = input.as_bytes();
+    let run = |chunks: &[&[u8]]| {
+        let mut t = upstream_handler();
+        for chunk in chunks {
+            t.parse_bytes(chunk);
+        }
+        (
+            t.handler.take_events(),
+            t.handler.cur_attr_data.extended.url_id(),
+            t.screen().first().cloned(),
+        )
+    };
+    let expected = run(&[bytes]);
+    assert!(!expected.0.is_empty());
+    let singles: Vec<&[u8]> = bytes.chunks(1).collect();
+    assert_eq!(run(&singles), expected);
+    for cut in 1..bytes.len() {
+        let (a, b) = bytes.split_at(cut);
+        assert_eq!(run(&[a, b]), expected, "cut at {cut}");
+    }
+}
+
+/// Expected values from `@xterm/headless` 6.0.0 (`_core._inputHandler.onColor` /
+/// `onTitleChange`, `_curAttrData`, `_oscLinkService`, `coreService.onData`), one run per entry
+/// (scratch script `s8/run.mjs`). The inputs spell ESC as `\e`, BEL as `\a`, ST as `\s`.
+const OSC_ORACLE: &[(&[&str], &str)] = &[
+    (
+        &["\\e]4;0;?;123;?\\a"],
+        "ev=C[R0,R123];url=0;links=;title=;icon=",
+    ),
+    (&["\\e]4;256;?\\a"], "ev=;url=0;links=;title=;icon="),
+    (&["\\e]4;255;?\\a"], "ev=C[R255];url=0;links=;title=;icon="),
+    (
+        &["\\e]4;00;?;0001;?\\a"],
+        "ev=C[R0,R1];url=0;links=;title=;icon=",
+    ),
+    (&["\\e]4;+1;?\\a"], "ev=;url=0;links=;title=;icon="),
+    (&["\\e]4; 1;?\\a"], "ev=;url=0;links=;title=;icon="),
+    (&["\\e]4;1\\a"], "ev=;url=0;links=;title=;icon="),
+    (&["\\e]4;1;?;2\\a"], "ev=C[R1];url=0;links=;title=;icon="),
+    (
+        &["\\e]4;99999999999999999999999;?\\a"],
+        "ev=;url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\e]4;1;rgb:ff/00/00;2;bad;3;#fff\\a"],
+        "ev=C[S1=ff0000,S3=f0f0f0];url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\e]4;255;?;;?\\a"],
+        "ev=C[R255];url=0;links=;title=;icon=",
+    ),
+    (&["\\e]4;;?\\a"], "ev=;url=0;links=;title=;icon="),
+    (&["\\e]4\\a"], "ev=;url=0;links=;title=;icon="),
+    (&["\\e]4;\\a"], "ev=;url=0;links=;title=;icon="),
+    (
+        &["\\e]4;1;#abc;2;rgb:1/2/3;3;rgb:11/22/33;4;#aabbccdd\\a"],
+        "ev=C[S1=a0b0c0,S2=112233,S3=112233];url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\e]4;1;RGB:AA/BB/CC;2;#ABCDEF\\a"],
+        "ev=C[S1=aabbcc,S2=abcdef];url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\e]10;?;?;?;?\\a"],
+        "ev=C[R256]|C[R257]|C[R258];url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\e]11;?;bad;#fff\\a"],
+        "ev=C[R257];url=0;links=;title=;icon=",
+    ),
+    (&["\\e]12;?;?\\a"], "ev=C[R258];url=0;links=;title=;icon="),
+    (&["\\e]10;\\a"], "ev=;url=0;links=;title=;icon="),
+    (&["\\e]10;;?\\a"], "ev=C[R257];url=0;links=;title=;icon="),
+    (
+        &["\\e]10;?;;?\\a"],
+        "ev=C[R256]|C[R258];url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\e]11;#102030;?;?\\a"],
+        "ev=C[S257=102030]|C[R258];url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\e]12;rgb:0/0/0\\a"],
+        "ev=C[S258=000000];url=0;links=;title=;icon=",
+    ),
+    (&["\\e]104\\a"], "ev=C[X];url=0;links=;title=;icon="),
+    (&["\\e]104;\\a"], "ev=C[X];url=0;links=;title=;icon="),
+    (
+        &["\\e]104;1;x;300;255;256;007\\a"],
+        "ev=C[X1,X255,X7];url=0;links=;title=;icon=",
+    ),
+    (&["\\e]104;;1\\a"], "ev=C[X1];url=0;links=;title=;icon="),
+    (&["\\e]104;x\\a"], "ev=;url=0;links=;title=;icon="),
+    (
+        &["\\e]110;foo\\a\\e]111;\\a\\e]112;1;2\\a"],
+        "ev=C[X256]|C[X257]|C[X258];url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\e]0;a;b\\a"],
+        "ev=T(a;b);url=0;links=;title=a;b;icon=a;b",
+    ),
+    (&["\\e]2;\\a"], "ev=T();url=0;links=;title=;icon="),
+    (&["\\e]1;x\\a"], "ev=;url=0;links=;title=;icon=x"),
+    (
+        &["\\e]0;日本\\a"],
+        "ev=T(\\u{65e5}\\u{672c});url=0;links=;title=\\u{65e5}\\u{672c};icon=\\u{65e5}\\u{672c}",
+    ),
+    (
+        &["\\e]2;t1\\s\\e]0;t2\\a"],
+        "ev=T(t1)|T(t2);url=0;links=;title=t2;icon=t2",
+    ),
+    (
+        &["\\e]8;id=a;http://x\\a"],
+        "ev=;url=1;links=1:a:http://x;title=;icon=",
+    ),
+    (
+        &["\\e]8;a=b:id=c:d=e;uri\\a"],
+        "ev=;url=1;links=1:c:uri;title=;icon=",
+    ),
+    (
+        &["\\e]8;id=;uri\\a"],
+        "ev=;url=1;links=1:-:uri;title=;icon=",
+    ),
+    (
+        &["\\e]8;id=a:id=b;u\\a"],
+        "ev=;url=1;links=1:a:u;title=;icon=",
+    ),
+    (&["\\e]8; id=a ;u\\a"], "ev=;url=1;links=1:a:u;title=;icon="),
+    (&["\\e]8;x;\\a"], "ev=;url=0;links=;title=;icon="),
+    (
+        &["\\e]8;x;\\a\\e]8;;u\\a\\e]8;x;\\a"],
+        "ev=;url=1;links=1:-:u;title=;icon=",
+    ),
+    (&["\\e]8;\\a"], "ev=;url=0;links=;title=;icon="),
+    (&["\\e]8\\a"], "ev=;url=0;links=;title=;icon="),
+    (&["\\e]8;;\\a"], "ev=;url=0;links=;title=;icon="),
+    (
+        &["\\e]8;;u;v;w\\a"],
+        "ev=;url=1;links=1:-:u;v;w;title=;icon=",
+    ),
+    (
+        &["\\e]8;id=a;u\\ahi\\e]8;id=a;u\\a"],
+        "ev=;url=1;links=1:a:u;title=;icon=",
+    ),
+    (
+        &["\\e]8;id=a;u\\ahi\\e]8;id=a;u2\\a"],
+        "ev=;url=2;links=1:a:u,2:a:u2;title=;icon=",
+    ),
+    (
+        &["\\e]8;;u1\\a\\e]8;;u2\\a"],
+        "ev=;url=2;links=1:-:u1,2:-:u2;title=;icon=",
+    ),
+    (
+        &["\\e]8;;u1\\ax\\e]8;;\\ay\\e]8;;u1\\az"],
+        "ev=;url=2;links=1:-:u1,2:-:u1;title=;icon=",
+    ),
+    (&["\\e]8;:id=q;u\\a"], "ev=;url=1;links=1:q:u;title=;icon="),
+    (&["\\e]8;ID=q;u\\a"], "ev=;url=1;links=1:-:u;title=;icon="),
+    (
+        &["\\e]8;id=q=r;u\\a"],
+        "ev=;url=1;links=1:q=r:u;title=;icon=",
+    ),
+    (
+        &["\\e]52;c;aGk=\\a\\e]52;c;?\\a"],
+        "ev=;url=0;links=;title=;icon=",
+    ),
+    (&["\\e]999;x\\a"], "ev=;url=0;links=;title=;icon="),
+    (
+        &[
+            "\\eP$q\"q\\s",
+            "\\eP$q\"p\\s",
+            "\\eP$qr\\s",
+            "\\eP$qm\\s",
+            "\\eP$q q\\s",
+            "\\eP$qx\\s",
+            "\\eP$q\\s",
+        ],
+        "ev=D(\\u{1b}P1$r0\"q\\u{1b}\\u{5c})|D(\\u{1b}P1$r61;1\"p\\u{1b}\\u{5c})|D(\\u{1b}P1$r1;24r\\u{1b}\\u{5c})|D(\\u{1b}P1$r0m\\u{1b}\\u{5c})|D(\\u{1b}P1$r2 q\\u{1b}\\u{5c})|D(\\u{1b}P0$r\\u{1b}\\u{5c})|D(\\u{1b}P0$r\\u{1b}\\u{5c});url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\e[1\"q\\eP$q\"q\\s\\e[2\"q\\eP$q\"q\\s\\e[0\"q\\eP$q\"q\\s"],
+        "ev=D(\\u{1b}P1$r1\"q\\u{1b}\\u{5c})|D(\\u{1b}P1$r0\"q\\u{1b}\\u{5c})|D(\\u{1b}P1$r0\"q\\u{1b}\\u{5c});url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\e[5;10r\\eP$qr\\s\\e[r\\eP$qr\\s\\e[3;3r\\eP$qr\\s"],
+        "ev=D(\\u{1b}P1$r5;10r\\u{1b}\\u{5c})|D(\\u{1b}P1$r1;24r\\u{1b}\\u{5c})|D(\\u{1b}P1$r1;24r\\u{1b}\\u{5c});url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\e[1m\\eP$qm\\s\\e[0m\\eP$qm\\s"],
+        "ev=D(\\u{1b}P1$r0m\\u{1b}\\u{5c})|D(\\u{1b}P1$r0m\\u{1b}\\u{5c});url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\e[3 q\\eP$q q\\s"],
+        "ev=D(\\u{1b}P1$r2 q\\u{1b}\\u{5c});url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\eP$q q\\s\\eP1$q q\\s"],
+        "ev=D(\\u{1b}P1$r2 q\\u{1b}\\u{5c})|D(\\u{1b}P1$r2 q\\u{1b}\\u{5c});url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\eP$qrr\\s", "\\eP$q\"q\"q\\s"],
+        "ev=D(\\u{1b}P0$r\\u{1b}\\u{5c})|D(\\u{1b}P0$r\\u{1b}\\u{5c});url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\eP$q\"q", "\\s"],
+        "ev=D(\\u{1b}P1$r0\"q\\u{1b}\\u{5c});url=0;links=;title=;icon=",
+    ),
+    (
+        &["\\eP$q\"", "q\\s"],
+        "ev=D(\\u{1b}P1$r0\"q\\u{1b}\\u{5c});url=0;links=;title=;icon=",
+    ),
+    (&["\\eP$q\"q\\a"], "ev=;url=0;links=;title=;icon="),
+    (
+        &["\\eP+q\\s\\eP$q\"q\\s"],
+        "ev=D(\\u{1b}P1$r0\"q\\u{1b}\\u{5c});url=0;links=;title=;icon=",
+    ),
+    (&["\\e]8; id=a﻿;u\\a"], "ev=;url=1;links=1:a:u;title=;icon="),
+    (
+        &["\\e]8; id=a　;u\\a"],
+        "ev=;url=1;links=1:a:u;title=;icon=",
+    ),
+    (&["\\e]8;id=a;u\\a"], "ev=Bell;url=0;links=;title=;icon="),
+    (&["\\e]8; 　;\\a"], "ev=;url=0;links=;title=;icon="),
+    (&["\\e]8;  ;\\a"], "ev=;url=0;links=;title=;icon="),
+    (
+        &["\\e]8;id=a;u\\a\\e]8; ;\\a"],
+        "ev=;url=0;links=1:a:u;title=;icon=",
+    ),
+    (&["\\e]8;᠎;\\a"], "ev=;url=0;links=;title=;icon="),
+    (
+        &["\\e]8;id=a;u\\a\\e]8;;\\a"],
+        "ev=Bell;url=1;links=1:a:u;title=;icon=",
+    ),
+];
+
+fn oracle_escape(s: &str) -> String {
+    let mut out = String::new();
+    for ch in s.chars() {
+        if (' '..'\u{7f}').contains(&ch) && ch != '\\' {
+            out.push(ch);
+        } else {
+            out.push_str(&format!("\\u{{{:x}}}", u32::from(ch)));
+        }
+    }
+    out
+}
+
+fn oracle_summary(t: &mut TestTerm) -> String {
+    let events: Vec<String> = t
+        .handler
+        .take_events()
+        .into_iter()
+        .map(|event| match event {
+            HostEvent::Title(title) => format!("T({})", oracle_escape(&title)),
+            HostEvent::Response(bytes) => {
+                format!("D({})", oracle_escape(&String::from_utf8_lossy(&bytes)))
+            }
+            HostEvent::Color(requests) => {
+                let items: Vec<String> = requests
+                    .iter()
+                    .map(|request| {
+                        let index = |i: &ColorIndex| match i {
+                            ColorIndex::Palette(n) => n.to_string(),
+                            ColorIndex::Foreground => "256".to_owned(),
+                            ColorIndex::Background => "257".to_owned(),
+                            ColorIndex::Cursor => "258".to_owned(),
+                        };
+                        match request {
+                            Report(i) => format!("R{}", index(i)),
+                            Set(i, c) => {
+                                format!("S{}={:02x}{:02x}{:02x}", index(i), c[0], c[1], c[2])
+                            }
+                            Restore(i) => format!("X{}", i.as_ref().map(index).unwrap_or_default()),
+                        }
+                    })
+                    .collect();
+                format!("C[{}]", items.join(","))
+            }
+            other => format!("{other:?}"),
+        })
+        .collect();
+    let links: Vec<String> = (1..20)
+        .filter_map(|id| {
+            t.handler.services.osc_link.get_link_data(id).map(|d| {
+                format!(
+                    "{id}:{}:{}",
+                    d.id.as_deref().map_or("-".to_owned(), oracle_escape),
+                    oracle_escape(&d.uri)
+                )
+            })
+        })
+        .collect();
+    format!(
+        "ev={};url={};links={};title={};icon={}",
+        events.join("|"),
+        t.handler.cur_attr_data.extended.url_id(),
+        links.join(","),
+        oracle_escape(t.handler.window_title()),
+        oracle_escape(&t.handler.icon_name),
+    )
+}
+
+#[test]
+fn osc_and_decrqss_equal_the_oracle() {
+    for (inputs, expected) in OSC_ORACLE {
+        let mut t = upstream_handler();
+        t.resize(80, 24);
+        for input in *inputs {
+            let input = input
+                .replace("\\e", "\x1b")
+                .replace("\\a", "\x07")
+                .replace("\\s", "\x1b\\");
+            t.parse_str(&input);
+        }
+        assert_eq!(&oracle_summary(&mut t), expected, "inputs {inputs:?}");
+    }
 }

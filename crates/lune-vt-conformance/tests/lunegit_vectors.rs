@@ -5,21 +5,14 @@
 //!   differs from the tmux grid, and the paired `lunegit_<name>` screen golden (what xterm.js
 //!   produces, P10) matches.
 //! - All 27: feeding one byte per write gives the grid of the recorded chunking.
-//!
-//! `PENDING` lists the vectors expected to fail because their handlers are ported in a later
-//! step of milestone M6 (plan steps 5-8); the test fails when the failing set differs from it
-//! in either direction. It must be empty at the end of step 8.
 
 mod common;
 
-use common::{check_pending, describe_difference, guarded};
+use common::{check_all_pass, describe_difference, guarded};
 use lune_vt_conformance::screen::{dump, grid};
 use lune_vt_conformance::{Golden, Kind, load};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-/// Vectors that fail until their handlers are ported (steps 5-8). Shrinks to empty.
-const PENDING: &[&str] = &[];
 
 fn size_of(pair: Option<(u32, u32)>) -> Option<(usize, usize)> {
     pair.map(|(c, r)| (c as usize, r as usize))
@@ -68,7 +61,7 @@ fn failure_of(vector: &Golden, screens: &[Golden]) -> Option<String> {
 }
 
 #[test]
-fn lunegit_vectors_match_except_pending() -> Result<()> {
+fn lunegit_vectors_match() -> Result<()> {
     let vectors = load(Kind::Grid)?;
     let screens = load(Kind::Screen)?;
     assert_eq!(vectors.len(), 27, "Lunegit vectors");
@@ -81,6 +74,6 @@ fn lunegit_vectors_match_except_pending() -> Result<()> {
         .iter()
         .map(|vector| (vector.name.clone(), failure_of(vector, &screens)))
         .collect();
-    check_pending("Lunegit vectors", &results, PENDING);
+    check_all_pass("Lunegit vectors", &results);
     Ok(())
 }

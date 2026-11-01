@@ -1,7 +1,6 @@
-//! Shared by the engine differential tests: panic capture and the `PENDING` bookkeeping.
+//! Shared by the engine differential tests: panic capture and the pass/fail report.
 #![allow(dead_code, unreachable_pub)]
 
-use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use lune_vt_conformance::trace::{clip, first_difference};
@@ -31,42 +30,19 @@ pub fn describe_difference(how: &str, got: &[String], expected: &[String]) -> Op
     ))
 }
 
-/// The failing set must equal `pending` (names expected to fail until a later step ports their
-/// handlers): a new failure and a newly passing name both fail the test.
+/// Every golden must pass.
 ///
 /// `results` holds, per golden name, the first failure description or `None` when it passes.
-pub fn check_pending(label: &str, results: &[(String, Option<String>)], pending: &[&str]) {
-    let failing: BTreeSet<&str> = results
+pub fn check_all_pass(label: &str, results: &[(String, Option<String>)]) {
+    let report: Vec<String> = results
         .iter()
-        .filter(|(_, failure)| failure.is_some())
-        .map(|(name, _)| name.as_str())
+        .filter_map(|(name, failure)| failure.as_ref().map(|f| format!("FAIL {name}: {f}")))
         .collect();
-    let pending_set: BTreeSet<&str> = pending.iter().copied().collect();
-    assert_eq!(
-        pending_set.len(),
-        pending.len(),
-        "{label}: PENDING has duplicate names"
-    );
-    let mut report: Vec<String> = Vec::new();
-    for (name, failure) in results {
-        if let Some(failure) = failure {
-            if !pending_set.contains(name.as_str()) {
-                report.push(format!("NEW FAILURE {name}: {failure}"));
-            }
-        }
-    }
-    let fixed: Vec<&&str> = pending_set.difference(&failing).collect();
-    if !fixed.is_empty() {
-        report.push(format!(
-            "PENDING names that now pass (or do not exist), remove them: {fixed:?}"
-        ));
-    }
     assert!(
         report.is_empty(),
-        "{label}: {} of {} fail, {} pending\n{}",
-        failing.len(),
+        "{label}: {} of {} fail\n{}",
+        report.len(),
         results.len(),
-        pending.len(),
         report
             .iter()
             .take(12)

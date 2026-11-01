@@ -26,8 +26,9 @@ pub mod services;
 pub mod windows_mode;
 
 pub use engine::{
-    CellColor, CursorStyle, Damage, HostEvent, Modes, MouseEncoding, MouseTracking, UnderlineStyle,
-    Viewport, ViewportCell, ViewportCursor, VtEngine, WindowReportKind,
+    CellColor, ColorIndex, ColorRequest, CursorStyle, Damage, HostEvent, Modes, MouseEncoding,
+    MouseTracking, UnderlineStyle, Viewport, ViewportCell, ViewportCursor, VtEngine,
+    WindowReportKind,
 };
 pub use extension::Extension;
 pub use headless::terminal::Terminal;
