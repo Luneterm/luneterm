@@ -34,9 +34,11 @@
 
 use std::fmt;
 
+use crate::buffer::buffer::MAX_BUFFER_SIZE;
+
 /// `Buffer.ts:19` `MAX_BUFFER_SIZE`, which `_sanitizeAndValidateOption` repeats as the literal
 /// `4294967295` (`OptionsService.ts:185`): the largest accepted `scrollback`.
-const MAX_SCROLLBACK: usize = u32::MAX as usize;
+const MAX_SCROLLBACK: usize = MAX_BUFFER_SIZE;
 
 /// `DEFAULT_OPTIONS.wordSeparator` (`OptionsService.ts:54`).
 pub const DEFAULT_WORD_SEPARATOR: &str = " ()[]{}',\"`";
