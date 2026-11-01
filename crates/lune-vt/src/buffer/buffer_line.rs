@@ -30,6 +30,9 @@
 //!    the cap is dropped; the width it asks for is still applied, so layout and the cursor are
 //!    as upstream and only the cell's text is shorter. `get_string` (and so REP and the
 //!    renderer) sees the capped text.
+//!  - `// LUNETERM:` (review S7) [`insert_cells_repeatedly`](BufferLine::insert_cells_repeatedly)
+//!    is a run of `insert_cells` calls at advancing positions done in one pass, with the same
+//!    cells and side-table entries (stale ones included); REP uses it in insert mode.
 //!  - A width above 2 (never stored by the input handler) is kept as is; `content >> 22` is an
 //!    unsigned shift here where JS sign-extends a value with bit 31 set.
 
