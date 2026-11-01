@@ -14,17 +14,23 @@ pub mod addons;
 pub mod buffer;
 pub mod circular_list;
 pub mod color;
+pub mod core_terminal;
 pub mod data;
 pub mod engine;
 pub mod extension;
+pub mod headless;
 pub mod input;
 pub mod input_handler;
 pub mod parser;
 pub mod services;
 pub mod windows_mode;
 
-pub use engine::{HostEvent, VtEngine};
+pub use engine::{
+    CellColor, CursorStyle, Damage, HostEvent, Modes, MouseEncoding, MouseTracking, UnderlineStyle,
+    Viewport, ViewportCell, ViewportCursor, VtEngine, WindowReportKind,
+};
 pub use extension::Extension;
+pub use headless::terminal::Terminal;
 
 /// xterm.js release this crate ports.
 pub const XTERM_JS_TAG: &str = "6.0.0";
