@@ -1,6 +1,4 @@
-//! Port of xterm.js src/common/buffer/Buffer.ts @ f447274 (tests: Buffer.test.ts), without the
-//! column reflow (`_reflow`, `_reflowLarger`, `_reflowLargerAdjustViewport`, `_reflowSmaller`),
-//! which plan M5 step 7 adds behind [`Buffer::resize`].
+//! Port of xterm.js src/common/buffer/Buffer.ts @ f447274 (tests: Buffer.test.ts).
 //!
 //! Rust notes (see `docs/porting-xterm.md` and plan M5 D1, D3, D5, D9):
 //!  - Upstream reads `IOptionsService.rawOptions` live and `IBufferService.cols/rows`. Here the
@@ -30,11 +28,29 @@
 //!    step is clamped to 1 here. `adapted:` no valid input is affected.
 //!  - `get_wrapped_range_for_line` past the end, or over an empty slot, treats the missing line
 //!    as not wrapped (upstream dereferences `undefined` and throws). `adapted:`.
+//!  - Reflow (`_reflowLarger`, `_reflowSmaller`) takes each wrapped group out of the list, rewrites
+//!    it as owned lines and puts it back (see `buffer_reflow.rs`); the list events upstream fires
+//!    directly are the `notify_*` calls.
+//!  - `_reflowSmaller`'s `lines.pop()` only shortens upstream's length and leaves the popped line
+//!    in its ring slot, where the same loop can read it again (`lines.get(y)` past the length).
+//!    Here the loop keeps its own length and leaves the slots alone; the final rearrangement
+//!    drops everything past that length, as upstream's does.
+//!  - In that rearrangement upstream writes new lines that fall below index 0 (trimmed) with
+//!    `lines.set(-k)`, which on a ring whose start index is above 0 overwrites the slot of the
+//!    last line. The list here has no ring (plan D2), so those writes go nowhere. `adapted:`.
+//!  - Reads upstream would make of a missing line in reflow (then a throw) end the copy loop or
+//!    the group (`buffer_reflow.rs`). A wrapped first line with no content gives
+//!    `linesToAdd = -1` and can move `savedY` to -1 upstream; here it stops at 0. `adapted:`.
 
 use std::collections::BTreeSet;
 
 use crate::buffer::attribute_data::{AttributeData, ExtendedAttrs};
 use crate::buffer::buffer_line::{BufferLine, DEFAULT_ATTR_DATA};
+use crate::buffer::buffer_reflow::{
+    copy_cells_in_group, put_group, reflow_larger_apply_new_layout,
+    reflow_larger_create_new_layout, reflow_larger_get_lines_to_remove,
+    reflow_smaller_get_new_line_lengths, take_group, wrapped_line_trimmed_length,
+};
 use crate::buffer::cell_data::CellData;
 use crate::buffer::constants::{
     NULL_CELL_CHAR, NULL_CELL_CODE, NULL_CELL_WIDTH, WHITESPACE_CELL_CHAR, WHITESPACE_CELL_CODE,
@@ -389,9 +405,325 @@ impl Buffer {
         self.has_scrollback && !opts.windows_mode
     }
 
-    /// Column reflow. Plan M5 step 7 ports `_reflow`, `_reflowLarger` and `_reflowSmaller` here.
-    fn reflow(&mut self, _new_cols: usize, _new_rows: usize, _opts: &TerminalOptions) {
-        // step 7
+    fn reflow(&mut self, new_cols: usize, new_rows: usize, opts: &TerminalOptions) {
+        if self.cols == new_cols {
+            return;
+        }
+
+        // Iterate through rows, ignore the last one as it cannot be wrapped
+        if new_cols > self.cols {
+            self.reflow_larger(new_cols, new_rows, opts);
+        } else {
+            self.reflow_smaller(new_cols, new_rows, opts);
+        }
+    }
+
+    fn reflow_larger(&mut self, new_cols: usize, new_rows: usize, opts: &TerminalOptions) {
+        let reflow_cursor_line = opts.reflow_cursor_line;
+        let null_cell = self.get_null_cell(Some(&DEFAULT_ATTR_DATA));
+        let to_remove = reflow_larger_get_lines_to_remove(
+            &mut self.lines,
+            self.cols,
+            new_cols,
+            self.ybase + self.y,
+            &null_cell,
+            reflow_cursor_line,
+        );
+        if !to_remove.is_empty() {
+            let new_layout_result = reflow_larger_create_new_layout(&mut self.lines, &to_remove);
+            reflow_larger_apply_new_layout(&mut self.lines, &new_layout_result.layout);
+            self.reflow_larger_adjust_viewport(new_cols, new_rows, new_layout_result.count_removed);
+        }
+    }
+
+    fn reflow_larger_adjust_viewport(
+        &mut self,
+        new_cols: usize,
+        new_rows: usize,
+        count_removed: usize,
+    ) {
+        let null_cell = self.get_null_cell(Some(&DEFAULT_ATTR_DATA));
+        // Adjust viewport based on number of items removed
+        for _ in 0..count_removed {
+            if self.ybase == 0 {
+                if self.y > 0 {
+                    self.y -= 1;
+                }
+                if self.lines.len() < new_rows {
+                    // Add an extra row at the bottom of the viewport
+                    self.lines
+                        .push(BufferLine::new(new_cols, Some(&null_cell), false));
+                }
+            } else {
+                if self.ydisp == self.ybase {
+                    self.ydisp = self.ydisp.saturating_sub(1);
+                }
+                self.ybase -= 1;
+            }
+        }
+        self.saved_y = self.saved_y.saturating_sub(count_removed);
+    }
+
+    fn reflow_smaller(&mut self, new_cols: usize, new_rows: usize, opts: &TerminalOptions) {
+        let reflow_cursor_line = opts.reflow_cursor_line;
+        let null_cell = self.get_null_cell(Some(&DEFAULT_ATTR_DATA));
+        let max_length = to_i64(self.lines.max_length());
+        let new_rows_i = to_i64(new_rows);
+        // Gather all BufferLines that need to be inserted into the Buffer here so that they can
+        // be batched up and only committed once
+        let mut to_insert: Vec<(i64, Vec<BufferLine>)> = Vec::new();
+        let mut count_to_insert = 0usize;
+        // Upstream's `lines.length`: `pop` below only shortens it and leaves the popped lines in
+        // their slots, where later reads in this loop still find them (module doc).
+        let mut lines_len = self.lines.len();
+        // Go backwards as many lines may be trimmed and this will avoid considering them
+        let mut y = to_i64(self.lines.len()) - 1;
+        while y >= 0 {
+            let Ok(end) = usize::try_from(y) else { break };
+            // Check whether this line is a problem
+            let skip = match self.lines.get(end) {
+                None => true,
+                Some(line) => !line.is_wrapped && line.get_trimmed_length() <= new_cols,
+            };
+            if skip {
+                y -= 1;
+                continue;
+            }
+
+            // Gather wrapped lines and adjust y to be the starting line
+            let mut start = end;
+            while start > 0
+                && self.lines.get(start).is_some_and(|line| line.is_wrapped)
+                && self.lines.get(start - 1).is_some()
+            {
+                start -= 1;
+            }
+            let group_len = end - start + 1;
+
+            if !reflow_cursor_line {
+                // If these lines contain the cursor don't touch them, the program will handle
+                // fixing up wrapped lines with the cursor
+                let absolute_y = self.ybase + self.y;
+                if absolute_y >= start && absolute_y < start + group_len {
+                    y = to_i64(start) - 1;
+                    continue;
+                }
+            }
+
+            let (last_line_length, dest_line_lengths) = {
+                let refs: Vec<&BufferLine> =
+                    (start..=end).filter_map(|i| self.lines.get(i)).collect();
+                let last = refs.last().map_or(0, |line| line.get_trimmed_length());
+                (
+                    last,
+                    reflow_smaller_get_new_line_lengths(&refs, self.cols, new_cols),
+                )
+            };
+            let lines_to_add = to_i64(dest_line_lengths.len()) - to_i64(group_len);
+            let trimmed_lines = if self.ybase == 0 && to_i64(self.y) != to_i64(lines_len) - 1 {
+                // If the top section of the buffer is not yet filled
+                (to_i64(self.y) - max_length + lines_to_add).max(0)
+            } else {
+                (to_i64(lines_len) - max_length + lines_to_add).max(0)
+            };
+
+            // Add the new lines (`getBlankLine` reads the buffer service's columns, already the
+            // new ones during a resize)
+            let blank = self.get_null_cell(Some(&DEFAULT_ATTR_DATA));
+            let new_line_count = usize::try_from(lines_to_add).unwrap_or(0);
+            let mut wrapped_lines = take_group(&mut self.lines, start, group_len);
+            wrapped_lines.extend(
+                std::iter::repeat_with(|| BufferLine::new(new_cols, Some(&blank), true))
+                    .take(new_line_count),
+            );
+
+            // Copy buffer data to new locations, this needs to happen backwards to do in-place.
+            // Index -1 is upstream's `undefined` line, which ends the copy.
+            let length_at = |i: i64| -> usize {
+                usize::try_from(i)
+                    .ok()
+                    .and_then(|i| dest_line_lengths.get(i).copied())
+                    .unwrap_or(0)
+            };
+            let mut dest_line_index = to_i64(dest_line_lengths.len()) - 1;
+            let mut dest_col = length_at(dest_line_index);
+            if dest_col == 0 {
+                dest_line_index -= 1;
+                dest_col = length_at(dest_line_index);
+            }
+            let mut src_line_index = to_i64(wrapped_lines.len()) - lines_to_add - 1;
+            let mut src_col = last_line_length;
+            while src_line_index >= 0 {
+                let cells_to_copy = src_col.min(dest_col);
+                let (Ok(dest), Ok(src)) = (
+                    usize::try_from(dest_line_index),
+                    usize::try_from(src_line_index),
+                ) else {
+                    // Sanity check that the line exists, this has been known to fail for an
+                    // unknown reason which would stop the reflow from happening if an exception
+                    // would throw.
+                    break;
+                };
+                if dest >= wrapped_lines.len() || src >= wrapped_lines.len() {
+                    // the same sanity check; a missing source line throws upstream
+                    break;
+                }
+                copy_cells_in_group(
+                    &mut wrapped_lines,
+                    dest,
+                    src,
+                    src_col - cells_to_copy,
+                    dest_col - cells_to_copy,
+                    cells_to_copy,
+                    true,
+                );
+                dest_col -= cells_to_copy;
+                if dest_col == 0 {
+                    dest_line_index -= 1;
+                    dest_col = length_at(dest_line_index);
+                }
+                src_col -= cells_to_copy;
+                if src_col == 0 {
+                    src_line_index -= 1;
+                    let wrapped_lines_index = usize::try_from(src_line_index).unwrap_or(0);
+                    src_col =
+                        wrapped_line_trimmed_length(&wrapped_lines, wrapped_lines_index, self.cols);
+                }
+            }
+
+            // Null out the end of the line ends if a wide character wrapped to the following line
+            for (line, &length) in wrapped_lines.iter_mut().zip(&dest_line_lengths) {
+                if length < new_cols {
+                    line.set_cell(length, &null_cell);
+                }
+            }
+
+            let new_lines = wrapped_lines.split_off(group_len.min(wrapped_lines.len()));
+            put_group(&mut self.lines, start, wrapped_lines);
+            if !new_lines.is_empty() {
+                // count_to_insert here gets the actual index, taking into account other inserted
+                // items. using this we can iterate through the list forwards
+                let insert_start = to_i64(start + group_len + count_to_insert);
+                count_to_insert += new_lines.len();
+                to_insert.push((insert_start, new_lines));
+            }
+
+            // Adjust viewport as needed
+            let mut viewport_adjustments = lines_to_add - trimmed_lines;
+            while viewport_adjustments > 0 {
+                viewport_adjustments -= 1;
+                if self.ybase == 0 {
+                    if to_i64(self.y) < new_rows_i - 1 {
+                        self.y += 1;
+                        // `this.lines.pop()`
+                        lines_len = lines_len.saturating_sub(1);
+                    } else {
+                        self.ybase += 1;
+                        self.ydisp += 1;
+                    }
+                } else {
+                    // Ensure ybase does not exceed its maximum value
+                    let limit =
+                        max_length.min(to_i64(lines_len) + to_i64(count_to_insert)) - new_rows_i;
+                    if to_i64(self.ybase) < limit {
+                        if self.ybase == self.ydisp {
+                            self.ydisp += 1;
+                        }
+                        self.ybase += 1;
+                    }
+                }
+            }
+            let saved_y =
+                (to_i64(self.saved_y) + lines_to_add).min(to_i64(self.ybase) + new_rows_i - 1);
+            self.saved_y = usize::try_from(saved_y).unwrap_or(0);
+
+            // the loop's `y--` from the group's first line
+            y = to_i64(start) - 1;
+        }
+
+        // Rearrange lines in the buffer if there are any insertions, this is done at the end
+        // rather than earlier so that it's a single O(n) pass through the buffer, instead of
+        // O(n^2) from many costly calls to CircularList.splice.
+        if !to_insert.is_empty() {
+            self.reflow_smaller_insert(to_insert, count_to_insert, lines_len);
+        } else {
+            self.lines.set_len(lines_len);
+        }
+    }
+
+    /// The end of `_reflowSmaller`: rebuilds the list with the new lines in place, then fires the
+    /// insert events backwards and one trim event.
+    fn reflow_smaller_insert(
+        &mut self,
+        to_insert: Vec<(i64, Vec<BufferLine>)>,
+        count_to_insert: usize,
+        original_lines_length: usize,
+    ) {
+        // Record buffer insert events and then play them back backwards so that the indexes are
+        // correct
+        let mut insert_events: Vec<(i64, usize)> = Vec::new();
+
+        // Record original lines so they don't get overridden when we rearrange the list (the
+        // popped lines past `original_lines_length` are dropped)
+        let mut original_lines = self.lines.take_all();
+        original_lines.truncate(original_lines_length);
+        let max_length = self.lines.max_length();
+
+        let mut original_line_index = to_i64(original_lines_length) - 1;
+        let new_len = max_length.min(original_lines_length.saturating_add(count_to_insert));
+        let mut out: Vec<Option<BufferLine>> = Vec::new();
+        out.resize_with(new_len, || None);
+        let set = |out: &mut Vec<Option<BufferLine>>, i: i64, line: Option<BufferLine>| {
+            // a negative index writes nowhere visible upstream
+            if let Some(slot) = usize::try_from(i).ok().and_then(|i| out.get_mut(i)) {
+                *slot = line;
+            }
+        };
+        let mut pending = to_insert.into_iter().peekable();
+        let mut count_inserted_so_far = 0usize;
+        let mut i = to_i64(new_len) - 1;
+        while i >= 0 {
+            let insert_here = pending.peek().is_some_and(|(start, _)| {
+                *start > original_line_index + to_i64(count_inserted_so_far)
+            });
+            if insert_here {
+                if let Some((_, new_lines)) = pending.next() {
+                    let amount = new_lines.len();
+                    // Insert extra lines here, adjusting i as needed
+                    for line in new_lines.into_iter().rev() {
+                        set(&mut out, i, Some(line));
+                        i -= 1;
+                    }
+                    i += 1;
+
+                    // Create insert events for later
+                    insert_events.push((original_line_index + 1, amount));
+
+                    count_inserted_so_far += amount;
+                }
+            } else {
+                let line = usize::try_from(original_line_index)
+                    .ok()
+                    .and_then(|k| original_lines.get_mut(k))
+                    .and_then(Option::take);
+                original_line_index -= 1;
+                set(&mut out, i, line);
+            }
+            i -= 1;
+        }
+        self.lines.replace_all(out);
+
+        // Update markers
+        let mut insert_count_emitted = 0usize;
+        for &(index, amount) in insert_events.iter().rev() {
+            let index = usize::try_from(index).unwrap_or(0) + insert_count_emitted;
+            self.lines.notify_insert(index, amount);
+            insert_count_emitted += amount;
+        }
+        let amount_to_trim = (original_lines_length + count_to_insert).saturating_sub(max_length);
+        if amount_to_trim > 0 {
+            self.lines.notify_trim(amount_to_trim);
+        }
     }
 
     /// Translates a buffer line to a string, with optional start and end columns. Wide
