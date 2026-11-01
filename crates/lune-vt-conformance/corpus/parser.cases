@@ -1,0 +1,296 @@
+# Parser-trace corpus. Syntax: see ../FORMAT.md ("Corpus files"). Each case is replayed through a
+# fresh upstream EscapeSequenceParser + Utf8ToUtf32 by tools/xterm-oracle/gen-goldens.mjs.
+#
+# `random N seed S` asks the generator for N extra cases (rand_0001 ...) from a mulberry32 PRNG
+# seeded with S, with random byte soup and random chunking.
+random 240 seed 0x4C554E45
+
+case print_ascii
+input "hello world"
+
+case print_utf8
+input "héllo 你好 🚀 x"
+
+case print_long_run
+input "a"*3000
+
+case c0_all_but_esc
+source every C0 control except ESC (CAN and SUB are executes in ground)
+input hex:000102030405060708090a0b0c0d0e0f10111213141516171819 hex:1a hex:1c1d1e1f
+
+case c0_each_chunked
+source every C0 control alone in its own chunk
+input "x" | hex:00 | hex:07 | hex:08 | hex:09 | hex:0a | hex:0b | hex:0c | hex:0d | hex:0e | hex:0f | "y"
+
+case del_ground
+input "a" hex:7f "b"
+
+case esc_alone
+input "x\e"
+
+case esc_final_split
+input "\e" | "7" | "\e" | "[" | "1" | "m"
+
+case esc_backslash_swallowed
+source ESC \ outside a string is swallowed by the constructor's handler
+input "a\e\\b"
+
+case esc_assorted
+input "\e7\e8\eM\eD\eE\eH\e=\e>\ec\e(B\e)0\e*A\e+B\e#8\e%G\e%@"
+
+case esc_five_intermediates
+input "\e" hex:2021222324 "0z"
+
+case esc_del_inside
+input "\e" hex:7f "(B"
+
+case c1_csi_utf8
+source C1 as UTF-8 (C2 80..C2 9F): CSI 9B
+input hex:c29b "1;2m"
+
+case c1_osc_st_utf8
+source OSC 9D terminated by ST 9C
+input hex:c29d "0;title" hex:c29c "after"
+
+case c1_dcs_st_utf8
+input hex:c290 "1$qm" hex:c29c
+
+case c1_all_utf8
+input hex:c280c281c282c283c284c285c286c287c288c289c28ac28bc28cc28dc28ec28f hex:c290c291c292c293c294c295c296c297c298c299c29ac29bc29cc29dc29ec29f
+
+case c1_sos_pm_apc_utf8
+input hex:c298 "sos" hex:c29c hex:c29e "pm" hex:c29c hex:c29f "apc" hex:c29c
+
+case csi_sgr_basic
+input "\e[0m\e[1;31m\e[38;5;196m\e[38;2;1;2;3m\e[4:3m\e[58:2::9:8:7m"
+
+case csi_cursor_misc
+input "\e[H\e[2J\e[10;20H\e[?25l\e[?1049h\e[0 q\e[!p\e[6n"
+
+case csi_prefix_question
+input "\e[?1;25h"
+
+case csi_prefix_greater
+input "\e[>4;2m\e[>c"
+
+case csi_prefix_less
+input "\e[<1;2M"
+
+case csi_prefix_equals
+input "\e[=1;2c"
+
+case csi_prefix_in_middle
+source a prefix after a digit sends the sequence to CSI_IGNORE
+input "\e[1?2m" "after"
+
+case csi_intermediate_then_param
+input "\e[ 1m" "after"
+
+case csi_five_intermediates
+source five collected intermediates overflow upstream's int32 collect shift
+input "\e[" hex:2021222324 "p" "x"
+
+case csi_six_intermediates
+input "\e[" hex:202122232425 "p" "x"
+
+case csi_many_params
+source 40 params; the Params limit is 32
+input "\e[" "1;"*40 "m"
+
+case csi_many_subparams
+source 40 sub-params on one parameter
+input "\e[1:" "2:"*40 "m"
+
+case csi_params_and_subparams_mixed
+input "\e[1;2:3:4;5:6;;7m"
+
+case csi_50_digit_param
+input "\e[" "9"*50 "m"
+
+case csi_param_overflow
+input "\e[99999999999m\e[2147483647m\e[2147483648m\e[4294967295;4294967296m"
+
+case csi_empty_params
+input "\e[;m\e[;;m\e[;1;m\e[1;m\e[m"
+
+case csi_empty_subparams
+input "\e[1::2::3m\e[::m\e[:1m\e[1:m"
+
+case csi_colon_semicolon_mix
+input "\e[38:2::1:2:3;48;5;9m"
+
+case csi_ignore_state
+source an invalid byte inside CSI enters CSI_IGNORE until the final
+input "\e[1;2<3;4m" "after" "\e[1-2m" "after2"
+
+case csi_c0_inside
+source C0 controls are executed in the middle of a CSI
+input "\e[1" hex:0a ";2" hex:0d "m"
+
+case csi_del_inside
+input "\e[1" hex:7f ";2m"
+
+case csi_split_everywhere
+input "\e" | "[" | "1" | ";" | "2" | ":" | "3" | "m" | "x"
+
+case cancel_csi_can
+input "\e[1;2" hex:18 "m"
+
+case cancel_csi_sub
+input "\e[1;2" hex:1a "m"
+
+case cancel_osc_can
+input "\e]0;ti" hex:18 "tle" hex:07
+
+case cancel_osc_sub
+input "\e]0;ti" hex:1a "tle" hex:07
+
+case cancel_dcs_can
+input "\eP1$qm" hex:18 "tail"
+
+case cancel_dcs_sub
+input "\eP1$qm" hex:1a "tail"
+
+case esc_inside_csi
+input "\e[1\e[2m"
+
+case esc_inside_osc
+input "\e]0;ab\e[1m"
+
+case esc_inside_dcs
+input "\eP1$qm\e[0m"
+
+case osc_bel
+input "\e]0;title" hex:07 "x"
+
+case osc_esc_backslash
+input "\e]0;title\e\\x"
+
+case osc_c1_st
+input "\e]0;title" hex:c29c "x"
+
+case osc_no_payload_bel
+input "\e]" hex:07
+
+case osc_id_only
+input "\e]0" hex:07
+
+case osc_semicolon_first
+source no id: the first byte is ';'
+input "\e];foo" hex:07
+
+case osc_nondigit_id
+input "\e]a;b" hex:07 "\e]1x;c" hex:07
+
+case osc_id_400_digits
+source 400 digits overflow the id to Infinity upstream; the trace writes `max`
+input "\e]" "9"*400 ";x" hex:07
+
+case osc_id_boundaries
+input "\e]2147483646;a" hex:07 "\e]2147483647;b" hex:07 "\e]2147483648;c" hex:07 "\e]4294967296;d" hex:07
+
+case osc_payload_utf8
+input "\e]0;héllo 你 🚀" hex:07
+
+case osc_payload_c0_inside
+input "\e]0;a" hex:0a "b" hex:0d "c" hex:07
+
+case osc_payload_del
+input "\e]0;a" hex:7f "b" hex:07
+
+case osc_payload_split
+input "\e]0;ab" | "cd" | "ef" hex:07 "\e]1" | "0;x" hex:07
+
+case osc_long_payload
+input "\e]0;" "x"*3000 hex:07
+
+case osc_8_link
+input "\e]8;id=1;http://example.com/a;b" hex:07 "text\e]8;;" hex:07
+
+case osc_unterminated
+input "\e]0;never ends"
+
+case dcs_decrqss_payload
+input "\eP$qm\e\\after"
+
+case dcs_params_and_passthrough
+input "\eP1;2|payload data 123\e\\x"
+
+case dcs_empty
+input "\eP\e\\x"
+
+case dcs_c1_hook_st
+input "\eP1;2;3|abc" hex:c29c
+
+case dcs_with_prefix_and_intermediates
+input "\eP?1;2 $zpay\e\\"
+
+case dcs_del_inside
+input "\eP1$q" hex:7f "m" hex:7f "\e\\"
+
+case dcs_many_params
+input "\eP" "1;"*40 "|x\e\\"
+
+case dcs_long_payload
+input "\eP1$q" "z"*3000 "\e\\"
+
+case dcs_sixel_like
+input "\eP0;0;8q#0;2;0;0;0#1;2;100;100;100~~~-\e\\"
+
+case apc_pm_sos
+input "\e_apc text\e\\\e^pm text\e\\\eXsos text\e\\after"
+
+case utf8_lone_continuation
+input hex:80 "a" hex:bf "b"
+
+case utf8_overlong_c080
+input hex:c080 "a"
+
+case utf8_overlong_3byte
+input hex:e08080 "a"
+
+case utf8_surrogate_eda080
+input hex:eda080 "a"
+
+case utf8_above_10ffff
+input hex:f4908080 "a"
+
+case utf8_f8_five_byte
+input hex:f888808080 "a"
+
+case utf8_ff
+input hex:ff "a" hex:fe "b"
+
+case utf8_bom
+input hex:efbbbf "a"
+
+case utf8_truncated_then_ascii
+input hex:e2 "A" hex:f09f "B" hex:f09f9a "C"
+
+case utf8_truncated_then_esc
+input hex:e2 "\e[1m" hex:f09f "\e]0;x" hex:07
+
+case utf8_split_after_80
+source E2 80 | 99 loses U+2019 in upstream Utf8ToUtf32 (TextDecoder.ts:161); the unsplit trace is expected
+input hex:e280 | hex:99 "A"
+
+case utf8_split_before_80
+input hex:e2 | hex:8099 "A"
+
+case utf8_emoji_split_every_byte
+input "A" hex:f0 | hex:9f | hex:9a | hex:80 | "B"
+
+case utf8_3byte_split_every_byte
+input "A" hex:e4 | hex:bd | hex:a0 | "B"
+
+case utf8_c1_split
+input hex:c2 | hex:9b | "1m"
+
+case utf8_split_with_esc
+input hex:f09f | "\e[1m" hex:9a80
+
+case mixed_prompt
+input "\e]0;user@host: ~" hex:07 "\e[1;32muser@host\e[0m:\e[1;34m~\e[0m$ ls\r\n\e[0m\e[01;34mdir\e[0m  file\r\n"
+
+case mixed_everything
+input "ab\e[1mc" hex:0a "\e]0;t" hex:07 "\eP1$qm\e\\" hex:c29b "2J" "你好" hex:e2 "x" hex:c29d "1;" hex:c29c

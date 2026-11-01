@@ -1,0 +1,197 @@
+# Lunegit's 27 conformance vectors, converted from the inline literals in
+# Lunegit.Tests/Terminal/IVtEngineConformanceTests.cs (lines 62-92). The `grid` rows are the tmux 3.6b
+# golden grids (TestData/vt-goldens/<name>.grid.txt), already in Lunegit's normalisation (right-trimmed
+# rows, trailing blank rows dropped). `divergent` marks the 6 vectors where xterm.js deliberately does
+# not reflow the cursor's own wrapped line (IVtEngineConformanceTests.cs:120-139).
+
+case wrap_basic
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden wrap_basic.grid.txt
+size 10 3
+input "0123456789AB"
+grid "0123456789"
+grid "AB"
+
+case wrap_cancel_cr
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden wrap_cancel_cr.grid.txt
+size 10 3
+input "0123456789\rXY"
+grid "XY23456789"
+
+case wrap_cancel_cup
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden wrap_cancel_cup.grid.txt
+size 10 3
+input "0123456789\e[1;1HXY"
+grid "XY23456789"
+
+case el_clearline_afterwrap
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden el_clearline_afterwrap.grid.txt
+size 10 3
+input "0123456789\e[1;1H\e[2KZZ"
+grid "ZZ"
+
+case el_to_eol
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden el_to_eol.grid.txt
+size 10 3
+input "\e[1;1HABCDE\e[3G\e[0K"
+grid "AB"
+
+case erase_display_below
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden erase_display_below.grid.txt
+size 10 3
+input "AAAAA\n\rBBBBB\n\rCCCCC\e[2;1H\e[0J"
+grid "AAAAA"
+
+case scroll_region
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden scroll_region.grid.txt
+size 10 4
+input "\e[2;3r\e[2;1HL2\n\rL3\n\rL4"
+grid ""
+grid "L3"
+grid "L4"
+
+case rep_csi_b
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden rep_csi_b.grid.txt
+size 10 2
+input "A\e[4b"
+grid "AAAAA"
+
+case cursor_clamp
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden cursor_clamp.grid.txt
+size 10 3
+input "\e[999;999HX"
+grid ""
+grid ""
+grid "         X"
+
+case ich_insertchar
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden ich_insertchar.grid.txt
+size 10 2
+input "\e[1;1HABCDE\e[1;3H\e[2@"
+grid "AB  CDE"
+
+case dch_deletechar
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden dch_deletechar.grid.txt
+size 10 2
+input "\e[1;1HABCDE\e[1;2H\e[2P"
+grid "ADE"
+
+case widechar_cjk
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden widechar_cjk.grid.txt
+size 10 2
+input "你好AB"
+grid "\u{4F60}\u{597D}AB"
+
+case widechar_emoji
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden widechar_emoji.grid.txt
+size 12 2
+input "🚀X"
+grid "\u{1F680}X"
+
+case inplace_wrap_redraw
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden inplace_wrap_redraw.grid.txt
+size 10 4
+input "\e[?25l0123456789abc\r\e[1A\e[2K\rNEW"
+grid "NEW"
+grid "abc"
+
+case ech_erasechar
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden ech_erasechar.grid.txt
+size 10 2
+input "\e[1;1HABCDE\e[1;1H\e[3X"
+grid "   DE"
+
+case cursor_moves
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden cursor_moves.grid.txt
+size 10 3
+input "\e[1;1HABC\e[2;1HDEF\e[1;1H\e[2CZ"
+grid "ABZ"
+grid "DEF"
+
+case scroll_on_lf
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden scroll_on_lf.grid.txt
+size 6 3
+input "L1\n\rL2\n\rL3\n\rL4"
+grid "L2"
+grid "L3"
+grid "L4"
+
+case decstbm_scroll
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden decstbm_scroll.grid.txt
+size 6 4
+input "\e[1;3r\e[1;1Ha\n\rb\n\rc\n\rd"
+grid "b"
+grid "c"
+grid "d"
+
+case wrap_widechar_acct
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden wrap_widechar_acct.grid.txt
+size 6 3
+input "ab你好\r\e[1A\e[2KZ"
+grid "Z"
+
+case el0_after_widechar
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden el0_after_widechar.grid.txt
+size 8 2
+input "你好AB\e[1;3H\e[0K"
+grid "\u{4F60}"
+
+case shrink_wrapped
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden shrink_wrapped.grid.txt
+size 12 4
+resize 8 4
+divergent xterm.js keeps the cursor's wrapped line unflowed (Lunegit KnownDivergent XtermJs)
+input "abcdefghijklmnopqrst"
+grid "ijklmnop"
+grid "qrst"
+
+case grow_wrapped
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden grow_wrapped.grid.txt
+size 8 4
+resize 16 4
+divergent xterm.js keeps the cursor's wrapped line unflowed (Lunegit KnownDivergent XtermJs)
+input "abcdefghijklmnopqrst"
+grid "abcdefghijklmnop"
+grid "qrst"
+
+case shrink_multiline
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden shrink_multiline.grid.txt
+size 12 4
+resize 6 6
+divergent xterm.js keeps the cursor's wrapped line unflowed (Lunegit KnownDivergent XtermJs)
+input "ABCDEFGHIJKL\r\n0123456789"
+grid "012345"
+grid "6789"
+
+case grow_after_wrap
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden grow_after_wrap.grid.txt
+size 6 6
+resize 18 4
+divergent xterm.js keeps the cursor's wrapped line unflowed (Lunegit KnownDivergent XtermJs)
+input "Hello-World-Reflow-Test"
+grid "Hello-World-Reflow"
+grid "-Test"
+
+case shrink_then_text
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden shrink_then_text.grid.txt
+size 12 4
+resize 8 4
+divergent xterm.js keeps the cursor's wrapped line unflowed (Lunegit KnownDivergent XtermJs)
+input "0123456789AB"
+grid "89AB"
+
+case altscreen_resize
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden altscreen_resize.grid.txt
+size 12 4
+resize 8 4
+input "\e[?1049hFULLSCREEN-APP-CONTENT\e[H"
+grid "FULLSCRE"
+grid "PP-CONTE"
+
+case viewport_resize
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden viewport_resize.grid.txt
+size 12 4
+resize 8 4
+divergent xterm.js keeps the cursor's wrapped line unflowed (Lunegit KnownDivergent XtermJs)
+input "0123456789ABCDEFGHIJ"
+grid "89ABCDEF"
+grid "GHIJ"
