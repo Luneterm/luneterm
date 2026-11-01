@@ -29,7 +29,8 @@ pub struct Run {
     pub term: Terminal,
     /// `onData` strings, in order.
     pub responses: Vec<String>,
-    /// The last `onTitleChange` value, `""` if none.
+    /// The title at the last `TitleChanged` drain (upstream's last `onTitleChange` value), `""`
+    /// if none.
     pub title: String,
 }
 
@@ -53,7 +54,9 @@ impl Run {
                     self.responses
                         .push(String::from_utf8_lossy(&bytes).into_owned());
                 }
-                HostEvent::Title(title) => self.title = title,
+                HostEvent::TitleChanged => {
+                    self.title = self.term.core().input_handler().window_title().to_owned();
+                }
                 _ => {}
             }
         }

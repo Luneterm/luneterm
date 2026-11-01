@@ -42,9 +42,9 @@
 //!  - Colours: upstream's `onColor` event is [`HostEvent::Color`] (a list of [`ColorRequest`]s).
 //!    The engine never answers a report: the host knows the theme. OSC 52 and every other OSC
 //!    without a handler reach the fallback, which only logs (ledger row 13). `onTitleChange` is
-//!    [`HostEvent::Title`]; the icon name (OSC 1) is stored and fires nothing, as headless.
-//!  - Event coalescing (D2 amendment, Q10; [`EventQueue`]): one `Title` per drain carrying the
-//!    current title, and `onA11yChar` characters merged into one `A11yText` capped at
+//!    [`HostEvent::TitleChanged`]; the icon name (OSC 1) is stored and fires nothing, as headless.
+//!  - Event coalescing (D2 amendment, Q10/Q11; [`EventQueue`]): one payload-free `TitleChanged`
+//!    per drain (the host reads the title), and `onA11yChar` characters merged into one `A11yText` capped at
 //!    [`A11Y_TEXT_LIMIT`] bytes per drain. Upstream hands listeners shared strings, one event per
 //!    fire; queued copies would let a few bytes of XTWINOPS 22/23 or REP queue gigabytes.
 //!  - JS string functions: `String.trim` is `js_trim` (ECMAScript WhiteSpace, not Rust's), and
@@ -247,9 +247,9 @@ impl DirtyRowTracker {
 
 /// The host event queue (plan M6 D2, amended by Q10). Events keep upstream's fire order, with
 /// two coalescing rules that keep one write's events proportional to its bytes:
-///  - at most one [`HostEvent::Title`] per drain: it stays where the first title change since the
-///    last drain fired and carries the window title at drain time (the latest title set; the
-///    title changes only through `set_title`, which queues the event);
+///  - at most one [`HostEvent::TitleChanged`] per drain, where the first title change since the
+///    last drain fired; it carries no text (the host reads the current title), so a stored title
+///    popped by XTWINOPS 23 is never copied into the queue;
 ///  - consecutive printed characters merge into one [`HostEvent::A11yText`], and at most
 ///    [`A11Y_TEXT_LIMIT`] bytes of such text are queued per drain; the first character that does
 ///    not fit ends voicing until the next drain.
@@ -258,8 +258,8 @@ impl DirtyRowTracker {
 #[derive(Debug, Default)]
 struct EventQueue {
     events: Vec<HostEvent>,
-    /// Index of the queued [`HostEvent::Title`], if any.
-    title_slot: Option<usize>,
+    /// Whether a [`HostEvent::TitleChanged`] is queued.
+    title_queued: bool,
     /// Bytes of [`HostEvent::A11yText`] text queued since the last drain.
     a11y_bytes: usize,
 }
@@ -267,17 +267,17 @@ struct EventQueue {
 impl EventQueue {
     fn push(&mut self, event: HostEvent) {
         match event {
-            HostEvent::Title(_) => self.title_changed(),
+            HostEvent::TitleChanged => self.title_changed(),
             HostEvent::A11yText(text) => self.push_a11y_text(&text),
             event => self.events.push(event),
         }
     }
 
-    /// The window title changed; the event's text is filled in by [`EventQueue::take`].
+    /// The window title changed.
     fn title_changed(&mut self) {
-        if self.title_slot.is_none() {
-            self.title_slot = Some(self.events.len());
-            self.events.push(HostEvent::Title(String::new()));
+        if !self.title_queued {
+            self.title_queued = true;
+            self.events.push(HostEvent::TitleChanged);
         }
     }
 
@@ -306,16 +306,11 @@ impl EventQueue {
         }
     }
 
-    /// The queued events, the title event carrying `window_title`; starts a new drain.
-    fn take(&mut self, window_title: &str) -> Vec<HostEvent> {
-        let mut events = mem::take(&mut self.events);
-        if let Some(slot) = self.title_slot.take() {
-            if let Some(HostEvent::Title(title)) = events.get_mut(slot) {
-                window_title.clone_into(title);
-            }
-        }
+    /// The queued events; starts a new drain.
+    fn take(&mut self) -> Vec<HostEvent> {
+        self.title_queued = false;
         self.a11y_bytes = 0;
-        events
+        mem::take(&mut self.events)
     }
 }
 
@@ -598,10 +593,10 @@ impl InputHandler {
     }
 
     /// The events fired since the last call, in fire order, coalesced as [`EventQueue`]
-    /// describes: one [`HostEvent::Title`] (the current title), printed characters merged into
-    /// [`HostEvent::A11yText`] up to [`A11Y_TEXT_LIMIT`] bytes.
+    /// describes: one [`HostEvent::TitleChanged`] (read [`InputHandler::window_title`]), printed
+    /// characters merged into [`HostEvent::A11yText`] up to [`A11Y_TEXT_LIMIT`] bytes.
     pub fn take_events(&mut self) -> Vec<HostEvent> {
-        self.events.take(&self.window_title)
+        self.events.take()
     }
 
     /// The damage accumulated since the last call.

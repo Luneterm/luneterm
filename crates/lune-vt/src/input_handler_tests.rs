@@ -3833,14 +3833,13 @@ fn titles_after(t: &mut TestTerm, input: &str) -> Vec<String> {
     titles(t)
 }
 
+/// The title after each `TitleChanged` of the drain (at most one since Q10/Q11).
 fn titles(t: &mut TestTerm) -> Vec<String> {
-    t.handler
-        .take_events()
-        .into_iter()
-        .filter_map(|event| match event {
-            HostEvent::Title(title) => Some(title),
-            _ => None,
-        })
+    let events = t.handler.take_events();
+    events
+        .iter()
+        .filter(|event| **event == HostEvent::TitleChanged)
+        .map(|_| t.handler.window_title().to_owned())
         .collect()
 }
 
@@ -6027,7 +6026,7 @@ fn oracle_summary(t: &mut TestTerm) -> String {
         .take_events()
         .into_iter()
         .map(|event| match event {
-            HostEvent::Title(title) => format!("T({})", oracle_escape(&title)),
+            HostEvent::TitleChanged => format!("T({})", oracle_escape(t.handler.window_title())),
             HostEvent::Response(bytes) => {
                 format!("D({})", oracle_escape(&String::from_utf8_lossy(&bytes)))
             }
@@ -6093,8 +6092,9 @@ fn osc_and_decrqss_equal_the_oracle() {
     }
 }
 
-/// The oracle's events with Q10's title rule applied (D2 amendment): one `T(..)` per drain, at
-/// the first title's place, carrying the last title. Upstream fires one `onTitleChange` per
+/// The oracle's events with the Q10/Q11 title rule applied (D2 amendment): one `T(..)` per
+/// drain, at the first title's place; `oracle_summary` prints the title read at drain time
+/// (`TitleChanged` carries none), which is the last one set. Upstream fires one `onTitleChange` per
 /// change; the oracle rows keep that record. (No title in `OSC_ORACLE` contains `|`.)
 fn coalesce_oracle_titles(expected: &str) -> String {
     let Some(rest) = expected.strip_prefix("ev=") else {
