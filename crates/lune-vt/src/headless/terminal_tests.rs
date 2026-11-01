@@ -237,7 +237,7 @@ fn on_title_change() {
     let mut t = term([]);
     t.write_str("\x1b]2;foo\u{9c}");
     assert_eq!(t.drain_events(), [HostEvent::TitleChanged]);
-    assert_eq!(t.viewport().title, "foo");
+    assert_eq!(&*t.viewport().title, "foo");
 }
 
 #[test]
@@ -785,7 +785,7 @@ fn viewport_cursor_visibility_style_and_blink() {
     t.scroll_to_bottom();
     t.write_str("de");
     assert_eq!(t.viewport().cursor.x, 5);
-    assert_eq!(t.viewport().title, "");
+    assert_eq!(&*t.viewport().title, "");
     assert!(!t.viewport().alt_screen);
 }
 
@@ -1026,7 +1026,12 @@ fn title_storm_queues_one_title_per_drain_and_keeps_other_events() {
     let big = "x".repeat(60_000);
     t.write_str(&format!("\x1b]0;{big}\x07"));
     assert_eq!(t.drain_events(), [HostEvent::TitleChanged]);
-    assert_eq!(t.viewport().title, big);
+    assert_eq!(&*t.viewport().title, big);
+    // review F2: snapshots share the title instead of copying it
+    assert!(std::sync::Arc::ptr_eq(
+        &t.viewport().title,
+        &t.viewport().title
+    ));
 
     // 100 push/pop pairs, each followed by a DSR and a BEL: one title event, every other event
     // as fired and in order.
@@ -1053,18 +1058,18 @@ fn title_storm_queues_one_title_per_drain_and_keeps_other_events() {
             HostEvent::Bell,
         ]
     );
-    assert_eq!(t.viewport().title, "b");
+    assert_eq!(&*t.viewport().title, "b");
 
     // A large title stored by one write and popped by the next (the Q11 case): one payload-free
     // event for 7 bytes written.
     t.write_str(&format!("\x1b]2;{big}\x07\x1b[22;2t\x1b]2;c\x07"));
     assert_eq!(t.drain_events(), [HostEvent::TitleChanged]);
-    assert_eq!(t.viewport().title, "c");
+    assert_eq!(&*t.viewport().title, "c");
     t.write_str("\x1b[23;2t");
     let events = t.drain_events();
     assert_eq!(events, [HostEvent::TitleChanged]);
     assert!(payload_bytes(&events) <= 16 * 7 + 4096);
-    assert_eq!(t.viewport().title, big);
+    assert_eq!(&*t.viewport().title, big);
 }
 
 #[test]

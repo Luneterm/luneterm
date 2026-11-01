@@ -123,7 +123,7 @@ use crate::data::charsets::{Charset, charset};
 use crate::data::escape_sequences::{C0, C1};
 use crate::engine::{ColorIndex, ColorRequest, Damage, HostEvent, WindowReportKind};
 use crate::headless::terminal::reset_terminal;
-use crate::input::text_decoder::{Utf8ToUtf32, string_from_code_point, utf32_to_string};
+use crate::input::text_decoder::{Utf8ToUtf32, string_from_code_point};
 use crate::input::x_parse_color::parse_color;
 use crate::parser::dcs_parser::DcsStringHandler;
 use crate::parser::escape_sequence_parser::{EscapeSequenceParser, ident_to_string};
@@ -568,15 +568,6 @@ impl fmt::Display for ParamsArray<'_> {
     }
 }
 
-/// A UTF-32 payload chunk as a string.
-struct Utf32<'a>(&'a [u32]);
-
-impl fmt::Display for Utf32<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&utf32_to_string(self.0))
-    }
-}
-
 impl InputHandler {
     /// A handler over `services`. Register it with a parser through
     /// [`InputHandler::register_handlers`].
@@ -633,6 +624,11 @@ impl InputHandler {
         &self.window_title
     }
 
+    /// The window title as the shared string the handler holds (no copy).
+    pub fn window_title_shared(&self) -> Arc<str> {
+        Arc::clone(&self.window_title)
+    }
+
     /// Queue an event for the host (an upstream `fire` whose listener is the host).
     pub(crate) fn push_event(&mut self, event: HostEvent) {
         self.events.push(event);
@@ -684,9 +680,11 @@ impl InputHandler {
             OscFallbackAction::Start => h.services.log.debug(format_args!(
                 "Unknown OSC code: {{ identifier: {identifier}, action: START }}"
             )),
+            // LUNETERM: the length, not the data (upstream logs it): an unhandled OSC can carry
+            // secrets, e.g. OSC 52 clipboard contents (user decision 2026-11-01)
             OscFallbackAction::Put(data) => h.services.log.debug(format_args!(
-                "Unknown OSC code: {{ identifier: {identifier}, action: PUT, data: {} }}",
-                Utf32(data)
+                "Unknown OSC code: {{ identifier: {identifier}, action: PUT, length: {} }}",
+                data.len()
             )),
             OscFallbackAction::End(success) => h.services.log.debug(format_args!(
                 "Unknown OSC code: {{ identifier: {identifier}, action: END, data: {success} }}"
@@ -698,10 +696,11 @@ impl InputHandler {
                 Ident(ident),
                 ParamsArray(params)
             )),
+            // LUNETERM: the length, not the payload (as for OSC above)
             DcsFallbackAction::Put(data) => h.services.log.debug(format_args!(
-                "Unknown DCS code: {{ identifier: {}, action: PUT, payload: {} }}",
+                "Unknown DCS code: {{ identifier: {}, action: PUT, length: {} }}",
                 Ident(ident),
-                Utf32(data)
+                data.len()
             )),
             DcsFallbackAction::Unhook(success) => h.services.log.debug(format_args!(
                 "Unknown DCS code: {{ identifier: {}, action: UNHOOK, payload: {success} }}",
@@ -2061,7 +2060,7 @@ impl InputHandler {
     /// text). The repeated data is capped at [`MAX_REP_CODE_POINTS`]; a larger count prints that
     /// many fewer repetitions (the visible difference is only the cursor column and which
     /// repetition ends the output). Of those, only as many are printed as can still change the
-    /// state (about two buffers' worth of lines; [`Self::rep_equivalent_repeats`]), which
+    /// state (about two buffers' worth of lines; `rep_equivalent_repeats`), which
     /// leaves the same state as printing all of them.
     pub fn repeat_preceding_character(&mut self, params: &Params) -> bool {
         let join_state = self.preceding_join_state;
@@ -2709,7 +2708,8 @@ impl InputHandler {
         true
     }
 
-    /// OSC 0 and 2: set the window title and tell the host (`HostEvent::Title`).
+    /// OSC 0 and 2: set the window title and tell the host (`HostEvent::TitleChanged`, one per
+    /// drain).
     pub fn set_title(&mut self, data: &str) -> bool {
         self.window_title = Arc::from(data);
         self.events.title_changed();
