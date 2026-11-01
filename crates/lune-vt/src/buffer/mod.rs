@@ -27,6 +27,7 @@ pub mod attribute_data;
 pub mod buffer;
 pub mod buffer_line;
 pub mod buffer_range;
+pub mod buffer_reflow;
 pub mod buffer_set;
 pub mod cell_data;
 pub mod constants;

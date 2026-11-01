@@ -384,38 +384,32 @@ impl<T, O: ListObserver> CircularList<T, O> {
     }
 
     /// Fires `on_trim` as `Buffer`/`BufferReflow` do upstream (`lines.onTrimEmitter.fire`).
-    #[allow(dead_code)] // used by Buffer/BufferReflow from M5 steps 6-7
     pub(crate) fn notify_trim(&mut self, amount: usize) {
         self.observer.on_trim(amount);
     }
 
     /// Fires `on_insert` (`lines.onInsertEmitter.fire`).
-    #[allow(dead_code)] // used by Buffer/BufferReflow from M5 steps 6-7
     pub(crate) fn notify_insert(&mut self, index: usize, amount: usize) {
         self.observer.on_insert(InsertEvent { index, amount });
     }
 
     /// Fires `on_delete` (`lines.onDeleteEmitter.fire`).
-    #[allow(dead_code)] // used by Buffer/BufferReflow from M5 steps 6-7
     pub(crate) fn notify_delete(&mut self, index: usize, amount: usize) {
         self.observer.on_delete(DeleteEvent { index, amount });
     }
 
     /// Takes the item out of slot `index`, leaving the slot empty.
-    #[allow(dead_code)] // used by Buffer/BufferReflow from M5 steps 6-7
     pub(crate) fn take(&mut self, index: usize) -> Option<T> {
         self.slots.get_mut(index).and_then(Option::take)
     }
 
     /// Takes every slot out, in order, leaving the list empty (`len() == 0`). No events.
-    #[allow(dead_code)] // used by Buffer/BufferReflow from M5 steps 6-7
     pub(crate) fn take_all(&mut self) -> Vec<Option<T>> {
         self.slots.drain(..).collect()
     }
 
     /// Replaces the contents with `slots` (`len()` becomes `slots.len()`, clamped to
     /// `max_length` by dropping the tail). No events.
-    #[allow(dead_code)] // used by Buffer/BufferReflow from M5 steps 6-7
     pub(crate) fn replace_all(&mut self, slots: Vec<Option<T>>) {
         self.slots = slots.into();
         self.slots.truncate(self.max_length);

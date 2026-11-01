@@ -1,9 +1,5 @@
-//! Port of xterm.js src/common/buffer/Buffer.test.ts @ f447274, for the describes that do not
-//! need column reflow: constructor, fillViewportRows, getWrappedRangeForLine, the non-reflow
-//! `resize` describes, "buffer marked to have no scrollback", addMarker, translateBufferLineToString
-//! and "memory cleanup after shrinking". The `reflow` describe (`:237-1053`, including its first
-//! two cases "should not wrap empty lines" and "should shrink row length") is ported with the
-//! reflow in plan M5 step 7.
+//! Port of xterm.js src/common/buffer/Buffer.test.ts @ f447274: every describe, all 56 cases
+//! (the `reflow` describe, `:237-1053`, with the reflow in plan M5 step 7).
 //!
 //! Adaptations (`adapted:`):
 //!  - `MockOptionsService({ scrollback })` is a [`TerminalOptions`] value; `MockBufferService` is
@@ -18,6 +14,15 @@
 //!    `while buffer.batched_memory_cleanup() {}`. `_data.buffer.byteLength` is observed through
 //!    [`BufferLine::resize`] to the line's own length, which returns whether the allocation holds
 //!    more than `CLEANUP_THRESHOLD` times the used memory.
+//!  - Upstream's tests call `buffer.resize` without resizing the `MockBufferService`, so its
+//!    `getBlankLine` keeps making 80-column lines (in the spliced rows and the rows reflow adds);
+//!    here they have the buffer's columns. Every such line is resized to the buffer's columns
+//!    before a test reads it, so no assertion differs.
+//!  - "should wrap and unwrap lines" and "should discard parts of wrapped lines" resize to one
+//!    column as upstream does; without wide characters that does not lock up (plan D8).
+//!
+//! The added reflow tests (plan M5 step 7 (a)-(d)) take their expected values from
+//! @xterm/headless 6.0.0 driven through `Terminal.resize`.
 //!
 //! Added tests cover the pieces upstream leaves untested: tab stops, `clear` and markers, the
 //! cursor and scrollback predicates, the Windows row-growth branch, `batched_memory_cleanup`'s
@@ -863,4 +868,1001 @@ fn prev_stop_and_next_stop_walk_the_stops_and_clamp() {
     buffer.x = 20;
     assert_eq!(buffer.next_stop(None), 24);
     assert_eq!(buffer.prev_stop(None), 16);
+}
+
+// ---- resize: reflow (Buffer.test.ts:237-1053) ----
+
+fn cd(c: &str, width: u32) -> crate::buffer::cell_data::CharData {
+    (
+        0,
+        c.to_string(),
+        width,
+        c.encode_utf16().next().map_or(0, u32::from),
+    )
+}
+
+/// `line.set(from + i, [0, c, 1, code])` for every char of `text`.
+fn set_text(buffer: &mut Buffer, row: usize, from: usize, text: &str) {
+    let line = buffer.lines.get_mut(row).unwrap();
+    for (i, c) in text.chars().enumerate() {
+        line.set(from + i, &cd(&c.to_string(), 1));
+    }
+}
+
+/// `translateToString()` (no trim) of a row.
+fn text(buffer: &Buffer, row: usize) -> String {
+    buffer
+        .lines
+        .get(row)
+        .unwrap()
+        .translate_to_string(false, None, None, None)
+}
+
+fn trimmed(buffer: &Buffer, row: usize) -> String {
+    buffer
+        .lines
+        .get(row)
+        .unwrap()
+        .translate_to_string(true, None, None, None)
+}
+
+fn assert_wrapped(buffer: &Buffer, wrapped: &[usize]) {
+    for i in 0..buffer.lines.len() {
+        assert_eq!(
+            buffer.lines.get(i).unwrap().is_wrapped,
+            wrapped.contains(&i),
+            "line {i} isWrapped must equal {}",
+            wrapped.contains(&i)
+        );
+    }
+}
+
+/// Rows as the oracle script printed them: `+` for a wrapped row, ` ` otherwise, then the text.
+fn rows(buffer: &Buffer) -> Vec<String> {
+    (0..buffer.lines.len())
+        .map(|i| {
+            let line = buffer.lines.get(i).unwrap();
+            format!(
+                "{}{}",
+                if line.is_wrapped { '+' } else { ' ' },
+                line.translate_to_string(false, None, None, None)
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn reflow_should_not_wrap_empty_lines() {
+    let (mut buffer, opts) = new_buffer();
+    buffer.fill_viewport_rows(None);
+    assert_eq!(buffer.lines.len(), INIT_ROWS);
+    buffer.resize(INIT_COLS - 5, INIT_ROWS, &opts);
+    assert_eq!(buffer.lines.len(), INIT_ROWS);
+}
+
+#[test]
+fn reflow_should_shrink_row_length() {
+    let (mut buffer, opts) = new_buffer();
+    buffer.fill_viewport_rows(None);
+    buffer.resize(5, 10, &opts);
+    assert_eq!(buffer.lines.len(), 10);
+    for i in 0..10 {
+        assert_eq!(buffer.lines.get(i).unwrap().len(), 5);
+    }
+}
+
+#[test]
+fn reflow_should_wrap_and_unwrap_lines() {
+    let (mut buffer, opts) = new_buffer();
+    buffer.fill_viewport_rows(None);
+    buffer.resize(5, 10, &opts);
+    set_text(&mut buffer, 0, 0, "abcde");
+    buffer.y = 1;
+    assert_eq!(buffer.lines.get(0).unwrap().len(), 5);
+    assert_eq!(text(&buffer, 0), "abcde");
+    // upstream resizes to one column here; no wide character, so no lock-up (plan D8)
+    buffer.resize(1, 10, &opts);
+    assert_eq!(buffer.lines.len(), 10);
+    for (i, c) in ["a", "b", "c", "d", "e", " ", " ", " ", " ", " "]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(text(&buffer, i), *c);
+    }
+    buffer.resize(5, 10, &opts);
+    assert_eq!(buffer.lines.len(), 10);
+    assert_eq!(text(&buffer, 0), "abcde");
+    for i in 1..10 {
+        assert_eq!(text(&buffer, i), "     ");
+    }
+}
+
+#[test]
+fn reflow_should_discard_parts_of_wrapped_lines_that_go_out_of_the_scrollback() {
+    let (mut buffer, mut opts) = new_buffer();
+    buffer.fill_viewport_rows(None);
+    opts.scrollback = 1;
+    buffer.resize(10, 5, &opts);
+    set_text(&mut buffer, 3, 0, "abcdefghij");
+    assert_eq!(buffer.lines.len(), 5);
+    buffer.y = 4;
+    buffer.resize(2, 5, &opts);
+    assert_eq!(buffer.y, 4);
+    assert_eq!(buffer.ybase, 1);
+    assert_eq!(buffer.lines.len(), 6);
+    for (i, t) in ["ab", "cd", "ef", "gh", "ij", "  "].iter().enumerate() {
+        assert_eq!(text(&buffer, i), *t);
+    }
+    buffer.resize(1, 5, &opts);
+    assert_eq!(buffer.y, 4);
+    assert_eq!(buffer.ybase, 1);
+    assert_eq!(buffer.lines.len(), 6);
+    for (i, t) in ["f", "g", "h", "i", "j", " "].iter().enumerate() {
+        assert_eq!(text(&buffer, i), *t);
+    }
+    buffer.resize(10, 5, &opts);
+    assert_eq!(buffer.y, 1);
+    assert_eq!(buffer.ybase, 0);
+    assert_eq!(buffer.lines.len(), 5);
+    assert_eq!(text(&buffer, 0), "fghij     ");
+    for i in 1..5 {
+        assert_eq!(text(&buffer, i), "          ");
+    }
+}
+
+#[test]
+fn reflow_should_remove_the_correct_amount_of_rows_when_reflowing_larger() {
+    // This is a regression test to ensure that successive wrapped lines that are getting 3+
+    // lines removed on a reflow actually remove the right lines
+    let (mut buffer, opts) = new_buffer();
+    buffer.fill_viewport_rows(None);
+    buffer.resize(10, 10, &opts);
+    buffer.y = 2;
+    set_text(&mut buffer, 0, 0, "abcdefghij");
+    set_text(&mut buffer, 1, 0, "0123456789");
+    assert_eq!(buffer.lines.len(), 10);
+    assert_eq!(text(&buffer, 0), "abcdefghij");
+    assert_eq!(text(&buffer, 1), "0123456789");
+    for i in 2..10 {
+        assert_eq!(text(&buffer, i), "          ");
+    }
+    buffer.resize(2, 10, &opts);
+    assert_eq!(buffer.ybase, 1);
+    assert_eq!(buffer.lines.len(), 11);
+    for (i, t) in [
+        "ab", "cd", "ef", "gh", "ij", "01", "23", "45", "67", "89", "  ",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_eq!(text(&buffer, i), *t);
+    }
+    buffer.resize(10, 10, &opts);
+    assert_eq!(buffer.ybase, 0);
+    assert_eq!(buffer.lines.len(), 10);
+    assert_eq!(text(&buffer, 0), "abcdefghij");
+    assert_eq!(text(&buffer, 1), "0123456789");
+    for i in 2..10 {
+        assert_eq!(text(&buffer, i), "          ");
+    }
+}
+
+#[test]
+fn reflow_should_transfer_combined_char_data_over_to_reflowed_lines() {
+    let (mut buffer, opts) = new_buffer();
+    buffer.fill_viewport_rows(None);
+    buffer.resize(4, 3, &opts);
+    buffer.y = 2;
+    {
+        let line = buffer.lines.get_mut(0).unwrap();
+        line.set(0, &cd("a", 1));
+        line.set(1, &cd("b", 1));
+        line.set(2, &cd("c", 1));
+        line.set(3, &cd("😁", 1));
+    }
+    assert_eq!(buffer.lines.len(), 3);
+    assert_eq!(text(&buffer, 0), "abc😁");
+    assert_eq!(text(&buffer, 1), "    ");
+    buffer.resize(2, 3, &opts);
+    assert_eq!(text(&buffer, 0), "ab");
+    assert_eq!(text(&buffer, 1), "c😁");
+}
+
+fn three_rows(buffer: &mut Buffer) {
+    set_text(buffer, 0, 0, "abcdefghij");
+    set_text(buffer, 1, 0, "0123456789");
+    set_text(buffer, 2, 0, "klmnopqrst");
+}
+
+#[test]
+fn reflow_should_adjust_markers_when_reflowing() {
+    let (mut buffer, opts) = new_buffer();
+    buffer.fill_viewport_rows(None);
+    buffer.resize(10, 16, &opts);
+    three_rows(&mut buffer);
+    buffer.y = 3;
+    let first = buffer.add_marker(0);
+    let second = buffer.add_marker(1);
+    let third = buffer.add_marker(2);
+    assert_eq!(text(&buffer, 0), "abcdefghij");
+    assert_eq!(text(&buffer, 1), "0123456789");
+    assert_eq!(text(&buffer, 2), "klmnopqrst");
+    let line = |buffer: &Buffer, id| buffer.marker(id).unwrap().line;
+    assert_eq!(line(&buffer, first), 0);
+    assert_eq!(line(&buffer, second), 1);
+    assert_eq!(line(&buffer, third), 2);
+    buffer.resize(2, 16, &opts);
+    for (i, t) in [
+        "ab", "cd", "ef", "gh", "ij", "01", "23", "45", "67", "89", "kl", "mn", "op", "qr", "st",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_eq!(text(&buffer, i), *t);
+    }
+    assert_eq!(
+        line(&buffer, first),
+        0,
+        "first marker should remain unchanged"
+    );
+    assert_eq!(
+        line(&buffer, second),
+        5,
+        "second marker should be shifted since the first line wrapped"
+    );
+    assert_eq!(
+        line(&buffer, third),
+        10,
+        "third marker should be shifted since the first and second lines wrapped"
+    );
+    buffer.resize(10, 16, &opts);
+    assert_eq!(text(&buffer, 0), "abcdefghij");
+    assert_eq!(text(&buffer, 1), "0123456789");
+    assert_eq!(text(&buffer, 2), "klmnopqrst");
+    assert_eq!(
+        line(&buffer, first),
+        0,
+        "first marker should remain unchanged"
+    );
+    assert_eq!(
+        line(&buffer, second),
+        1,
+        "second marker should be restored to it's original line"
+    );
+    assert_eq!(
+        line(&buffer, third),
+        2,
+        "third marker should be restored to it's original line"
+    );
+    assert!(buffer.marker(first).is_some());
+    assert!(buffer.marker(second).is_some());
+    assert!(buffer.marker(third).is_some());
+}
+
+#[test]
+fn reflow_should_dispose_markers_whose_rows_are_trimmed_during_a_reflow() {
+    let (mut buffer, mut opts) = new_buffer();
+    buffer.fill_viewport_rows(None);
+    opts.scrollback = 1;
+    buffer.resize(10, 11, &opts);
+    three_rows(&mut buffer);
+    buffer.y = 10;
+    let first = buffer.add_marker(0);
+    let second = buffer.add_marker(1);
+    let third = buffer.add_marker(2);
+    buffer.y = 3;
+    assert_eq!(text(&buffer, 0), "abcdefghij");
+    assert_eq!(text(&buffer, 1), "0123456789");
+    assert_eq!(text(&buffer, 2), "klmnopqrst");
+    let line = |buffer: &Buffer, id| buffer.marker(id).unwrap().line;
+    assert_eq!(line(&buffer, first), 0);
+    assert_eq!(line(&buffer, second), 1);
+    assert_eq!(line(&buffer, third), 2);
+    buffer.resize(2, 11, &opts);
+    for (i, t) in [
+        "ij", "01", "23", "45", "67", "89", "kl", "mn", "op", "qr", "st",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_eq!(text(&buffer, i), *t);
+    }
+    assert_eq!(
+        line(&buffer, second),
+        1,
+        "second marker should remain the same as it was shifted 4 and trimmed 4"
+    );
+    assert_eq!(
+        line(&buffer, third),
+        6,
+        "third marker should be shifted since the first and second lines wrapped"
+    );
+    assert!(buffer.marker(first).is_none(), "first marker was trimmed");
+    assert!(buffer.marker(second).is_some());
+    assert!(buffer.marker(third).is_some());
+    buffer.resize(10, 11, &opts);
+    assert_eq!(text(&buffer, 0), "ij        ");
+    assert_eq!(text(&buffer, 1), "0123456789");
+    assert_eq!(text(&buffer, 2), "klmnopqrst");
+    assert_eq!(line(&buffer, second), 1, "second marker should be restored");
+    assert_eq!(line(&buffer, third), 2, "third marker should be restored");
+}
+
+fn ab_cd_wrapped(buffer: &mut Buffer, opts: &TerminalOptions) {
+    buffer.fill_viewport_rows(None);
+    buffer.resize(4, 10, opts);
+    buffer.y = 2;
+    set_text(buffer, 0, 0, "ab");
+    set_text(buffer, 1, 0, "cd");
+    buffer.lines.get_mut(1).unwrap().is_wrapped = true;
+    // Buffer:
+    // "ab  " (wrapped)
+    // "cd"
+}
+
+#[test]
+fn reflow_larger_wrapped_lines_that_end_in_0_space_via_tab_char() {
+    let (mut buffer, opts) = new_buffer();
+    ab_cd_wrapped(&mut buffer, &opts);
+    buffer.resize(5, 10, &opts);
+    assert_eq!(buffer.ybase, 0);
+    assert_eq!(buffer.lines.len(), 10);
+    assert_eq!(trimmed(&buffer, 0), "ab  c");
+    assert_eq!(text(&buffer, 1), "d    ");
+    buffer.resize(6, 10, &opts);
+    assert_eq!(buffer.ybase, 0);
+    assert_eq!(buffer.lines.len(), 10);
+    assert_eq!(trimmed(&buffer, 0), "ab  cd");
+    assert_eq!(text(&buffer, 1), "      ");
+}
+
+fn wide_rows(buffer: &mut Buffer, opts: &TerminalOptions) {
+    buffer.fill_viewport_rows(None);
+    buffer.resize(12, 10, opts);
+    buffer.y = 2;
+    for row in 0..2 {
+        let line = buffer.lines.get_mut(row).unwrap();
+        for i in (0..12).step_by(4) {
+            line.set(i, &cd("汉", 2));
+        }
+        for i in (2..12).step_by(4) {
+            line.set(i, &cd("语", 2));
+        }
+        for i in (1..12).step_by(2) {
+            line.set(i, &cd("", 0));
+        }
+    }
+    buffer.lines.get_mut(1).unwrap().is_wrapped = true;
+    // Buffer:
+    // 汉语汉语汉语 (wrapped)
+    // 汉语汉语汉语
+    assert_eq!(trimmed(buffer, 0), "汉语汉语汉语");
+    assert_eq!(trimmed(buffer, 1), "汉语汉语汉语");
+}
+
+#[test]
+fn reflow_should_wrap_wide_characters_correctly_when_reflowing_larger() {
+    let (mut buffer, opts) = new_buffer();
+    wide_rows(&mut buffer, &opts);
+    buffer.resize(13, 10, &opts);
+    assert_eq!(buffer.ybase, 0);
+    assert_eq!(buffer.lines.len(), 10);
+    assert_eq!(trimmed(&buffer, 0), "汉语汉语汉语");
+    assert_eq!(text(&buffer, 0), "汉语汉语汉语 ");
+    assert_eq!(trimmed(&buffer, 1), "汉语汉语汉语");
+    assert_eq!(text(&buffer, 1), "汉语汉语汉语 ");
+    buffer.resize(14, 10, &opts);
+    assert_eq!(trimmed(&buffer, 0), "汉语汉语汉语汉");
+    assert_eq!(text(&buffer, 0), "汉语汉语汉语汉");
+    assert_eq!(trimmed(&buffer, 1), "语汉语汉语");
+    assert_eq!(text(&buffer, 1), "语汉语汉语    ");
+}
+
+#[test]
+fn reflow_smaller_wrapped_lines_that_end_in_0_space_via_tab_char() {
+    let (mut buffer, opts) = new_buffer();
+    ab_cd_wrapped(&mut buffer, &opts);
+    buffer.resize(3, 10, &opts);
+    assert_eq!(buffer.y, 2);
+    assert_eq!(buffer.ybase, 0);
+    assert_eq!(buffer.lines.len(), 10);
+    assert_eq!(text(&buffer, 0), "ab ");
+    assert_eq!(text(&buffer, 1), " cd");
+    buffer.resize(2, 10, &opts);
+    assert_eq!(buffer.y, 3);
+    assert_eq!(buffer.ybase, 0);
+    assert_eq!(buffer.lines.len(), 10);
+    assert_eq!(text(&buffer, 0), "ab");
+    assert_eq!(text(&buffer, 1), "  ");
+    assert_eq!(text(&buffer, 2), "cd");
+}
+
+#[test]
+fn reflow_should_wrap_wide_characters_correctly_when_reflowing_smaller() {
+    let (mut buffer, opts) = new_buffer();
+    wide_rows(&mut buffer, &opts);
+    let check = |buffer: &Buffer, expected: &[&str]| {
+        for (i, t) in expected.iter().enumerate() {
+            assert_eq!(trimmed(buffer, i), *t, "row {i}");
+        }
+    };
+    buffer.resize(11, 10, &opts);
+    assert_eq!(buffer.ybase, 0);
+    assert_eq!(buffer.lines.len(), 10);
+    check(&buffer, &["汉语汉语汉", "语汉语汉语", "汉语"]);
+    buffer.resize(10, 10, &opts);
+    check(&buffer, &["汉语汉语汉", "语汉语汉语", "汉语"]);
+    buffer.resize(9, 10, &opts);
+    check(&buffer, &["汉语汉语", "汉语汉语", "汉语汉语"]);
+    buffer.resize(8, 10, &opts);
+    check(&buffer, &["汉语汉语", "汉语汉语", "汉语汉语"]);
+    buffer.resize(7, 10, &opts);
+    check(&buffer, &["汉语汉", "语汉语", "汉语汉", "语汉语"]);
+    buffer.resize(6, 10, &opts);
+    check(&buffer, &["汉语汉", "语汉语", "汉语汉", "语汉语"]);
+}
+
+// ---- reflowLarger cases ----
+
+/// 'ab', 'cd' (wrapped), 'ef', 'gh' (wrapped), 'ij', 'kl' (wrapped), then blank rows; 2 x 10.
+fn larger_setup() -> (Buffer, TerminalOptions) {
+    let (mut buffer, opts) = new_buffer();
+    buffer.fill_viewport_rows(None);
+    buffer.resize(2, 10, &opts);
+    for (row, t) in ["ab", "cd", "ef", "gh", "ij", "kl"].iter().enumerate() {
+        set_text(&mut buffer, row, 0, t);
+    }
+    for row in [1, 3, 5] {
+        buffer.lines.get_mut(row).unwrap().is_wrapped = true;
+    }
+    (buffer, opts)
+}
+
+/// `buffer.lines.splice(0, 0, buffer.getBlankLine(DEFAULT_ATTR_DATA))` ten times.
+fn prepend_ten_blank_rows(buffer: &mut Buffer) {
+    for _ in 0..10 {
+        let line = buffer.get_blank_line(&DEFAULT_ATTR_DATA, false);
+        buffer.lines.splice(0, 0, vec![line]);
+    }
+}
+
+fn assert_larger_content(buffer: &Buffer, top_blank: usize) {
+    for i in 0..top_blank {
+        assert_eq!(text(buffer, i), "    ");
+    }
+    assert_eq!(text(buffer, top_blank), "abcd");
+    assert_eq!(text(buffer, top_blank + 1), "efgh");
+    assert_eq!(text(buffer, top_blank + 2), "ijkl");
+    for i in top_blank + 3..buffer.lines.len() {
+        assert_eq!(text(buffer, i), "    ");
+    }
+    assert_wrapped(buffer, &[]);
+}
+
+#[test]
+fn reflow_larger_viewport_not_yet_filled_moves_the_cursor_up_and_adds_empty_lines() {
+    let (mut buffer, opts) = larger_setup();
+    buffer.y = 6;
+    buffer.resize(4, 10, &opts);
+    assert_eq!(buffer.y, 3);
+    assert_eq!(buffer.ydisp, 0);
+    assert_eq!(buffer.ybase, 0);
+    assert_eq!(buffer.lines.len(), 10);
+    assert_larger_content(&buffer, 0);
+}
+
+#[test]
+fn reflow_larger_scrollback_remaining_ybase_0_moves_the_cursor_up_and_adds_empty_lines() {
+    let (mut buffer, opts) = larger_setup();
+    buffer.y = 9;
+    buffer.resize(4, 10, &opts);
+    assert_eq!(buffer.y, 6);
+    assert_eq!(buffer.ydisp, 0);
+    assert_eq!(buffer.ybase, 0);
+    assert_eq!(buffer.lines.len(), 10);
+    assert_larger_content(&buffer, 0);
+}
+
+#[test]
+fn reflow_larger_scrollback_remaining_ydisp_eq_ybase_adjusts_the_viewport_and_keeps_ydisp_eq_ybase()
+{
+    let (mut buffer, opts) = larger_setup();
+    buffer.y = 9;
+    prepend_ten_blank_rows(&mut buffer);
+    buffer.ybase = 10;
+    buffer.ydisp = 10;
+    buffer.resize(4, 10, &opts);
+    assert_eq!(buffer.y, 9);
+    assert_eq!(buffer.ydisp, 7);
+    assert_eq!(buffer.ybase, 7);
+    assert_eq!(buffer.lines.len(), 17);
+    assert_larger_content(&buffer, 10);
+}
+
+#[test]
+fn reflow_larger_scrollback_remaining_ydisp_ne_ybase_keeps_ydisp_at_the_same_value() {
+    let (mut buffer, opts) = larger_setup();
+    buffer.y = 9;
+    prepend_ten_blank_rows(&mut buffer);
+    buffer.ybase = 10;
+    buffer.ydisp = 5;
+    buffer.resize(4, 10, &opts);
+    assert_eq!(buffer.y, 9);
+    assert_eq!(buffer.ydisp, 5);
+    assert_eq!(buffer.ybase, 7);
+    assert_eq!(buffer.lines.len(), 17);
+    assert_larger_content(&buffer, 10);
+}
+
+fn larger_no_scrollback_setup() -> (Buffer, TerminalOptions) {
+    let (mut buffer, mut opts) = larger_setup();
+    opts.scrollback = 10;
+    prepend_ten_blank_rows(&mut buffer);
+    buffer.y = 9;
+    buffer.ybase = 10;
+    (buffer, opts)
+}
+
+#[test]
+fn reflow_larger_no_scrollback_remaining_ydisp_eq_ybase_trims_lines_and_keeps_ydisp_eq_ybase() {
+    let (mut buffer, opts) = larger_no_scrollback_setup();
+    buffer.ydisp = 10;
+    buffer.resize(4, 10, &opts);
+    assert_eq!(buffer.y, 9);
+    assert_eq!(buffer.ydisp, 7);
+    assert_eq!(buffer.ybase, 7);
+    assert_eq!(buffer.lines.len(), 17);
+    assert_larger_content(&buffer, 10);
+}
+
+#[test]
+fn reflow_larger_no_scrollback_remaining_ydisp_ne_ybase_trims_lines_and_does_not_change_ydisp() {
+    let (mut buffer, opts) = larger_no_scrollback_setup();
+    buffer.ydisp = 5;
+    buffer.resize(4, 10, &opts);
+    assert_eq!(buffer.y, 9);
+    assert_eq!(buffer.ydisp, 5);
+    assert_eq!(buffer.ybase, 7);
+    assert_eq!(buffer.lines.len(), 17);
+    assert_larger_content(&buffer, 10);
+}
+
+// ---- reflowSmaller cases ----
+
+/// 'abcd', 'efgh' (not wrapped), 'ijkl', then blank rows; 4 x 10.
+fn smaller_setup() -> (Buffer, TerminalOptions) {
+    let (mut buffer, opts) = new_buffer();
+    buffer.fill_viewport_rows(None);
+    buffer.resize(4, 10, &opts);
+    for (row, t) in ["abcd", "efgh", "ijkl"].iter().enumerate() {
+        set_text(&mut buffer, row, 0, t);
+    }
+    (buffer, opts)
+}
+
+fn assert_smaller_content(buffer: &Buffer, top_blank: usize) {
+    for i in 0..top_blank {
+        assert_eq!(text(buffer, i), "  ");
+    }
+    for (k, t) in ["ab", "cd", "ef", "gh", "ij", "kl"].iter().enumerate() {
+        assert_eq!(text(buffer, top_blank + k), *t);
+    }
+    for i in top_blank + 6..buffer.lines.len() {
+        assert_eq!(text(buffer, i), "  ");
+    }
+    assert_wrapped(buffer, &[top_blank + 1, top_blank + 3, top_blank + 5]);
+}
+
+#[test]
+fn reflow_smaller_viewport_not_yet_filled_moves_the_cursor_down() {
+    let (mut buffer, opts) = smaller_setup();
+    buffer.y = 3;
+    buffer.resize(2, 10, &opts);
+    assert_eq!(buffer.y, 6);
+    assert_eq!(buffer.ydisp, 0);
+    assert_eq!(buffer.ybase, 0);
+    assert_eq!(buffer.lines.len(), 10);
+    assert_smaller_content(&buffer, 0);
+}
+
+#[test]
+fn reflow_smaller_scrollback_remaining_ybase_0_trims_the_top() {
+    let (mut buffer, opts) = smaller_setup();
+    buffer.y = 9;
+    buffer.resize(2, 10, &opts);
+    assert_eq!(buffer.y, 9);
+    assert_eq!(buffer.ydisp, 3);
+    assert_eq!(buffer.ybase, 3);
+    assert_eq!(buffer.lines.len(), 13);
+    assert_smaller_content(&buffer, 0);
+}
+
+#[test]
+fn reflow_smaller_scrollback_remaining_ydisp_eq_ybase_adjusts_the_viewport_and_keeps_ydisp_eq_ybase()
+ {
+    let (mut buffer, opts) = smaller_setup();
+    buffer.y = 9;
+    prepend_ten_blank_rows(&mut buffer);
+    buffer.ybase = 10;
+    buffer.ydisp = 10;
+    buffer.resize(2, 10, &opts);
+    assert_eq!(buffer.ydisp, 13);
+    assert_eq!(buffer.ybase, 13);
+    assert_eq!(buffer.lines.len(), 23);
+    assert_smaller_content(&buffer, 10);
+}
+
+#[test]
+fn reflow_smaller_scrollback_remaining_ydisp_ne_ybase_keeps_ydisp_at_the_same_value() {
+    let (mut buffer, opts) = smaller_setup();
+    buffer.y = 9;
+    prepend_ten_blank_rows(&mut buffer);
+    buffer.ybase = 10;
+    buffer.ydisp = 5;
+    buffer.resize(2, 10, &opts);
+    assert_eq!(buffer.ydisp, 5);
+    assert_eq!(buffer.ybase, 13);
+    assert_eq!(buffer.lines.len(), 23);
+    assert_smaller_content(&buffer, 10);
+}
+
+fn smaller_no_scrollback_setup() -> (Buffer, TerminalOptions) {
+    let (mut buffer, mut opts) = smaller_setup();
+    opts.scrollback = 10;
+    prepend_ten_blank_rows(&mut buffer);
+    buffer.ybase = 10;
+    (buffer, opts)
+}
+
+#[test]
+fn reflow_smaller_no_scrollback_remaining_ydisp_eq_ybase_trims_lines_and_keeps_ydisp_eq_ybase() {
+    let (mut buffer, opts) = smaller_no_scrollback_setup();
+    buffer.ydisp = 10;
+    buffer.y = 13;
+    buffer.resize(2, 10, &opts);
+    assert_eq!(buffer.ydisp, 10);
+    assert_eq!(buffer.ybase, 10);
+    assert_eq!(buffer.lines.len(), 20);
+    assert_smaller_content(&buffer, 7);
+}
+
+#[test]
+fn reflow_smaller_no_scrollback_remaining_ydisp_ne_ybase_trims_lines_and_does_not_change_ydisp() {
+    let (mut buffer, opts) = smaller_no_scrollback_setup();
+    buffer.ydisp = 5;
+    buffer.y = 13;
+    buffer.resize(2, 10, &opts);
+    assert_eq!(buffer.ydisp, 5);
+    assert_eq!(buffer.ybase, 10);
+    assert_eq!(buffer.lines.len(), 20);
+    assert_smaller_content(&buffer, 7);
+}
+
+// ---- added reflow tests (plan M5 step 7 (a)-(d)); expected values from @xterm/headless 6.0.0
+// driven through `Terminal.resize` (scratch oracle script, recorded in the task notes) ----
+
+#[test]
+fn added_markers_before_inside_after_and_trimmed_follow_both_reflow_directions() {
+    let opts = options(1);
+    let mut buffer = Buffer::new(true, 10, 5, &opts);
+    buffer.fill_viewport_rows(None);
+    for (row, t) in ["top", "b", "0123456789", "abcdefghij", "after"]
+        .iter()
+        .enumerate()
+    {
+        set_text(&mut buffer, row, 0, t);
+    }
+    buffer.lines.get_mut(3).unwrap().is_wrapped = true;
+    buffer.y = 4;
+    let top = buffer.add_marker(0);
+    let before = buffer.add_marker(1);
+    let in0 = buffer.add_marker(2);
+    let in1 = buffer.add_marker(3);
+    let after = buffer.add_marker(4);
+    let line = |buffer: &Buffer, id| buffer.marker(id).map(|m| m.line);
+
+    // shrink: the group grows by two rows, one row trims off the top
+    buffer.resize(5, 5, &opts);
+    assert_eq!(
+        rows(&buffer),
+        [" b    ", " 01234", "+56789", "+abcde", "+fghij", " after"]
+    );
+    assert_eq!(
+        (buffer.ybase, buffer.ydisp, buffer.y, buffer.saved_y),
+        (1, 1, 4, 2)
+    );
+    assert_eq!(line(&buffer, top), None);
+    assert_eq!(line(&buffer, before), Some(0));
+    assert_eq!(line(&buffer, in0), Some(1));
+    assert_eq!(line(&buffer, in1), Some(2));
+    assert_eq!(line(&buffer, after), Some(5));
+    assert_eq!(buffer.take_disposed_markers(), vec![top]);
+
+    // grow: a marker on every row, the two removed rows dispose theirs
+    let g: Vec<MarkerId> = (0..6).map(|i| buffer.add_marker(i)).collect();
+    buffer.resize(10, 5, &opts);
+    assert_eq!(
+        rows(&buffer),
+        [
+            " b         ",
+            " 0123456789",
+            "+abcdefghij",
+            " after     ",
+            "           "
+        ]
+    );
+    assert_eq!(
+        (buffer.ybase, buffer.ydisp, buffer.y, buffer.saved_y),
+        (0, 0, 3, 0)
+    );
+    assert_eq!(line(&buffer, before), Some(0));
+    assert_eq!(line(&buffer, in0), Some(1));
+    assert_eq!(line(&buffer, in1), Some(2));
+    assert_eq!(line(&buffer, after), Some(3));
+    let g_lines: Vec<Option<i64>> = g.iter().map(|&id| line(&buffer, id)).collect();
+    assert_eq!(g_lines, [Some(0), Some(1), Some(2), None, None, Some(3)]);
+    assert_eq!(buffer.take_disposed_markers(), vec![g[3], g[4]]);
+}
+
+/// Line 0 as `abe\u{301}` + `CSI 4:3 m` + `OSC 8 ;; https://x.test` + `LINK` + `OSC 8 ;;` +
+/// `CSI 24 m` + `z` leaves it at 8 columns in @xterm/headless 6.0.0 (raw `_data`, `_combined`,
+/// `_extendedAttrs` dumped by the oracle script).
+fn oracle_link_line(buffer: &mut Buffer) {
+    const DATA: [u32; 24] = [
+        4194401, 0, 0, 4194402, 0, 0, 6291456, 0, 0, 4194380, 268435456, 268435456, 4194377,
+        268435456, 268435456, 4194382, 268435456, 268435456, 4194379, 268435456, 268435456,
+        4194426, 0, 0,
+    ];
+    let line = buffer.lines.get_mut(0).unwrap();
+    for x in 0..8 {
+        let mut cell = CellData::new();
+        cell.content = DATA[x * 3];
+        cell.fg = DATA[x * 3 + 1];
+        cell.bg = DATA[x * 3 + 2];
+        if x == 2 {
+            cell.combined_data = "e\u{301}".to_string();
+        }
+        if (3..=6).contains(&x) {
+            cell.extended = ExtendedAttrs::new(201326592, 1);
+        }
+        line.set_cell(x, &cell);
+    }
+}
+
+/// `[chars, width, combined, has_extended, url_id, raw extended attrs]` per cell of a row.
+fn cell_dump(buffer: &Buffer, row: usize) -> Vec<(String, u32, bool, bool, u32, ExtendedAttrs)> {
+    let line = buffer.lines.get(row).unwrap();
+    (0..line.len())
+        .map(|x| {
+            let mut cell = CellData::new();
+            line.load_cell(x, &mut cell);
+            let has_ext = cell.has_extended_attrs() != 0;
+            (
+                cell.get_chars(),
+                cell.get_width(),
+                cell.is_combined() != 0,
+                has_ext,
+                if has_ext { cell.extended.url_id() } else { 0 },
+                if has_ext {
+                    cell.extended
+                } else {
+                    ExtendedAttrs::default()
+                },
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn added_reflow_round_trip_keeps_combined_marks_and_linked_curly_underlines() {
+    let opts = options(10);
+    let mut buffer = Buffer::new(true, 8, 3, &opts);
+    buffer.fill_viewport_rows(None);
+    oracle_link_line(&mut buffer);
+    buffer.y = 2;
+    let none = ExtendedAttrs::default();
+    let plain = |c: &str| (c.to_string(), 1, false, false, 0, none);
+    // curly underline (`_ext` 3 << 26) with url id 1
+    let link = |c: &str| {
+        (
+            c.to_string(),
+            1,
+            false,
+            true,
+            1,
+            ExtendedAttrs::new(201326592, 1),
+        )
+    };
+    let combined = ("e\u{301}".to_string(), 1, true, false, 0, none);
+
+    buffer.resize(5, 3, &opts);
+    assert_eq!(
+        (buffer.ybase, buffer.ydisp, buffer.y, buffer.saved_y),
+        (1, 1, 2, 1)
+    );
+    assert_eq!(buffer.lines.len(), 4);
+    assert_eq!(text(&buffer, 0), "abe\u{301}LI");
+    assert_eq!(text(&buffer, 1), "NKz  ");
+    assert!(buffer.lines.get(1).unwrap().is_wrapped);
+    assert_eq!(
+        cell_dump(&buffer, 0),
+        [
+            plain("a"),
+            plain("b"),
+            combined.clone(),
+            link("L"),
+            link("I")
+        ]
+    );
+    assert_eq!(
+        cell_dump(&buffer, 1),
+        [link("N"), link("K"), plain("z"), plain(""), plain("")]
+    );
+
+    buffer.resize(8, 3, &opts);
+    assert_eq!(
+        (buffer.ybase, buffer.ydisp, buffer.y, buffer.saved_y),
+        (0, 0, 2, 0)
+    );
+    assert_eq!(buffer.lines.len(), 3);
+    assert_eq!(text(&buffer, 0), "abe\u{301}LINKz");
+    assert_eq!(
+        cell_dump(&buffer, 0),
+        [
+            plain("a"),
+            plain("b"),
+            combined,
+            link("L"),
+            link("I"),
+            link("N"),
+            link("K"),
+            plain("z")
+        ]
+    );
+}
+
+#[test]
+fn added_reflow_cursor_line_decides_whether_the_cursor_group_reflows() {
+    for reflow_cursor_line in [false, true] {
+        let opts = TerminalOptions {
+            scrollback: 10,
+            reflow_cursor_line,
+            ..TerminalOptions::default()
+        };
+        // shrink: `0123456789abcde` written at 10 columns, cursor after `e`
+        let mut buffer = Buffer::new(true, 10, 5, &opts);
+        buffer.fill_viewport_rows(None);
+        set_text(&mut buffer, 0, 0, "0123456789");
+        set_text(&mut buffer, 1, 0, "abcde");
+        buffer.lines.get_mut(1).unwrap().is_wrapped = true;
+        buffer.y = 1;
+        buffer.x = 5;
+        buffer.resize(5, 5, &opts);
+        if reflow_cursor_line {
+            assert_eq!(rows(&buffer)[..3], [" 01234", "+56789", "+abcde"]);
+            assert_eq!((buffer.y, buffer.x, buffer.saved_y), (2, 4, 1));
+        } else {
+            assert_eq!(rows(&buffer)[..3], [" 01234", "+abcde", "      "]);
+            assert_eq!((buffer.y, buffer.x, buffer.saved_y), (1, 4, 0));
+        }
+        assert_eq!(buffer.lines.len(), 5);
+
+        // grow: `0123456789ab` written at 5 columns, cursor after `b`
+        let mut buffer = Buffer::new(true, 5, 5, &opts);
+        buffer.fill_viewport_rows(None);
+        set_text(&mut buffer, 0, 0, "01234");
+        set_text(&mut buffer, 1, 0, "56789");
+        set_text(&mut buffer, 2, 0, "ab");
+        buffer.lines.get_mut(1).unwrap().is_wrapped = true;
+        buffer.lines.get_mut(2).unwrap().is_wrapped = true;
+        buffer.y = 2;
+        buffer.x = 2;
+        buffer.resize(10, 5, &opts);
+        if reflow_cursor_line {
+            assert_eq!(rows(&buffer)[..2], [" 0123456789", "+ab        "]);
+            assert_eq!(buffer.y, 1);
+        } else {
+            assert_eq!(
+                rows(&buffer)[..3],
+                [" 01234     ", "+56789     ", "+ab        "]
+            );
+            assert_eq!(buffer.y, 2);
+        }
+        assert_eq!(buffer.lines.len(), 5);
+    }
+}
+
+#[test]
+fn added_windows_mode_and_conpty_builds_decide_whether_reflow_runs() {
+    let cases = [
+        (true, None, None, false),
+        (false, Some(PtyBackendKind::Conpty), Some(21375), false),
+        (false, Some(PtyBackendKind::Conpty), Some(21376), true),
+        (false, None, None, true),
+    ];
+    for (windows_mode, backend, build_number, reflows) in cases {
+        let mut opts = options(10);
+        opts.windows_mode = windows_mode;
+        opts.windows_pty.backend = backend;
+        opts.windows_pty.build_number = build_number;
+        let mut buffer = Buffer::new(true, 4, 5, &opts);
+        buffer.fill_viewport_rows(None);
+        set_text(&mut buffer, 0, 0, "abcd");
+        buffer.y = 4;
+        buffer.resize(2, 5, &opts);
+        let label = format!("{windows_mode} {backend:?} {build_number:?}");
+        if reflows {
+            assert_eq!(text(&buffer, 0), "ab", "{label}");
+            assert_eq!(text(&buffer, 1), "cd", "{label}");
+            assert_eq!(buffer.lines.len(), 6, "{label}");
+        } else {
+            // upstream trims shrunk lines only inside the reflow branch: the rows keep 4 columns
+            assert_eq!(text(&buffer, 0), "abcd", "{label}");
+            assert_eq!(text(&buffer, 1), "    ", "{label}");
+            assert_eq!(buffer.lines.len(), 5, "{label}");
+        }
+    }
+}
+
+#[test]
+fn added_reflow_smaller_reads_popped_rows_again_as_upstream_does() {
+    // Upstream's `lines.pop()` leaves the row in its slot and the same loop reads it again
+    // (row 7 here, after the group at rows 8-9 popped eight rows). Expected values from
+    // @xterm/headless 6.0.0 (`Terminal.resize(2, 10)`), including its lost rows and the
+    // markers it leaves past the end.
+    let opts = options(100);
+    let mut buffer = Buffer::new(true, 10, 10, &opts);
+    buffer.fill_viewport_rows(None);
+    set_text(&mut buffer, 1, 0, "top");
+    set_text(&mut buffer, 7, 0, "XYZ");
+    set_text(&mut buffer, 8, 0, "0123456789");
+    set_text(&mut buffer, 9, 0, "abcdefghij");
+    buffer.lines.get_mut(9).unwrap().is_wrapped = true;
+    buffer.y = 0;
+    let markers: Vec<MarkerId> = [0, 1, 7, 8, 9].map(|y| buffer.add_marker(y)).to_vec();
+    buffer.resize(2, 10, &opts);
+    assert_eq!(
+        rows(&buffer),
+        [
+            "   ", "+p ", "+Z ", "+45", "+67", "+89", "+ab", "+cd", "+ef", "+gh", "+ij"
+        ]
+    );
+    assert_eq!(
+        (buffer.ybase, buffer.ydisp, buffer.y, buffer.saved_y),
+        (1, 1, 9, 10)
+    );
+    let lines: Vec<Option<i64>> = markers
+        .iter()
+        .map(|&id| buffer.marker(id).map(|m| m.line))
+        .collect();
+    assert_eq!(lines, [Some(0), Some(11), Some(17), Some(18), Some(19)]);
+}
+
+#[test]
+fn added_reflow_smaller_drops_trimmed_new_rows_instead_of_overwriting_the_last_row() {
+    // adapted (plan D2): upstream's ring (start index 1 here) receives the trimmed new row `cd`
+    // through `lines.set(-1)` in the last row's slot (@xterm/headless 6.0.0 ends with
+    // `..., "9", "cd"`); the list here has no ring, so the last row keeps `ZZ`.
+    let opts = options(5);
+    let mut buffer = Buffer::new(true, 6, 5, &opts);
+    buffer.fill_viewport_rows(None);
+    for _ in 0..5 {
+        let line = buffer.get_blank_line(&DEFAULT_ATTR_DATA, false);
+        buffer.lines.push(line);
+    }
+    for (row, t) in ["abcdef", "2", "3", "4", "5", "6", "7", "8", "9", "ZZ"]
+        .iter()
+        .enumerate()
+    {
+        set_text(&mut buffer, row, 0, t);
+    }
+    buffer.ybase = 5;
+    buffer.ydisp = 5;
+    buffer.y = 4;
+    buffer.resize(2, 5, &opts);
+    let text: Vec<String> = (0..buffer.lines.len())
+        .map(|i| trimmed(&buffer, i))
+        .collect();
+    assert_eq!(text, ["ef", "2", "3", "4", "5", "6", "7", "8", "9", "ZZ"]);
+    assert_eq!((buffer.ybase, buffer.y), (5, 4));
 }
