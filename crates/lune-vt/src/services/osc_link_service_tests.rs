@@ -354,3 +354,81 @@ fn enforce_caps_ends_even_when_an_age_key_outlived_its_entry() {
         assert_eq!(osc.len(), MAX_LINKS);
     });
 }
+
+// ---- bulk disposal, `// LUNETERM:` (review F6) ----
+
+/// A buffer with `lines` lines of scrollback and one link (id "l") marking each of them.
+fn long_link(lines: usize) -> (BufferService, OscLinkService, u32) {
+    let options = OptionsService::new([
+        OptionValue::Rows(3),
+        OptionValue::Cols(10),
+        OptionValue::Scrollback(lines),
+    ]);
+    let mut buffers = BufferService::new(options.options());
+    let mut osc = OscLinkService::new();
+    for _ in 0..lines {
+        buffers.scroll(&AttributeData::default(), false);
+    }
+    let long = osc.register_link(&mut buffers, link("l", "long"));
+    for y in 0..lines {
+        osc.add_line_to_link(&mut buffers, long, y);
+    }
+    (buffers, osc, long)
+}
+
+#[test]
+fn evicting_a_long_link_walks_the_marker_list_once() {
+    let (mut buffers, mut osc, long) = long_link(2000);
+    let k = osc.link_markers(long).map_or(0, <[_]>::len);
+    assert_eq!(k, 2001, "every scrollback line and the cursor line");
+    for i in 0..MAX_LINKS - 1 {
+        osc.register_link(&mut buffers, no_id(&format!("u{i}")));
+    }
+    assert!(osc.get_link_data(long).is_some());
+    let before = buffers.buffers.normal().markers().len();
+    buffers.buffers.normal_mut().lines.observer_mut().visits = 0;
+    osc.register_link(&mut buffers, no_id("evicts the long link"));
+    assert!(osc.get_link_data(long).is_none());
+    // one walk of the list, which holds the new link's marker too (disposal one by one moved
+    // about k * before entries)
+    let visits = buffers.buffers.normal().markers().visits;
+    assert!(
+        visits <= before as u64 + 1,
+        "{visits} visits for {before} markers"
+    );
+    assert_eq!(buffers.buffers.normal().markers().len(), before + 1 - k);
+    assert_eq!(buffers.buffers.normal().markers().len(), osc.marker_count());
+    // the disposal log holds the evicted markers once each, in creation order
+    let log = buffers.buffers.normal_mut().take_disposed_markers();
+    assert_eq!(log.len(), k);
+    assert!(log.windows(2).all(|w| w[0] < w[1]));
+}
+
+#[test]
+fn forwarding_the_disposal_of_a_long_link_filters_its_list_once() {
+    let (mut buffers, mut osc, long) = long_link(2000);
+    let other = osc.register_link(&mut buffers, no_id("other"));
+    let k = osc.link_markers(long).map_or(0, <[_]>::len);
+    buffers.buffers.normal_mut().clear_all_markers();
+    osc.line_visits = 0;
+    forward(&mut buffers, &mut osc);
+    assert!(osc.is_empty(), "both links freed");
+    assert!(osc.get_link_data(other).is_none());
+    assert_eq!(osc.marker_count(), 0);
+    assert!(osc.by_age.is_empty() && osc.entries_with_id.is_empty());
+    // one pass per affected link (one marker each removed by search moved about k^2 / 2)
+    assert!(
+        osc.line_visits <= k as u64 + 1,
+        "{} visits",
+        osc.line_visits
+    );
+    // a partial batch keeps the link with the rest of its markers
+    let (mut buffers, mut osc, long) = long_link(100);
+    let lines: Vec<_> = osc.link_markers(long).unwrap().to_vec();
+    let half: Vec<_> = lines.iter().step_by(2).map(|m| m.id).collect();
+    osc.on_markers_disposed(&half);
+    let left: Vec<_> = lines.iter().skip(1).step_by(2).copied().collect();
+    assert_eq!(osc.link_markers(long), Some(left.as_slice()));
+    assert_eq!(osc.marker_count(), left.len());
+    let _ = &mut buffers;
+}

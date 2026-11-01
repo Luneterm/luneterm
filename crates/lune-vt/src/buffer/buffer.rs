@@ -42,7 +42,7 @@
 //!    the group (`buffer_reflow.rs`). A wrapped first line with no content gives
 //!    `linesToAdd = -1` and can move `savedY` to -1 upstream; here it stops at 0. `adapted:`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use crate::buffer::attribute_data::{AttributeData, ExtendedAttrs};
 use crate::buffer::buffer_line::{BufferLine, DEFAULT_ATTR_DATA};
@@ -837,6 +837,12 @@ impl Buffer {
     /// already disposed ids are ignored.
     pub fn dispose_marker(&mut self, id: MarkerId) {
         self.lines.observer_mut().dispose(id);
+    }
+
+    /// Disposes the markers in `ids` in one walk, logged in creation order (unknown ids are
+    /// ignored).
+    pub fn dispose_markers(&mut self, ids: &HashSet<MarkerId>) {
+        self.lines.observer_mut().dispose_all(ids);
     }
 
     /// The live marker, `None` once disposed.
