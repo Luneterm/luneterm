@@ -10,7 +10,8 @@
 //!  - `toRemove[k]` past the end is `undefined` upstream and never equals an index; here the
 //!    lookup is an `Option` with the same outcome.
 //!  - `adapted:` reads upstream would make of a missing line (`undefined`, then a throw) treat the
-//!    line as absent: an empty slot ends a group, a missing line has width 0 and trimmed length 0.
+//!    line as absent: an empty slot ends a group (or, at a group's first row, is skipped and the
+//!    wrapped rows after it are left unreflowed), a missing line has width 0 and trimmed length 0.
 //!    No valid buffer reaches them.
 //!  - `new_cols >= 2` is the caller's precondition (D8): [`reflow_smaller_get_new_line_lengths`]
 //!    locks up at 1 column on a line with a wide character, as upstream does.
@@ -107,6 +108,12 @@ pub fn reflow_larger_get_lines_to_remove<O: ListObserver>(
         // Check if this row is wrapped
         let mut i = y + 1;
         if !is_wrapped(lines, i) {
+            y += 1;
+            continue;
+        }
+        // adapted: an empty slot cannot start a group; skip it so the wrapped tail is left in
+        // place (`take_group` would drop the `None` and shift the whole group up one slot).
+        if lines.get(y).is_none() {
             y += 1;
             continue;
         }

@@ -1866,3 +1866,40 @@ fn added_reflow_smaller_drops_trimmed_new_rows_instead_of_overwriting_the_last_r
     assert_eq!(text, ["ef", "2", "3", "4", "5", "6", "7", "8", "9", "ZZ"]);
     assert_eq!((buffer.ybase, buffer.y), (5, 4));
 }
+
+// ---- reflow over an empty slot ----
+
+#[test]
+fn reflow_larger_leaves_lines_in_their_slots_when_a_group_starts_on_an_empty_slot() {
+    let opts = options(0);
+    let mut buffer = Buffer::new(true, 4, 3, &opts);
+    buffer.fill_viewport_rows(None);
+    for (x, c) in ["a", "b", "c", "d"].iter().enumerate() {
+        set_char(&mut buffer, 1, x, c);
+    }
+    set_char(&mut buffer, 2, 0, "x");
+    set_char(&mut buffer, 2, 1, "y");
+    wrap(&mut buffer, &[1]);
+    buffer.lines.set(0, None);
+    buffer.y = 2;
+    let at_empty = buffer.add_marker(0);
+    let at_wrapped = buffer.add_marker(1);
+    let after = buffer.add_marker(2);
+
+    buffer.resize(8, 3, &opts);
+
+    assert!(buffer.lines.get(0).is_none(), "the empty slot stays empty");
+    assert_eq!(
+        buffer.translate_buffer_line_to_string(1, true, 0, None),
+        "abcd"
+    );
+    assert!(buffer.lines.get(1).unwrap().is_wrapped);
+    assert_eq!(
+        buffer.translate_buffer_line_to_string(2, true, 0, None),
+        "xy"
+    );
+    assert_eq!(buffer.lines.len(), 3);
+    assert_eq!(buffer.marker(at_empty).unwrap().line, 0);
+    assert_eq!(buffer.marker(at_wrapped).unwrap().line, 1);
+    assert_eq!(buffer.marker(after).unwrap().line, 2);
+}
