@@ -1125,7 +1125,7 @@ mod edge_semantics {
         assert_eq!(CELL_SIZE, 3);
     }
 
-    /// LUNETERM (review S4): a cell holds at most `MAX_COMBINED_CODE_POINTS` code points; the
+    /// LUNETERM: (review S4) a cell holds at most `MAX_COMBINED_CODE_POINTS` code points; the
     /// rest are dropped, but a width they ask for still applies.
     #[test]
     fn combining_code_points_past_the_cap_are_dropped_and_their_width_still_applies() {
