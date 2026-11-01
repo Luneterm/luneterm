@@ -4,13 +4,16 @@
 //! The formats are specified in `FORMAT.md` next to this crate's `Cargo.toml`; the goldens are
 //! generated from the reference xterm.js by `scripts/regen-vt-goldens.sh` and committed, so
 //! nothing here needs Node. [`trace`] is the parser-trace runner (`tests/parser_trace.rs`; the
-//! `lune-vt` fuzz test includes the same file by path, see its header).
+//! `lune-vt` fuzz test includes the same file by path, see its header); [`screen`] renders the
+//! screen dump and Lunegit's grid from a `lune_vt::Terminal` (`tests/screen_goldens.rs`,
+//! `tests/lunegit_vectors.rs`).
 
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub mod escape;
+pub mod screen;
 pub mod trace;
 
 pub use escape::{escape_code_points, escape_str};
