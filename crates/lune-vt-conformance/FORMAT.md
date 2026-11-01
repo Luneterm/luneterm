@@ -15,6 +15,16 @@ directories; the reader also tolerates a trailing `\r`.
   `tests/parser_trace.rs` replays every parser golden (chunked and unsplit) and compares it with
   `expect`. `lune-vt/tests/no_panic.rs` includes `trace.rs` and `escape.rs` by path (the engine
   crate cannot depend on this one) for its seeded fuzz and chunk-invariance check.
+- `src/screen.rs` renders a `lune_vt::Terminal` run (Unicode 11 active, default options, as the
+  oracle's `createTerminal`) in the screen-dump format and Lunegit's grid, reading only the public
+  API and `core()` accessors. `tests/screen_goldens.rs` replays every screen golden as recorded,
+  unsplit, one byte per write and with three seeded random splits; all must equal `expect`.
+  `tests/lunegit_vectors.rs` checks the 27 Lunegit vectors: the 21 non-divergent equal the tmux
+  grid, the 6 divergent differ from it and their `lunegit_<name>` screen golden matches, and one
+  byte per write gives the recorded chunking's grid. Both tests carry a `PENDING` list of names
+  expected to fail until the handlers they need are ported (milestone M6, plan steps 5-8); the
+  failing set must equal `PENDING` exactly, so a newly passing golden has to be removed from it
+  and a regression fails. `PENDING` is empty once step 8 lands.
 - Known upstream chunk dependence: xterm.js 6.0.0 drops a DEL (0x7F) that is the first code after
   a DCS hook or starts a chunk inside a DCS payload and keeps one anywhere later. `lune-vt` keeps
   it everywhere (ledger row 18), so the fuzz's chunk-invariance comparison needs no exception
