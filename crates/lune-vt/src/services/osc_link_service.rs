@@ -73,6 +73,7 @@ struct Entry {
     data: OscLinkData,
     /// `Some` for a link with an id: the `_entriesWithId` key.
     key: Option<String>,
+    /// In the order the markers were added, which is ascending id (ids only grow).
     lines: Vec<LinkMarker>,
     /// LUNETERM: the marker [`OscLinkService::add_line_to_link`] last found on, or added to,
     /// the line it was asked about. `print` asks once per character for the cursor line, so
@@ -265,16 +266,18 @@ impl OscLinkService {
     /// LUNETERM: (review F6) upstream removes each marker from its link's list on its own
     /// dispose event, a search and a removal per marker: quadratic when ED 3, RIS or a trim
     /// disposes the markers of a link over a long buffer at once. Here the batch is grouped by
-    /// link and each affected list is filtered once. The end state is the same; links freed
-    /// by one batch are freed in another order, which nothing observes.
+    /// link and each affected list is filtered once, by a merge of the sorted ids against the
+    /// list, which is in creation order and so sorted by id (`Entry::lines`); a single trimmed
+    /// line costs what upstream's one removal costs. The end state is the same; links freed by
+    /// one batch are freed in another order, which nothing observes.
     pub fn on_markers_disposed(&mut self, ids: &[MarkerId]) {
-        let mut gone: HashMap<u32, HashSet<MarkerId>> = HashMap::new();
+        let mut gone: HashMap<u32, Vec<MarkerId>> = HashMap::new();
         for &marker in ids {
             if let Some(link_id) = self.link_of_marker.remove(&marker) {
-                gone.entry(link_id).or_default().insert(marker);
+                gone.entry(link_id).or_default().push(marker);
             }
         }
-        for (link_id, markers) in gone {
+        for (link_id, mut markers) in gone {
             let Some(entry) = self.data_by_link_id.get_mut(&link_id) else {
                 continue;
             };
@@ -282,8 +285,26 @@ impl OscLinkService {
             {
                 self.line_visits += entry.lines.len() as u64;
             }
+            markers.sort_unstable();
+            markers.dedup();
             let before = entry.lines.len();
-            entry.lines.retain(|m| !markers.contains(&m.id));
+            if let [marker] = markers.as_slice() {
+                // the common case (one trimmed line): one search and one removal
+                if let Ok(index) = entry.lines.binary_search_by_key(marker, |m| m.id) {
+                    entry.lines.remove(index);
+                }
+            } else {
+                let mut next = markers.iter().peekable();
+                entry.lines.retain(|m| {
+                    while next.next_if(|&&id| id < m.id).is_some() {}
+                    next.next_if(|&&id| id == m.id).is_none()
+                });
+            }
+            if before - entry.lines.len() != markers.len() {
+                // not sorted after all (never expected): remove the rest by lookup
+                let markers: HashSet<MarkerId> = markers.into_iter().collect();
+                entry.lines.retain(|m| !markers.contains(&m.id));
+            }
             if entry.lines.len() != before && entry.lines.is_empty() {
                 if let Some(key) = entry.key.take() {
                     self.entries_with_id.remove(&key);
