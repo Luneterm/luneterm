@@ -23,4 +23,5 @@
 )]
 
 pub mod charset_service;
+pub mod options_service;
 pub mod unicode_service;
