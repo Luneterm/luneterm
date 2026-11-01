@@ -11,6 +11,7 @@
 //! drained, so the host must drain after every write.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub use crate::services::options_service::CursorStyle;
 
@@ -244,7 +245,9 @@ pub struct Viewport {
     pub total_lines: usize,
     /// The viewport shows the bottom page.
     pub is_at_bottom: bool,
-    pub title: String,
+    /// The window title, shared with the engine (a snapshot does not copy it; it can be up to
+    /// the parser's 10 MB payload limit).
+    pub title: Arc<str>,
     pub alt_screen: bool,
     /// The uri of every link id used by a cell in `cells`.
     pub links: BTreeMap<u32, String>,

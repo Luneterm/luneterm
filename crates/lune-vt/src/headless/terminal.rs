@@ -381,7 +381,7 @@ impl Terminal {
             base_y: buffer.ybase,
             total_lines: buffer.lines.len(),
             is_at_bottom: buffer.ydisp >= buffer.ybase,
-            title: input_handler.window_title().to_owned(),
+            title: input_handler.window_title_shared(),
             alt_screen: services.buffer.buffers.is_alt_active(),
             links,
         }

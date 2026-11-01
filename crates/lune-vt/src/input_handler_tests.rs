@@ -1197,7 +1197,23 @@ fn fallbacks_log_unknown_sequences() {
         .log
         .set_logger(Some(Box::new(Capture(Rc::clone(&messages)))));
     t.parse_str("\x1b[1;2y\x1b(z\x01\x1b]777;hi\x07\x1bP1$zab\x1b\\ok");
+    // an unhandled OSC and DCS log their identifier and payload length, never the payload
+    // (user decision 2026-11-01)
+    t.parse_str("\x1b]52;c;c2VjcmV0\x07\x1bP1$zsecret\x1b\\");
     let messages = messages.borrow();
+    let fallback = |m: &&String| m.starts_with("Unknown OSC") || m.starts_with("Unknown DCS");
+    assert!(
+        messages
+            .iter()
+            .filter(fallback)
+            .all(|m| !m.contains("c2VjcmV0") && !m.contains("secret")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("identifier: 52") && m.contains("length: "))
+    );
     for prefix in [
         "Unknown CSI code",
         "Unknown ESC code",
