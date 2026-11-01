@@ -17,12 +17,11 @@
 //!    random chunks, end with the same `screen::dump` lines and the same `Viewport` as the
 //!    operations as generated, at a few checkpoints and at the end.
 //!
-//! The event bound is the one check that fails on the engine today: `PENDING_EVENT_BOUND` lists
-//! the seeds and the test asserts that exactly those fail it; each is re-run without the bound so
-//! nothing hides behind it. The engine coalesces events per drain (plan M6 D2 amendment, user
-//! decision Q10: one `Title` per drain, merged `A11yText` capped per drain), which fixed the REP
-//! class and the in-write title storms; the seeds left re-emit, in a later drain, a large title
-//! stored by an earlier write (XTWINOPS 23 pops it: one title of up to 10 MB for a few bytes).
+//! The event bound holds on every seed since the engine coalesces the two amplifiers this test
+//! found (plan M6 D2 amendment, user decisions Q10/Q11): one payload-free `TitleChanged` per
+//! drain (XTWINOPS 23 used to re-queue a stored title of up to 10 MB per pop) and merged
+//! `A11yText` capped per drain (REP with screen reader mode on used to queue one event per
+//! repeated character). The unit tests for both rules are in `headless/terminal_tests.rs`.
 //!
 //! Known upstream chunk dependence (step 9 hand-off (b), root cause found here): with autowrap off
 //! (`CSI ? 7 l`) a wide character that does not fit at the right margin is skipped and leaves
@@ -654,11 +653,14 @@ fn event_cost(event: &HostEvent) -> u64 {
     let n = |len: usize| len as u64 + 1;
     match event {
         HostEvent::Response(bytes) => n(bytes.len()),
-        HostEvent::Title(text) | HostEvent::A11yText(text) => n(text.len()),
+        HostEvent::A11yText(text) => n(text.len()),
         HostEvent::Color(requests) => 8 * requests.len() as u64 + 1,
         HostEvent::A11yTab(_) | HostEvent::UnknownOsc { .. } => 16,
         HostEvent::ClipboardWrite { selection, data } => n(selection.len() + data.len()),
-        HostEvent::Bell | HostEvent::FocusReportRequested | HostEvent::WindowReport(_) => 1,
+        HostEvent::Bell
+        | HostEvent::TitleChanged
+        | HostEvent::FocusReportRequested
+        | HostEvent::WindowReport(_) => 1,
     }
 }
 
@@ -666,7 +668,7 @@ fn event_slot(event: &HostEvent) -> usize {
     match event {
         HostEvent::Response(_) => 0,
         HostEvent::Bell => 1,
-        HostEvent::Title(_) => 2,
+        HostEvent::TitleChanged => 2,
         HostEvent::Color(_) => 3,
         HostEvent::FocusReportRequested | HostEvent::WindowReport(_) => 4,
         HostEvent::A11yText(_) => 5,
@@ -708,7 +710,15 @@ impl Sim {
                     .run
                     .responses
                     .push(String::from_utf8_lossy(&bytes).into_owned()),
-                HostEvent::Title(title) => self.run.title = title,
+                HostEvent::TitleChanged => {
+                    self.run.title = self
+                        .run
+                        .term
+                        .core()
+                        .input_handler()
+                        .window_title()
+                        .to_owned();
+                }
                 _ => {}
             }
         }
@@ -1023,21 +1033,6 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// Seeds below 2400 whose events outweigh their input (`drain_events` bound), left after the Q10
-/// coalescing: the event queue is a design decision (plan D2), see
-/// `known_event_amplifiers_still_amplify`. The test asserts that the seeds failing the event
-/// bound are exactly these (within the run's seeds), so a fix must empty the list. Each of
-/// these seeds, replayed without the event bound, passes every other check. After a change to
-/// the generator the list is regenerated: `LUNE_VT_ENGINE_FUZZ_SEEDS=2400 cargo test -p lune-vt
-/// --release --test engine_fuzz` prints the failing seeds.
-///
-/// Title replay class: XTWINOPS 23 with `pop_title` on restores a title stored by an earlier
-/// write and the drain after it carries that title (one per drain since Q10), up to 10 MB for a
-/// few bytes written. Awaiting a decision (step 10 follow-up notes).
-const PENDING_EVENT_BOUND: &[u64] = &[569, 606, 637, 1049, 1331, 2036, 2204];
-
-const EVENT_BOUND_MESSAGE: &str = "drain_events weighed";
-
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
 }
@@ -1049,21 +1044,11 @@ fn random_operations_never_panic_stay_bounded_and_ignore_chunking() {
         None => (0..env_u64("LUNE_VT_ENGINE_FUZZ_SEEDS").unwrap_or(DEFAULT_SEEDS)).collect(),
     };
     let mut failures: Vec<String> = Vec::new();
-    let mut event_bound_seeds: Vec<u64> = Vec::new();
     let mut wrap_off_skips = 0;
     let mut saw = [0u64; 8];
     for &seed in &seeds {
         let mut log: Vec<String> = Vec::new();
-        let mut result = catch_unwind(AssertUnwindSafe(|| run_seed(seed, &mut log, true)));
-        if let Err(payload) = &result {
-            if panic_text(payload.as_ref()).starts_with(EVENT_BOUND_MESSAGE) {
-                // Record it, then run the seed again without the event bound: the assertion
-                // ended the first run early and must not hide anything after it.
-                event_bound_seeds.push(seed);
-                log.clear();
-                result = catch_unwind(AssertUnwindSafe(|| run_seed(seed, &mut log, false)));
-            }
-        }
+        let result = catch_unwind(AssertUnwindSafe(|| run_seed(seed, &mut log, true)));
         match result {
             Ok(outcome) => {
                 wrap_off_skips += usize::from(outcome.wrap_off_skipped);
@@ -1081,9 +1066,8 @@ fn random_operations_never_panic_stay_bounded_and_ignore_chunking() {
         }
     }
     println!(
-        "engine fuzz: {} seeds, {} failed, {wrap_off_skips} wrap-off skips, event bound seeds \
-         {event_bound_seeds:?}, events seen [response, bell, title, color, report, a11y text, \
-         a11y tab, other] = {saw:?}",
+        "engine fuzz: {} seeds, {} failed, {wrap_off_skips} wrap-off skips, events seen \
+         [response, bell, title, color, report, a11y text, a11y tab, other] = {saw:?}",
         seeds.len(),
         failures.len()
     );
@@ -1098,16 +1082,6 @@ fn random_operations_never_panic_stay_bounded_and_ignore_chunking() {
             .map(|f| first_line(f).to_string() + "\n" + f.lines().nth(1).unwrap_or_default())
             .collect::<Vec<_>>()
             .join("\n")
-    );
-    let expected: Vec<u64> = PENDING_EVENT_BOUND
-        .iter()
-        .copied()
-        .filter(|seed| seeds.contains(seed))
-        .collect();
-    assert_eq!(
-        event_bound_seeds, expected,
-        "the seeds that break the event bound differ from PENDING_EVENT_BOUND (a fixed seed must \
-         be removed from the list, a new one is a finding)"
     );
     // Instrument check: a run of the default size must exercise every event kind but the ones
     // only M7 produces; a generator that never reached the handlers would pass everything above.
@@ -1127,56 +1101,6 @@ fn random_operations_never_panic_stay_bounded_and_ignore_chunking() {
             assert!(saw[slot] > 0, "no {name} event in {} seeds", seeds.len());
         }
     }
-}
-
-/// The amplifier behind `PENDING_EVENT_BOUND` as a small deterministic input, and the
-/// instrument check that the event bound sees real amplification: it asserts the current (bad)
-/// behaviour and fails once the title replay is fixed (then delete it with the list). The two
-/// shapes Q10 fixed are asserted bounded.
-#[test]
-fn known_event_amplifiers_still_amplify() {
-    fn weight(sim: &mut Sim, input: &[u8]) -> (u64, u64) {
-        sim.term().write(input);
-        let cost = sim
-            .run
-            .term
-            .drain_events()
-            .iter()
-            .map(event_cost)
-            .sum::<u64>();
-        (cost, EVENT_RATIO * input.len() as u64 + EVENT_SLACK)
-    }
-    let title_sim = || {
-        let mut sim = Sim::new(10, 4, Chunking::AsIs, false);
-        sim.apply(&Op::SetOption(OptionValue::WindowOptions(
-            all_window_options(),
-        )));
-        sim
-    };
-    let mut big_title = b"\x1b]0;".to_vec();
-    big_title.extend(std::iter::repeat_n(b'x', 60_000));
-    big_title.push(0x07);
-    // Fixed by Q10: a 60 KB title and ten push/pop pairs in one write queue one title.
-    let mut sim = title_sim();
-    let mut input = big_title.clone();
-    input.extend(b"\x1b[22;2t\x1b[23;2t".repeat(10));
-    let (cost, allowed) = weight(&mut sim, &input);
-    assert!(cost <= allowed, "{cost} > {allowed}");
-    // Still open: the title pushed in one write, popped in the next.
-    let mut sim = title_sim();
-    let mut input = big_title.clone();
-    input.extend(b"\x1b[22;2t\x1b]2;y\x07");
-    let _ = weight(&mut sim, &input);
-    let (cost, allowed) = weight(&mut sim, b"\x1b[23;2t");
-    assert!(
-        cost > allowed,
-        "title replay no longer amplifies: {cost} <= {allowed}"
-    );
-    // Fixed by Q10: REP with screen reader mode on.
-    let mut sim = Sim::new(10, 4, Chunking::AsIs, false);
-    sim.apply(&Op::SetOption(OptionValue::ScreenReaderMode(true)));
-    let (cost, allowed) = weight(&mut sim, b"a\x1b[100000b");
-    assert!(cost <= allowed, "{cost} > {allowed}");
 }
 
 /// The generator is deterministic per seed and reaches the shapes the fuzz relies on.
