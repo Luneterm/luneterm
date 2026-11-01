@@ -1,92 +1,179 @@
 //! Extension point: sequence handlers registered on top of the ported core.
 //!
-//! Same semantics as xterm.js `parser.registerOscHandler` / `registerCsiHandler`: handlers for
-//! one identifier are tried newest-first, and the first that returns `true` consumes the
-//! sequence. Built-in behaviour is registered first, so an extension can override it without
-//! touching ported code.
+//! An [`Extension`] registers handlers on the [`EscapeSequenceParser`] itself, the same registry
+//! xterm.js's `parser.registerOscHandler` / `registerCsiHandler` / ... feed (plan M4, decision
+//! D6): handlers for one identifier are tried newest-first, and the first that returns `true`
+//! consumes the sequence. Built-in behaviour is registered first, so an extension can override
+//! it without touching ported code. There is no second dispatch mechanism beside the parser's.
 
-use std::collections::HashMap;
-use std::fmt;
+use crate::parser::escape_sequence_parser::EscapeSequenceParser;
+use crate::parser::types::{IdentifierError, ParserHost};
 
 /// A unit of optional behaviour (e.g. kitty keyboard protocol, XTVERSION, OSC 7 cwd tracking).
-pub trait Extension {
+///
+/// `C` is the host state the parser dispatches into (the same `C` as the parser's). Handlers an
+/// extension registers receive `&mut C` per call and own whatever else they capture; they never
+/// hold a reference back to the host or the parser.
+pub trait Extension<C: ParserHost> {
     /// Stable identifier, used in logs and settings.
     fn name(&self) -> &'static str;
-    fn register(&self, registry: &mut HandlerRegistry);
-}
 
-/// Handler for an OSC payload. Returns `true` when it consumed the sequence.
-pub type OscHandler = Box<dyn FnMut(&str) -> bool>;
-
-/// Ordered handler table, keyed by OSC identifier.
-#[derive(Default)]
-pub struct HandlerRegistry {
-    osc: HashMap<u32, Vec<OscHandler>>,
-}
-
-impl fmt::Debug for HandlerRegistry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut idents: Vec<_> = self.osc.keys().collect();
-        idents.sort();
-        f.debug_struct("HandlerRegistry")
-            .field("osc", &idents)
-            .finish()
-    }
-}
-
-impl HandlerRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn register_osc(&mut self, ident: u32, handler: impl FnMut(&str) -> bool + 'static) {
-        self.osc.entry(ident).or_default().push(Box::new(handler));
-    }
-
-    /// Dispatch to the handlers for `ident`, newest first. Returns `false` if none consumed it.
-    pub fn dispatch_osc(&mut self, ident: u32, payload: &str) -> bool {
-        self.osc
-            .get_mut(&ident)
-            .is_some_and(|handlers| handlers.iter_mut().rev().any(|h| h(payload)))
-    }
+    /// Register this extension's handlers (and fallbacks) on `parser`. Returns the first
+    /// registration error (an invalid function identifier).
+    fn register(&self, parser: &mut EscapeSequenceParser<C>) -> Result<(), IdentifierError>;
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
+    use crate::parser::osc_parser::OscStringHandler;
+    use crate::parser::types::{FunctionIdentifier, OscFallbackAction};
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    #[derive(Default)]
+    struct TestHost {
+        join_state: u32,
+    }
+
+    impl ParserHost for TestHost {
+        fn preceding_join_state(&mut self) -> &mut u32 {
+            &mut self.join_state
+        }
+    }
+
+    type Log = Rc<RefCell<Vec<String>>>;
+
+    /// Registers one OSC handler (ident 7) that logs `<tag>:<payload>` and returns `result`.
+    struct OscLogger {
+        tag: &'static str,
+        ident: i32,
+        result: bool,
+        log: Log,
+    }
+
+    impl Extension<TestHost> for OscLogger {
+        fn name(&self) -> &'static str {
+            self.tag
+        }
+
+        fn register(
+            &self,
+            parser: &mut EscapeSequenceParser<TestHost>,
+        ) -> Result<(), IdentifierError> {
+            let (tag, result, log) = (self.tag, self.result, Rc::clone(&self.log));
+            parser.register_osc_handler(
+                self.ident,
+                OscStringHandler::new(move |_, payload| {
+                    log.borrow_mut().push(format!("{tag}:{payload}"));
+                    result
+                }),
+            );
+            Ok(())
+        }
+    }
+
+    /// Registers a CSI handler with an invalid (out of range) final byte.
+    struct BadIdentifier;
+
+    impl Extension<TestHost> for BadIdentifier {
+        fn name(&self) -> &'static str {
+            "bad"
+        }
+
+        fn register(
+            &self,
+            parser: &mut EscapeSequenceParser<TestHost>,
+        ) -> Result<(), IdentifierError> {
+            parser
+                .register_csi_handler(FunctionIdentifier::new('\u{1f}'), |_, _| true)
+                .map(|_| ())
+        }
+    }
+
+    fn logger(tag: &'static str, ident: i32, result: bool, log: &Log) -> OscLogger {
+        OscLogger {
+            tag,
+            ident,
+            result,
+            log: Rc::clone(log),
+        }
+    }
+
+    /// `ESC ] <ident> ; <payload> BEL` as code points.
+    fn osc(ident: i32, payload: &str) -> Vec<u32> {
+        format!("\u{1b}]{ident};{payload}\u{7}")
+            .chars()
+            .map(u32::from)
+            .collect()
+    }
+
     #[test]
     fn newest_handler_wins_and_stops_dispatch() {
-        let log = Rc::new(RefCell::new(Vec::new()));
-        let mut reg = HandlerRegistry::new();
-        let l = Rc::clone(&log);
-        reg.register_osc(7, move |p| {
-            l.borrow_mut().push(format!("old:{p}"));
-            true
-        });
-        let l = Rc::clone(&log);
-        reg.register_osc(7, move |p| {
-            l.borrow_mut().push(format!("new:{p}"));
-            true
-        });
+        let log: Log = Rc::default();
+        let mut parser = EscapeSequenceParser::<TestHost>::new();
+        let mut host = TestHost::default();
+        logger("old", 7, true, &log).register(&mut parser).unwrap();
+        logger("new", 7, true, &log).register(&mut parser).unwrap();
 
-        assert!(reg.dispatch_osc(7, "file:///tmp"));
+        parser.parse(&mut host, &osc(7, "file:///tmp"));
         assert_eq!(*log.borrow(), ["new:file:///tmp"]);
     }
 
     #[test]
     fn declining_handler_falls_through_to_older() {
-        let mut reg = HandlerRegistry::new();
-        reg.register_osc(52, |_| true);
-        reg.register_osc(52, |_| false);
-        assert!(reg.dispatch_osc(52, "c;?"));
+        let log: Log = Rc::default();
+        let mut parser = EscapeSequenceParser::<TestHost>::new();
+        let mut host = TestHost::default();
+        logger("old", 52, true, &log).register(&mut parser).unwrap();
+        logger("new", 52, false, &log)
+            .register(&mut parser)
+            .unwrap();
+
+        parser.parse(&mut host, &osc(52, "c;?"));
+        assert_eq!(*log.borrow(), ["new:c;?", "old:c;?"]);
     }
 
     #[test]
-    fn unhandled_ident_reports_false() {
-        let mut reg = HandlerRegistry::new();
-        assert!(!reg.dispatch_osc(1337, "x"));
+    fn unhandled_ident_reports_to_the_fallback() {
+        let log: Log = Rc::default();
+        let mut parser = EscapeSequenceParser::<TestHost>::new();
+        let mut host = TestHost::default();
+        logger("seven", 7, true, &log)
+            .register(&mut parser)
+            .unwrap();
+        let fallback_log = Rc::clone(&log);
+        parser.set_osc_handler_fallback(move |_, ident, action| {
+            if let OscFallbackAction::End(success) = action {
+                fallback_log
+                    .borrow_mut()
+                    .push(format!("end:{ident}:{success}"));
+            }
+        });
+
+        parser.parse(&mut host, &osc(1337, "x"));
+        assert_eq!(*log.borrow(), ["end:1337:true"]);
+    }
+
+    #[test]
+    fn registration_errors_are_returned_and_extensions_are_object_safe() {
+        let log: Log = Rc::default();
+        let mut parser = EscapeSequenceParser::<TestHost>::new();
+        let extensions: Vec<Box<dyn Extension<TestHost>>> = vec![
+            Box::new(logger("ok", 7, true, &log)),
+            Box::new(BadIdentifier),
+        ];
+
+        let results: Vec<_> = extensions
+            .iter()
+            .map(|e| (e.name(), e.register(&mut parser)))
+            .collect();
+        assert_eq!(results[0], ("ok", Ok(())));
+        assert!(matches!(
+            results[1],
+            ("bad", Err(IdentifierError::FinalRange { .. }))
+        ));
     }
 }

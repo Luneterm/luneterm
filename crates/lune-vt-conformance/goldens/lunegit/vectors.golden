@@ -1,0 +1,247 @@
+lune-vt-golden 1
+kind grid
+name wrap_basic
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden wrap_basic.grid.txt
+size 10 3
+chunk 303132333435363738394142
+expect
+"0123456789"
+"AB"
+end
+kind grid
+name wrap_cancel_cr
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden wrap_cancel_cr.grid.txt
+size 10 3
+chunk 303132333435363738390d5859
+expect
+"XY23456789"
+end
+kind grid
+name wrap_cancel_cup
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden wrap_cancel_cup.grid.txt
+size 10 3
+chunk 303132333435363738391b5b313b31485859
+expect
+"XY23456789"
+end
+kind grid
+name el_clearline_afterwrap
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden el_clearline_afterwrap.grid.txt
+size 10 3
+chunk 303132333435363738391b5b313b31481b5b324b5a5a
+expect
+"ZZ"
+end
+kind grid
+name el_to_eol
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden el_to_eol.grid.txt
+size 10 3
+chunk 1b5b313b314841424344451b5b33471b5b304b
+expect
+"AB"
+end
+kind grid
+name erase_display_below
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden erase_display_below.grid.txt
+size 10 3
+chunk 41414141410a0d42424242420a0d43434343431b5b323b31481b5b304a
+expect
+"AAAAA"
+end
+kind grid
+name scroll_region
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden scroll_region.grid.txt
+size 10 4
+chunk 1b5b323b33721b5b323b31484c320a0d4c330a0d4c34
+expect
+""
+"L3"
+"L4"
+end
+kind grid
+name rep_csi_b
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden rep_csi_b.grid.txt
+size 10 2
+chunk 411b5b3462
+expect
+"AAAAA"
+end
+kind grid
+name cursor_clamp
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden cursor_clamp.grid.txt
+size 10 3
+chunk 1b5b3939393b3939394858
+expect
+""
+""
+"         X"
+end
+kind grid
+name ich_insertchar
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden ich_insertchar.grid.txt
+size 10 2
+chunk 1b5b313b314841424344451b5b313b33481b5b3240
+expect
+"AB  CDE"
+end
+kind grid
+name dch_deletechar
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden dch_deletechar.grid.txt
+size 10 2
+chunk 1b5b313b314841424344451b5b313b32481b5b3250
+expect
+"ADE"
+end
+kind grid
+name widechar_cjk
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden widechar_cjk.grid.txt
+size 10 2
+chunk e4bda0e5a5bd4142
+expect
+"\u{4F60}\u{597D}AB"
+end
+kind grid
+name widechar_emoji
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden widechar_emoji.grid.txt
+size 12 2
+chunk f09f9a8058
+expect
+"\u{1F680}X"
+end
+kind grid
+name inplace_wrap_redraw
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden inplace_wrap_redraw.grid.txt
+size 10 4
+chunk 1b5b3f32356c303132333435363738396162630d1b5b31411b5b324b0d4e4557
+expect
+"NEW"
+"abc"
+end
+kind grid
+name ech_erasechar
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden ech_erasechar.grid.txt
+size 10 2
+chunk 1b5b313b314841424344451b5b313b31481b5b3358
+expect
+"   DE"
+end
+kind grid
+name cursor_moves
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden cursor_moves.grid.txt
+size 10 3
+chunk 1b5b313b31484142431b5b323b31484445461b5b313b31481b5b32435a
+expect
+"ABZ"
+"DEF"
+end
+kind grid
+name scroll_on_lf
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden scroll_on_lf.grid.txt
+size 6 3
+chunk 4c310a0d4c320a0d4c330a0d4c34
+expect
+"L2"
+"L3"
+"L4"
+end
+kind grid
+name decstbm_scroll
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden decstbm_scroll.grid.txt
+size 6 4
+chunk 1b5b313b33721b5b313b3148610a0d620a0d630a0d64
+expect
+"b"
+"c"
+"d"
+end
+kind grid
+name wrap_widechar_acct
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden wrap_widechar_acct.grid.txt
+size 6 3
+chunk 6162e4bda0e5a5bd0d1b5b31411b5b324b5a
+expect
+"Z"
+end
+kind grid
+name el0_after_widechar
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden el0_after_widechar.grid.txt
+size 8 2
+chunk e4bda0e5a5bd41421b5b313b33481b5b304b
+expect
+"\u{4F60}"
+end
+kind grid
+name shrink_wrapped
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden shrink_wrapped.grid.txt
+size 12 4
+resize 8 4
+divergent xterm.js keeps the cursor's wrapped line unflowed (Lunegit KnownDivergent XtermJs)
+chunk 6162636465666768696a6b6c6d6e6f7071727374
+expect
+"ijklmnop"
+"qrst"
+end
+kind grid
+name grow_wrapped
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden grow_wrapped.grid.txt
+size 8 4
+resize 16 4
+divergent xterm.js keeps the cursor's wrapped line unflowed (Lunegit KnownDivergent XtermJs)
+chunk 6162636465666768696a6b6c6d6e6f7071727374
+expect
+"abcdefghijklmnop"
+"qrst"
+end
+kind grid
+name shrink_multiline
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden shrink_multiline.grid.txt
+size 12 4
+resize 6 6
+divergent xterm.js keeps the cursor's wrapped line unflowed (Lunegit KnownDivergent XtermJs)
+chunk 4142434445464748494a4b4c0d0a30313233343536373839
+expect
+"012345"
+"6789"
+end
+kind grid
+name grow_after_wrap
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden grow_after_wrap.grid.txt
+size 6 6
+resize 18 4
+divergent xterm.js keeps the cursor's wrapped line unflowed (Lunegit KnownDivergent XtermJs)
+chunk 48656c6c6f2d576f726c642d5265666c6f772d54657374
+expect
+"Hello-World-Reflow"
+"-Test"
+end
+kind grid
+name shrink_then_text
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden shrink_then_text.grid.txt
+size 12 4
+resize 8 4
+divergent xterm.js keeps the cursor's wrapped line unflowed (Lunegit KnownDivergent XtermJs)
+chunk 303132333435363738394142
+expect
+"89AB"
+end
+kind grid
+name altscreen_resize
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden altscreen_resize.grid.txt
+size 12 4
+resize 8 4
+chunk 1b5b3f313034396846554c4c53435245454e2d4150502d434f4e54454e541b5b48
+expect
+"FULLSCRE"
+"PP-CONTE"
+end
+kind grid
+name viewport_resize
+source Lunegit IVtEngineConformanceTests.cs, tmux 3.6b golden viewport_resize.grid.txt
+size 12 4
+resize 8 4
+divergent xterm.js keeps the cursor's wrapped line unflowed (Lunegit KnownDivergent XtermJs)
+chunk 303132333435363738394142434445464748494a
+expect
+"89ABCDEF"
+"GHIJ"
+end
