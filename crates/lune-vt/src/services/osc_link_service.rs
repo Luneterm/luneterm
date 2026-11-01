@@ -4,7 +4,8 @@
 //! Rust notes (see `docs/porting-xterm.md` and plan M5 D1):
 //!  - Upstream holds `IMarker` objects and registers `marker.onDispose(() => _removeMarkerFromLink)`
 //!    on each. Markers here are [`MarkerId`]s in the buffer's [`MarkerSet`], and disposal is a
-//!    log the buffer keeps. **Host duty (M6):** after anything that can dispose markers (a scroll
+//!    log the buffer keeps. **Host duty (done by `InputHandler::forward_disposed_markers`, which
+//!    `CoreTerminal` calls after every public mutation):** after anything that can dispose markers (a scroll
 //!    that trims, `clear_markers`, resize, activating the normal buffer), drain
 //!    `Buffer::take_disposed_markers()` of *both* buffers of the [`BufferService`] and pass the
 //!    ids to [`OscLinkService::on_markers_disposed`], before the next call to this service.
