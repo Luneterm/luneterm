@@ -2226,10 +2226,24 @@ impl InputHandler {
     /// cursor (the checks below), so every wrap after the first starts a line at column 0 in
     /// the same state, and a fully printed line of `cols` cells is the same line (the old
     /// row's cells from the wrap column on are cleared, also in insert mode; for longer lines
-    /// see below). After `rows + max_lines + 3` wraps the cursor has reached the line it stays
-    /// on (the scroll bottom, or the last row below a region), the buffer is full (`ybase` and
-    /// a user-scrolled `ydisp` no longer move) and every line the print can reach holds that
-    /// full line; `per_line` more units then complete the current line, scroll or rewrite it,
+    /// see below). How many lines the print can reach depends on where the cursor is (review
+    /// S2 round 2):
+    ///  - In or above the scroll region, a wrap at the scroll bottom scrolls, which (with
+    ///    `scroll_top == 0`) feeds the scrollback until it is full, so the print can reach
+    ///    every line up to `max_lines`; after `rows + max_lines + 3` wraps the buffer is full
+    ///    (`ybase` and a user-scrolled `ydisp` no longer move) and every reachable line holds
+    ///    the full line.
+    ///  - Below the region (`y > scroll_bottom`), a wrap neither scrolls nor trims:
+    ///    `print_wrap` scrolls only when the cursor reaches `scroll_bottom + 1`, so below the
+    ///    region (where `y + 1 > scroll_bottom + 1`) it clamps the cursor to the last row
+    ///    (`rows - 1`) with `ybase` and `ydisp` fixed and nothing enters the scrollback. The
+    ///    print reaches only the rows from the cursor down to the last (`rows` over-counts the
+    ///    descent); after `rows + 3` wraps the cursor stays on the last row and every reachable
+    ///    line holds the full line. The scrollback is unreachable, so the floor drops
+    ///    `max_lines` here — without that, a full scrollback made every one of `max_lines`
+    ///    units a pass over the (possibly long) last row, the cost of review S2.
+    ///
+    /// Either way, `per_line` more units then complete the current line, scroll or rewrite it,
     /// and print the same partial line again. Lines outside the reach keep their content and
     /// markers. Damage, dirty rows and the screen reader text (capped per drain; with screen
     /// reader mode on, the `A11Y_TEXT_LIMIT` floor fills the cap in both) are the same; link
@@ -2269,9 +2283,10 @@ impl InputHandler {
     ///    reaches by scrolling are blank lines of `cols` cells, and a line passed once is the
     ///    same prefix in both prints. The last row needs `ceil(len / (per_line * w)) + 1` full
     ///    passes, at most `ceil(excess / (per_line * w)) + 3` (`per_line * w >= cols - 1` and
-    ///    `cols >= 2`, so `ceil(cols / (per_line * w)) <= 2`). Of the floor's wraps at most
-    ///    `rows - 1` reach it and one pass is partial, which leaves `max_lines + 3 >= 4` full
-    ///    passes; the floor gets `ceil(excess / (per_line * w)) + 1` more lines of units.
+    ///    `cols >= 2`, so `ceil(cols / (per_line * w)) <= 2`). Of the floor's `rows + 3` base
+    ///    lines (review S2 round 2 dropped the scrollback, unreachable below the region) at
+    ///    most `rows - 1` are the descent and one pass is partial, which leaves at least three
+    ///    full passes; the floor gets `ceil(excess / (per_line * w)) + 1` more lines of units.
     ///
     /// The extra units print as before. Without wraparound they go through `print`, one
     /// `O(len)` insert each, so such a REP costs up to `O(len * (len - cols))` (the longest
@@ -2310,8 +2325,13 @@ impl InputHandler {
             let joins = UnicodeService::extract_should_join(info);
             let w = UnicodeService::extract_width(info);
             if i == 0 {
-                // the base: never joins, one or two cells
-                if joins || w == 0 || w > 2 {
+                // the base: never joins, one or two cells. (review S3 round 2) a unit whose
+                // base joins can still be cut, but only when every code point joins the cell
+                // before the cursor without moving it, so its own helper decides
+                if joins {
+                    return self.rep_joining_base_repeats(unit, repeats);
+                }
+                if w == 0 || w > 2 {
                     return repeats;
                 }
                 (width, base_width) = (w, w);
@@ -2344,8 +2364,19 @@ impl InputHandler {
         let (period, floor) = if services.core.dec_private_modes.wraparound {
             let w = to_usize(i64::from(width));
             let per_line = cols / w;
-            let mut lines = rows.saturating_add(max_lines).saturating_add(3);
-            if insert_mode && buffer.y > buffer.scroll_bottom {
+            // LUNETERM: (review S2 round 2) below a scroll region a wrap neither scrolls nor
+            // trims (`print_wrap` scrolls only at `scroll_bottom + 1`; below the region the
+            // cursor is clamped to the last row with `ybase`/`ydisp` fixed, see the doc
+            // comment), so no line enters the scrollback: the print reaches only the rows from
+            // the cursor down to the last. Elsewhere a wrap at the scroll bottom can scroll, so
+            // the print can reach every line up to the full scrollback (`max_lines`).
+            let below_region = buffer.y > buffer.scroll_bottom;
+            let mut lines = if below_region {
+                rows.saturating_add(3)
+            } else {
+                rows.saturating_add(max_lines).saturating_add(3)
+            };
+            if insert_mode && below_region {
                 // every wrap rewrites the last row, shifting it by `per_line * inserted` cells
                 // (M7 fix round 1: a widened unit inserts its base's one cell, and one more
                 // line covers `ceil(cols / (per_line * inserted)) <= 3`)
@@ -2384,6 +2415,58 @@ impl InputHandler {
             return repeats;
         }
         floor + (repeats - floor) % period
+    }
+
+    /// LUNETERM: (review S3 round 2) the fewest repetitions of `unit` that leave the state
+    /// `repeats` of them leave, for a unit whose base (its first code point) joins. REP reads
+    /// such a unit when a zero-width code point was stored alone in a cell and a wide character
+    /// was then skipped at the last column without wraparound (the cursor is left on a cell
+    /// whose text begins with a joiner). Uncut (returns `repeats`) unless every code point
+    /// joins the cell before the cursor without moving it — its joined width equals the width
+    /// it joins, so `print` appends it to that cell ([`InputHandler::print_inner`]'s
+    /// `should_join` branch) and writes no stub and does not advance the cursor — and the join
+    /// state after one repetition equals the state entering it. Then every repetition appends
+    /// the same code points to that one cell, whose combined string stops growing at
+    /// [`MAX_COMBINED_CODE_POINTS`] code points ([`BufferLine::add_codepoint_to_cell`] is a
+    /// no-op once full); from then on each repetition is a complete no-op (no cursor move, no
+    /// new cell, no stub, the same dirty row, the same link line), so the state is fixed with a
+    /// period of one unit. `MAX_COMBINED_CODE_POINTS + 2` units leave it full (one repetition
+    /// appends at least one code point, plus a margin). The screen reader text is queued per
+    /// code point up to the per-drain cap, so the `A11Y_TEXT_LIMIT` floor still applies. The
+    /// conditions are read in the steady state (entering the second repetition), where the cell
+    /// before the cursor already holds the growing string, not the first (whose cursor may
+    /// arrive carrying a wide character's width).
+    fn rep_joining_base_repeats(&self, unit: &[u32], repeats: usize) -> usize {
+        let services = &self.services;
+        let unicode = &services.unicode;
+        let charset = services.charset.charset;
+        // the join state entering the second repetition (after one full unit)
+        let mut preceding = self.preceding_join_state;
+        for &code in unit {
+            preceding = unicode.char_properties(charset_replacement(charset, code), preceding);
+        }
+        let after_first = preceding;
+        // every code point joins the cell before the cursor keeping the width it joins, so
+        // `print` moves the cursor for none of them
+        for &code in unit {
+            let info = unicode.char_properties(charset_replacement(charset, code), preceding);
+            let held = UnicodeService::extract_width(preceding);
+            if !UnicodeService::extract_should_join(info)
+                || UnicodeService::extract_width(info) != held
+            {
+                return repeats;
+            }
+            preceding = info;
+        }
+        // periodic: the second repetition leaves the state the first did
+        if preceding != after_first {
+            return repeats;
+        }
+        let mut floor = MAX_COMBINED_CODE_POINTS.saturating_add(2);
+        if services.options.options().screen_reader_mode {
+            floor = floor.max(A11Y_TEXT_LIMIT);
+        }
+        repeats.min(floor)
     }
 
     /// LUNETERM: (review S3, S7) whether REP of `unit` (the repeated cell's code points) can
