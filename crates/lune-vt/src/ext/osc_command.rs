@@ -41,6 +41,11 @@ pub(crate) struct CommandState {
 }
 
 impl CommandState {
+    /// RIS / `Terminal::reset`: no command running, latch clear.
+    pub(crate) fn reset(&mut self) {
+        *self = CommandState::default();
+    }
+
     /// Whether a command is running (test hook).
     #[cfg(test)]
     pub(crate) fn running(&self) -> bool {

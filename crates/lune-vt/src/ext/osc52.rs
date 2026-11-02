@@ -193,6 +193,18 @@ pub(crate) struct Osc52State {
 }
 
 impl Osc52State {
+    /// A reset (RIS, `Terminal::reset`) while the sequence may be in flight: free the buffer and
+    /// make whatever follows end as Malformed (the part already received is gone, so the rest
+    /// must not be read as a payload).
+    pub(crate) fn abort(&mut self) {
+        *self = Osc52State {
+            seen_separator: true,
+            body: String::new(),
+            length: 0,
+            invalid: true,
+        };
+    }
+
     fn push(&mut self, ch: char) {
         self.length = self.length.saturating_add(ch.len_utf16());
         if self.length > MAX_BASE64_CHARS {

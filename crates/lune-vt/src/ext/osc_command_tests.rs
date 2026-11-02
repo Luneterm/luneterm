@@ -412,3 +412,73 @@ fn mark_events_are_never_merged_or_dropped() {
     }
     assert_eq!(marks(&mut t).len(), 1200);
 }
+
+// --- reset (step 9: the gap found in step 8's review) ---------------------------------------------
+
+#[test]
+fn ris_in_the_middle_of_a_command_clears_running_and_the_latch() {
+    let mut t = terminal();
+    feed(&mut t, "\x1b]133;C\x1b\\\x1b[?2026h");
+    assert!(running(&t));
+    assert!(latch(&t));
+    let _ = t.drain_events();
+    feed(&mut t, "\x1bc");
+    assert!(!running(&t));
+    assert!(!latch(&t));
+    // no stale `running`: the next DECSET 2026 queues nothing
+    feed(&mut t, "\x1b[?2026h");
+    assert!(latch(&t), "the latch still sets while no command runs");
+    assert!(
+        !t.drain_events()
+            .iter()
+            .any(|e| matches!(e, HostEvent::SyncUpdateInCommand)),
+        "a spurious SyncUpdateInCommand after RIS"
+    );
+}
+
+#[test]
+fn terminal_reset_in_the_middle_of_a_command_clears_running_and_the_latch() {
+    let mut t = terminal();
+    feed(&mut t, "\x1b]133;C\x1b\\");
+    assert!(running(&t));
+    t.reset();
+    assert!(!running(&t));
+    assert!(!latch(&t));
+    feed(&mut t, "\x1b[?2026h");
+    assert!(
+        !t.drain_events()
+            .iter()
+            .any(|e| matches!(e, HostEvent::SyncUpdateInCommand))
+    );
+}
+
+#[test]
+fn a_command_started_after_a_reset_still_reports_the_sync_update() {
+    let mut t = terminal();
+    feed(&mut t, "\x1b]133;C\x1b\\\x1bc\x1b]133;C\x1b\\\x1b[?2026h");
+    assert!(
+        t.drain_events()
+            .iter()
+            .any(|e| matches!(e, HostEvent::SyncUpdateInCommand))
+    );
+}
+
+/// Recorded for the step 9 hand-off: Lunegit's scanner matches only the single-mode form
+/// `CSI ? 2026 h`, the Rust observer also a list, but `Params` keeps 32 parameters (xterm.js
+/// `DEFAULT_LIMIT`) and drops the rest, so a 2026 in position 33 or later never sets the latch (and
+/// the core's DECSET never sees it either). Not a defect: nothing an application can do with a
+/// 33-mode list is lost that DECSET itself honours.
+#[test]
+fn a_2026_beyond_the_parameter_limit_does_not_latch() {
+    let mut t = terminal();
+    feed(&mut t, "\x1b]133;C\x1b\\");
+    let list = |filler: usize| format!("\x1b[?{}2026h", "1;".repeat(filler));
+    feed(&mut t, &list(31)); // 2026 is the 32nd parameter: kept
+    assert!(latch(&t), "32nd parameter");
+    feed(&mut t, "\x1b]133;C\x1b\\");
+    assert!(!latch(&t));
+    feed(&mut t, &list(32)); // the 33rd: dropped by Params
+    assert!(!latch(&t), "33rd parameter");
+    feed(&mut t, &list(100));
+    assert!(!latch(&t), "101st parameter");
+}
