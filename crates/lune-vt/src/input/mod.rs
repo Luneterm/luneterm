@@ -21,6 +21,9 @@
 //!   modifyOtherKeys, legacy.
 //! - `legacy_key_encoder.rs`: `legacy_key_input`, `legacy_char_input` (the key and char parts of
 //!   `XtermVtInputEncoder.cs`).
+//! - `mouse_event.rs`: `TerminalMouseEvent` mapped onto the ported `CoreMouseService` (plan D5).
+//! - `paste.rs`: `paste_bytes`, xterm.js's `Clipboard.ts` plus the bracketed-paste sanitizer
+//!   (plan D7).
 
 // No-panic gate (plan M4): ported non-test code must not index, unwrap or panic. Tests are
 // exempt; every other lint stays at the workspace level.
@@ -41,6 +44,8 @@
 pub mod key_encoder;
 pub mod key_event;
 pub mod legacy_key_encoder;
+pub mod mouse_event;
+pub mod paste;
 pub mod text_decoder;
 pub mod unicode_v6;
 pub mod x_parse_color;
