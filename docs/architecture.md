@@ -326,7 +326,12 @@ The input encoders (key and mouse encoding) are M7.
   `buffer_line.rs`); REP prints only the repetitions that still change the state
   (`rep_equivalent_repeats`, tested equal to the full print), and a unit that prints alike
   (a character with its joiners, also in insert mode, inside an open link or with screen reader
-  mode) fills whole lines (`print_repeated`, review S7). No log line carries pty output or user
+  mode) fills whole lines (`print_repeated`, review S7): one insert pass per line in insert mode,
+  on lines longer than `cols` too (`BufferLine::insert_cells_repeatedly`, with `print`'s fix-up
+  at `cols - 1`), and one data pass plus one extended-attribute run per line
+  (`BufferLine::set_cells_repeatedly`; a line's extended attributes are a `RunMap` of runs, so
+  an underline colour or link costs one entry per run, not a tree insert per cell; review S7
+  round 4). No log line carries pty output or user
   input: unknown OSC and DCS log their identifier and payload length, the parse and the
   data/binary events log lengths only.
 
