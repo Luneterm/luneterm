@@ -40,11 +40,16 @@ use crate::input_handler::InputHandler;
 use crate::parser::escape_sequence_parser::EscapeSequenceParser;
 use crate::parser::types::IdentifierError;
 
+pub mod keyboard_protocol;
 mod unknown_osc;
 mod xtversion;
 
 #[cfg(test)]
 mod ext_tests;
+#[cfg(test)]
+mod keyboard_protocol_tests;
+
+pub use keyboard_protocol::KeyboardProtocol;
 
 /// What [`crate::Terminal::install_standard_extensions`] registers, beyond the always-on
 /// handlers (the unknown-OSC report).
@@ -96,6 +101,8 @@ impl From<IdentifierError> for ExtensionError {
 /// PTY sends.
 #[derive(Debug, Default)]
 pub struct ExtState {
+    /// The kitty keyboard flag stacks and the modifyOtherKeys level.
+    pub(crate) keyboard: KeyboardProtocol,
     /// [`install`] ran.
     pub(crate) installed: bool,
     /// Payload code points of the unknown OSC being received (reset at its start).
@@ -119,6 +126,7 @@ impl Extension<InputHandler> for StandardSet {
         if let Some(name) = &self.xtversion {
             xtversion::register(parser, name)?;
         }
+        keyboard_protocol::register(parser)?;
         unknown_osc::register(parser);
         Ok(())
     }
