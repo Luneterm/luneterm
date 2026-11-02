@@ -80,7 +80,7 @@ impl OscHandler<InputHandler> for ProgressHandler {
                 h.push_event(HostEvent::Progress(progress));
                 true
             }
-            // not a 9;4 form, or over the cap: consumed, nothing produced
+            // not a 9;4 form, or over the cap: not handled here; `false` passes it on to the other OSC 9 handler (9;9 cwd)
             _ => false,
         }
     }
