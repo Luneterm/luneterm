@@ -500,6 +500,27 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     on, the tail's included (upstream's copy), so on a long row its passes settle only with the
     tail: 53.6 us per byte at L = 2000 narrowed to 79 columns (12.5x plain there; short rows 3.1x
     / 3.4x).
+  - **M7 fix round 4** (code review F6, F7): the cut floor of rounds 1-3 was **not**
+    state-identical for that widened unit on an odd number of columns over rows longer than
+    `cols` that hold combined strings. Each joiner wrap runs upstream's `copyCellsFrom(oldRow,
+    cols - 1, 0, 1)`, whose FIXME copy moves every string at a key `>= cols - 1` (stale entries
+    and keys past the line's end included) `cols - 1` to the left, so a row's strings settle
+    only after about `last key / (cols - 1)` wraps; below a region the cut REP showed other text
+    (insert off), at the scroll bottom the oldest lines' hidden entries differed. The floor now
+    adds `ceil((K + 1) / (cols - 1)) + 1` lines, `K` the largest combined key on the rows the
+    print reaches (each row's last cell too in insert mode), read in O(log n) per row
+    (`BufferLine::last_combined_key`); state identity is tested at 7, 9, 21 and 79 columns, below
+    the region and at the scroll bottom, insert on and off (dedicated test, the review's seeded
+    probe, the matrix, the 300k-seed differential). Cost of this shape (`bench-rep.sh` table
+    "REP at odd widths over narrowed rows of strings", Windows mode, sb10k; before = the same
+    table built on fix round 3, same run, load ~3.5): below the region without insert VS16 at
+    L = 2000 is 0.55 ms per byte at 79 columns (was 0.35 ms, cut too early) and 1.38 ms at 21
+    (was 0.71 ms); in insert mode 0.95 / 4.0 ms, unchanged (round 3's insert passes already
+    walked the tail); at the scroll bottom ~1.5 / ~0.95 ms, unchanged. Plain `a` in the same
+    setup is 0.2-0.3 us (no insert) and 29 us (insert). So the shape is O(L^2 / cols): one O(len)
+    copy per wrap until the strings settle, now counted, not cut. It needs a narrowed row of
+    strings (Windows 10 without reflow), an odd width and `11-vs16`; an O(len) closed form of
+    the copy is not built.
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as
