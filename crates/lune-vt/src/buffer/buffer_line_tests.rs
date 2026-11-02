@@ -1817,16 +1817,28 @@ mod edge_semantics {
                 }
                 fresh_lines.push(got);
             }
-            // changing one line's strings leaves the others as they were
+            // changing one line's strings leaves the others as they were (copy on write).
+            // (review F4) the combined map is shared by `Arc`, so cloning the lines would share
+            // it too and hide an in-place change: snapshot the entries themselves, not the
+            // `Arc`s, and compare the entries after the change.
             let before: Vec<BufferLine> = fresh_lines.clone();
+            let before_combined: Vec<Vec<(usize, Arc<str>)>> =
+                fresh_lines.iter().map(|l| l.combined.entries()).collect();
             if let Some(first) = fresh_lines.first_mut() {
                 first.add_codepoint_to_cell(0, 0x301, 1);
                 first.combined.insert(1, "new".into());
             }
-            for (got, was) in fresh_lines.iter().zip(&before).skip(1) {
+            for ((got, was), combined) in fresh_lines
+                .iter()
+                .zip(&before)
+                .zip(&before_combined)
+                .skip(1)
+            {
+                assert_eq!(got, was, "round {round}: a line changed with another line");
                 assert_eq!(
-                    got, was,
-                    "round {round}: a shared map changed with another line"
+                    got.combined.entries(),
+                    *combined,
+                    "round {round}: a shared map's entries changed with another line"
                 );
                 isolated += 1;
             }
