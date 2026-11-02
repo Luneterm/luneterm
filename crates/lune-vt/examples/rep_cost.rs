@@ -35,7 +35,9 @@
 //!    rows of L cells each holding a letter and a combining mark, narrowed to 79 or 21 columns
 //!    in Windows mode, below a region and at the scroll bottom, with and without insert mode;
 //!    a widened unit's wraps copy the rows' strings there, so the cut floor grows with the
-//!    rows' last key. Plain `a` in the same setup is the reference.
+//!    rows' last key. Plain `a` in the same setup is the reference. M7 fix round 5 adds rows
+//!    not narrowed (L = cols), the even widths 80 and 22 (no joiner wrap: the reference for the
+//!    same unit and L), plain `a` at the scroll bottom and the keycap there.
 //!  - **REP of a joining-base unit** (M7 fix round 2, review S3): a lone combining mark the
 //!    cursor sits on (wraparound off, a wide char skipped at the last column); every repetition
 //!    appends to the one capped cell, so the cost tracks plain REP.
@@ -605,15 +607,26 @@ fn odd_widths_over_strings() {
         "REP at odd widths over narrowed rows of strings, Windows mode, scrollback 10,000 (ns per \
          input byte, median of {RUNS})"
     );
-    let configs: [(usize, usize); 4] = [(79, 300), (79, 1_000), (79, 2_000), (21, 2_000)];
+    // (M7 fix round 5) rows not narrowed (L = cols), and the even widths 80 and 22 (no joiner
+    // wrap there: the reference for the same unit and L)
+    let configs: [(usize, usize); 8] = [
+        (79, 79),
+        (79, 300),
+        (79, 1_000),
+        (79, 2_000),
+        (21, 21),
+        (21, 2_000),
+        (80, 2_000),
+        (22, 2_000),
+    ];
     let mut header = format!("{:<34}", "variant");
     for (cols, l) in configs {
-        header.push_str(&format!(" {:>14}", format!("L={l} -> {cols}")));
+        header.push_str(&format!(" {:>13}", format!("{l}->{cols}")));
     }
     println!("{header}");
     const BELOW: &str = "\x1b[1;10r\x1b[999;1H";
     const BOTTOM: &str = "\x1b[999;1H";
-    let cases: [(&str, &str, &str, Make); 7] = [
+    let cases: [(&str, &str, &str, Make); 10] = [
         (
             "plain a, below, insert",
             "a",
@@ -621,6 +634,13 @@ fn odd_widths_over_strings() {
             new_winmode_terminal,
         ),
         ("plain a, below", "a", "", new_winmode_terminal),
+        (
+            "plain a, scroll bottom, insert",
+            "a",
+            "\x1b[4h",
+            new_winmode_terminal,
+        ),
+        ("plain a, scroll bottom", "a", "", new_winmode_terminal),
         (
             "VS16, below, insert",
             VS16,
@@ -636,6 +656,12 @@ fn odd_widths_over_strings() {
             new_winmode_vs16_terminal,
         ),
         ("VS16, scroll bottom", VS16, "", new_winmode_vs16_terminal),
+        (
+            "keycap, scroll bottom",
+            KEYCAP,
+            "",
+            new_winmode_vs16_terminal,
+        ),
     ];
     for (name, unit, modes, new_term) in cases {
         let data = stream(unit);
@@ -682,7 +708,7 @@ fn odd_widths_over_strings() {
                     "odd-width string-row REP printed nothing"
                 );
             });
-            row.push_str(&format!(" {:>14}", format_ns(ns)));
+            row.push_str(&format!(" {:>13}", format_ns(ns)));
         }
         println!("{row}");
     }

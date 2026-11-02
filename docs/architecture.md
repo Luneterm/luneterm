@@ -521,6 +521,37 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     copy per wrap until the strings settle, now counted, not cut. It needs a narrowed row of
     strings (Windows 10 without reflow), an odd width and `11-vs16`; an O(len) closed form of
     the copy is not built.
+  - **M7 fix round 5** (plan revision 1, step fix5; the F6 residual): the floor is unchanged;
+    how its units print changed. (A) Below the region without insert mode, the last row's whole
+    passes differ only in the strings the joiner's wrap copies, and `p` passes leave the state
+    of the first `p - 1` copies taken in closed form (`BufferLine::shift_combined_classes_repeatedly`,
+    `F_k(M)[j]` = the value of the largest held key of `j`'s class in `j..=j + k (cols - 1)`,
+    O(K + runs); lemma in `InputHandler::copy_passes_at_once`) and one real pass. (B1) A joiner
+    wrap no longer clones the old row (`CellsSource`: the copied cells and the shared strings),
+    a copy of a row onto itself is one closed-form self-copy, and the wrapping repetition
+    (`print_widened_wrap`, `print`'s steps) shares the head string between the lines that hold no
+    other, which the fill's template (now also keyed on a one-run "before" map) takes in O(1).
+    (B2) At the scroll bottom the first `ceil(K / (cols - 1)) - 1` scrolling joiner wraps skip
+    their strings' copy when at least `max_length` scrolls follow (the lines they land on are
+    then discarded; proof in `InputHandler::chain_copies_to_skip`). State identity: the closed
+    form against the loop of copies, the direct wrap against `print_inner`, the skip bound at
+    `max_length - 1 / 0 / +1`, the matrix, the 300k-seed differential; 11 mutants of the bounds
+    each fail a test (notes.md "fix round 5"). Cost (`bench-rep.sh` table "REP at odd widths over
+    narrowed rows of strings", Windows mode, sb10k, VS16, median of 5; before = fix round 4's
+    tree with the same example, load ~4.5; after load ~3): below the region without insert at
+    L = 2000, 543 us -> 12.1 us per byte at 79 columns and 1.38 ms -> 9.0 us at 21; linear in L
+    (1000 -> 2000 at 79 columns: 6.8 -> 12.1 us); but still 6.7x / 12.5x the same unit at the
+    even widths 80 / 22 (1.8 us / 721 ns) and 40x / 51x plain `a` — every REP rebuilds the row's
+    O(K) string map in the batch and in each real joiner wrap's self-copy, because the fill's
+    heads keep the row from being a fixed point of the copy (85% of the time in a profile).
+    At the scroll bottom 1.41 ms -> 135 us (79 -> 79), 1.55 ms -> 157 us (2000 -> 79), 462 ->
+    83 us (21 -> 21), 955 -> 100 us (2000 -> 21): 1.1-2.1x plain `a` with and without insert
+    mode. Insert mode below the region is still O(L^2 / cols) (the copy interleaves with the
+    insert shifts; plan revision 1 R1-D3), now 941 us -> 398 us at 2000 -> 79 and 3.98 -> 1.77 ms
+    at 2000 -> 21 (the row clone gone). Where the chain's lines survive the REP (too few scrolls
+    after them to discard them), the exact state holds `Θ(K^2 / cols)` entries over those lines
+    (K up to a narrowed row's length, `cols` down to 2): a memory amplification of upstream's
+    copy that no exact algorithm on this representation avoids (R1-D4, for the security review).
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as
