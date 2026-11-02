@@ -2234,8 +2234,9 @@ impl InputHandler {
     /// cursor (the checks below), so every wrap after the first starts a line at column 0 in
     /// the same state, and a fully printed line of `cols` cells is the same line (the old
     /// row's cells from the wrap column on are cleared, also in insert mode; for longer lines
-    /// see below). How many lines the print can reach depends on where the cursor is (review
-    /// S2 round 2):
+    /// see below; for a widened unit on an odd number of columns, whose wraps also copy
+    /// strings, see the last paragraph). How many lines the print can reach depends on where
+    /// the cursor is (review S2 round 2):
     ///  - In or above the scroll region, a wrap at the scroll bottom scrolls, which (with
     ///    `scroll_top == 0`) feeds the scrollback until it is full, so the print can reach
     ///    every line up to `max_lines`; after `rows + max_lines + 3` wraps the buffer is full
@@ -2278,7 +2279,9 @@ impl InputHandler {
     /// every cell the row held has been pushed past `len`, its cells no longer depend on what
     /// it held, and the same repetitions applied again give the same cells (a fixed point).
     /// One more round of the same writes then fixes the side tables too, whose entries change
-    /// only when a flagged cell is written to their key.
+    /// only when a flagged cell is written to their key — except where a widened unit's wrap
+    /// copies strings (an odd number of columns, last paragraph), whose term the floor adds on
+    /// top of this one.
     ///  - Without wraparound, a narrow unit inserts once per repetition at the cursor (stuck
     ///    at `cols - 1` past the last column), so the row's content from `min(x, cols - 1)` on
     ///    has left the line after `len - min(x, cols - 1)` units and `len + 1` units suffice:
@@ -2315,6 +2318,37 @@ impl InputHandler {
     /// into the last cell, skips the widening joiner, which does not fit, and leaves the
     /// cursor on the last column, so a later joiner stacks onto the cell left of it as a stuck
     /// wide unit's joiners do: the floor for units with joiners covers it.
+    ///
+    /// On an odd number of columns that widened unit's wraps also copy strings (M7 fix round 4,
+    /// code review F6), and the argument above does not hold as it stands: a line is not "the
+    /// same line" once printed in full, and the reachable lines do not hold the full line after
+    /// the base floor. With wraparound on, the repetition that starts at `per_line * w =
+    /// cols - 1` puts its base on the last column and its joiner wraps it (`print_wrap` with
+    /// `old_width = 1`), which runs upstream's `copyCellsFrom(oldRow, cols - 1, 0, 1)`: besides
+    /// the base, it copies every combined string of the old row at a key `k >= cols - 1` to key
+    /// `k - (cols - 1)` of the new row (the FIXME copy), stale entries (cells no longer
+    /// flagged) and keys past the old row's end included, over the new row's entries, flagged
+    /// or not. Below the region the new row is the same row; at the scroll bottom it is a fresh
+    /// line, which receives the keys past its end too and passes them on to the next. Without
+    /// insert mode nothing else moves a string at a key `>= cols - 1` (a pass writes strings at
+    /// the heads left of `cols - 1` only, and the base it writes on the last column carries no
+    /// string), so after `m` such wraps every key `j` holds the string of the largest key among
+    /// `j, j + (cols - 1), ..., j + m (cols - 1)` that held one: the strings settle once `m`
+    /// reaches `ceil((K + 1) / (cols - 1))`, where `K` is the largest key on the rows the print
+    /// reaches (from the cursor's row down to the last; a fresh line's keys are below the
+    /// row's it came from). One more line of units, and the argument above holds from there.
+    /// In insert mode the shifts also carry flagged strings right; there the floor takes `K`
+    /// at least each row's last cell (the shifts write strings up to it) and adds the same
+    /// term on top of the insert passes', so the copy's lines start once the cells have
+    /// settled. That insert-mode bound is the sum of the two settling times; it is checked by
+    /// the tests (`rep_widened_unit_at_odd_widths_over_rows_of_strings…`, the matrix, the
+    /// seeded differential) rather than proven tight. The floor gets `K / (cols - 1) + 2` more
+    /// lines (`ceil((K + 1) / (cols - 1)) + 1`), read in `O(log n)` per reachable row
+    /// ([`BufferLine::last_combined_key`]). Cost: below the region with insert mode the line
+    /// fill takes the settled passes at once, so only the passes before the strings settle
+    /// cost (`O(len)` each, `O(len^2 / cols)` in all on a long row of strings); without insert
+    /// mode each line of the floor is one pass (`O(cols)` plus the copy, `O(len)` on a row of
+    /// strings).
     fn rep_equivalent_repeats(&self, unit: &[u32], repeats: usize) -> usize {
         let services = &self.services;
         let unicode = &services.unicode;
@@ -2398,6 +2432,32 @@ impl InputHandler {
                     .saturating_add(passes)
                     .saturating_add(1)
                     .saturating_add(usize::from(inserted < w));
+            }
+            // LUNETERM: (M7 fix round 4, code review F6) a widened unit whose joiner wraps its
+            // base (an odd number of columns): every such wrap copies the old row's strings
+            // from `cols - 1` on to the new row, `cols - 1` to the left (see the doc comment)
+            let base = to_usize(i64::from(base_width));
+            if base < w && per_line.saturating_mul(w).saturating_add(base) <= cols {
+                let first = abs_y(buffer);
+                let last = buffer.ybase.saturating_add(rows).saturating_sub(1);
+                let reach = (first..=last)
+                    .filter_map(|row| buffer.lines.get(row))
+                    .filter_map(|line| {
+                        let key = line.last_combined_key();
+                        match insert_mode {
+                            // (an insert writes the strings of the cells it shifts, up to the
+                            // line's end)
+                            true => Some(key.unwrap_or(0).max(line.len().saturating_sub(1))),
+                            false => key,
+                        }
+                    })
+                    .max();
+                if let Some(reach) = reach {
+                    // `ceil((reach + 1) / (cols - 1)) + 1` lines of units
+                    lines = lines
+                        .saturating_add(reach / cols.saturating_sub(1).max(1))
+                        .saturating_add(2);
+                }
             }
             (per_line, per_line.saturating_mul(lines))
         } else {
@@ -2629,7 +2689,9 @@ impl InputHandler {
     ///    passes over the row, where it made one per line of the cut floor (`rows + 3` and one
     ///    per `pushed` cells of tail: `O(len^2 / cols)` on a long row). Not for a widened unit on
     ///    an odd number of columns on a row longer than `cols`: its passes settle only once the
-    ///    tail has, which still takes one `O(len)` pass per `pushed` cells of it.
+    ///    tail has, and once the strings the joiner's wrap copies have (M7 fix round 4, code
+    ///    review F6; see [`InputHandler::rep_equivalent_repeats`]), which still takes one
+    ///    `O(len)` pass per `pushed` cells of tail and per `cols - 1` of the row's last key.
     fn print_repeated(&mut self, fill: &RepFill, count: usize) {
         #[cfg(test)]
         {

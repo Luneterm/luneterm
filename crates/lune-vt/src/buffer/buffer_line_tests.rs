@@ -927,6 +927,26 @@ mod edge_semantics {
         );
     }
 
+    /// M7 fix round 4 (code review F6): the largest combined key, stale entries and keys past
+    /// the line's end included.
+    #[test]
+    fn last_combined_key_is_the_largest_key_held() {
+        let mut line = null_line(6);
+        assert_eq!(line.last_combined_key(), None);
+        line.set_cell(1, &combined_cell("e\u{301}"));
+        line.set_cell(4, &combined_cell("o\u{308}"));
+        assert_eq!(line.last_combined_key(), Some(4));
+        // a stale entry: the cell is plain now, its string stays
+        line.set_cell(4, &cell_of(0, "x", 1));
+        assert_eq!(line.last_combined_key(), Some(4));
+        // keys past the end, from upstream's copy into a shorter line
+        let mut long = null_line(12);
+        long.set_cell(11, &combined_cell("a\u{302}"));
+        line.copy_cells_from(&long, 3, 0, 1, false);
+        assert_eq!(line.len(), 6);
+        assert_eq!(line.last_combined_key(), Some(8));
+    }
+
     #[test]
     fn copy_cells_within_forward_shift_cascades_like_upstream() {
         // Worked from the TS loop (node, upstream keys snapshot [1, 2, 5], values read live):

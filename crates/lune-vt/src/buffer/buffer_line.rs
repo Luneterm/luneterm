@@ -731,6 +731,15 @@ impl<V: Clone + PartialEq + SameValue> SharedRunMap<V> {
         self.0.as_deref()?.get(key)
     }
 
+    /// The largest key held: the last run's last key, `O(log n)`.
+    fn last_key(&self) -> Option<usize> {
+        self.0
+            .as_deref()?
+            .runs
+            .last_key_value()
+            .map(|(_, (last, _))| *last)
+    }
+
     #[cfg(test)]
     fn entries(&self) -> Vec<(usize, V)> {
         self.0.as_deref().map(RunMap::entries).unwrap_or_default()
@@ -1011,6 +1020,13 @@ impl BufferLine {
     /// bounding the side tables in tests.
     pub fn combined_len(&self) -> usize {
         self.combined.len()
+    }
+
+    /// LUNETERM: (M7 fix round 4, code review F6) the largest key of the combined strings,
+    /// stale entries and keys past the line's end included, in `O(log n)`: how far upstream's
+    /// copy of the strings from a column on (`copy_cells_from`'s FIXME) can reach.
+    pub fn last_combined_key(&self) -> Option<usize> {
+        self.combined.last_key()
     }
 
     /// The combined strings as runs `(first key, last key, string)`, for tests that pin how
