@@ -2393,16 +2393,21 @@ mod edge_semantics {
             let mut expected = dest.clone();
             expected.copy_cells_from(&src, src_col, dest_col, len, false);
             let mut got = dest.clone();
-            got.copy_cells_from_source(&source, dest_col);
+            got.copy_cells_from_source(&source, dest_col, true);
             assert_eq!(
                 got, expected,
                 "round {round}: {src_col} -> {dest_col}, {len}"
             );
+            // without the strings: the cells and extended entries, the strings left as they were
+            let mut got = dest.clone();
+            got.copy_cells_from_source(&source, dest_col, false);
+            expected.combined = dest.combined.clone();
+            assert_eq!(got, expected, "round {round}: cells only");
             // onto itself, sharing the strings (the snapshot holds the same map)
             let mut expected = src.clone();
             expected.copy_cells_from(&src.clone(), src_col, 0, len, false);
             let mut got = src.clone();
-            got.copy_cells_from_source(&source, 0);
+            got.copy_cells_from_source(&source, 0, true);
             assert_eq!(got, expected, "round {round}: onto itself from {src_col}");
         }
         assert!(null_line(4).cells_source(0, 3).is_none());

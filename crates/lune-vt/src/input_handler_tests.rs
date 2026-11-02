@@ -3239,7 +3239,7 @@ fn longest_string_lines(t: &mut TestTerm, modes: &str) {
 fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
     const BELOW: &str = "\x1b[1;2r\x1b[999;1H\x1b[4h";
     const NO_WRAP: &str = "\x1b[?7l\x1b[999;1H\x1b[4h";
-    let cases: [RepCutCase; 26] = [
+    let cases: [RepCutCase; 28] = [
         (
             "below the region, len cols + 1",
             |t| longer_lines(t, 0, BELOW),
@@ -3453,6 +3453,24 @@ fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
             true,
             true,
         ),
+        // M7 fix round 5: the strings' copy of the first joiner wraps at the scroll bottom is
+        // skipped where the REP's own scrolls discard their lines; the counts straddle that
+        // bound (at 7x3+4, 211 and 1,009 skip, 40 does not; at 21x5+2, 1,009 and 5,003 do, 40
+        // and 211 do not); with a region from row 2 (`scroll_top` > 0) and a keycap
+        (
+            "11-vs16, at the scroll bottom without insert, keycap over strings, longest",
+            |t| longest_string_lines(t, "\x1b[999;1H"),
+            KEYCAP,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, at the scroll bottom of a region from row 2, VS16 over strings, longest",
+            |t| longest_string_lines(t, "\x1b[2r\x1b[999;1H"),
+            VS16,
+            true,
+            true,
+        ),
     ];
     // counts below and past the floors of the longest lines (at 7x3+4 below the region the
     // floor is 224, and was 91 before review F9)
@@ -3493,7 +3511,7 @@ fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
         .filter(|case| case.0.contains("over strings"))
         .copied()
         .collect();
-    assert_eq!(strings.len(), 5);
+    assert_eq!(strings.len(), 7);
     let counts: &[usize] = if full {
         &[40, 211, 1_009, 5_003]
     } else {
@@ -4075,8 +4093,9 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         }
     };
     let (mut filled, mut batched, mut cycled, mut compared) = (0, 0, 0, 0);
-    // (M7 fix round 5) copy batches below the region without insert mode
-    let mut copy_batched = 0u64;
+    // (M7 fix round 5) copy batches below the region without insert mode, chain skips at the
+    // scroll bottom
+    let (mut copy_batched, mut chain_skipped) = (0u64, 0u64);
     // (review F5) seeds whose uncapped print would not fit one `print` call: counted, not a
     // failure. A unit of several code points stacked into one cell at a large count makes the
     // repeated text longer than one parse buffer; REP and print still agree, but this harness
@@ -4158,6 +4177,7 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         batched += capped.handler.rep_stuck_batches;
         cycled += capped.handler.rep_cycle_batches;
         copy_batched += capped.handler.rep_copy_batches;
+        chain_skipped += capped.handler.rep_chain_skips;
         // the uncapped print: what REP repeats (nothing after no print, or where the cell
         // would start left of the line), `count` times in one `print` call
         let mut uncapped = make();
@@ -4188,6 +4208,10 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
             copy_batched > compared as u64 / 1_000,
             "{copy_batched} copy batches of {compared}"
         );
+        assert!(
+            chain_skipped > compared as u64 / 1_000,
+            "{chain_skipped} chain skips of {compared}"
+        );
         // the skipped seeds stay rare (review F5): fewer than 1 in 10,000
         assert!(
             skipped < 1 + compared as u64 / 10_000,
@@ -4195,7 +4219,7 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         );
         eprintln!(
             "rep diff: {compared} compared, {filled} filled, {batched} batched, {cycled} passes \
-             batched, {copy_batched} copy batches, {skipped} skipped"
+             batched, {copy_batched} copy batches, {chain_skipped} chain skips, {skipped} skipped"
         );
     }
 }
@@ -8149,6 +8173,118 @@ fn rep_widened_unit_at_odd_widths_over_rows_of_strings_leaves_the_state_of_the_u
     }
 }
 
+/// M7 fix round 5 (code review F6 residual), part B2: at the scroll bottom a widened unit's
+/// joiner wraps (odd widths) chain the rows' strings from line to line; REP skips the strings'
+/// copy of the first `m = ceil(K / (cols - 1)) - 1` scrolling ones when at least `max_length`
+/// scrolls follow the `m`-th (the lines they made are then discarded). Rows of strings `cols +
+/// 4 (cols - 1) + 3` cells long (`K mod (cols - 1) = 3`, so `m` is tight), at 7, 9 and 21
+/// columns; scrollback 0, 10 and 1,000; the cursor on the scroll bottom with `scroll_top` 0 and
+/// 2, and above a region at row 1 (descents into rows the scrolls never discard); insert mode
+/// on and off; VS16 and a keycap. Counts make the scrolls after the `m`-th exactly
+/// `max_length - 1`, `max_length` and `max_length + 1` (the last line full or holding one
+/// unit), plus a short REP where the chain's lines survive: REP leaves the state of the
+/// uncapped print every time, and `rep_chain_skips` fires exactly on the `>=` side. Axes (repo
+/// lesson): odd widths (the shape needs one; even widths never wrap from `cols - 1`), rows
+/// longer than `cols`, strings in every hidden cell; the mutants of the bound (`m - 1`, the
+/// discard bound `max_length - 1`, skipping on descent) fail it.
+#[test]
+fn rep_chain_copies_skipped_at_the_scroll_bottom_leave_the_state_of_the_uncapped_print() {
+    let (mut fired, mut held_back) = (0, 0);
+    for cols in [7usize, 9, 21] {
+        let c = cols - 1;
+        let per_line = cols / 2;
+        let rows = 5;
+        let len = cols + 4 * c + 3;
+        let key = len - 1;
+        let m = key.div_ceil(c) - 1;
+        let scrollbacks: &[usize] = if cols == 7 { &[0, 10, 1_000] } else { &[0, 10] };
+        for &scrollback in scrollbacks {
+            let max_length = rows + scrollback;
+            // (region, cursor row, descents to the scroll bottom)
+            let places = [
+                (String::new(), rows, 0),
+                (format!("\x1b[3;{rows}r"), rows, 0),
+                (format!("\x1b[3;{rows}r"), 1, rows - 1),
+            ];
+            for (region, row, descents) in &places {
+                for insert in [false, true] {
+                    for unit in [VS16, KEYCAP] {
+                        // (scrolls after the m-th skipped wrap, units on the last line)
+                        let mut shapes: Vec<(isize, usize)> = Vec::new();
+                        for delta in [-1isize, 0, 1] {
+                            shapes.push((delta, 1));
+                        }
+                        shapes.push((0, per_line));
+                        // a short REP: the chain's lines survive
+                        shapes.push((-(max_length as isize), 1));
+                        for (delta, last) in shapes {
+                            // the REP starts at column 2 (the unit printed once), so the first
+                            // line takes `per_line - 1` units and ends at `cols - 1`: the first
+                            // wrap is a joiner wrap
+                            let u0 = per_line - 1;
+                            let wraps = (descents + m + max_length) as isize + delta;
+                            let Ok(wraps) = usize::try_from(wraps) else {
+                                continue;
+                            };
+                            if wraps == 0 {
+                                continue;
+                            }
+                            let count = u0 + (wraps - 1) * per_line + last;
+                            let make = || {
+                                let mut t =
+                                    test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
+                                with_11_vs16(&mut t);
+                                let insert = if insert { "\x1b[4h" } else { "" };
+                                string_lines(
+                                    &mut t,
+                                    len,
+                                    false,
+                                    &format!("{region}\x1b[{row};1H{insert}"),
+                                );
+                                t.parse_str(unit);
+                                t
+                            };
+                            let label = format!(
+                                "{unit:?} at {cols}x{rows}+{scrollback}, {region:?} row {row}, \
+                                 insert {insert}, {wraps} wraps (m {m}, delta {delta}), REP \
+                                 {count}"
+                            );
+                            let mut capped = make();
+                            let units: Vec<u32> = unit.chars().map(u32::from).collect();
+                            assert_eq!(
+                                capped.handler.rep_equivalent_repeats(&units, count),
+                                count,
+                                "{label}: cut"
+                            );
+                            capped.parse_str(&format!("\x1b[{count}b"));
+                            let expected = delta >= 0;
+                            assert_eq!(
+                                capped.handler.rep_chain_skips,
+                                u64::from(expected),
+                                "{label}: chain skips"
+                            );
+                            if expected {
+                                fired += 1;
+                            } else {
+                                held_back += 1;
+                            }
+                            let mut uncapped = make();
+                            let text = unit.repeat(count);
+                            assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
+                            uncapped.parse_str(&format!("{text}\x1b[}}"));
+                            assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        fired > 100 && held_back > 50,
+        "{fired} fired, {held_back} held back"
+    );
+}
+
 /// M7 fix round 5 (code review F6 residual): `print_widened_wrap` (REP's direct path for the
 /// repetition whose widening joiner wraps its base) leaves the state of `print_inner` of the
 /// unit, the call it replaces: one call and then a second from the same column (the second
@@ -8235,10 +8371,14 @@ fn rep_widened_wrap_equals_print_inner() {
                 a.parse_str(&format!("\x1b[{column}G"));
                 b.parse_str(&format!("\x1b[{column}G"));
             }
-            assert!(a.handler.print_inner(&fill.codes, false, false), "{label}");
+            assert!(
+                a.handler.print_inner(&fill.codes, false, false, true),
+                "{label}"
+            );
             let before = joined_heads();
             assert!(
-                b.handler.print_widened_wrap(&fill, &head, &mut joined),
+                b.handler
+                    .print_widened_wrap(&fill, &head, &mut joined, true),
                 "{label}"
             );
             if joined_heads() > before {
