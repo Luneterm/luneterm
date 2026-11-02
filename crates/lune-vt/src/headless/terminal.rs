@@ -453,6 +453,19 @@ impl Terminal {
         self.core.input_handler_mut().ext.keyboard.reset();
     }
 
+    /// Turn the OSC 52 clipboard-write gate on or off (initially
+    /// [`crate::StandardExtensions::clipboard_write`]). Takes effect at the next OSC 52; with the
+    /// gate off a valid write is consumed and dropped. Without the standard extensions installed
+    /// it changes nothing: OSC 52 then reaches the core's unknown-OSC fallback only.
+    pub fn set_clipboard_write(&mut self, enabled: bool) {
+        self.core.input_handler_mut().ext.clipboard_write = enabled;
+    }
+
+    /// Whether the OSC 52 clipboard-write gate is on.
+    pub fn clipboard_write(&self) -> bool {
+        self.core.input_handler().ext.clipboard_write
+    }
+
     /// The live keyboard modes the key encoder reads: the kitty flags of the active screen, the
     /// modifyOtherKeys level and DECCKM.
     pub fn keyboard_modes(&self) -> KeyboardModes {

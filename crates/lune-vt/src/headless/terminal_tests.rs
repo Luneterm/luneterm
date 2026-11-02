@@ -819,6 +819,23 @@ fn osc_52_produces_no_event_and_no_response() {
 }
 
 #[test]
+fn osc_52_write_needs_the_install_and_the_gate() {
+    // plan M7 step 7: ledger row 13 holds for a plain terminal and for an installed one with the
+    // gate off; only the gate on queues the write, and a query is never answered
+    let mut t = term([]);
+    t.install_standard_extensions(&crate::StandardExtensions::default())
+        .unwrap();
+    t.write(b"\x1b]52;c;aGk=\x07\x1b]52;c;?\x07");
+    assert!(t.drain_events().is_empty());
+    t.set_clipboard_write(true);
+    t.write(b"\x1b]52;c;aGk=\x07\x1b]52;c;?\x07");
+    assert_eq!(
+        t.drain_events(),
+        [HostEvent::ClipboardWrite("hi".to_owned())]
+    );
+}
+
+#[test]
 fn events_keep_fire_order_and_responses_are_not_merged() {
     let mut t = term([OptionValue::ScreenReaderMode(true)]);
     t.write(b"a\x07\tb");
