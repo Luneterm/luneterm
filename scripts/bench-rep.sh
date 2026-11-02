@@ -3,8 +3,9 @@
 # plain, link, cluster, extended-attribute REP at 80x24 and 300x100 (scrollback 1,000 / 10,000), the
 # DECALN control, the no-wrap insert REP on lines longer than the window, (M7 fix round 2) REP
 # below a scroll region, below a region on a long row in Windows mode (no reflow), and of a
-# joining-base unit, and (M7 fix round 3) REP below a region at odd widths (a widened unit's
-# joiner wraps its base there). Median of 5 fresh terminals each; prints one table with the machine's load
+# joining-base unit, (M7 fix round 3) REP below a region at odd widths (a widened unit's
+# joiner wraps its base there), and (M7 fix round 4) REP at odd widths over narrowed rows of
+# combined strings (that wrap copies the rows' strings). Median of 5 fresh terminals each; prints one table with the machine's load
 # average. No pass/fail threshold: the S7 residual steps (plan M7 11 to 13) and the M7 fix rounds
 # compare their before and after tables from this script.
 # Needs only a Rust toolchain. Takes about a minute; run it on an idle machine and read the load
