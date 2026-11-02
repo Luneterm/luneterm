@@ -1679,6 +1679,482 @@ mod edge_semantics {
         assert!(fast_short > 600, "{fast_short}");
     }
 
+    /// A random line of `len` cells for the M7 fix round 3 differentials: narrow, wide, combined
+    /// and extended cells, stale entries at unflagged cells, flagged cells without an entry,
+    /// and sometimes entries past the end.
+    fn random_line(next: &mut impl FnMut(usize) -> usize, len: usize) -> BufferLine {
+        let ext = |v: usize| ExtendedAttrs::new(v as u32 + 1, v as u32);
+        let mut line = null_line(len);
+        let mut c = 0;
+        while c < len {
+            let mut cell = CellData::new();
+            let kind = next(5);
+            let width = if kind == 1 && c + 1 < len { 2 } else { 1 };
+            cell.content = match kind {
+                0 => NULL_CELL_CODE | (NULL_CELL_WIDTH << Content::WIDTH_SHIFT),
+                2 => {
+                    cell.combined_data =
+                        format!("e{}", char::from_u32(0x300 + (c % 3) as u32).unwrap());
+                    Content::IS_COMBINED_MASK | (width << Content::WIDTH_SHIFT)
+                }
+                _ => (u32::from('a') + (c % 26) as u32) | (width << Content::WIDTH_SHIFT),
+            };
+            if next(3) == 0 {
+                cell.bg |= BgFlags::HAS_EXTENDED;
+                cell.extended = ext(next(3));
+            }
+            line.set_cell(c, &cell);
+            if next(5) == 0 {
+                line.combined.insert(c, format!("stale{}", c % 2).into());
+                line.extended_attrs.insert(c, ext(9));
+            }
+            if next(11) == 0 {
+                line.write(
+                    c,
+                    CELL_CONTENT,
+                    Content::IS_COMBINED_MASK | (width << Content::WIDTH_SHIFT),
+                );
+                line.combined.remove(&c);
+            }
+            if width == 2 {
+                line.set_cell_from_codepoint(c + 1, 0, 0, &DEFAULT_ATTR_DATA);
+            }
+            c += width as usize;
+        }
+        if next(5) == 0 {
+            line.combined.insert(len + next(3), "past".into());
+            line.extended_attrs.insert(len + next(3), ext(7));
+        }
+        line
+    }
+
+    /// A head and a stub as REP's line fill writes them (`print`'s calls on a scratch line): a
+    /// base `width` cells wide with `joiners` combining marks, in `attrs`.
+    fn rep_cells(
+        width: u32,
+        joiners: usize,
+        base: u32,
+        attrs: &AttributeData,
+    ) -> (CellData, CellData) {
+        let mut scratch = BufferLine::new(2, None, false);
+        scratch.set_cell_from_codepoint(0, base, width, attrs);
+        for joiner in 0..joiners {
+            scratch.add_codepoint_to_cell(0, 0x301 + joiner as u32, width);
+        }
+        scratch.set_cell_from_codepoint(1, 0, 0, attrs);
+        let (mut head, mut stub) = (CellData::new(), CellData::new());
+        scratch.load_cell(0, &mut head);
+        scratch.load_cell(1, &mut stub);
+        (head, stub)
+    }
+
+    /// LUNETERM: (M7 fix round 3) `insert_cells` (its shift now one pass) leaves what
+    /// upstream's per-cell loop leaves: the `pos - 1` fix-up, `set_cell(pos + n + i,
+    /// load_cell(pos + i))` from the right, `set_cell` of the fill, the line-end fix-up. Whole
+    /// lines compared, stale entries and flagged cells without one included.
+    #[test]
+    fn inserting_cells_equals_the_per_cell_loop() {
+        let mut seed: u64 = 0x7a3c_51e9_04bd_2f68;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let mut shifted = 0;
+        for round in 0..4_000 {
+            let len = 1 + next(40);
+            let line = random_line(&mut next, len);
+            let pos = next(len + 2);
+            let n = next(len + 2);
+            let mut fill = null_cell();
+            fill.fg = 0x0300_0011;
+            if next(2) == 0 {
+                fill.bg |= BgFlags::HAS_EXTENDED;
+                fill.extended = ExtendedAttrs::new(5, 5);
+            }
+            if next(6) == 0 {
+                fill.content = Content::IS_COMBINED_MASK | (1 << Content::WIDTH_SHIFT);
+                fill.combined_data = "fill".into();
+            }
+            let mut looped = line.clone();
+            let p = pos % len;
+            if p != 0 && looped.get_width(p - 1) == 2 {
+                looped.set_cell_from_codepoint(p - 1, 0, 1, &fill);
+            }
+            if n < len - p {
+                let mut cell = CellData::new();
+                for i in (0..len - p - n).rev() {
+                    looped.load_cell(p + i, &mut cell);
+                    looped.set_cell(p + n + i, &cell);
+                }
+                for i in 0..n {
+                    looped.set_cell(p + i, &fill);
+                }
+                shifted += 1;
+            } else {
+                for i in p..len {
+                    looped.set_cell(i, &fill);
+                }
+            }
+            if looped.get_width(len - 1) == 2 {
+                looped.set_cell_from_codepoint(len - 1, 0, 1, &fill);
+            }
+            let mut once = line.clone();
+            once.insert_cells(pos, n, &fill);
+            assert_eq!(
+                once, looped,
+                "round {round}: {line:?} pos {pos} n {n} fill {fill:?}"
+            );
+        }
+        assert!(shifted > 1_500, "{shifted}");
+    }
+
+    /// LUNETERM: (M7 fix round 3, review S2) `insert_cells_repeatedly_then_set` leaves what its
+    /// two calls leave (`insert_cells_repeatedly`, then `set_cells_repeatedly_shared` of the
+    /// head and stub over the inserted cells), whole lines compared. Lines are random or
+    /// filled with the unit already (as REP's passes leave them: every class all flagged or
+    /// none), units 1 to 3 cells wide, fills reaching the line's end or stopping short, edges at
+    /// the last cell or left of it, heads and stubs with and without strings and extended
+    /// attributes, fills with and without them. The one-shift form runs for both kinds of fill.
+    #[test]
+    fn inserting_repeatedly_then_writing_equals_the_two_calls() {
+        let mut seed: u64 = 0x13c9_e2a7_58f0_b46d;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let (mut one_shift_full, mut one_shift_short) = (0, 0);
+        for round in 0..6_000 {
+            let n = 1 + next(3);
+            let len = n + next(40);
+            let mut attrs = AttributeData {
+                fg: 0x0300_0011,
+                ..AttributeData::default()
+            };
+            if next(3) == 0 {
+                attrs.bg |= BgFlags::HAS_EXTENDED;
+                attrs.extended = ExtendedAttrs::new(6, 6);
+            }
+            let (mut head, mut stub) = rep_cells(n.min(2) as u32, next(3), 0x4e2d, &attrs);
+            if n == 3 {
+                // (a 3-cell unit: never `print`'s, but the call allows it)
+                head.content = (head.content & !Content::WIDTH_MASK) | (3 << Content::WIDTH_SHIFT);
+            }
+            if next(8) == 0 {
+                stub.content |= Content::IS_COMBINED_MASK;
+                stub.combined_data = head.combined_data.clone();
+            }
+            let mut line = random_line(&mut next, len);
+            if next(2) == 0 {
+                // the unit printed over the line already, as after a pass
+                let mut template = None;
+                line.set_cells_repeatedly_shared(0, n, len / n, &head, &stub, &mut template);
+            }
+            let pos = next(len);
+            let room = (len - pos) / n;
+            if room == 0 {
+                continue;
+            }
+            let times = if next(2) == 0 { room } else { 1 + next(room) };
+            let edge = if next(4) == 0 {
+                pos + next(len - pos)
+            } else {
+                len - 1
+            };
+            let mut fill = null_cell();
+            fill.fg = attrs.fg;
+            fill.bg = attrs.bg;
+            fill.extended = attrs.extended;
+
+            let mut two = line.clone();
+            two.insert_cells_repeatedly(pos, n, times, &fill, edge, &attrs);
+            let mut template = None;
+            two.set_cells_repeatedly_shared(pos, n, times, &head, &stub, &mut template);
+            let mut one = line.clone();
+            let before = one_shift_fills();
+            let mut template = None;
+            one.insert_cells_repeatedly_then_set(
+                pos,
+                n,
+                times,
+                &fill,
+                edge,
+                &attrs,
+                (&head, &stub),
+                &mut template,
+            );
+            assert_eq!(
+                one, two,
+                "round {round}: {line:?} pos {pos} n {n} times {times} edge {edge} head {head:?} \
+                 stub {stub:?} fill {fill:?}"
+            );
+            if one_shift_fills() > before {
+                match pos + n * times == len {
+                    true => one_shift_full += 1,
+                    false => one_shift_short += 1,
+                }
+            }
+        }
+        assert!(one_shift_full > 300, "{one_shift_full}");
+        assert!(one_shift_short > 300, "{one_shift_short}");
+    }
+
+    /// LUNETERM: (M7 fix round 3, review S2) `insert_cell_strided_then_set` leaves what its two
+    /// calls leave, on lines REP's widened-unit passes leave (heads two cells apart, one string
+    /// over the whole line, stale at the stubs) and on random ones, fills reaching the line's
+    /// end or stopping short, edges at the last cell or left of it, with and without extended
+    /// attributes. The one-shift form runs for both kinds of fill.
+    #[test]
+    fn inserting_strided_then_writing_equals_the_two_calls() {
+        let mut seed: u64 = 0x6b1f_d3a0_9c27_e845;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let (mut one_shift_full, mut one_shift_short) = (0, 0);
+        for round in 0..6_000 {
+            let stride = 2 + next(2);
+            let len = stride + next(40);
+            let mut attrs = AttributeData {
+                fg: 0x0300_0011,
+                ..AttributeData::default()
+            };
+            if next(3) == 0 {
+                attrs.bg |= BgFlags::HAS_EXTENDED;
+                attrs.extended = ExtendedAttrs::new(6, 6);
+            }
+            // a widened base: VS16 after a narrow one, two cells
+            let (head, stub) = rep_cells(2, 1 + next(2), 0x26a0, &attrs);
+            let mut line = random_line(&mut next, len);
+            if next(3) != 0 {
+                let mut template = None;
+                line.set_cells_repeatedly_shared(
+                    0,
+                    stride,
+                    len / stride,
+                    &head,
+                    &stub,
+                    &mut template,
+                );
+                if next(4) != 0 {
+                    // the stale strings the shifted heads leave at the stubs
+                    line.combined
+                        .assign(0, len - 1, Some(Arc::from(&*head.combined_data)));
+                }
+                if next(3) == 0 && attrs.bg & BgFlags::HAS_EXTENDED != 0 {
+                    line.extended_attrs.assign(0, len - 1, Some(attrs.extended));
+                }
+            }
+            let pos = next(len);
+            let room = (len - pos) / stride;
+            if room == 0 {
+                continue;
+            }
+            let times = if next(2) == 0 { room } else { 1 + next(room) };
+            let edge = if next(4) == 0 {
+                pos + next(len - pos)
+            } else {
+                len - 1
+            };
+            let mut fill = null_cell();
+            fill.fg = attrs.fg;
+            fill.bg = attrs.bg;
+            fill.extended = attrs.extended;
+            match next(8) {
+                // (never `print`'s fill, but the call allows it) the line's one string, or another
+                0 => {
+                    fill.content |= Content::IS_COMBINED_MASK;
+                    fill.combined_data = head.combined_data.clone();
+                }
+                1 => {
+                    fill.content |= Content::IS_COMBINED_MASK;
+                    fill.combined_data = "fill".into();
+                }
+                _ => {}
+            }
+
+            let mut two = line.clone();
+            two.insert_cell_strided(pos, stride, times, &fill, edge, &attrs);
+            let mut template = None;
+            two.set_cells_repeatedly_shared(pos, stride, times, &head, &stub, &mut template);
+            let mut one = line.clone();
+            let before = one_shift_fills();
+            let mut template = None;
+            one.insert_cell_strided_then_set(
+                pos,
+                stride,
+                times,
+                &fill,
+                edge,
+                &attrs,
+                (&head, &stub),
+                &mut template,
+            );
+            assert_eq!(
+                one, two,
+                "round {round}: {line:?} pos {pos} stride {stride} times {times} edge {edge} \
+                 head {head:?} fill {fill:?}"
+            );
+            if one_shift_fills() > before {
+                match pos + stride * times == len {
+                    true => one_shift_full += 1,
+                    false => one_shift_short += 1,
+                }
+            }
+        }
+        assert!(one_shift_full > 300, "{one_shift_full}");
+        assert!(one_shift_short > 300, "{one_shift_short}");
+    }
+
+    /// LUNETERM: (M7 fix round 3, review S2) `insert_block_repeatedly` leaves exactly what its
+    /// loop leaves (per step: the cells right of `start` shifted by `step`, the next cells of
+    /// the block pushed at `start`, the line-end fix-up), whole lines compared: cells and both
+    /// side tables, stale entries included. Random lines with narrow, wide, combined and
+    /// extended cells, flagged cells without entries and stale entries; steps 1 to 3, blocks of
+    /// one to several steps, periods from 0 to past the cap; fills with and without extended
+    /// attributes. Also the lines too short for the one pass (the loop runs).
+    #[test]
+    fn inserting_a_block_repeatedly_equals_the_loop_of_block_inserts() {
+        let mut seed: u64 = 0x2f8a_17c3_9b4e_d651;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let ext = |v: usize| ExtendedAttrs::new(v as u32 + 1, v as u32);
+        let (mut fast, mut line_end_fix, mut capped, mut old_reached) = (0, 0, 0, 0);
+        for round in 0..6_000 {
+            let len = 2 + next(60);
+            let mut line = null_line(len);
+            let mut c = 0;
+            while c < len {
+                let mut cell = CellData::new();
+                let kind = next(5);
+                let width = if kind == 1 && c + 1 < len { 2 } else { 1 };
+                cell.content = match kind {
+                    0 => NULL_CELL_CODE | (NULL_CELL_WIDTH << Content::WIDTH_SHIFT),
+                    2 => {
+                        cell.combined_data =
+                            format!("e{}", char::from_u32(0x300 + (c % 40) as u32).unwrap());
+                        Content::IS_COMBINED_MASK | (width << Content::WIDTH_SHIFT)
+                    }
+                    _ => (u32::from('a') + (c % 26) as u32) | (width << Content::WIDTH_SHIFT),
+                };
+                if next(3) == 0 {
+                    cell.bg |= BgFlags::HAS_EXTENDED;
+                    cell.extended = ext(next(4));
+                }
+                line.set_cell(c, &cell);
+                if next(4) == 0 {
+                    // a stale entry at a cell without the flag
+                    line.combined.insert(c, format!("stale{c}").into());
+                    line.extended_attrs.insert(c, ext(9));
+                }
+                if next(9) == 0 {
+                    // a flagged cell without an entry
+                    line.write(
+                        c,
+                        CELL_CONTENT,
+                        Content::IS_COMBINED_MASK | (width << Content::WIDTH_SHIFT),
+                    );
+                    line.combined.remove(&c);
+                }
+                if next(12) == 0 {
+                    line.extended_attrs.remove(&c);
+                }
+                if width == 2 {
+                    line.set_cell_from_codepoint(c + 1, 0, 0, &DEFAULT_ATTR_DATA);
+                }
+                c += width as usize;
+            }
+            // a few entries past the line's end, which nothing here touches
+            if next(4) == 0 {
+                line.combined.insert(len + next(3), "past".into());
+                line.extended_attrs.insert(len + next(3), ext(7));
+            }
+            let mut fill = null_cell();
+            fill.fg = 0x0300_0011;
+            if next(2) == 0 {
+                fill.bg |= BgFlags::HAS_EXTENDED;
+                fill.extended = ext(5 + round % 3);
+            }
+            let step = 1 + next(3);
+            let block = step * (1 + next(5));
+            let start = next(len);
+            let room = len - start;
+            let periods = match next(5) {
+                0 => next(2),
+                1 => room / block + 2 + next(4),
+                _ => 1 + next(room / block + 3),
+            };
+
+            let mut looped = line.clone();
+            let pushed: Vec<CellData> = (start..start + block)
+                .map(|c| {
+                    let mut cell = CellData::new();
+                    looped.load_cell(c, &mut cell);
+                    cell
+                })
+                .collect();
+            for _ in 0..periods {
+                for j in 0..block / step {
+                    let mut cell = CellData::new();
+                    for c in (start..len.saturating_sub(step)).rev() {
+                        looped.load_cell(c, &mut cell);
+                        looped.set_cell(c + step, &cell);
+                    }
+                    for i in 0..step {
+                        looped.set_cell(start + i, &pushed[block - (j + 1) * step + i]);
+                    }
+                    if looped.get_width(len - 1) == 2 {
+                        looped.set_cell_from_codepoint(
+                            len - 1,
+                            NULL_CELL_CODE,
+                            NULL_CELL_WIDTH,
+                            &fill,
+                        );
+                    }
+                }
+            }
+            let mut once = line.clone();
+            once.insert_block_repeatedly(start, block, step, periods, &fill);
+            assert_eq!(
+                once, looped,
+                "round {round}: {line:?} start {start} block {block} step {step} periods \
+                 {periods} fill {fill:?}"
+            );
+
+            if periods > 0 && start + block < len {
+                fast += 1;
+                let total = periods * block;
+                if total < room {
+                    old_reached += 1;
+                }
+                if periods > room / block + 2 {
+                    capped += 1;
+                }
+                // the old cell the last one ends as
+                let last = match room - 1 {
+                    t if t < total => start + t % block,
+                    t => start + t - total,
+                };
+                if line.get_width(last) == 2 {
+                    line_end_fix += 1;
+                }
+            }
+        }
+        assert!(fast > 2_500, "{fast}");
+        assert!(line_end_fix > 150, "{line_end_fix}");
+        assert!(capped > 400, "{capped}");
+        assert!(old_reached > 400, "{old_reached}");
+    }
+
     /// LUNETERM: (review S7 round 4) `set_cells_repeatedly` leaves exactly what its loop of
     /// `set_cell` calls leaves, over random lines with entries, heads and stubs with and
     /// without combined strings and extended attributes, widths 0 to 3 and runs past the end
@@ -1860,7 +2336,9 @@ fn run_map_holds_the_entries_of_a_per_key_map() {
     check_run_map(|v| -> Arc<str> { Arc::from(format!("c{v}\u{301}")) });
 }
 
-fn check_run_map<V: Clone + PartialEq + std::fmt::Debug>(value_of: impl Fn(usize) -> V) {
+fn check_run_map<V: Clone + PartialEq + SameValue + std::fmt::Debug>(
+    value_of: impl Fn(usize) -> V,
+) {
     use std::collections::BTreeMap;
     let mut seed: u64 = 0x1234_5678_9abc_def1;
     let mut next = |bound: usize| {
@@ -1970,6 +2448,26 @@ fn check_run_map<V: Clone + PartialEq + std::fmt::Debug>(value_of: impl Fn(usize
             let to = from.saturating_add(next(20)).min(usize::MAX - 1);
             let model_dense: Vec<Option<V>> = (from..to).map(|k| model.get(&k).cloned()).collect();
             assert_eq!(map.dense(from, to), model_dense, "dense {from}..{to}");
+            // (M7 fix round 3) the same as indexes into the runs' values, and the runs there
+            let (values, index) = map.dense_indexed(from, to);
+            let indexed: Vec<Option<V>> = index
+                .iter()
+                .map(|id| id.map(|id| values[id].clone()))
+                .collect();
+            assert_eq!(indexed, model_dense, "dense_indexed {from}..{to}");
+            let (runs, values) = map.runs_in(from, Some(to));
+            let mut from_runs: Vec<Option<V>> = vec![None; to.saturating_sub(from)];
+            for &(first, last, id) in &runs {
+                assert!(from <= first && first <= last && last < to, "{runs:?}");
+                for slot in &mut from_runs[first - from..=last - from] {
+                    *slot = Some(values[id].clone());
+                }
+            }
+            assert_eq!(from_runs, model_dense, "runs_in {from}..{to}");
+            assert!(
+                values.windows(2).all(|pair| pair[0] != pair[1]),
+                "{values:?}"
+            );
             // one form: the map built key by key from the model is equal, and no two runs
             // that touch hold the same value
             let mut rebuilt = RunMap::default();
