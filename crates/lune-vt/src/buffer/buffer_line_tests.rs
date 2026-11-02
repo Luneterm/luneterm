@@ -1274,6 +1274,255 @@ mod edge_semantics {
         assert!(fast_fired > 600, "{fast_fired}");
     }
 
+    /// LUNETERM: (M7 fix round 1) `insert_cell_strided` leaves exactly what its loop of
+    /// one-cell inserts `stride` apart (each followed by the edge fix-up) leaves, whole lines
+    /// compared: cells and both side tables, stale entries included. Random lines (narrow,
+    /// wide, combined and extended cells, stale entries, flagged cells without an entry),
+    /// fills (plain, extended, combined, wide), strides 1 to 4, positions, counts and edges in
+    /// and out of the one-pass conditions.
+    #[test]
+    fn inserting_one_cell_strided_equals_the_loop_of_inserts() {
+        let mut seed: u64 = 0x2f8a_63d1_9c4e_b507;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let ext = |v: usize| ExtendedAttrs::new(v as u32 + 1, v as u32);
+        let (mut fast, mut fast_edge_fired, mut fast_gap_fired, mut fast_end_fired) = (0, 0, 0, 0);
+        let (mut plain_runs, mut narrow_runs) = (0, 0);
+        let mut shared_runs = 0;
+        // a line with no combined string at all (the shared strings' condition)
+        let plain_free = |line: &BufferLine| line.combined.is_empty();
+        for round in 0..80_000 {
+            let len = 1 + next(16);
+            let mut line = null_line(len);
+            // sometimes no flagged or wide cell (stale entries still), and a plain fill; or no
+            // combined or wide cell, extended ones allowed, and a fill that is neither
+            let plain = next(5) == 0;
+            let narrow = !plain && next(4) == 0;
+            let mut c = 0;
+            while c < len {
+                let mut cell = CellData::new();
+                let kind = if plain || narrow {
+                    3 * next(2)
+                } else {
+                    next(5)
+                };
+                let width = if kind == 1 && c + 1 < len { 2 } else { 1 };
+                cell.content = match kind {
+                    0 => NULL_CELL_CODE | (NULL_CELL_WIDTH << Content::WIDTH_SHIFT),
+                    2 => {
+                        cell.combined_data =
+                            format!("e{}", char::from_u32(0x300 + c as u32).unwrap());
+                        Content::IS_COMBINED_MASK | (width << Content::WIDTH_SHIFT)
+                    }
+                    _ => (u32::from('a') + c as u32) | (width << Content::WIDTH_SHIFT),
+                };
+                if !plain && next(3) == 0 {
+                    cell.bg |= BgFlags::HAS_EXTENDED;
+                    cell.extended = ext(next(4));
+                }
+                line.set_cell(c, &cell);
+                if next(4) == 0 {
+                    // a stale entry at a cell without the flag
+                    line.combined.insert(c, format!("stale{c}").into());
+                    line.extended_attrs.insert(c, ext(9));
+                }
+                if !plain && !narrow && next(12) == 0 {
+                    // a flagged cell without an entry
+                    line.write(
+                        c,
+                        CELL_CONTENT,
+                        Content::IS_COMBINED_MASK | (width << Content::WIDTH_SHIFT),
+                    );
+                    line.combined.remove(&c);
+                }
+                if width == 2 {
+                    line.set_cell_from_codepoint(c + 1, 0, 0, &DEFAULT_ATTR_DATA);
+                }
+                c += width as usize;
+            }
+            let mut fill = null_cell();
+            match if plain {
+                6
+            } else if narrow {
+                [0, 6][next(2)]
+            } else {
+                next(7)
+            } {
+                0 | 1 => {
+                    fill.bg |= BgFlags::HAS_EXTENDED;
+                    fill.extended = ext(7);
+                }
+                2 => {
+                    fill.content = Content::IS_COMBINED_MASK | (1 << Content::WIDTH_SHIFT);
+                    fill.combined_data = "fill".into();
+                }
+                3 if round % 4 == 0 => fill.content = u32::from('w') | (2 << Content::WIDTH_SHIFT),
+                _ => {}
+            }
+            let stride = 1 + next(4);
+            let pos = next(len + 1);
+            let times = next((len - pos) / stride + 2);
+            let last = (pos + times.saturating_sub(1) * stride).min(len + 8);
+            let edge = match next(4) {
+                0 => next(len + 3),
+                1 => len - 1,
+                _ => last + 1 + next(len.saturating_sub(last + 1).max(1)),
+            };
+            let mut edge_attrs = AttributeData {
+                fg: 0x0300_0011,
+                ..AttributeData::default()
+            };
+            if next(2) == 0 {
+                edge_attrs.bg |= BgFlags::HAS_EXTENDED;
+                edge_attrs.extended = ext(5);
+            }
+            let one_pass = stride >= 2
+                && times > 0
+                && last + 1 < len
+                && (edge + 1 >= len || edge > last)
+                && fill.get_width() != 2;
+            let mut looped = line.clone();
+            let (mut edge_fired, mut gap_fired, mut end_fired) = (false, false, false);
+            for j in 0..times {
+                let at = pos + j * stride;
+                gap_fired |= j > 0 && at > 0 && looped.get_width(at - 1) == 2;
+                // the cell the shift moves onto the last cell, which its fix-up rewrites
+                end_fired |= at + 1 < len && looped.get_width(len - 2) == 2;
+                looped.insert_cells(at, 1, &fill);
+                if looped.get_width(edge) == 2 {
+                    looped.set_cell_from_codepoint(
+                        edge,
+                        NULL_CELL_CODE,
+                        NULL_CELL_WIDTH,
+                        &edge_attrs,
+                    );
+                    edge_fired = true;
+                }
+            }
+            if one_pass {
+                fast += 1;
+                plain_runs += usize::from(plain);
+                narrow_runs += usize::from(narrow);
+                fast_edge_fired += usize::from(edge_fired && edge + 1 < len);
+                fast_gap_fired += usize::from(gap_fired);
+                fast_end_fired += usize::from(end_fired);
+            }
+            let mut once = line.clone();
+            once.insert_cell_strided(pos, stride, times, &fill, edge, &edge_attrs);
+            assert_eq!(
+                once, looped,
+                "round {round}: {line:?} pos {pos} stride {stride} times {times} fill {fill:?} \
+                 edge {edge} {edge_attrs:?}"
+            );
+            // (M7 fix round 1) and with the cells written after: head and stub (combined or
+            // not, extended or not), on this line and on a second line alike (the template)
+            let mut head = CellData::new();
+            head.content = u32::from('h') | (stride.min(2) as u32) << Content::WIDTH_SHIFT;
+            if next(3) != 0 {
+                head.content = Content::IS_COMBINED_MASK | (2 << Content::WIDTH_SHIFT);
+                head.combined_data = format!("h{}\u{fe0f}", round % 3);
+            }
+            let mut stub = CellData::new();
+            if next(6) == 0 {
+                stub.content = Content::IS_COMBINED_MASK;
+                stub.combined_data = "s".into();
+            }
+            for cell in [&mut head, &mut stub] {
+                if next(2) == 0 {
+                    cell.bg |= BgFlags::HAS_EXTENDED;
+                    cell.extended = ext(6);
+                }
+            }
+            let mut template = None;
+            for copy in 0..2 {
+                let mut set_after = looped.clone();
+                if copy == 1 {
+                    set_after = line.clone();
+                    for j in 0..times {
+                        set_after.insert_cells(pos + j * stride, 1, &fill);
+                        if set_after.get_width(edge) == 2 {
+                            set_after.set_cell_from_codepoint(
+                                edge,
+                                NULL_CELL_CODE,
+                                NULL_CELL_WIDTH,
+                                &edge_attrs,
+                            );
+                        }
+                    }
+                }
+                set_after.set_cells_repeatedly(pos, stride, times, &head, &stub);
+                let mut fused = line.clone();
+                fused.insert_cell_strided_then_set(
+                    pos,
+                    stride,
+                    times,
+                    &fill,
+                    edge,
+                    &edge_attrs,
+                    (&head, &stub),
+                    &mut template,
+                );
+                assert_eq!(
+                    fused, set_after,
+                    "round {round} (fused, line {copy}): {line:?} pos {pos} stride {stride} \
+                     times {times} fill {fill:?} edge {edge} head {head:?} stub {stub:?}"
+                );
+                if copy == 1 && one_pass && plain_free(&line) {
+                    shared_runs += usize::from(
+                        fused
+                            .combined
+                            .0
+                            .as_ref()
+                            .is_some_and(|map| Arc::strong_count(map) > 1),
+                    );
+                }
+            }
+            // a line that holds a string does not take the template's strings
+            if template.is_some() {
+                let mut other = line.clone();
+                other.combined.insert(next(len + 2), "held".into());
+                let mut set_after = other.clone();
+                for j in 0..times {
+                    set_after.insert_cells(pos + j * stride, 1, &fill);
+                    if set_after.get_width(edge) == 2 {
+                        set_after.set_cell_from_codepoint(
+                            edge,
+                            NULL_CELL_CODE,
+                            NULL_CELL_WIDTH,
+                            &edge_attrs,
+                        );
+                    }
+                }
+                set_after.set_cells_repeatedly(pos, stride, times, &head, &stub);
+                other.insert_cell_strided_then_set(
+                    pos,
+                    stride,
+                    times,
+                    &fill,
+                    edge,
+                    &edge_attrs,
+                    (&head, &stub),
+                    &mut template,
+                );
+                assert_eq!(
+                    other, set_after,
+                    "round {round} (fused, a line with a string)"
+                );
+            }
+        }
+        assert!(fast > 12_000, "{fast}");
+        assert!(fast_edge_fired > 1_000, "{fast_edge_fired}");
+        assert!(fast_gap_fired > 1_000, "{fast_gap_fired}");
+        assert!(fast_end_fired > 1_000, "{fast_end_fired}");
+        assert!(plain_runs > 2_000, "{plain_runs}");
+        assert!(narrow_runs > 1_500, "{narrow_runs}");
+        assert!(shared_runs > 500, "{shared_runs}");
+    }
+
     /// LUNETERM: (plan M7 step 13, S7 residual 5) `stuck_insert_repeatedly` leaves exactly
     /// what its loop of per-unit stuck inserts leaves (`print`'s insert at `cols - 1`, its edge
     /// fix-up there, the head written), whole lines compared: cells and both side tables,
@@ -1673,7 +1922,12 @@ fn check_run_map<V: Clone + PartialEq + std::fmt::Debug>(value_of: impl Fn(usize
                     for (k, v) in &updates {
                         model.insert(*k, v.clone());
                     }
-                    map.insert_ascending(updates);
+                    // (M7 fix round 1) and as touching ranges
+                    if next(2) == 0 {
+                        map.assign_ascending(&updates);
+                    } else {
+                        map.insert_ascending(updates);
+                    }
                 }
                 _ if next(4) == 0 => {
                     map.clear();
@@ -1700,6 +1954,10 @@ fn check_run_map<V: Clone + PartialEq + std::fmt::Debug>(value_of: impl Fn(usize
             let from = base + next(41);
             let model_keys: Vec<usize> = model.range(from..).map(|(&k, _)| k).collect();
             assert_eq!(map.keys_from(from), model_keys);
+            // (M7 fix round 1) the values of a range of keys in one walk
+            let to = from.saturating_add(next(20)).min(usize::MAX - 1);
+            let model_dense: Vec<Option<V>> = (from..to).map(|k| model.get(&k).cloned()).collect();
+            assert_eq!(map.dense(from, to), model_dense, "dense {from}..{to}");
             // one form: the map built key by key from the model is equal, and no two runs
             // that touch hold the same value
             let mut rebuilt = RunMap::default();

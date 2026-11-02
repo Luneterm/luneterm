@@ -238,6 +238,21 @@ fn with_vs16(t: &mut TestTerm) {
     unicode.set_active_version("vs16-test").unwrap();
 }
 
+/// The shipped VS16 provider (`11-vs16`, plan M7 step 4) active, as
+/// `StandardExtensions { vs16: true }` leaves it (M7 fix round 1).
+fn with_11_vs16(t: &mut TestTerm) {
+    let unicode = &mut t.handler.services.unicode;
+    unicode.register(Box::new(crate::ext::vs16::UnicodeV11Vs16::new()));
+    unicode.set_active_version("11-vs16").unwrap();
+}
+
+/// VS16 (`U+26A0 U+FE0F`: 2 cells under `11-vs16`), a keycap (`1 U+FE0F U+20E3`: a joiner
+/// after the widening one) and an emoji with a ZWJ (a wide base and a joiner): the units of
+/// M7 fix round 1.
+const VS16: &str = "\u{26a0}\u{fe0f}";
+const KEYCAP: &str = "1\u{fe0f}\u{20e3}";
+const EMOJI_ZWJ: &str = "\u{1F468}\u{200D}";
+
 /// Upstream `Params.fromArray([..])` of plain params.
 fn params(values: &[i32]) -> Params {
     let items: Vec<ParamsArrayItem> = values.iter().map(|&v| ParamsArrayItem::Param(v)).collect();
@@ -2711,7 +2726,7 @@ fn rep_state(t: &mut TestTerm) -> RepState {
 /// others `print`; each case checks which. Lines compare whole, side-table entries included.
 #[test]
 fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
-    let cases: [RepCutCase; 25] = [
+    let cases: [RepCutCase; 40] = [
         ("plain", |_| {}, "a", true, true),
         ("wide, odd cols", |_| {}, "\u{4e2d}", true, true),
         ("cluster", |_| {}, "e\u{301}", true, true),
@@ -2864,8 +2879,128 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
             true,
             true,
         ),
-        // the cursor-moving join is not proven periodic: no cut
-        ("joiner that widens", with_vs16, "a\u{fe0f}", false, false),
+        // (M7 fix round 1, review S1) a joiner that widens a narrow base: cut and filled
+        ("joiner that widens", with_vs16, "a\u{fe0f}", true, true),
+        (
+            "joiner that widens, then a joiner",
+            with_vs16,
+            "a\u{fe0f}\u{301}",
+            true,
+            true,
+        ),
+        ("11-vs16, VS16", with_11_vs16, VS16, true, true),
+        ("11-vs16, keycap", with_11_vs16, KEYCAP, true, true),
+        ("11-vs16, emoji ZWJ", with_11_vs16, EMOJI_ZWJ, true, true),
+        (
+            "11-vs16, insert mode, VS16 over clusters and wides",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("e\u{301}\u{4e2d}e\u{301}x\r\n\u{4e2d}\u{301}e\u{301}\u{26a0}\u{fe0f}\x1b[H\x1b[4h")
+            },
+            VS16,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, insert mode, keycap below the region",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("1\r\n2\r\n3\x1b[1;2r\x1b[3;1H\x1b[4h")
+            },
+            KEYCAP,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, open link, VS16",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("\x1b]8;;u\x07")
+            },
+            VS16,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, open link, insert mode, emoji ZWJ",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("xyz\r\n12\x1b]8;;u\x07\x1b[H\x1b[4h")
+            },
+            EMOJI_ZWJ,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, screen reader, keycap",
+            |t| {
+                with_11_vs16(t);
+                t.set_option(OptionValue::ScreenReaderMode(true));
+            },
+            KEYCAP,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, underline colour, insert mode, open link, VS16",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("xyz\r\n12\x1b[4:3;58:5:9m\x1b]8;;u\x07\x1b[H\x1b[4h")
+            },
+            VS16,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, no wraparound, VS16",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("\x1b[?7l")
+            },
+            VS16,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, keycap",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("\x1b[?7l")
+            },
+            KEYCAP,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, insert mode, VS16",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("xyz\x1b[?7l\x1b[4h\x1b[H")
+            },
+            VS16,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, insert mode, keycap",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("x\u{4e2d}z\x1b[?7l\x1b[4h\x1b[H")
+            },
+            KEYCAP,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, emoji ZWJ",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("\x1b[?7l")
+            },
+            EMOJI_ZWJ,
+            true,
+            false,
+        ),
         // repetitions that alternate are not alike: no cut, no fill
         ("alternating widths", with_alternating_b, "b", false, false),
     ];
@@ -2890,11 +3025,24 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
     ];
     let mut stuck = Vec::new();
     let mut skipped = check_rep_cut(&cases, &sizes, CUT_AT, &mut stuck);
-    // plan M7 step 13: only the narrow no-wrap insert case batches its stuck inserts, at every
-    // small size (it is at 300 columns only with the full matrix, below 300 units not)
+    // plan M7 step 13: only the no-wrap insert cases of a narrow base batch their stuck
+    // inserts (M7 fix round 1: widened ones too), at every small size (at 300 columns only
+    // with the full matrix, below 300 units not)
+    let batching = [
+        "no wraparound, insert mode, cluster",
+        "11-vs16, no wraparound, insert mode, VS16",
+        "11-vs16, no wraparound, insert mode, keycap",
+    ];
     for (name, label, batches) in &stuck {
-        let expected = *name == "no wraparound, insert mode, cluster" && !label.contains(" 300x");
-        if *name != "no wraparound, insert mode, cluster" || expected {
+        // (the keycap's joiner stacks onto the cell left of the cursor until its string is
+        // full, about 60 units, before the batch)
+        let count: usize = label.rsplit(' ').next().unwrap().parse().unwrap();
+        if name.ends_with("keycap") && batching.contains(name) && count <= 200 {
+            assert!(*batches <= 1, "{label}: stuck path");
+            continue;
+        }
+        let expected = batching.contains(name) && !label.contains(" 300x");
+        if !batching.contains(name) || expected {
             assert_eq!(*batches, u64::from(expected), "{label}: stuck path");
         }
     }
@@ -2911,7 +3059,7 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
         let cases = cases.iter().filter(|case| large_cases.contains(&case.0));
         (cases.copied().collect(), &[97, 9_008, 40_000])
     };
-    assert_eq!(large_cases.len(), if full { 25 } else { 5 });
+    assert_eq!(large_cases.len(), if full { 40 } else { 5 });
     skipped.extend(check_rep_cut(
         &large_cases,
         &[(300, 100, 5, large)],
@@ -3030,7 +3178,7 @@ fn longer_lines(t: &mut TestTerm, kind: usize, modes: &str) {
 fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
     const BELOW: &str = "\x1b[1;2r\x1b[999;1H\x1b[4h";
     const NO_WRAP: &str = "\x1b[?7l\x1b[999;1H\x1b[4h";
-    let cases: [RepCutCase; 14] = [
+    let cases: [RepCutCase; 21] = [
         (
             "below the region, len cols + 1",
             |t| longer_lines(t, 0, BELOW),
@@ -3129,6 +3277,83 @@ fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
             true,
             true,
         ),
+        // M7 fix round 1: a joiner that widens a narrow base, and a wide base with a joiner
+        (
+            "11-vs16, below the region, VS16, longest",
+            |t| {
+                with_11_vs16(t);
+                longer_lines(t, 2, BELOW)
+            },
+            VS16,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, below the region, open link, keycap, 3 x cols",
+            |t| {
+                with_11_vs16(t);
+                longer_lines(t, 1, &format!("\x1b]8;;u\x07{BELOW}"))
+            },
+            KEYCAP,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, below the region, emoji ZWJ, longest",
+            |t| {
+                with_11_vs16(t);
+                longer_lines(t, 2, BELOW)
+            },
+            EMOJI_ZWJ,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, no wraparound, VS16, longest",
+            |t| {
+                with_11_vs16(t);
+                longer_lines(t, 2, NO_WRAP)
+            },
+            VS16,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, VS16 from the second column, len cols + 1",
+            |t| {
+                with_11_vs16(t);
+                // (at 2 columns the second is the last, where VS16 does not fit)
+                let column = if t.handler.services.buffer.cols > 2 {
+                    2
+                } else {
+                    1
+                };
+                longer_lines(t, 0, &format!("\x1b[?7l\x1b[4h\x1b[1;{column}H"))
+            },
+            VS16,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, keycap, longest",
+            |t| {
+                with_11_vs16(t);
+                longer_lines(t, 2, NO_WRAP)
+            },
+            KEYCAP,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, underline colour, emoji ZWJ, 3 x cols",
+            |t| {
+                with_11_vs16(t);
+                longer_lines(t, 1, &format!("\x1b[4:3;58:5:9m{NO_WRAP}"))
+            },
+            EMOJI_ZWJ,
+            true,
+            false,
+        ),
     ];
     // counts below and past the floors of the longest lines (at 7x3+4 below the region the
     // floor is 224, and was 91 before review F9)
@@ -3170,14 +3395,25 @@ fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
         "no wraparound, longest",
         "no wraparound, cluster from the second column, longest",
         "no wraparound, screen reader, open link, longest",
+        "11-vs16, no wraparound, VS16, longest",
+        "11-vs16, no wraparound, VS16 from the second column, len cols + 1",
     ];
     let mut seen = 0;
     for (name, label, batches) in &stuck {
+        if name.ends_with("keycap, longest") {
+            // the keycap's last joiner joins the cell left of the cursor, which may take up to
+            // about 60 units through `print` to settle (its string filling up) before the
+            // batch
+            let count: usize = label.rsplit(' ').next().unwrap().parse().unwrap();
+            assert!(*batches <= 1, "{label}: stuck path");
+            assert!(count <= 200 || *batches == 1, "{label}: stuck path");
+            continue;
+        }
         let expected = batched.contains(name);
         seen += usize::from(expected);
         assert_eq!(*batches, u64::from(expected), "{label}: stuck path");
     }
-    assert_eq!(seen, 4 * 5 * 3 + 2, "batched runs");
+    assert_eq!(seen, 6 * 5 * 3 + 2, "batched runs");
 }
 
 /// Plan M7 step 13 (S7 residual 5), timing-free: a no-wrap insert REP of a narrow unit on a
@@ -3190,9 +3426,11 @@ fn rep_no_wrap_insert_on_a_long_line_makes_a_bounded_number_of_insert_passes() {
     use crate::buffer::buffer_line::insert_passes;
     const NO_WRAP: &str = "\x1b[?7l\x1b[999;1H\x1b[4h";
     for (cols, kind) in [(7, 0), (7, 1), (7, 2), (10, 2), (80, 1), (80, 2)] {
-        for unit in ["a", "e\u{301}"] {
+        // (M7 fix round 1) and a joiner that widens a narrow base, stuck at `cols - 1`
+        for unit in ["a", "e\u{301}", VS16] {
             let label = format!("{unit:?} at {cols} cols, line kind {kind}");
             let mut t = test_handler(cols, 3, [OptionValue::Scrollback(4)]);
+            with_11_vs16(&mut t);
             longer_lines(&mut t, kind, NO_WRAP);
             let len = t.buffer().lines.get(abs_y(t.buffer())).unwrap().len();
             assert!(len > cols, "{label}");
@@ -3205,7 +3443,13 @@ fn rep_no_wrap_insert_on_a_long_line_makes_a_bounded_number_of_insert_passes() {
                 "{label}: {passes} passes over {len} cells"
             );
             assert_eq!(t.handler.rep_stuck_batches, 1, "{label}: stuck path");
-            assert_eq!(t.buffer().x, cols, "{label}");
+            let stuck_x = if unit == VS16 { cols - 1 } else { cols };
+            assert_eq!(t.buffer().x, stuck_x, "{label}");
+            if unit == VS16 {
+                // (a stuck VS16 leaves only its base in the last cell, with the join state of
+                // two cells: a REP after it repeats the cell two columns back)
+                continue;
+            }
             // stuck already: one unit through `print`, the rest batched
             t.parse_str(unit);
             let before = insert_passes();
@@ -3272,7 +3516,7 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
             buffer.lines.set(y, Some(line));
         }
     }
-    let cases: [(&str, Setup, &str); 28] = [
+    let cases: [(&str, Setup, &str); 42] = [
         // (a sequence between the unit and REP ends the print: REP repeats nothing)
         ("uk charset", |t, _, _| t.parse_str("\x1b(A"), "#"),
         ("over even wides", |t, c, r| fill_wides(t, c, r, ""), "a"),
@@ -3448,6 +3692,134 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
             |t, c, _| t.parse_str(&format!("{}\x1b[4:3;58:5:9m", "y".repeat(c - 1))),
             "e\u{301}",
         ),
+        // M7 fix round 1: a joiner that widens a narrow base (VS16 under `11-vs16`, alone and
+        // followed by a joiner) and a wide base with a joiner (an emoji and a ZWJ)
+        (
+            "VS16 over odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "x")
+            },
+            VS16,
+        ),
+        (
+            "VS16 over even wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "")
+            },
+            VS16,
+        ),
+        (
+            "keycap over odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "x")
+            },
+            KEYCAP,
+        ),
+        (
+            "emoji ZWJ over odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "x")
+            },
+            EMOJI_ZWJ,
+        ),
+        (
+            "VS16, base on the last column",
+            |t, c, r| {
+                with_11_vs16(t);
+                // (with one row and no scrollback, the wrap's carry finds the old row
+                // recycled and drops the base: the REP unit is then no VS16 at all)
+                if r > 1 {
+                    t.parse_str(&"y".repeat(c - 1));
+                }
+            },
+            VS16,
+        ),
+        (
+            "insert VS16 over odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "x");
+                t.parse_str("\x1b[4h");
+            },
+            VS16,
+        ),
+        (
+            "insert keycap over even wides, bg colour",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "");
+                t.parse_str("\x1b[42m\x1b[4h");
+            },
+            KEYCAP,
+        ),
+        (
+            "link VS16 over odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "x");
+                t.parse_str("\x1b]8;;u\x07");
+            },
+            VS16,
+        ),
+        (
+            "screen reader keycap over odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                t.set_option(OptionValue::ScreenReaderMode(true));
+                fill_wides(t, c, r, "x");
+            },
+            KEYCAP,
+        ),
+        (
+            "insert VS16 into longer lines with entries, odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                long_lines_of(t, c, r, "x");
+                t.parse_str("\x1b[4h");
+            },
+            VS16,
+        ),
+        (
+            "insert VS16 into longer lines, below the region",
+            |t, c, r| {
+                with_11_vs16(t);
+                long_lines_of(t, c, r, "x");
+                t.parse_str("\x1b[1;2r\x1b[999;1H\x1b[4h");
+            },
+            VS16,
+        ),
+        (
+            "insert keycap into longer lines, underline colour, open link",
+            |t, c, r| {
+                with_11_vs16(t);
+                long_lines_of(t, c, r, "");
+                t.parse_str("\x1b]8;;u\x07\x1b[4:3;58:5:9m\x1b[4h");
+            },
+            KEYCAP,
+        ),
+        (
+            "insert emoji ZWJ into longer lines, below the region, open link",
+            |t, c, r| {
+                with_11_vs16(t);
+                long_lines_of(t, c, r, "x");
+                t.parse_str("\x1b]8;;u\x07\x1b[1;2r\x1b[999;1H\x1b[4h");
+            },
+            EMOJI_ZWJ,
+        ),
+        (
+            "underline colour VS16 under a link over coloured cells",
+            |t, c, r| {
+                with_11_vs16(t);
+                t.parse_str("\x1b[58:5:3m");
+                fill_wides(t, c, r, "x");
+                t.parse_str("\x1b]8;;u\x07\x1b[4:2m");
+            },
+            VS16,
+        ),
     ];
     // (3 columns hold one wide character per line)
     let small = [(7, 3, 4), (8, 3, 0), (2, 1, 0), (5, 2, 3), (3, 3, 2)];
@@ -3463,6 +3835,9 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
         "link over odd wides",
         "insert into longer lines with entries, odd wides",
         "underline colour over odd wides",
+        "VS16 over odd wides",
+        "insert VS16 over odd wides",
+        "link VS16 over odd wides",
     ];
     let large_counts: &[usize] = if full {
         all_counts
@@ -3508,12 +3883,135 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
     }
     // every case takes the fill path, at every size and count of the matrix
     let expected = if full {
-        28 * 6 * 11
+        42 * 6 * 11
     } else {
-        28 * 5 * 10 + large_cases.len() * 3
+        42 * 5 * 10 + large_cases.len() * 3
     };
     assert_eq!(runs, expected, "matrix");
     assert_eq!(filled, runs, "fill path cases");
+}
+
+/// M7 fix round 1 (review S1 and the wide cluster REP), seeded: REP of wide and widened units
+/// (VS16, a keycap, an emoji and a ZWJ, a wide cluster) and of narrow ones, after random
+/// content and modes (insert, wraparound off, scroll regions, an open link, an underline
+/// colour, screen reader, lines longer than `cols`), at random small sizes and counts
+/// around and past the cuts, leaves the state of the uncapped print of all its repetitions.
+/// `LUNE_VT_REP_DIFF_SEEDS=<n>` runs more seeds (default 1000), `LUNE_VT_REP_DIFF_SEED=<n>`
+/// replays one.
+#[test]
+fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded() {
+    const UNITS: [&str; 9] = [
+        VS16,
+        KEYCAP,
+        EMOJI_ZWJ,
+        "a\u{fe0f}",
+        "\u{2764}\u{fe0f}\u{301}",
+        "\u{4e2d}\u{301}",
+        "\u{4e2d}",
+        "e\u{301}",
+        "a",
+    ];
+    const CONTENT: [&str; 22] = [
+        "x",
+        "\u{4e2d}",
+        "e\u{301}",
+        VS16,
+        KEYCAP,
+        EMOJI_ZWJ,
+        "\r\n",
+        "\x1b[4h",
+        "\x1b[4l",
+        "\x1b[?7l",
+        "\x1b[?7h",
+        "\x1b]8;;u\x07",
+        "\x1b]8;;\x07",
+        "\x1b[4:3;58:5:9m",
+        "\x1b[0m",
+        "\x1b[1;2r",
+        "\x1b[r",
+        "\x1b[999;1H",
+        "\x1b[H",
+        "\x1b[2;3H",
+        "\x1b[1;2H",
+        "yyyyyyy",
+    ];
+    let seeds: Vec<u64> = match std::env::var("LUNE_VT_REP_DIFF_SEED") {
+        Ok(seed) => vec![seed.parse().unwrap()],
+        Err(_) => {
+            let n = std::env::var("LUNE_VT_REP_DIFF_SEEDS")
+                .ok()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(1_000);
+            (1..=n).collect()
+        }
+    };
+    let (mut filled, mut batched, mut compared) = (0, 0, 0);
+    for seed in seeds {
+        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        let mut next = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        let cols = 2 + next(11);
+        let rows = 1 + next(5);
+        let scrollback = next(7);
+        let screen_reader = next(6) == 0;
+        let long = next(4);
+        let mut setup = String::new();
+        for _ in 0..next(14) {
+            setup.push_str(CONTENT[next(CONTENT.len())]);
+        }
+        let unit = UNITS[next(UNITS.len())];
+        let count = match next(4) {
+            0 => [97, 211, 1_009, 3_001, 9_008][next(5)],
+            _ => 1 + next(60),
+        };
+        let make = || {
+            let mut t = test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
+            with_11_vs16(&mut t);
+            if screen_reader {
+                t.set_option(OptionValue::ScreenReaderMode(true));
+            }
+            if long < 2 {
+                longer_lines(&mut t, long, "");
+            }
+            t.parse_str(&setup);
+            t.parse_str(unit);
+            t
+        };
+        let label = format!(
+            "seed {seed}: {cols}x{rows}+{scrollback}, long {long}, screen reader \
+             {screen_reader}, {setup:?} then {unit:?}, REP {count}"
+        );
+        let mut capped = make();
+        capped.parse_str(&format!("\x1b[{count}b"));
+        filled += capped.handler.rep_fills;
+        batched += capped.handler.rep_stuck_batches;
+        // the uncapped print: what REP repeats (nothing after no print, or where the cell
+        // would start left of the line), `count` times in one `print` call
+        let mut uncapped = make();
+        let text = {
+            let join = uncapped.handler.preceding_join_state;
+            let width = UnicodeService::extract_width(join) as usize;
+            let buffer = uncapped.buffer();
+            match buffer.x.checked_sub(width).filter(|_| join != 0) {
+                Some(x) => buffer.lines.get(abs_y(buffer)).unwrap().get_string(x),
+                None => String::new(),
+            }
+        };
+        let text = text.repeat(count);
+        assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
+        uncapped.parse_str(&format!("{text}\x1b[}}"));
+        assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+        compared += 1;
+    }
+    if std::env::var("LUNE_VT_REP_DIFF_SEED").is_err() {
+        // the line fill and the batched stuck inserts both ran
+        assert!(filled > compared as u64 / 4, "{filled} of {compared}");
+        assert!(batched > 0, "{batched} of {compared}");
+    }
 }
 
 #[test]

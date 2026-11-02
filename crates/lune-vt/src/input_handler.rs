@@ -488,8 +488,16 @@ fn add_cursor_line_to_link(services: &mut CoreServices, link_id: u32) {
 struct RepFill {
     /// The unit's code points with the charset applied: the base, then its joiners.
     codes: Vec<u32>,
-    /// The base's width in cells (1 or 2); the joiners keep it.
+    /// The unit's width in cells (1 or 2): the base's, or 2 where a joiner widens a narrow base
+    /// (M7 fix round 1).
     width: u32,
+    /// The base's width in cells: the cells each repetition inserts in insert mode.
+    base_width: u32,
+    /// Each code point's width as `print` writes it (the base's, then each joiner's joined
+    /// width).
+    widths: Vec<u32>,
+    /// The index of the joiner that widens the base to 2 cells, if one does.
+    widens_at: Option<usize>,
     /// The join state each repetition leaves.
     end_state: u32,
 }
@@ -1100,6 +1108,15 @@ impl InputHandler {
 
     /// Print `data` (code points) at the cursor.
     pub fn print(&mut self, data: &[u32]) {
+        self.print_inner(data, true, true);
+    }
+
+    /// `print` (upstream's body). LUNETERM: (M7 fix round 1) REP's line fill prints a
+    /// repetition in the middle of its stream through here ([`InputHandler::print_repeated`]):
+    /// without the end fix-up (`fix_up_end`), which `print` makes once after its last code point,
+    /// and without the screen reader text (`voice`), which the fill queues up front. Returns
+    /// false where `print` stops early (a missing line).
+    fn print_inner(&mut self, data: &[u32], fix_up_end: bool, voice: bool) -> bool {
         let InputHandler {
             services,
             cur_attr_data,
@@ -1122,7 +1139,7 @@ impl InputHandler {
         let mut row = abs_y(buffer);
         let x = buffer.x;
         let Some(buffer_row) = line_mut(buffer, row) else {
-            return;
+            return false;
         };
         // handle wide chars: reset start_cell-1 if we would overwrite the second cell of a wide
         // char
@@ -1148,7 +1165,7 @@ impl InputHandler {
             };
             preceding = current_info;
 
-            if screen_reader_mode {
+            if screen_reader_mode && voice {
                 events.a11y_char(code);
             }
             let link_id = cur_attr.extended.url_id();
@@ -1172,7 +1189,7 @@ impl InputHandler {
                     ) {
                         Some(new_row) => row = new_row,
                         // upstream throws on the missing line
-                        None => return,
+                        None => return false,
                     }
                 } else {
                     services.buffer.buffer_mut().x = cols.saturating_sub(1);
@@ -1185,7 +1202,7 @@ impl InputHandler {
 
             let Buffer { lines, x, .. } = services.buffer.buffer_mut();
             let Some(buffer_row) = lines.get_mut(row) else {
-                return;
+                return false;
             };
 
             // insert combining char at last cursor position; x is never 0 for a combining char
@@ -1252,7 +1269,7 @@ impl InputHandler {
         // handle wide chars: reset cell to the right if it is second cell of a wide char
         let buffer = services.buffer.buffer_mut();
         let x = buffer.x;
-        if x < cols && !data.is_empty() {
+        if fix_up_end && x < cols && !data.is_empty() {
             if let Some(buffer_row) = line_mut(buffer, row) {
                 if buffer_row.get_width(x) == 0 && buffer_row.has_content(x) == 0 {
                     buffer_row.set_cell_from_codepoint(x, 0, 1, &cur_attr);
@@ -1260,6 +1277,7 @@ impl InputHandler {
             }
         }
         dirty_row_tracker.mark_dirty(buffer.y);
+        true
     }
 
     /// `bufferService.onScroll` as `CoreTerminal` forwards it (`CoreTerminal.ts:137-140`): scroll
@@ -2258,6 +2276,19 @@ impl InputHandler {
     /// The extra units print as before. Without wraparound they go through `print`, one
     /// `O(len)` insert each, so such a REP costs up to `O(len * (len - cols))` (the longest
     /// line a resize left behind); with wraparound they take the line fill, `O(len)` per pass.
+    ///
+    /// A joiner that widens a narrow base to two cells (M7 fix round 1, review S1: VS16 under
+    /// the `11-vs16` provider) makes the unit 2 cells wide (`w = 2`) and moves the cursor.
+    /// With wraparound each repetition still fills its own two cells: a base that lands on the
+    /// last column is carried to the next line by the joiner's wrap, which clears that column
+    /// as a wide base's wrap does, so lines start at column 0 in the same state and the
+    /// argument above holds with `w = 2`. In insert mode a repetition inserts the base's one
+    /// cell (its stub overwrites the next), so below the region a pass inserts `per_line`
+    /// cells; `ceil(cols / per_line) <= 3` there, hence one more line of units. Without
+    /// wraparound a stuck repetition writes its base (and any joiner before the widening one)
+    /// into the last cell, skips the widening joiner, which does not fit, and leaves the
+    /// cursor on the last column, so a later joiner stacks onto the cell left of it as a stuck
+    /// wide unit's joiners do: the floor for units with joiners covers it.
     fn rep_equivalent_repeats(&self, unit: &[u32], repeats: usize) -> usize {
         let services = &self.services;
         let unicode = &services.unicode;
@@ -2273,24 +2304,30 @@ impl InputHandler {
             preceding = unicode.char_properties(charset_replacement(charset, code), preceding);
         }
         let after_first = preceding;
-        let mut width = 0;
+        let (mut width, mut base_width) = (0, 0);
         for (i, &code) in unit.iter().enumerate() {
             let info = unicode.char_properties(charset_replacement(charset, code), preceding);
             let joins = UnicodeService::extract_should_join(info);
             let w = UnicodeService::extract_width(info);
             if i == 0 {
-                // the base: never joins, one or two cells that fit a line
-                if joins || w == 0 || w > 2 || to_usize(i64::from(w)) > cols {
+                // the base: never joins, one or two cells
+                if joins || w == 0 || w > 2 {
                     return repeats;
                 }
-                width = w;
-            } else if !joins || w != UnicodeService::extract_width(preceding) {
-                // a joining character that does not move the cursor
-                return repeats;
+                (width, base_width) = (w, w);
+            } else {
+                // a joining character that does not move the cursor, or (M7 fix round 1) one
+                // that widens a narrow base to two cells
+                let held = UnicodeService::extract_width(preceding);
+                if !joins || (w != held && (held != 1 || w != 2)) {
+                    return repeats;
+                }
+                width = width.max(w);
             }
             preceding = info;
         }
-        if preceding != after_first || width == 0 {
+        // (the unit fits a line)
+        if preceding != after_first || width == 0 || to_usize(i64::from(width)) > cols {
             return repeats;
         }
 
@@ -2309,10 +2346,16 @@ impl InputHandler {
             let per_line = cols / w;
             let mut lines = rows.saturating_add(max_lines).saturating_add(3);
             if insert_mode && buffer.y > buffer.scroll_bottom {
-                // every wrap rewrites the last row, shifting it by `per_line * w` cells
+                // every wrap rewrites the last row, shifting it by `per_line * inserted` cells
+                // (M7 fix round 1: a widened unit inserts its base's one cell, and one more
+                // line covers `ceil(cols / (per_line * inserted)) <= 3`)
+                let inserted = to_usize(i64::from(base_width));
                 let last = buffer.ybase.saturating_add(rows).saturating_sub(1);
-                let passes = excess(last).div_ceil(per_line.saturating_mul(w).max(1));
-                lines = lines.saturating_add(passes).saturating_add(1);
+                let passes = excess(last).div_ceil(per_line.saturating_mul(inserted).max(1));
+                lines = lines
+                    .saturating_add(passes)
+                    .saturating_add(1)
+                    .saturating_add(usize::from(inserted < w));
             }
             (per_line, per_line.saturating_mul(lines))
         } else {
@@ -2349,8 +2392,9 @@ impl InputHandler {
     /// every repetition (the first one's from the current join state equal the second one's
     /// from the state the first leaves, so by induction all are equal); the first never joins
     /// and is one or two cells wide (no wider than a line); every other joins without changing
-    /// that width (onto the first, without moving the cursor); and wraparound is on. Insert
-    /// mode, an open link and screen reader mode are handled there.
+    /// the width it joins, except that one may widen a narrow base to two cells (M7 fix round
+    /// 1: VS16 under the `11-vs16` provider); and wraparound is on. Insert mode, an open link
+    /// and screen reader mode are handled there.
     fn rep_fill(&self, unit: &[u32]) -> Option<RepFill> {
         if !self.services.core.dec_private_modes.wraparound {
             return None;
@@ -2380,22 +2424,43 @@ impl InputHandler {
         let first = properties(self.preceding_join_state);
         let (&base, joiners) = first.split_first()?;
         let end_state = *first.last()?;
-        let width = UnicodeService::extract_width(base);
+        let base_width = UnicodeService::extract_width(base);
         if UnicodeService::extract_should_join(base)
-            || width == 0
-            || width > 2
-            || to_usize(i64::from(width)) > services.buffer.cols
-            || joiners.iter().any(|&info| {
-                !UnicodeService::extract_should_join(info)
-                    || UnicodeService::extract_width(info) != width
-            })
+            || base_width == 0
+            || base_width > 2
             || properties(end_state) != first
         {
+            return None;
+        }
+        // every joiner keeps the width it joins (`print` neither moves the cursor nor writes a
+        // stub), or (M7 fix round 1) widens a narrow base to two cells once (`print` writes a
+        // stub and moves the cursor one column, or wraps the base to the next line)
+        let mut widths = vec![base_width];
+        let mut widens_at = None;
+        let mut width = base_width;
+        for (i, &info) in joiners.iter().enumerate() {
+            let joined = UnicodeService::extract_width(info);
+            if !UnicodeService::extract_should_join(info) {
+                return None;
+            }
+            if joined != width {
+                if width != 1 || joined != 2 {
+                    return None;
+                }
+                widens_at = Some(i + 1);
+                width = 2;
+            }
+            widths.push(joined);
+        }
+        if to_usize(i64::from(width)) > services.buffer.cols {
             return None;
         }
         Some(RepFill {
             codes,
             width,
+            base_width,
+            widths,
+            widens_at,
             end_state,
         })
     }
@@ -2428,30 +2493,41 @@ impl InputHandler {
     ///  - Screen reader: the only events `print` fires are its characters' text, which the
     ///    queue stops taking at its per-drain cap; they are queued up front in order until the
     ///    queue is full.
+    ///  - (M7 fix round 1) A fresh line's combined strings are shared with the next fresh line
+    ///    ([`BufferLine::set_cells_repeatedly_shared`]): a wide cluster's line holds one per
+    ///    cell.
+    ///  - (M7 fix round 1, review S1) A joiner that widens a narrow base prints the unit as a
+    ///    wide one (the head is built with each code point's own width), except in two places.
+    ///    The repetition whose base lands on the last column wraps at the joiner: `print`
+    ///    writes the base there and `print_wrap` carries it to the next line (with the old
+    ///    row's combined strings from that column on, upstream's copy), so that repetition goes
+    ///    through `print`'s own steps ([`InputHandler::print_inner`], without the end fix-up,
+    ///    which `print` makes only after its last code point, and without the screen reader
+    ///    text queued here); its link adds are `print`'s. And in insert mode a repetition
+    ///    inserts one cell, the base's, and its stub overwrites the cell the insert shifted:
+    ///    the line's inserts are one [`BufferLine::insert_cell_strided`], written over after.
+    ///    That leaves `print`'s state: the writes are left of every later insert, of
+    ///    `cols - 1` and of the line's end, and a later insert's `pos - 1` fix-up, which finds
+    ///    the narrow stub in `print`, may rewrite that cell here, which the stub then
+    ///    overwrites, with the fill's extended entry, which is the stub's (the fill is the null
+    ///    cell carrying the current attributes); combined strings it does not touch.
     fn print_repeated(&mut self, fill: &RepFill, count: usize) {
         #[cfg(test)]
         {
             self.rep_fills += 1;
         }
-        let InputHandler {
-            services,
-            cur_attr_data,
-            erase_attr_data_internal,
-            dirty_row_tracker,
-            preceding_join_state,
-            events,
-            damage,
-            ..
-        } = self;
-        let cols = services.buffer.cols;
-        let insert_mode = services.core.modes.insert_mode;
-        let cur_attr = *cur_attr_data;
+        let cols = self.services.buffer.cols;
+        let insert_mode = self.services.core.modes.insert_mode;
+        let cur_attr = self.cur_attr_data;
         let link_id = cur_attr.extended.url_id();
-        let width = fill.width;
-        let w = to_usize(i64::from(width));
-        let null_cell = services.buffer.buffer().get_null_cell(Some(&cur_attr));
+        let w = to_usize(i64::from(fill.width));
+        // the cells a repetition inserts in insert mode: the base's (a widening joiner writes
+        // its stub over the next cell)
+        let inserted = to_usize(i64::from(fill.base_width));
+        let null_cell = self.services.buffer.buffer().get_null_cell(Some(&cur_attr));
 
-        if services.options.options().screen_reader_mode {
+        if self.services.options.options().screen_reader_mode {
+            let events = &mut self.events;
             'voice: for _ in 0..count {
                 for &code in &fill.codes {
                     if events.a11y_full() {
@@ -2466,11 +2542,11 @@ impl InputHandler {
         // `print`'s calls
         let (head, stub) = {
             let mut scratch = BufferLine::new(2, None, false);
-            let mut codes = fill.codes.iter().copied();
-            if let Some(base) = codes.next() {
+            let mut codes = fill.codes.iter().copied().zip(fill.widths.iter().copied());
+            if let Some((base, width)) = codes.next() {
                 scratch.set_cell_from_codepoint(0, base, width, &cur_attr);
             }
-            for code in codes {
+            for (code, width) in codes {
                 scratch.add_codepoint_to_cell(0, code, width);
             }
             scratch.set_cell_from_codepoint(1, 0, 0, &cur_attr);
@@ -2480,25 +2556,46 @@ impl InputHandler {
             (head, stub)
         };
 
-        let buffer = services.buffer.buffer_mut();
-        let mut row = abs_y(buffer);
-        let x = buffer.x;
-        let Some(buffer_row) = line_mut(buffer, row) else {
-            return;
-        };
-        // handle wide chars: reset start_cell-1 if we would overwrite the second cell of a wide
-        // char
-        if x != 0 && buffer_row.get_width(x - 1) == 2 {
-            buffer_row.set_cell_from_codepoint(x - 1, 0, 1, &cur_attr);
+        {
+            let buffer = self.services.buffer.buffer_mut();
+            let row = abs_y(buffer);
+            let x = buffer.x;
+            let Some(buffer_row) = line_mut(buffer, row) else {
+                return;
+            };
+            // handle wide chars: reset start_cell-1 if we would overwrite the second cell of a
+            // wide char
+            if x != 0 && buffer_row.get_width(x - 1) == 2 {
+                buffer_row.set_cell_from_codepoint(x - 1, 0, 1, &cur_attr);
+            }
+            let y = buffer.y;
+            self.dirty_row_tracker.mark_dirty(y);
         }
-        dirty_row_tracker.mark_dirty(buffer.y);
 
         // (M7 fix round 1) the combined strings of a line filled afresh, shared by the next
         let mut template = None;
         let mut left = count;
         while left > 0 {
+            let x = self.services.buffer.buffer().x;
+            if fill.widens_at.is_some() && x + inserted <= cols && x + w > cols {
+                // (M7 fix round 1) the base fits the line and its widening joiner wraps it to
+                // the next one: `print`'s own steps for this repetition
+                if !self.print_inner(&fill.codes, false, false) {
+                    return;
+                }
+                left -= 1;
+                continue;
+            }
+            let InputHandler {
+                services,
+                erase_attr_data_internal,
+                dirty_row_tracker,
+                damage,
+                ..
+            } = self;
+            let mut row = abs_y(services.buffer.buffer());
             // goto next line if ch would overflow
-            let wraps = services.buffer.buffer().x.saturating_add(w) > cols;
+            let wraps = x.saturating_add(w) > cols;
             if link_id != 0 {
                 // the first code point's line: the line it leaves when it wraps
                 add_cursor_line_to_link(services, link_id);
@@ -2533,7 +2630,7 @@ impl InputHandler {
                 // `print`'s calls per repetition, since an insert past the line's end wraps
                 // around to its start
                 for _ in 0..fit {
-                    buffer_row.insert_cells(*x, w, &null_cell);
+                    buffer_row.insert_cells(*x, inserted, &null_cell);
                     if buffer_row.get_width(cols.saturating_sub(1)) == 2 {
                         buffer_row.set_cell_from_codepoint(
                             cols.saturating_sub(1),
@@ -2548,7 +2645,7 @@ impl InputHandler {
                 left -= fit;
                 continue;
             }
-            if insert_mode {
+            if insert_mode && inserted == w {
                 // `print`'s insert-mode shifts and fix-ups of the line's repetitions
                 buffer_row.insert_cells_repeatedly(
                     *x,
@@ -2558,16 +2655,32 @@ impl InputHandler {
                     cols.saturating_sub(1),
                     &cur_attr,
                 );
+            } else if insert_mode {
+                // (M7 fix round 1) one cell per repetition, `w` apart, and the writes
+                buffer_row.insert_cell_strided_then_set(
+                    *x,
+                    w,
+                    fit,
+                    &null_cell,
+                    cols.saturating_sub(1),
+                    &cur_attr,
+                    (&head, &stub),
+                    &mut template,
+                );
+                *x += fit * w;
+                left -= fit;
+                continue;
             }
             buffer_row.set_cells_repeatedly_shared(*x, w, fit, &head, &stub, &mut template);
             *x += fit * w;
             left -= fit;
         }
 
-        *preceding_join_state = fill.end_state;
+        self.preceding_join_state = fill.end_state;
 
         // handle wide chars: reset cell to the right if it is second cell of a wide char
-        let buffer = services.buffer.buffer_mut();
+        let buffer = self.services.buffer.buffer_mut();
+        let row = abs_y(buffer);
         let x = buffer.x;
         if x < cols {
             if let Some(buffer_row) = line_mut(buffer, row) {
@@ -2576,14 +2689,15 @@ impl InputHandler {
                 }
             }
         }
-        dirty_row_tracker.mark_dirty(buffer.y);
+        let y = buffer.y;
+        self.dirty_row_tracker.mark_dirty(y);
     }
 
     /// LUNETERM: (plan M7 step 13, S7 residual 5) `print` of `count` repetitions of `unit`
-    /// (the repeated cell's code points) with wraparound off and insert mode on, for a narrow
-    /// unit whose repetitions print alike ([`InputHandler::rep_alike`]) on a line at least
-    /// `cols` long: `print` of the units that bring the cursor to the pending column `cols`
-    /// (one per column left, at least one), then the rest as one
+    /// (the repeated cell's code points) with wraparound off and insert mode on, for a unit
+    /// with a narrow base whose repetitions print alike ([`InputHandler::rep_alike`]) on a line
+    /// at least `cols` long: `print` of the units that bring the cursor to the pending column
+    /// `cols` (one per column left, at least one), then the rest as one
     /// [`BufferLine::stuck_insert_repeatedly`] at `cols - 1`, where `print` costs an `O(len)`
     /// insert per unit (the F9 floor's `len - cols` extra units made such a REP
     /// `O(len × (len - cols))`). Returns false, having done nothing, in every other case and
@@ -2607,43 +2721,103 @@ impl InputHandler {
     ///    between, which changes nothing, so one add is the same.
     ///  - Screen reader: the other code points' text, queued in order until the per-drain
     ///    cap, as [`InputHandler::print_repeated`] does.
+    ///
+    /// (M7 fix round 1, review S1) A joiner that widens the base to two cells does not fit
+    /// once the unit is stuck: `print` skips it and leaves the cursor at `cols - 1`, so a
+    /// stuck unit inserts at `cols - 1` as before, writes its base and any joiner before the
+    /// widening one there (the head), and ends at `cols - 1`; the units brought there are
+    /// stuck once the cursor is (at most `ceil((cols - 1 - x) / 2) + 1 <= max(cols - x, 1)`
+    /// units). Joiners after the widening one join the cell left of the cursor (`cols - 2`, or
+    /// `cols - 3` behind a stub), untouched by the inserts: units go through `print` one at a
+    /// time until one leaves those two cells as it found them (their string full, at most
+    /// [`MAX_COMBINED_CODE_POINTS`] units), which every later unit then does too, as a
+    /// unit's effect there depends on them only; the batch's one `pos - 1` fix-up is undone by
+    /// writing `cols - 2` back as the units leave it. Split `print` calls at the stuck cursor
+    /// do what one call does: the start fix-up is the insert's own `pos - 1` fix-up, and the
+    /// end fix-up finds the narrow head.
     fn print_stuck_inserts(&mut self, unit: &[u32], count: usize) -> bool {
         let services = &self.services;
         if services.core.dec_private_modes.wraparound || !services.core.modes.insert_mode {
             return false;
         }
-        let Some(alike) = self.rep_alike(unit).filter(|alike| alike.width == 1) else {
+        let Some(alike) = self.rep_alike(unit).filter(|alike| alike.base_width == 1) else {
             return false;
         };
         let cols = services.buffer.cols;
+        // (M7 fix round 1) where a stuck unit leaves the cursor: a widening joiner does not fit,
+        // so `print` skips it with the cursor back at the last column
+        let stuck_x = match alike.widens_at {
+            Some(_) => cols.saturating_sub(1),
+            None => cols,
+        };
+        // (M7 fix round 1) joiners after a widening one join the cell left of the cursor
+        let joins_left = alike.widens_at.is_some_and(|at| at + 1 < alike.codes.len());
         let buffer = services.buffer.buffer();
         let long_enough = buffer
             .lines
             .get(abs_y(buffer))
             .is_some_and(|line| line.len() >= cols);
         let to_stuck = cols.saturating_sub(buffer.x).max(1);
-        if !long_enough || cols == 0 || count <= to_stuck {
+        if !long_enough || cols < 2 || count <= to_stuck {
             return false;
         }
-        let data: Vec<u32> = unit
-            .iter()
-            .copied()
-            .cycle()
-            .take(unit.len() * to_stuck)
-            .collect();
-        self.print(&data);
-        let left = count - to_stuck;
-        if self.services.buffer.buffer().x != cols {
-            // (not reached: a narrow unit moves the cursor one column, up to `cols`)
-            debug_assert!(false, "REP unit not stuck at the last column");
-            let rest: Vec<u32> = unit
-                .iter()
+        let repeated = |times: usize| -> Vec<u32> {
+            unit.iter()
                 .copied()
                 .cycle()
-                .take(unit.len() * left)
-                .collect();
-            self.print(&rest);
+                .take(unit.len() * times)
+                .collect()
+        };
+        self.print(&repeated(to_stuck));
+        let mut left = count - to_stuck;
+        let stuck = |handler: &Self| handler.services.buffer.buffer().x == stuck_x;
+        if !stuck(self) {
+            // (not reached: a narrow base moves the cursor one column, up to `cols`, and a
+            // widened one two, until it is stuck at `cols - 1`)
+            debug_assert!(false, "REP unit not stuck at the last column");
+            self.print(&repeated(left));
             return true;
+        }
+        // (M7 fix round 1) the cells left of the cursor that those joiners change: one unit at
+        // a time (the split `print` calls leave what one call does: at the stuck cursor the
+        // start fix-up is the insert's own and the end fix-up finds the narrow head) until a
+        // unit leaves them as it found them; the unit's effect there depends on them only, so
+        // every later unit leaves them too
+        let left_cells = |handler: &Self| {
+            let buffer = handler.services.buffer.buffer();
+            buffer.lines.get(abs_y(buffer)).map(|line| {
+                (cols.saturating_sub(3)..cols - 1)
+                    .map(|c| line.cell_state(c))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let mut steady_left = None;
+        if joins_left {
+            for _ in 0..MAX_COMBINED_CODE_POINTS + 3 {
+                if left == 0 {
+                    return true;
+                }
+                let before = left_cells(self);
+                self.print(unit);
+                left -= 1;
+                let after = left_cells(self);
+                if !stuck(self) {
+                    debug_assert!(false, "REP unit not stuck at the last column");
+                    break;
+                }
+                if before == after {
+                    steady_left = after;
+                    break;
+                }
+            }
+            if steady_left.is_none() {
+                // (not reached: the joined cell's string stops growing at its cap)
+                self.print(&repeated(left));
+                return true;
+            }
+            if left == 0 {
+                return true;
+            }
         }
         #[cfg(test)]
         {
@@ -2680,6 +2854,11 @@ impl InputHandler {
             let mut head = CellData::new();
             line.load_cell(cols - 1, &mut head);
             line.stuck_insert_repeatedly(cols - 1, left, &null_cell, &head, &cur_attr);
+            // (M7 fix round 1) the cell left of the head as every unit leaves it, where the
+            // batch's one `pos - 1` fix-up rewrote it
+            if let Some(cell) = steady_left.as_ref().and_then(|cells| cells.last()) {
+                line.set_cell_state(cols - 2, cell);
+            }
         }
         dirty_row_tracker.mark_dirty(y);
         true

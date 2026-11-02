@@ -9,11 +9,16 @@
 //!  - **REP at the screen size**: plain `a`, `a` inside an open OSC 8 link, a narrow cluster
 //!    (`e U+0301`), a wide cluster (an emoji and a ZWJ), `a` with an extended attribute (an
 //!    underline colour), and the DECALN control (`ESC # 8` x 2000), at 80x24 and 300x100 with
-//!    scrollback 1,000 and 10,000.
+//!    scrollback 1,000 and 10,000. M7 fix round 1 (review S1) adds, with the standard
+//!    extensions installed and `vs16` on (the `11-vs16` provider active): VS16 (`U+26A0
+//!    U+FE0F`, two cells), a keycap (`1 U+FE0F U+20E3`), the wide cluster and VS16 inside an
+//!    open link, and `a` and VS16 in insert mode (wraparound on), plain and with an underline
+//!    colour.
 //!  - **No-wrap insert REP on a line longer than the window**: the alt screen is filled with
 //!    lines of L cells, the window is shrunk to 80x24 or 300x100 (the alt buffer does not reflow,
 //!    so the lines keep L cells), then `CSI ? 7 l CSI 4 h` and the REP of `a` or `e U+0301` on the
-//!    last row, for L in 80 (the control), 300, 1000 and 2000, scrollback 10,000.
+//!    last row, for L in 80 (the control), 300, 1000 and 2000, scrollback 10,000; and (M7 fix
+//!    round 1) of VS16 and the keycap under `11-vs16`.
 //!
 //! Each setup is checked once, outside the timing, to have the shape its name claims (the line
 //! length after the shrink, a link in the viewport, the cluster in the cells, the scrolled
@@ -23,8 +28,8 @@
 use std::process::Command;
 use std::time::Instant;
 
-use lune_vt::Terminal;
 use lune_vt::services::options_service::OptionValue;
+use lune_vt::{StandardExtensions, Terminal};
 
 const RUNS: usize = 5;
 const REPS_PER_RUN: usize = 3;
@@ -34,7 +39,17 @@ const NARROW_CLUSTER: &str = "e\u{301}";
 /// An emoji and a zero width joiner: a wide base with a combined code point (xterm.js has no
 /// grapheme clustering, so the next emoji of a ZWJ sequence would start a cell of its own).
 const WIDE_CLUSTER: &str = "\u{1F468}\u{200D}";
+/// U+26A0 U+FE0F: two cells under `11-vs16` (a joiner that widens a narrow base, review S1).
+const VS16: &str = "\u{26a0}\u{fe0f}";
+/// A keycap, `1 U+FE0F U+20E3`: a joiner after the widening one.
+const KEYCAP: &str = "1\u{fe0f}\u{20e3}";
+const LINK: &str = "\x1b]8;;http://x\x1b\\";
+/// Insert mode (wraparound stays on), and with an underline colour (extended attributes).
+const INSERT: &str = "\x1b[4h";
+const INSERT_UL: &str = "\x1b[4h\x1b[58:5:3;4m";
 const SIZES: [(usize, usize); 2] = [(80, 24), (300, 100)];
+/// A terminal of `cols`, `rows` and scrollback.
+type Make = fn(usize, usize, usize) -> Terminal;
 const SCROLLBACKS: [usize; 2] = [1_000, 10_000];
 const LINE_LENGTHS: [usize; 4] = [80, 300, 1_000, 2_000];
 
@@ -53,6 +68,26 @@ fn new_terminal(cols: usize, rows: usize, scrollback: usize) -> Terminal {
     // the oracle's and Lunegit's version; a failure here is a bug in this example
     assert!(term.unicode_mut().set_active_version("11").is_ok());
     term
+}
+
+/// [`new_terminal`] with the standard extensions installed and `vs16` on, as Lunegit runs
+/// (the `11-vs16` provider active).
+fn new_vs16_terminal(cols: usize, rows: usize, scrollback: usize) -> Terminal {
+    let mut term = new_terminal(cols, rows, scrollback);
+    let config = StandardExtensions {
+        vs16: true,
+        ..StandardExtensions::default()
+    };
+    assert!(term.install_standard_extensions(&config).is_ok());
+    term
+}
+
+/// Whether some viewport cell holds `text` as one cell `width` wide.
+fn some_cell_is(term: &Terminal, text: &str, width: u8) -> bool {
+    term.viewport().cells.iter().any(|row| {
+        row.iter()
+            .any(|cell| cell.text == text && cell.width == width)
+    })
 }
 
 /// `3 x (unit REP)`.
@@ -155,7 +190,7 @@ fn at_screen_size() {
         ("plain a", "", "a".to_string(), |t| {
             assert!(scrolled_lines(t) > 0, "plain REP did not scroll");
         }),
-        ("link a", "\x1b]8;;http://x\x1b\\", "a".to_string(), |t| {
+        ("link a", LINK, "a".to_string(), |t| {
             assert!(!t.viewport().links.is_empty(), "no link in the viewport");
         }),
         ("narrow cluster", "", NARROW_CLUSTER.to_string(), |t| {
@@ -181,22 +216,60 @@ fn at_screen_size() {
             },
         ),
     ];
-    for (name, pre, unit, check) in &variants {
-        let data = stream(unit);
-        let mut row = format!("{name:<22}");
-        for &(cols, rows, sb) in &configs {
-            let ns = measure(
-                || {
-                    let mut term = new_terminal(cols, rows, sb);
-                    term.write(pre.as_bytes());
-                    term
-                },
-                &data,
-                check,
-            );
-            row.push_str(&format!(" {:>12}", format_ns(ns)));
+    // (M7 fix round 1) under `11-vs16`, the standard extensions installed
+    let vs16_variants: Vec<Variant> = vec![
+        ("VS16 (11-vs16)", "", VS16.to_string(), |t| {
+            assert!(some_cell_is(t, VS16, 2), "no 2-wide VS16 cell");
+            assert!(scrolled_lines(t) > 0, "VS16 REP did not scroll");
+        }),
+        ("keycap (11-vs16)", "", KEYCAP.to_string(), |t| {
+            assert!(some_cell_is(t, KEYCAP, 2), "no 2-wide keycap cell");
+        }),
+        ("link wide cluster", LINK, WIDE_CLUSTER.to_string(), |t| {
+            assert!(!t.viewport().links.is_empty(), "no link in the viewport");
+            assert!(some_cell_is(t, WIDE_CLUSTER, 2), "no wide cluster cell");
+        }),
+        ("link VS16 (11-vs16)", LINK, VS16.to_string(), |t| {
+            assert!(!t.viewport().links.is_empty(), "no link in the viewport");
+            assert!(some_cell_is(t, VS16, 2), "no 2-wide VS16 cell");
+        }),
+        // insert mode, wraparound on: the line fill's inserts (a widened unit inserts one
+        // cell per repetition)
+        ("insert a (wrap)", INSERT, "a".to_string(), |t| {
+            assert!(scrolled_lines(t) > 0, "insert REP did not scroll");
+        }),
+        ("insert VS16 (wrap)", INSERT, VS16.to_string(), |t| {
+            assert!(some_cell_is(t, VS16, 2), "no 2-wide VS16 cell");
+        }),
+        ("insert ul a (wrap)", INSERT_UL, "a".to_string(), |t| {
+            assert!(scrolled_lines(t) > 0, "insert REP did not scroll");
+        }),
+        ("insert ul VS16 (wrap)", INSERT_UL, VS16.to_string(), |t| {
+            assert!(some_cell_is(t, VS16, 2), "no 2-wide VS16 cell");
+        }),
+    ];
+    let groups: [(&[Variant], Make); 2] = [
+        (&variants, new_terminal),
+        (&vs16_variants, new_vs16_terminal),
+    ];
+    for (variants, make) in groups {
+        for (name, pre, unit, check) in variants {
+            let data = stream(unit);
+            let mut row = format!("{name:<22}");
+            for &(cols, rows, sb) in &configs {
+                let ns = measure(
+                    || {
+                        let mut term = make(cols, rows, sb);
+                        term.write(pre.as_bytes());
+                        term
+                    },
+                    &data,
+                    check,
+                );
+                row.push_str(&format!(" {:>12}", format_ns(ns)));
+            }
+            println!("{row}");
         }
-        println!("{row}");
     }
     let mut row = format!("{:<22}", "DECALN (control)");
     for &(cols, rows, sb) in &configs {
@@ -215,7 +288,13 @@ fn no_wrap_insert() {
         "{:<22} {:>6} {:>14} {:>14}",
         "variant", "L", "-> 80x24", "-> 300x100"
     );
-    for (name, unit) in [("insert a", "a"), ("insert e+U+0301", NARROW_CLUSTER)] {
+    let units: [(&str, &str, Make); 4] = [
+        ("insert a", "a", new_terminal),
+        ("insert e+U+0301", NARROW_CLUSTER, new_terminal),
+        ("insert VS16", VS16, new_vs16_terminal),
+        ("insert keycap", KEYCAP, new_vs16_terminal),
+    ];
+    for (name, unit, new_term) in units {
         let data = stream(unit);
         for &line_length in &LINE_LENGTHS {
             let mut row = format!("{name:<22} {line_length:>6}");
@@ -226,7 +305,7 @@ fn no_wrap_insert() {
                     continue;
                 }
                 let make = || {
-                    let mut term = new_terminal(line_length, rows, 10_000);
+                    let mut term = new_term(line_length, rows, 10_000);
                     term.write(b"\x1b[?1049h");
                     for _ in 0..rows {
                         term.write(&vec![b'x'; line_length]);
