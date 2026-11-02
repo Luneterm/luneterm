@@ -347,10 +347,16 @@ The input encoders (key and mouse encoding) are M7.
   the work per slice (time or line changes), not only the bytes.** REP multiplies this: one
   15-byte REP inside an open link prints up to a buffer's worth of lines (2^20 code points, or
   `cols x (rows + scrollback + 3)` cells), so with a link open it costs O((rows + scrollback)^2)
-  marker visits and cannot be sliced (review S7, open: about 3 ms per input byte at 300x100
-  with scrollback 10,000, 14 ms at 80x24 with 10,000). A REP of a grapheme cluster stores one
-  combined string per cell, about 13x the work of a plain cell (about 1.9 ms per input byte at
-  300x100 with scrollback 10,000).
+  marker visits and cannot be sliced (review S7, accepted residual Q18). A REP of a grapheme
+  cluster stores one combined string per cell. Measured after S7 round 4 (3735c84; scratch
+  `fr4probe`, release fat LTO, median of 5 terminals each writing 3 x (unit + `CSI 1048576 b`);
+  notes "M6 fix round 4"): at 300x100 with scrollback 10,000, link REP about 0.88 ms and
+  cluster REP about 0.98 ms per input byte (plain REP 83 µs, DECALN 27 µs in the same run). The
+  security review's `vtprobe` gives link REP at 80x24 with scrollback 10,000 as 39-42 ms per
+  byte; single runs of the two probes differ by up to 3x on the same machine, so plan from the
+  order of magnitude. In insert mode on lines longer than `cols` (after a column shrink without
+  reflow), a REP without wraparound prints up to `len - cols` more repetitions, one `O(len)`
+  insert each (code review F9).
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as
