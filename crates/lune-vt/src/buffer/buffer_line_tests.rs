@@ -2271,23 +2271,37 @@ mod edge_semantics {
             }
             cell
         };
-        let (mut shared, mut isolated) = (0, 0);
+        // (M7 fix round 5) lines holding one run of strings before the call: the template's
+        // `before` must equal the line's entries (hits with an equal run, misses with another)
+        let (mut shared, mut isolated, mut shared_before, mut missed_before) = (0, 0, 0, 0);
         for round in 0..5_000 {
             let len = 1 + next(40);
             let w = 1 + next(2);
             let head = cell(next(4) != 0, next(3) == 0, round % 3, w as u32);
             let stub = cell(next(6) == 0, next(3) == 0, 7, 0);
-            let mut template = None;
+            let mut template: Option<CombinedTemplate> = None;
             let mut fresh_lines: Vec<BufferLine> = Vec::new();
             for _ in 0..4 {
                 let mut line = null_line(len);
-                if next(3) == 0 {
-                    // a line that already holds strings (stale or not)
-                    let c = next(len + 2);
-                    line.combined.insert(c, format!("old{c}").into());
-                    if next(2) == 0 {
-                        line.set_cell(c.min(len - 1), &cell(true, false, 9, 1));
+                match next(6) {
+                    0 | 1 => {
+                        // a line that already holds strings (stale or not)
+                        let c = next(len + 2);
+                        line.combined.insert(c, format!("old{c}").into());
+                        if next(2) == 0 {
+                            line.set_cell(c.min(len - 1), &cell(true, false, 9, 1));
+                        }
                     }
+                    2 | 3 => {
+                        // (M7 fix round 5) one run at the first cells, often the same run as
+                        // the other lines' (as a joiner wrap leaves the unit's head at 0),
+                        // sometimes another value or another extent
+                        let last = if next(4) == 0 { next(3) } else { 0 };
+                        let value = format!("h{}\u{fe0f}", next(2));
+                        line.combined.assign(0, last, Some(value.into()));
+                        line.set_cell(0, &cell(true, false, 5, 2));
+                    }
+                    _ => {}
                 }
                 // mostly the arguments of the template's call, sometimes others
                 let (pos, times) = match next(4) {
@@ -2298,17 +2312,25 @@ mod edge_semantics {
                 expected.set_cells_repeatedly(pos, w, times, &head, &stub);
                 let mut got = line.clone();
                 let had_template = template.is_some();
+                let template_before = template.as_ref().map(|t| t.before.clone());
                 got.set_cells_repeatedly_shared(pos, w, times, &head, &stub, &mut template);
                 assert_eq!(
                     got, expected,
                     "round {round}: pos {pos} w {w} times {times}"
                 );
+                let is_shared = got
+                    .combined
+                    .0
+                    .as_ref()
+                    .is_some_and(|map| Arc::strong_count(map) > 1);
                 if had_template && line.combined.is_empty() {
-                    shared += usize::from(
-                        got.combined
-                            .0
-                            .as_ref()
-                            .is_some_and(|map| Arc::strong_count(map) > 1),
+                    shared += usize::from(is_shared);
+                }
+                if had_template && line.combined.run_count() == 1 {
+                    shared_before += usize::from(is_shared);
+                    missed_before += usize::from(
+                        template_before
+                            .is_some_and(|before| !before.is_empty() && before != line.combined),
                     );
                 }
                 fresh_lines.push(got);
@@ -2339,8 +2361,51 @@ mod edge_semantics {
                 isolated += 1;
             }
         }
-        assert!(shared > 3_000, "{shared}");
+        assert!(shared > 1_500, "{shared}");
+        assert!(shared_before > 1_000, "{shared_before}");
+        assert!(missed_before > 500, "{missed_before}");
         assert!(isolated > 10_000, "{isolated}");
+    }
+
+    /// LUNETERM: (M7 fix round 5) `copy_cells_from_source` of what `cells_source` takes is
+    /// `copy_cells_from` itself (forward): random source and destination lines (stale strings
+    /// and extended entries, flagged cells without an entry, keys past the end), 0 to 2 cells
+    /// from any column including past the source's end, to any column including past the
+    /// destination's end; and onto the source line itself (a joiner wrap below the scroll
+    /// region, the strings shared). Whole lines compare.
+    #[test]
+    fn copying_from_a_cells_source_equals_copy_cells_from() {
+        let mut seed: u64 = 0x0c0f_fee0_dead_beef;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        for round in 0..6_000 {
+            let (src_len, dest_len) = (1 + next(30), 1 + next(30));
+            let src = random_line(&mut next, src_len);
+            let dest = random_line(&mut next, dest_len);
+            let src_col = next(src.len() + 3);
+            let dest_col = next(dest.len() + 2);
+            let len = next(3);
+            let source = src.cells_source(src_col, len).unwrap();
+            let mut expected = dest.clone();
+            expected.copy_cells_from(&src, src_col, dest_col, len, false);
+            let mut got = dest.clone();
+            got.copy_cells_from_source(&source, dest_col);
+            assert_eq!(
+                got, expected,
+                "round {round}: {src_col} -> {dest_col}, {len}"
+            );
+            // onto itself, sharing the strings (the snapshot holds the same map)
+            let mut expected = src.clone();
+            expected.copy_cells_from(&src.clone(), src_col, 0, len, false);
+            let mut got = src.clone();
+            got.copy_cells_from_source(&source, 0);
+            assert_eq!(got, expected, "round {round}: onto itself from {src_col}");
+        }
+        assert!(null_line(4).cells_source(0, 3).is_none());
     }
 }
 
