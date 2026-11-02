@@ -94,6 +94,25 @@ pub(crate) fn combined_allocations() -> u64 {
     COMBINED_ALLOCATIONS.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Passes over a line's cells right of an insert made by this thread's lines: one per
+    /// `insert_cells` call and one per batched stuck insert (plan M7 step 13 pins the passes
+    /// per REP).
+    static INSERT_PASSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The number of insert passes this thread's lines have made so far.
+#[cfg(test)]
+pub(crate) fn insert_passes() -> u64 {
+    INSERT_PASSES.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn count_insert_pass() {
+    INSERT_PASSES.with(|count| count.set(count.get() + 1));
+}
+
 /// A combined string as the shared value the line stores (plan M7 step 12): every allocation
 /// of one goes through here.
 fn shared_str(chars: &str) -> Arc<str> {
@@ -686,6 +705,8 @@ impl BufferLine {
     }
 
     pub fn insert_cells(&mut self, pos: usize, n: usize, fill_cell_data: &CellData) {
+        #[cfg(test)]
+        count_insert_pass();
         if self.length == 0 {
             return;
         }
@@ -1087,6 +1108,196 @@ impl BufferLine {
             }
         }
         self.combined.insert_ascending(combined_updates);
+    }
+
+    /// LUNETERM: (plan M7 step 13, S7 residual 5) `InputHandler::print`'s inserts of a narrow
+    /// unit stuck at the last column (wraparound off, insert mode on, `pos` = its `cols - 1`)
+    /// repeated `times` times, in one pass:
+    ///
+    /// ```text
+    /// for _ in 0..times {
+    ///     self.insert_cells(pos, 1, fill);
+    ///     if self.get_width(pos) == 2 {
+    ///         self.set_cell_from_codepoint(pos, NULL_CELL_CODE, NULL_CELL_WIDTH, edge_attrs);
+    ///     }
+    ///     self.set_cell(pos, head);
+    /// }
+    /// ```
+    ///
+    /// `set_cell(pos, head)` is what `print` writes there (`head` loaded from a cell `print`
+    /// wrote with the unit: the same cells and entries, as the unit's writes do not depend on
+    /// the cell's old value). It leaves the same cells and `combined` and `extended_attrs`
+    /// entries, stale ones included, at O(len + entries written), where the loop costs
+    /// O(times × len).
+    ///
+    /// Why it is the loop, for `fill` and `head` not wide and `pos < len` (otherwise this runs
+    /// the loop). Let `m = len - pos` and `c_i` be the old cell at `pos + i`.
+    ///  - Fix-ups: `insert_cells`' fix-up at `pos - 1` can fire at the first step only (it
+    ///    leaves a narrow cell, and nothing else writes `pos - 1`), so it runs once up front.
+    ///    The edge fix-up never fires: after the insert `pos` holds the fill. The line-end
+    ///    fix-up rewrites the cell shifted onto `len - 1`, which the next step shifts out
+    ///    unread, so it is seen only in that key's entries and in the final last cell.
+    ///  - Cells: step `t` (1-based) shifts `[pos, len - 1)` right by one and writes the head
+    ///    at `pos`, so at its start `pos + j` holds the head for `j < t - 1` and `c_{j-t+1}`
+    ///    otherwise. After `k = min(times, m)` steps `pos + j` holds the head for `j < k`
+    ///    and `c_{j-k}` otherwise (one shift by `k`; steps past `m` only rewrite heads), the
+    ///    last cell as the line-end fix-up leaves it.
+    ///  - Entries: a shifted cell is loaded where its last write put it, so a flagged cell
+    ///    carries its entry as first loaded (`c_i`: its old entry, or the empty string and
+    ///    default attributes when it had none) and an unflagged one writes none. Key
+    ///    `pos + j` (`j >= 1`) is written at step `t` by `c_{j-t}` for `t <= min(j, k)` and
+    ///    by the head for `t > j`: it ends with the head's entry if `k > j` and the head has
+    ///    one, else with the flagged source of smallest index in `j - min(j, k) ..= j - 1`
+    ///    (written latest), else unchanged. Key `len - 1` also takes the line-end fix-up's
+    ///    extended entry (`fill`'s, if flagged) after each wide source. Key `pos` takes the
+    ///    fill's and then the head's entries at every step: the head's, else the fill's,
+    ///    else unchanged.
+    pub fn stuck_insert_repeatedly(
+        &mut self,
+        pos: usize,
+        times: usize,
+        fill_cell_data: &CellData,
+        head: &CellData,
+        edge_attrs: &AttributeData,
+    ) {
+        let len = self.length;
+        if times == 0 {
+            return;
+        }
+        if pos >= len
+            || fill_cell_data.get_width() == 2
+            || head.get_width() == 2
+            || self.data.len() < len.saturating_mul(CELL_SIZE)
+        {
+            for _ in 0..times {
+                self.insert_cells(pos, 1, fill_cell_data);
+                if self.get_width(pos) == 2 {
+                    self.set_cell_from_codepoint(pos, NULL_CELL_CODE, NULL_CELL_WIDTH, edge_attrs);
+                }
+                self.set_cell(pos, head);
+            }
+            return;
+        }
+        #[cfg(test)]
+        count_insert_pass();
+        if pos != 0 && self.get_width(pos - 1) == 2 {
+            self.set_cell_from_codepoint(pos - 1, 0, 1, fill_cell_data);
+        }
+        let m = len - pos;
+        let k = times.min(m);
+
+        // the sources a step can shift, `c_0 ..= c_{m-2}`, as `load_cell` reads them
+        let sources = m - 1;
+        let mut combined: Vec<Option<Arc<str>>> = Vec::with_capacity(sources);
+        let mut extended: Vec<Option<ExtendedAttrs>> = Vec::with_capacity(sources);
+        let mut wide = Vec::with_capacity(sources);
+        for c in pos..len - 1 {
+            let content = self.read(c, CELL_CONTENT);
+            let bg = self.read(c, CELL_BG);
+            combined.push((content & Content::IS_COMBINED_MASK != 0).then(|| {
+                self.combined
+                    .get(&c)
+                    .cloned()
+                    .unwrap_or_else(|| shared_str(""))
+            }));
+            extended.push(
+                (bg & BgFlags::HAS_EXTENDED != 0)
+                    .then(|| self.extended_attrs.get(&c).copied().unwrap_or_default()),
+            );
+            wide.push(content >> Content::WIDTH_SHIFT == 2);
+        }
+        // per source index: the first index at or after it that holds an entry
+        // (`usize::MAX`: none)
+        let next_held = |held: &dyn Fn(usize) -> bool| {
+            let mut next = vec![usize::MAX; sources + 1];
+            for i in (0..sources).rev() {
+                let found = if held(i) {
+                    i
+                } else {
+                    next.get(i + 1).copied().unwrap_or(usize::MAX)
+                };
+                if let Some(slot) = next.get_mut(i) {
+                    *slot = found;
+                }
+            }
+            next
+        };
+        let next_combined = next_held(&|i| combined.get(i).is_some_and(Option::is_some));
+        let next_extended = next_held(&|i| extended.get(i).is_some_and(Option::is_some));
+
+        let head_combined = (head.content & Content::IS_COMBINED_MASK != 0).then(|| {
+            // (the string `print` left at `pos` is shared when it is the head's)
+            self.combined
+                .get(&pos)
+                .filter(|held| ***held == *head.combined_data)
+                .cloned()
+                .unwrap_or_else(|| shared_str(&head.combined_data))
+        });
+        let fill_combined = (fill_cell_data.content & Content::IS_COMBINED_MASK != 0)
+            .then(|| shared_str(&fill_cell_data.combined_data));
+        let head_extended = (head.bg & BgFlags::HAS_EXTENDED != 0).then_some(head.extended);
+        let fill_extended =
+            (fill_cell_data.bg & BgFlags::HAS_EXTENDED != 0).then_some(fill_cell_data.extended);
+
+        let mut combined_updates = Vec::new();
+        let mut extended_updates = Vec::new();
+        if let Some(chars) = head_combined.clone().or(fill_combined) {
+            combined_updates.push((pos, chars));
+        }
+        if let Some(attrs) = head_extended.or(fill_extended) {
+            extended_updates.push((pos, attrs));
+        }
+        for j in 1..m {
+            let key = pos + j;
+            // the sources that pass key `pos + j` (indexes `low..=high`), and whether heads
+            // follow them
+            let (low, high) = (j - j.min(k), j - 1);
+            let heads = k > j;
+            let in_window = |next: &[usize]| next.get(low).copied().filter(|&i| i <= high);
+            let chars = match &head_combined {
+                Some(chars) if heads => Some(chars.clone()),
+                _ => in_window(&next_combined).and_then(|i| combined.get(i).cloned().flatten()),
+            };
+            if let Some(chars) = chars {
+                if self.combined.get(&key) != Some(&chars) {
+                    combined_updates.push((key, chars));
+                }
+            }
+            let attrs = match head_extended {
+                Some(attrs) if heads => Some(attrs),
+                // the line-end fix-up writes after each wide source's shift
+                _ if j == m - 1 => (low..=high).find_map(|i| match fill_extended {
+                    Some(fix) if wide.get(i) == Some(&true) => Some(fix),
+                    _ => extended.get(i).copied().flatten(),
+                }),
+                _ => in_window(&next_extended).and_then(|i| extended.get(i).copied().flatten()),
+            };
+            if let Some(attrs) = attrs {
+                if self.extended_attrs.get(&key) != Some(&attrs) {
+                    extended_updates.push((key, attrs));
+                }
+            }
+        }
+
+        // the cells: `c_0 ..= c_{m-1-k}` shifted by `k`, the heads, the line-end fix-up
+        self.data.copy_within(
+            pos * CELL_SIZE..(len - k) * CELL_SIZE,
+            (pos + k) * CELL_SIZE,
+        );
+        let head_slots = [head.content, head.fg, head.bg];
+        if let Some(slots) = self.data.get_mut(pos * CELL_SIZE..(pos + k) * CELL_SIZE) {
+            for cell in slots.chunks_exact_mut(CELL_SIZE) {
+                cell.copy_from_slice(&head_slots);
+            }
+        }
+        if k < m && wide.get(m - 1 - k) == Some(&true) {
+            // (its entry is among the updates)
+            self.write(len - 1, CELL_CONTENT, 1 << Content::WIDTH_SHIFT);
+            self.write(len - 1, CELL_FG, fill_cell_data.fg);
+            self.write(len - 1, CELL_BG, fill_cell_data.bg);
+        }
+        self.combined.insert_ascending(combined_updates);
+        self.extended_attrs.insert_ascending(extended_updates);
     }
 
     /// The cells of `insert_cells_repeatedly`'s rewritten sources (indexes from `pos`, moved

@@ -405,6 +405,9 @@ pub struct InputHandler {
     /// REPs printed by the line-fill path (tests check which path a case takes).
     #[cfg(test)]
     pub(crate) rep_fills: u64,
+    /// REPs whose stuck inserts were batched (`print_stuck_inserts`; tests check the path).
+    #[cfg(test)]
+    pub(crate) rep_stuck_batches: u64,
 }
 
 impl ParserHost for InputHandler {
@@ -666,6 +669,8 @@ impl InputHandler {
             ext: ExtState::default(),
             #[cfg(test)]
             rep_fills: 0,
+            #[cfg(test)]
+            rep_stuck_batches: 0,
         }
     }
 
@@ -2176,6 +2181,11 @@ impl InputHandler {
                 self.print_repeated(&fill, repeats);
                 return true;
             }
+            // LUNETERM: (plan M7 step 13, S7 residual 5) a narrow unit stuck at the last
+            // column without wraparound in insert mode: its inserts batched
+            if repeats > 0 && self.print_stuck_inserts(&unit, repeats) {
+                return true;
+            }
             unit.iter()
                 .copied()
                 .cycle()
@@ -2342,10 +2352,16 @@ impl InputHandler {
     /// that width (onto the first, without moving the cursor); and wraparound is on. Insert
     /// mode, an open link and screen reader mode are handled there.
     fn rep_fill(&self, unit: &[u32]) -> Option<RepFill> {
-        let services = &self.services;
-        if !services.core.dec_private_modes.wraparound {
+        if !self.services.core.dec_private_modes.wraparound {
             return None;
         }
+        self.rep_alike(unit)
+    }
+
+    /// LUNETERM: (review S3, S7) how `unit` prints when every repetition prints alike: the
+    /// conditions of [`InputHandler::rep_fill`] but wraparound.
+    fn rep_alike(&self, unit: &[u32]) -> Option<RepFill> {
+        let services = &self.services;
         let charset = services.charset.charset;
         let unicode = &services.unicode;
         let codes: Vec<u32> = unit
@@ -2559,6 +2575,112 @@ impl InputHandler {
             }
         }
         dirty_row_tracker.mark_dirty(buffer.y);
+    }
+
+    /// LUNETERM: (plan M7 step 13, S7 residual 5) `print` of `count` repetitions of `unit`
+    /// (the repeated cell's code points) with wraparound off and insert mode on, for a narrow
+    /// unit whose repetitions print alike ([`InputHandler::rep_alike`]) on a line at least
+    /// `cols` long: `print` of the units that bring the cursor to the pending column `cols`
+    /// (one per column left, at least one), then the rest as one
+    /// [`BufferLine::stuck_insert_repeatedly`] at `cols - 1`, where `print` costs an `O(len)`
+    /// insert per unit (the F9 floor's `len - cols` extra units made such a REP
+    /// `O(len × (len - cols))`). Returns false, having done nothing, in every other case and
+    /// when no unit is left once the cursor is stuck.
+    ///
+    /// Why the state is `print`'s of all the units:
+    ///  - `print` of the data in two calls is the one call here: the second call's start
+    ///    fix-up finds the narrow head at `cols - 1` and the first call's end fix-up the cursor
+    ///    at `cols`, so neither does anything; the join state carries over and the dirty row is
+    ///    the same row.
+    ///  - Every later unit's base overflows (`cols + 1 > cols`), so without wraparound the
+    ///    cursor goes back to `cols - 1`; then `insert_cells(cols - 1, 1, null)`, the edge
+    ///    fix-up, the base written, its joiners added to the cell at `cols - 1` (narrow, so one
+    ///    cell back; the joined width is the base's, so the cursor does not move), and the
+    ///    cursor at `cols` again. The base's and joiners' writes do not depend on the cell's
+    ///    old value, so they leave what `set_cell(cols - 1, head)` leaves, `head` loaded from
+    ///    the cell the last printed unit wrote. That is `stuck_insert_repeatedly`'s loop.
+    ///  - Link: `print` adds the cursor's line before each code point. The printed units
+    ///    added this row; each later add first forwards the pending marker disposals (the
+    ///    first does it here) and then finds the marker it cached with only cell writes in
+    ///    between, which changes nothing, so one add is the same.
+    ///  - Screen reader: the other code points' text, queued in order until the per-drain
+    ///    cap, as [`InputHandler::print_repeated`] does.
+    fn print_stuck_inserts(&mut self, unit: &[u32], count: usize) -> bool {
+        let services = &self.services;
+        if services.core.dec_private_modes.wraparound || !services.core.modes.insert_mode {
+            return false;
+        }
+        let Some(alike) = self.rep_alike(unit).filter(|alike| alike.width == 1) else {
+            return false;
+        };
+        let cols = services.buffer.cols;
+        let buffer = services.buffer.buffer();
+        let long_enough = buffer
+            .lines
+            .get(abs_y(buffer))
+            .is_some_and(|line| line.len() >= cols);
+        let to_stuck = cols.saturating_sub(buffer.x).max(1);
+        if !long_enough || cols == 0 || count <= to_stuck {
+            return false;
+        }
+        let data: Vec<u32> = unit
+            .iter()
+            .copied()
+            .cycle()
+            .take(unit.len() * to_stuck)
+            .collect();
+        self.print(&data);
+        let left = count - to_stuck;
+        if self.services.buffer.buffer().x != cols {
+            // (not reached: a narrow unit moves the cursor one column, up to `cols`)
+            debug_assert!(false, "REP unit not stuck at the last column");
+            let rest: Vec<u32> = unit
+                .iter()
+                .copied()
+                .cycle()
+                .take(unit.len() * left)
+                .collect();
+            self.print(&rest);
+            return true;
+        }
+        #[cfg(test)]
+        {
+            self.rep_stuck_batches += 1;
+        }
+
+        let InputHandler {
+            services,
+            cur_attr_data,
+            dirty_row_tracker,
+            events,
+            ..
+        } = self;
+        let cur_attr = *cur_attr_data;
+        if services.options.options().screen_reader_mode {
+            'voice: for _ in 0..left {
+                for &code in &alike.codes {
+                    if events.a11y_full() {
+                        break 'voice;
+                    }
+                    events.a11y_char(code);
+                }
+            }
+        }
+        let link_id = cur_attr.extended.url_id();
+        if link_id != 0 {
+            add_cursor_line_to_link(services, link_id);
+        }
+        let null_cell = services.buffer.buffer().get_null_cell(Some(&cur_attr));
+        let buffer = services.buffer.buffer_mut();
+        let y = buffer.y;
+        let row = abs_y(buffer);
+        if let Some(line) = line_mut(buffer, row) {
+            let mut head = CellData::new();
+            line.load_cell(cols - 1, &mut head);
+            line.stuck_insert_repeatedly(cols - 1, left, &null_cell, &head, &cur_attr);
+        }
+        dirty_row_tracker.mark_dirty(y);
+        true
     }
 
     /// ESC # 8 (DECALN): fill the viewport with `E` in the current colours and home the cursor.
