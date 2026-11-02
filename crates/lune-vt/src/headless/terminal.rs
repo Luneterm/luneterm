@@ -50,6 +50,7 @@ use crate::engine::{
     CellColor, Damage, HostEvent, Modes, MouseEncoding, MouseTracking, UnderlineStyle, Viewport,
     ViewportCell, ViewportCursor, VtEngine,
 };
+use crate::ext::{ExtensionError, StandardExtensions};
 use crate::extension::Extension;
 use crate::input_handler::InputHandler;
 use crate::parser::params::Params;
@@ -315,6 +316,18 @@ impl Terminal {
         self.core.add_extension(extension)
     }
 
+    /// Register Lunegit's terminal additions (plan M7 D2): XTVERSION when `config` names the
+    /// terminal, the unknown-OSC report, and as later steps land the keyboard protocols and the
+    /// rest. Call it once, right after [`Terminal::new`]; the second call is
+    /// [`ExtensionError::AlreadyInstalled`]. A terminal that never calls it behaves exactly as
+    /// xterm.js.
+    pub fn install_standard_extensions(
+        &mut self,
+        config: &StandardExtensions,
+    ) -> Result<(), ExtensionError> {
+        self.core.install_standard_extensions(config)
+    }
+
     /// The core (read access for the conformance dump).
     pub fn core(&self) -> &CoreTerminal {
         &self.core
@@ -417,6 +430,8 @@ impl Terminal {
             cursor_hidden: services.core.is_cursor_hidden,
             mouse_tracking,
             mouse_encoding,
+            kitty_keyboard_flags: 0,
+            modify_other_keys: 0,
         }
     }
 }

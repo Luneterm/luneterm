@@ -401,6 +401,8 @@ fn modes_defaults() {
             cursor_hidden: false,
             mouse_tracking: MouseTracking::None,
             mouse_encoding: MouseEncoding::Default,
+            kitty_keyboard_flags: 0,
+            modify_other_keys: 0,
         }
     );
 }

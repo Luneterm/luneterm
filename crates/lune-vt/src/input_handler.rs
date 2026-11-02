@@ -128,6 +128,7 @@ use crate::buffer::constants::{
 use crate::data::charsets::{Charset, charset};
 use crate::data::escape_sequences::{C0, C1};
 use crate::engine::{ColorIndex, ColorRequest, Damage, HostEvent, WindowReportKind};
+use crate::ext::ExtState;
 use crate::headless::terminal::reset_terminal;
 use crate::input::text_decoder::{Utf8ToUtf32, string_from_code_point};
 use crate::input::x_parse_color::parse_color;
@@ -172,6 +173,10 @@ pub const MAX_REP_CODE_POINTS: usize = 1 << 20;
 /// (4 KiB), so a write that hits it (REP with screen reader mode on) stays within the bound
 /// `events <= 16 x bytes written + 4 KiB`.
 pub const A11Y_TEXT_LIMIT: usize = 2048;
+
+/// Most [`HostEvent::UnknownOsc`] events queued per drain (Lunegit's per-write cap on its
+/// unknown-OSC channel, `driver.js`): a stream cycling identifiers cannot grow the queue.
+pub const UNKNOWN_OSC_LIMIT: usize = 64;
 
 /// The services every handler reads or writes (upstream's constructor arguments).
 #[derive(Debug)]
@@ -262,6 +267,13 @@ impl DirtyRowTracker {
 ///    [`A11Y_TEXT_LIMIT`] bytes of such text are queued per drain; the first character that does
 ///    not fit ends voicing until the next drain.
 ///
+///
+/// LUNETERM (plan M7 D8): three more events keep only the last (the host acts on the latest
+/// value), replaced in place at the position of the first one queued since the last drain, so a
+/// stream of them costs one event and one payload ([`HostEvent::ClipboardWrite`],
+/// [`HostEvent::CwdChanged`], [`HostEvent::Progress`]); [`HostEvent::UnknownOsc`] stops after
+/// [`UNKNOWN_OSC_LIMIT`] per drain.
+///
 /// Every other event is queued as fired.
 #[derive(Debug, Default)]
 struct EventQueue {
@@ -270,6 +282,11 @@ struct EventQueue {
     title_queued: bool,
     /// Bytes of [`HostEvent::A11yText`] text queued since the last drain.
     a11y_bytes: usize,
+    /// Index in `events` of the queued [`HostEvent::ClipboardWrite`], `CwdChanged` and
+    /// `Progress`.
+    last_wins: [Option<usize>; 3],
+    /// [`HostEvent::UnknownOsc`] events queued since the last drain.
+    unknown_osc: usize,
 }
 
 impl EventQueue {
@@ -277,7 +294,33 @@ impl EventQueue {
         match event {
             HostEvent::TitleChanged => self.title_changed(),
             HostEvent::A11yText(text) => self.push_a11y_text(&text),
+            event @ HostEvent::ClipboardWrite(_) => self.push_last_wins(0, event),
+            event @ HostEvent::CwdChanged(_) => self.push_last_wins(1, event),
+            event @ HostEvent::Progress(_) => self.push_last_wins(2, event),
+            HostEvent::UnknownOsc { .. } if self.unknown_osc >= UNKNOWN_OSC_LIMIT => {}
+            event @ HostEvent::UnknownOsc { .. } => {
+                self.unknown_osc += 1;
+                self.events.push(event);
+            }
             event => self.events.push(event),
+        }
+    }
+
+    /// Queue `event`, or replace the one of its kind (slot `slot`) already queued.
+    fn push_last_wins(&mut self, slot: usize, event: HostEvent) {
+        let queued = self
+            .last_wins
+            .get(slot)
+            .copied()
+            .flatten()
+            .and_then(|index| self.events.get_mut(index));
+        if let Some(queued) = queued {
+            *queued = event;
+        } else {
+            if let Some(entry) = self.last_wins.get_mut(slot) {
+                *entry = Some(self.events.len());
+            }
+            self.events.push(event);
         }
     }
 
@@ -324,6 +367,8 @@ impl EventQueue {
     fn take(&mut self) -> Vec<HostEvent> {
         self.title_queued = false;
         self.a11y_bytes = 0;
+        self.last_wins = [None; 3];
+        self.unknown_osc = 0;
         mem::take(&mut self.events)
     }
 }
@@ -353,6 +398,10 @@ pub struct InputHandler {
     /// Upstream's `onLineFeed` listener for the Windows wrapping heuristics (`CoreTerminal`'s
     /// `_handleWindowsPtyOptionChange`, plan M6 D6). Off until the host turns it on.
     pub(crate) windows_heuristics: bool,
+    /// LUNETERM (plan M7 D1): the standard extensions' state. It lives here so the parser
+    /// closures (which get `&mut InputHandler`) and the encoders (which get the terminal) see
+    /// the same state, with no reference back to the host.
+    pub(crate) ext: ExtState,
     /// REPs printed by the line-fill path (tests check which path a case takes).
     #[cfg(test)]
     pub(crate) rep_fills: u64,
@@ -614,6 +663,7 @@ impl InputHandler {
             window_title_stack: Vec::new(),
             icon_name_stack: Vec::new(),
             windows_heuristics: false,
+            ext: ExtState::default(),
             #[cfg(test)]
             rep_fills: 0,
         }
@@ -680,6 +730,29 @@ impl InputHandler {
         self.erase_attr_data_internal = DEFAULT_ATTR_DATA;
     }
 
+    /// The OSC fallback (upstream's `setOscHandlerFallback` callback): logs the unhandled
+    /// sequence. The standard extensions' unknown-OSC reporter calls it too.
+    pub(crate) fn log_unknown_osc(
+        h: &mut InputHandler,
+        identifier: i32,
+        action: OscFallbackAction<'_>,
+    ) {
+        match action {
+            OscFallbackAction::Start => h.services.log.debug(format_args!(
+                "Unknown OSC code: {{ identifier: {identifier}, action: START }}"
+            )),
+            // LUNETERM: the length, not the data (upstream logs it): an unhandled OSC can carry
+            // secrets, e.g. OSC 52 clipboard contents (user decision 2026-11-01)
+            OscFallbackAction::Put(data) => h.services.log.debug(format_args!(
+                "Unknown OSC code: {{ identifier: {identifier}, action: PUT, length: {} }}",
+                data.len()
+            )),
+            OscFallbackAction::End(success) => h.services.log.debug(format_args!(
+                "Unknown OSC code: {{ identifier: {identifier}, action: END, data: {success} }}"
+            )),
+        }
+    }
+
     /// The constructor's handler registrations (`InputHandler.ts:189-381`) for the handlers
     /// ported so far, plus the fallbacks and the error handler.
     pub fn register_handlers(
@@ -704,20 +777,7 @@ impl InputHandler {
                 .log
                 .debug(format_args!("Unknown EXECUTE code: {{ code: {code} }}"));
         });
-        parser.set_osc_handler_fallback(|h, identifier, action| match action {
-            OscFallbackAction::Start => h.services.log.debug(format_args!(
-                "Unknown OSC code: {{ identifier: {identifier}, action: START }}"
-            )),
-            // LUNETERM: the length, not the data (upstream logs it): an unhandled OSC can carry
-            // secrets, e.g. OSC 52 clipboard contents (user decision 2026-11-01)
-            OscFallbackAction::Put(data) => h.services.log.debug(format_args!(
-                "Unknown OSC code: {{ identifier: {identifier}, action: PUT, length: {} }}",
-                data.len()
-            )),
-            OscFallbackAction::End(success) => h.services.log.debug(format_args!(
-                "Unknown OSC code: {{ identifier: {identifier}, action: END, data: {success} }}"
-            )),
-        });
+        parser.set_osc_handler_fallback(Self::log_unknown_osc);
         parser.set_dcs_handler_fallback(|h, ident, action| match action {
             DcsFallbackAction::Hook(params) => h.services.log.debug(format_args!(
                 "Unknown DCS code: {{ identifier: {}, action: HOOK, payload: {} }}",
