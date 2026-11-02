@@ -263,12 +263,83 @@ fn on_rotate_equals_the_per_event_calls() {
     }
 }
 
+/// Review S6 pinned one walk of all markers (1000) instead of `2 * n`; S7 residual 1 tightens
+/// it to the markers between the two lines (both included), each visited once.
 #[test]
-fn on_rotate_walks_the_markers_once() {
+fn on_rotate_visits_only_the_markers_between_the_lines() {
     let (mut set, _) = set_with(&(0..1000).map(|l| l % 50).collect::<Vec<_>>());
     set.visits = 0;
     set.on_rotate(40, 2, 30);
-    assert_eq!(set.visits, 1000, "one walk, not 2 * 30");
+    let between = (0..1000).filter(|l| (2..=40).contains(&(l % 50))).count() as u64;
+    assert_eq!(set.visits, between, "not 2 * 30 walks, and not all 1000");
+}
+
+// ---- cost bounds, `// LUNETERM:` (review S7 residual 1); `visits` counts, not time ----
+
+#[test]
+fn on_trim_visits_only_the_disposed_markers() {
+    let (mut set, ids) = set_with(&(0..10_000).collect::<Vec<_>>());
+    set.visits = 0;
+    set.on_trim(1);
+    assert_eq!(
+        set.visits, 1,
+        "one marker trimmed off; the other 9,999 not touched"
+    );
+    assert_eq!(set.take_disposed(), vec![ids[0]]);
+    assert_eq!(set.get(ids[9_999]).map(|m| m.line), Some(9_998));
+    set.visits = 0;
+    set.on_trim(0);
+    assert_eq!(set.visits, 0);
+    set.on_trim(5);
+    assert_eq!(set.visits, 5);
+    assert_eq!(set.take_disposed(), ids[1..6].to_vec());
+}
+
+#[test]
+fn insert_and_delete_visit_only_the_markers_from_the_index_on() {
+    let lines: Vec<i64> = (0..10_000).map(|l| l % 1000).collect();
+    let from = |index: i64| lines.iter().filter(|&&l| l >= index).count() as u64;
+    let (mut set, _) = set_with(&lines);
+    set.visits = 0;
+    set.on_insert(InsertEvent {
+        index: 990,
+        amount: 3,
+    });
+    assert_eq!(set.visits, from(990));
+    let (mut set, _) = set_with(&lines);
+    set.visits = 0;
+    set.on_delete(DeleteEvent {
+        index: 995,
+        amount: 2,
+    });
+    // the disposed (lines 995, 996) and the shifted (997..=999); line 995 is in the range
+    assert_eq!(set.visits, from(995));
+    assert_eq!(set.take_disposed().len(), 20);
+    // a delete with nothing at or after the index touches nothing
+    set.visits = 0;
+    set.on_delete(DeleteEvent {
+        index: 5000,
+        amount: 7,
+    });
+    assert_eq!(set.visits, 0);
+}
+
+#[test]
+fn ids_on_line_and_count_on_line_see_attached_and_detached_markers() {
+    let (mut set, ids) = set_with(&[3, 4, 3]);
+    set.detach_all();
+    let late = set.add(3);
+    set.on_trim(1); // the detached stay on 3 and 4; `late` moves to 2
+    assert_eq!(set.count_on_line(3), 2);
+    let mut on3: Vec<MarkerId> = set.ids_on_line(3).collect();
+    on3.sort_unstable();
+    assert_eq!(on3, vec![ids[0], ids[2]]);
+    assert_eq!(set.ids_on_line(2).collect::<Vec<_>>(), vec![late]);
+    assert_eq!(set.count_on_line(2), 1);
+    assert_eq!(set.count_on_line(9), 0);
+    set.clear_line(3);
+    assert_eq!(set.count_on_line(3), 0);
+    assert_eq!(set.take_disposed(), vec![ids[0], ids[2]]);
 }
 
 // ---- ReferenceMarkerSet: the `Vec`-based set as shipped before plan M7 step 11 ----

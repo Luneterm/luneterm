@@ -6545,7 +6545,11 @@ fn osc_8_print_adds_the_line_to_the_link() {
     t.parse_str("\x1b]8;;u\x07ab\r\ncd\x1b]8;;\x07ef");
     let id = 1;
     assert_eq!(
-        t.handler.services.osc_link.link_markers(id).map(<[_]>::len),
+        t.handler
+            .services
+            .osc_link
+            .link_markers(id)
+            .map(|m| m.len()),
         Some(2)
     );
     let cell_url = |t: &TestTerm, row: usize, x: usize| {
@@ -6607,6 +6611,40 @@ fn rep_inside_an_open_link_looks_up_markers_once_per_line() {
         (5..=6).contains(&markers),
         "every line of the buffer is in the link: {markers}"
     );
+}
+
+/// Review S7 residual 1: a REP that scrolls a full scrollback inside an open link visits a
+/// few markers per printed line in total (link lookups plus marker-set events: one trimmed
+/// marker and one added line each), where the walks of every marker made it O(lines x
+/// markers). Counts visits, not time.
+#[test]
+fn rep_inside_an_open_link_over_a_full_scrollback_visits_few_markers_per_line() {
+    let mut t = test_handler(80, 24, [OptionValue::Scrollback(1000)]);
+    t.parse_str("\x1b]8;;http://x\x07");
+    t.parse_str(&format!("{}\r\n", "a".repeat(79)).repeat(1100));
+    t.parse_str("a");
+    let markers_before = t.handler.services.osc_link.marker_count();
+    assert_eq!(markers_before, 1024, "the link holds every line");
+    let reset = |t: &mut TestTerm| {
+        t.handler.services.osc_link.marker_visits = 0;
+        let buffers = &mut t.handler.services.buffer.buffers;
+        buffers.normal_mut().lines.observer_mut().visits = 0;
+        buffers.alt_mut().lines.observer_mut().visits = 0;
+    };
+    reset(&mut t);
+    let count = 1_048_576u64;
+    t.parse_str(&format!("\x1b[{count}b"));
+    let buffers = &t.handler.services.buffer.buffers;
+    let visits = t.handler.services.osc_link.marker_visits
+        + buffers.normal().markers().visits
+        + buffers.alt().markers().visits;
+    let lines = count / 80 + 1;
+    assert!(
+        visits <= 8 * lines,
+        "{visits} marker visits for {lines} printed lines"
+    );
+    assert_eq!(t.handler.services.osc_link.marker_count(), 1024);
+    assert_eq!(t.buffer().markers().len(), 1024);
 }
 
 /// Review S2: links without an id repeated on one line (and overwritten) stay capped, with
