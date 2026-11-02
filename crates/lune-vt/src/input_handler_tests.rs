@@ -6647,6 +6647,54 @@ fn rep_inside_an_open_link_over_a_full_scrollback_visits_few_markers_per_line() 
     assert_eq!(t.buffer().markers().len(), 1024);
 }
 
+/// Plan M7 step 12 (S7 residual 2): a narrow-cluster REP stores each line's combined strings
+/// as at most two runs sharing one allocation, and allocates one string per line, not one per
+/// cell (a `String` per cell before). Counts allocations and references, not time.
+#[test]
+fn rep_of_a_narrow_cluster_shares_one_string_per_line() {
+    use crate::buffer::buffer_line::combined_allocations;
+    use std::sync::Arc;
+    let mut t = test_handler(80, 24, [OptionValue::Scrollback(1000)]);
+    t.parse_str("e\u{301}");
+    let before = combined_allocations();
+    let k = 10;
+    // the rest of line 0, k - 1 full lines and one cell of line k
+    t.parse_str(&format!("\x1b[{}b", 80 * k));
+    assert_eq!(t.handler.rep_fills, 1);
+    let allocations = combined_allocations() - before;
+    // the REP's head cell, then one string per line
+    assert!(
+        allocations <= k as u64 + 2,
+        "{allocations} combined strings allocated for {} lines",
+        k + 1
+    );
+    let buffer = t.buffer();
+    for row in 0..=k {
+        let line = buffer.lines.get(row).unwrap();
+        let runs = line.combined_runs();
+        assert!(
+            (1..=2).contains(&runs.len()),
+            "row {row}: {} runs",
+            runs.len()
+        );
+        let shared = &runs[0].2;
+        assert_eq!(&**shared, "e\u{301}");
+        for x in (0..line.len()).filter(|&x| line.is_combined(x) != 0) {
+            let run = runs
+                .iter()
+                .find(|&&(first, last, _)| first <= x && x <= last);
+            assert!(
+                run.is_some_and(|(_, _, chars)| Arc::ptr_eq(chars, shared)),
+                "row {row} cell {x}"
+            );
+        }
+        for (_, _, chars) in &runs {
+            // held by the line's run and by this copy only, however many cells it covers
+            assert_eq!(Arc::strong_count(chars), 2, "row {row}");
+        }
+    }
+}
+
 /// Review S2: links without an id repeated on one line (and overwritten) stay capped, with
 /// their markers; the newest link still works and an evicted one's cells lose only the link.
 #[test]

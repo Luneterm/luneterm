@@ -7,12 +7,14 @@
 //!    overflows `usize` is 0 as well. `Vec::capacity()` stands in for the typed array's
 //!    `buffer.byteLength` (the underlying `ArrayBuffer`), so `resize` and `cleanup_memory` keep
 //!    upstream's reuse/shrink behaviour and return values.
-//!  - `_combined` and `_extendedAttrs` are ordered maps (`BTreeMap`: ascending integer keys, as
-//!    `Object.keys` on integer-like keys; `// LUNETERM:` (review S7 round 4) `_extendedAttrs` is a
-//!    [`RunMap`], the same entries stored as runs of keys with one value, so a line in one
-//!    underline colour or link is one run). Writes to them are as unchecked as JS object writes:
-//!    a `set_cell` of a combined cell at an index `>= len()` stores the string even though the
-//!    data write is ignored. An `undefined` map value is represented by an absent key (every
+//!  - `_combined` and `_extendedAttrs` are ordered maps (ascending integer keys, as
+//!    `Object.keys` on integer-like keys), each a [`RunMap`]: the same entries stored as runs of
+//!    keys with one value (`// LUNETERM:` review S7 round 4 for `_extendedAttrs`, so a line in
+//!    one underline colour or link is one run; plan M7 step 12, S7 residual 2, for `_combined`,
+//!    whose strings are shared `Arc<str>` values, so a line filled with one cluster is one run
+//!    and one allocation, not a `String` per cell). Writes to them are as unchecked as JS
+//!    object writes: a `set_cell` of a combined cell at an index `>= len()` stores the string
+//!    even though the data write is ignored. An `undefined` map value is represented by an absent key (every
 //!    reader treats the two alike).
 //!  - [`copy_cells_from`](BufferLine::copy_cells_from) copies every combined key `>= src_col`,
 //!    not only those of the copied range, as upstream does (`:501-508`, a `FIXME` there). Do not
@@ -42,6 +44,7 @@
 //!    unsigned shift here where JS sign-extends a value with bit 31 set.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::buffer::attribute_data::{AttributeData, ExtendedAttrs};
 use crate::buffer::cell_data::{CellData, CharData};
@@ -79,35 +82,24 @@ fn last_code_unit(s: &str) -> u32 {
 /// dozen; Unicode's stream-safe format allows a base plus 30 non-starters.
 pub const MAX_COMBINED_CODE_POINTS: usize = 64;
 
-/// LUNETERM: (review S7) `map.insert(k, v)` for every `(k, v)` of `updates`, whose keys are
-/// ascending and distinct. A batch that is large next to the map rebuilds it in one ordered
-/// merge (`collect` of a sorted sequence builds the tree in bulk, O(entries)) instead of one
-/// tree insert per entry; the map ends with the same entries either way, and nothing reads a
-/// map's node layout.
-fn insert_sorted<V>(map: &mut BTreeMap<usize, V>, updates: Vec<(usize, V)>) {
-    debug_assert!(updates.windows(2).all(|pair| match pair {
-        [(a, _), (b, _)] => a < b,
-        _ => true,
-    }));
-    if updates.len() < 16 || updates.len().saturating_mul(4) < map.len() {
-        for (key, value) in updates {
-            map.insert(key, value);
-        }
-        return;
-    }
-    let old = std::mem::take(map);
-    let mut merged = Vec::with_capacity(old.len() + updates.len());
-    let mut old = old.into_iter().peekable();
-    for (key, value) in updates {
-        while let Some(entry) = old.next_if(|(old_key, _)| *old_key < key) {
-            merged.push(entry);
-        }
-        // an entry at the same key is replaced
-        old.next_if(|(old_key, _)| *old_key == key);
-        merged.push((key, value));
-    }
-    merged.extend(old);
-    *map = merged.into_iter().collect();
+#[cfg(test)]
+thread_local! {
+    /// Combined strings allocated by this thread's lines (tests pin allocations per line).
+    static COMBINED_ALLOCATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The number of combined strings this thread's lines have allocated so far.
+#[cfg(test)]
+pub(crate) fn combined_allocations() -> u64 {
+    COMBINED_ALLOCATIONS.with(std::cell::Cell::get)
+}
+
+/// A combined string as the shared value the line stores (plan M7 step 12): every allocation
+/// of one goes through here.
+fn shared_str(chars: &str) -> Arc<str> {
+    #[cfg(test)]
+    COMBINED_ALLOCATIONS.with(|count| count.set(count.get() + 1));
+    Arc::from(chars)
 }
 
 /// LUNETERM: (review S7 round 4) upstream's `_extendedAttrs` (cell index -> extended
@@ -116,7 +108,9 @@ fn insert_sorted<V>(map: &mut BTreeMap<usize, V>, updates: Vec<(usize, V)>) {
 /// whose id lives here too) is one run instead of a tree entry per cell: filling, cloning and
 /// dropping it no longer cost an allocation per handful of cells. It answers every read as
 /// the per-key map does, keys past the line's end included (a write there is stored, as a JS
-/// object write is).
+/// object write is). Plan M7 step 12 (S7 residual 2) stores `_combined` the same way, with
+/// `Arc<str>` values: values compare by content, so equal strings at touching keys merge
+/// into one run whichever allocation they came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RunMap<V> {
     /// first key -> (last key, value). Runs are disjoint and non-empty, and two runs that
@@ -133,7 +127,7 @@ impl<V> Default for RunMap<V> {
     }
 }
 
-impl<V: Copy + PartialEq> RunMap<V> {
+impl<V: Clone + PartialEq> RunMap<V> {
     /// The value at `key`.
     fn get(&self, key: &usize) -> Option<&V> {
         self.runs
@@ -148,13 +142,35 @@ impl<V: Copy + PartialEq> RunMap<V> {
         self.get(key).is_some()
     }
 
-    /// The number of keys held.
-    fn len(&self) -> usize {
+    /// Every key held with its value, in key order (one entry per key, as the per-key map).
+    #[cfg(test)]
+    fn entries(&self) -> Vec<(usize, V)> {
         self.runs
             .iter()
-            .fold(0, |sum: usize, (&first, &(last, _))| {
-                sum.saturating_add((last - first).saturating_add(1))
-            })
+            .flat_map(|(&first, (last, value))| (first..=*last).map(move |k| (k, value.clone())))
+            .collect()
+    }
+
+    /// The keys from `start` on, in order (one per key).
+    fn keys_from(&self, start: usize) -> Vec<usize> {
+        let mut keys = Vec::new();
+        // a run that starts before `start` may reach it
+        if let Some((_, &(last, _))) = self.runs.range(..start).next_back() {
+            if last >= start {
+                keys.extend(start..=last);
+            }
+        }
+        for (&first, &(last, _)) in self.runs.range(start..) {
+            keys.extend(first..=last);
+        }
+        keys
+    }
+
+    /// The number of keys held.
+    fn len(&self) -> usize {
+        self.runs.iter().fold(0, |sum: usize, (&first, (last, _))| {
+            sum.saturating_add((*last - first).saturating_add(1))
+        })
     }
 
     fn clear(&mut self) {
@@ -168,8 +184,9 @@ impl<V: Copy + PartialEq> RunMap<V> {
             .runs
             .range(..=key)
             .next_back()
-            .map(|(&first, &(last, held))| (first, last, held));
-        if let Some((first, last, _)) = before.filter(|&(_, _, held)| held == value) {
+            .filter(|(_, (_, held))| *held == value)
+            .map(|(&first, &(last, _))| (first, last));
+        if let Some((first, last)) = before {
             if key <= last {
                 return;
             }
@@ -177,7 +194,7 @@ impl<V: Copy + PartialEq> RunMap<V> {
                 let joins_next = key
                     .checked_add(1)
                     .and_then(|next| self.runs.get(&next))
-                    .is_some_and(|&(_, next_value)| next_value == value);
+                    .is_some_and(|(_, next_value)| *next_value == value);
                 if !joins_next {
                     if let Some(run) = self.runs.get_mut(&first) {
                         run.0 = key;
@@ -210,7 +227,7 @@ impl<V: Copy + PartialEq> RunMap<V> {
             .runs
             .range(..=first)
             .next_back()
-            .is_some_and(|(_, &(end, held))| end >= last && Some(held) == value);
+            .is_some_and(|(_, (end, held))| *end >= last && value.as_ref() == Some(held));
         if covering {
             // (a run already holds the value at every key)
             return;
@@ -221,13 +238,14 @@ impl<V: Copy + PartialEq> RunMap<V> {
             .runs
             .range(..first)
             .next_back()
-            .map(|(&start, &(end, held))| (start, end, held));
-        if let Some((start, end, held)) = before.filter(|&(_, end, _)| end >= first) {
+            .filter(|(_, (end, _))| *end >= first)
+            .map(|(&start, (end, held))| (start, *end, held.clone()));
+        if let Some((start, end, held)) = before {
             // (start < first <= end, so neither bound overflows)
-            self.runs.insert(start, (first - 1, held));
             if end > last {
-                self.runs.insert(last + 1, (end, held));
+                self.runs.insert(last + 1, (end, held.clone()));
             }
+            self.runs.insert(start, (first - 1, held));
         }
         // a run that starts inside goes, but keeps its keys after `last`
         while let Some((&start, _)) = self.runs.range(first..=last).next() {
@@ -247,21 +265,91 @@ impl<V: Copy + PartialEq> RunMap<V> {
             .runs
             .range(..first)
             .next_back()
-            .map(|(&start, &(end, held))| (start, end, held));
-        if let Some((start, _, _)) =
-            before.filter(|&(_, end, held)| end.checked_add(1) == Some(first) && held == value)
-        {
+            .filter(|(_, (end, held))| end.checked_add(1) == Some(first) && *held == value)
+            .map(|(&start, _)| start);
+        if let Some(start) = before {
             self.runs.remove(&start);
             first = start;
         }
-        let after = last
-            .checked_add(1)
-            .and_then(|next| self.runs.get(&next).map(|&(end, held)| (next, end, held)));
-        if let Some((next, end, _)) = after.filter(|&(_, _, held)| held == value) {
+        let after = last.checked_add(1).and_then(|next| {
+            self.runs
+                .get(&next)
+                .filter(|(_, held)| *held == value)
+                .map(|&(end, _)| (next, end))
+        });
+        if let Some((next, end)) = after {
             self.runs.remove(&next);
             last = end;
         }
         self.runs.insert(first, (last, value));
+    }
+
+    /// For every key `k >= src_col` of `src`, in ascending order, the entry at
+    /// `(k - src_col).saturating_add(dest_col)` takes `src`'s value at `k` (`src` is another
+    /// map). The shift is monotone, so each run of `src` lands on one range of keys (a run whose
+    /// keys saturate ends at `usize::MAX`, which the last such key wins, as in key order), and
+    /// assigning the shifted runs in order is the per-key loop.
+    fn copy_shifted_from(&mut self, src: &RunMap<V>, src_col: usize, dest_col: usize) {
+        let shift = |k: usize| (k - src_col).saturating_add(dest_col);
+        let reaching = src
+            .runs
+            .range(..src_col)
+            .next_back()
+            .filter(|(_, (last, _))| *last >= src_col)
+            .map(|(_, (last, value))| (src_col, *last, value));
+        let inside = src
+            .runs
+            .range(src_col..)
+            .map(|(&first, (last, value))| (first, *last, value));
+        for (first, last, value) in reaching.into_iter().chain(inside) {
+            self.assign(shift(first), shift(last), Some(value.clone()));
+        }
+    }
+
+    /// `insert(k, v)` for every `(k, v)` of `updates`, whose keys are ascending and distinct.
+    /// When no run holds or touches a key in `first - 1 ..= last + 1` (the updates' span, as
+    /// on a line the batch writes afresh), the updates' own runs (touching equal values
+    /// merged) cannot meet an old run, so they go in as they are, a large batch next to the
+    /// map in one ordered merge (`collect` of a sorted sequence builds the tree in bulk) instead
+    /// of a tree update per key; otherwise key by key. The same entries either way.
+    fn insert_ascending(&mut self, updates: Vec<(usize, V)>) {
+        debug_assert!(updates.windows(2).all(|pair| match pair {
+            [(a, _), (b, _)] => a < b,
+            _ => true,
+        }));
+        let (Some(&(first, _)), Some(&(last, _))) = (updates.first(), updates.last()) else {
+            return;
+        };
+        let (low, high) = (first.saturating_sub(1), last.saturating_add(1));
+        let reaches_low = self
+            .runs
+            .range(..low)
+            .next_back()
+            .is_some_and(|(_, (end, _))| *end >= low);
+        if reaches_low || self.runs.range(low..=high).next().is_some() {
+            for (key, value) in updates {
+                self.insert(key, value);
+            }
+            return;
+        }
+        let mut new_runs: Vec<(usize, (usize, V))> = Vec::new();
+        for (key, value) in updates {
+            if let Some((_, (end, held))) = new_runs.last_mut() {
+                if end.checked_add(1) == Some(key) && *held == value {
+                    *end = key;
+                    continue;
+                }
+            }
+            new_runs.push((key, (key, value)));
+        }
+        if new_runs.len() < 16 || new_runs.len().saturating_mul(4) < self.runs.len() {
+            self.runs.extend(new_runs);
+            return;
+        }
+        let mut tail = self.runs.split_off(&first);
+        let mut batch: BTreeMap<usize, (usize, V)> = new_runs.into_iter().collect();
+        self.runs.append(&mut batch);
+        self.runs.append(&mut tail);
     }
 }
 
@@ -289,7 +377,7 @@ impl<V: Copy + PartialEq> RunMap<V> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BufferLine {
     data: Vec<u32>,
-    combined: BTreeMap<usize, String>,
+    combined: RunMap<Arc<str>>,
     extended_attrs: RunMap<ExtendedAttrs>,
     length: usize,
     pub is_wrapped: bool,
@@ -303,7 +391,7 @@ impl BufferLine {
     pub fn new(cols: usize, fill_cell_data: Option<&CellData>, is_wrapped: bool) -> Self {
         let mut line = BufferLine {
             data: vec![0; cols.saturating_mul(CELL_SIZE)],
-            combined: BTreeMap::new(),
+            combined: RunMap::default(),
             extended_attrs: RunMap::default(),
             length: cols,
             is_wrapped,
@@ -342,6 +430,17 @@ impl BufferLine {
         self.combined.len()
     }
 
+    /// The combined strings as runs `(first key, last key, string)`, for tests that pin how
+    /// they are shared.
+    #[cfg(test)]
+    pub(crate) fn combined_runs(&self) -> Vec<(usize, usize, Arc<str>)> {
+        self.combined
+            .runs
+            .iter()
+            .map(|(&first, (last, chars))| (first, *last, chars.clone()))
+            .collect()
+    }
+
     /// The number of extended attribute entries held (upstream `Object.keys(_extendedAttrs).length`).
     pub fn extended_attrs_len(&self) -> usize {
         self.extended_attrs.len()
@@ -375,7 +474,9 @@ impl BufferLine {
         let cp = content & Content::CODEPOINT_MASK;
         let is_combined = content & Content::IS_COMBINED_MASK != 0;
         let chars = if is_combined {
-            self.combined.get(&index).cloned().unwrap_or_default()
+            self.combined
+                .get(&index)
+                .map_or_else(String::new, |chars| String::from(&**chars))
         } else if cp != 0 {
             string_from_code_point(cp)
         } else {
@@ -405,7 +506,7 @@ impl BufferLine {
         self.write(index, CELL_FG, value.0);
         let width_bits = value.2 << Content::WIDTH_SHIFT;
         if value.1.encode_utf16().count() > 1 {
-            self.combined.insert(index, value.1.clone());
+            self.combined.insert(index, shared_str(&value.1));
             // `index | ...` is an int32 operation: only the low 32 bits survive.
             let content = (index as u32) | Content::IS_COMBINED_MASK | width_bits;
             self.write(index, CELL_CONTENT, content);
@@ -468,7 +569,10 @@ impl BufferLine {
     pub fn get_string(&self, index: usize) -> String {
         let content = self.read(index, CELL_CONTENT);
         if content & Content::IS_COMBINED_MASK != 0 {
-            return self.combined.get(&index).cloned().unwrap_or_default();
+            return self
+                .combined
+                .get(&index)
+                .map_or_else(String::new, |chars| String::from(&**chars));
         }
         if content & Content::CODEPOINT_MASK != 0 {
             return string_from_code_point(content & Content::CODEPOINT_MASK);
@@ -493,7 +597,11 @@ impl BufferLine {
         cell.fg = self.read(index, CELL_FG);
         cell.bg = self.read(index, CELL_BG);
         if cell.content & Content::IS_COMBINED_MASK != 0 {
-            cell.combined_data = self.combined.get(&index).cloned().unwrap_or_default();
+            // (the cell's own buffer reused: the same string as a fresh copy)
+            cell.combined_data.clear();
+            if let Some(chars) = self.combined.get(&index) {
+                cell.combined_data.push_str(chars);
+            }
         }
         if cell.bg & BgFlags::HAS_EXTENDED != 0 {
             cell.extended = self.extended_attrs.get(&index).copied().unwrap_or_default();
@@ -504,7 +612,11 @@ impl BufferLine {
     /// Set data at `index` to `cell`.
     pub fn set_cell(&mut self, index: usize, cell: &CellData) {
         if cell.content & Content::IS_COMBINED_MASK != 0 {
-            self.combined.insert(index, cell.combined_data.clone());
+            // (a key that already holds the string keeps it: the same entries, no allocation)
+            let held = self.combined.get(&index);
+            if held.is_none_or(|held| **held != *cell.combined_data) {
+                self.combined.insert(index, shared_str(&cell.combined_data));
+            }
         }
         if cell.bg & BgFlags::HAS_EXTENDED != 0 {
             self.extended_attrs.insert(index, cell.extended);
@@ -543,11 +655,14 @@ impl BufferLine {
     pub fn add_codepoint_to_cell(&mut self, index: usize, code_point: u32, width: u32) {
         let mut content = self.read(index, CELL_CONTENT);
         if content & Content::IS_COMBINED_MASK != 0 {
-            // we already have a combined string, simply add
-            let combined = self.combined.entry(index).or_default();
+            // we already have a combined string, simply add (a missing entry reads as empty);
+            // the shared string is replaced by a new one, never changed in place
+            let held = self.combined.get(&index);
             // LUNETERM: capped (module notes); the width below still applies
-            if combined.chars().count() < MAX_COMBINED_CODE_POINTS {
-                combined.push_str(&string_from_code_point(code_point));
+            if held.map_or(0, |chars| chars.chars().count()) < MAX_COMBINED_CODE_POINTS {
+                let mut chars = held.map_or_else(String::new, |chars| String::from(&**chars));
+                chars.push_str(&string_from_code_point(code_point));
+                self.combined.insert(index, shared_str(&chars));
             }
         } else if content & Content::CODEPOINT_MASK != 0 {
             // normal case for combining chars:
@@ -555,7 +670,7 @@ impl BufferLine {
             //  - set combined flag
             let mut chars = string_from_code_point(content & Content::CODEPOINT_MASK);
             chars.push_str(&string_from_code_point(code_point));
-            self.combined.insert(index, chars);
+            self.combined.insert(index, shared_str(&chars));
             content &= !Content::CODEPOINT_MASK; // set codepoint in buffer to 0
             content |= Content::IS_COMBINED_MASK;
         } else {
@@ -603,11 +718,12 @@ impl BufferLine {
     /// LUNETERM: (review S7) `times` repetitions of a `w`-cell unit from `pos`: for each
     /// `p = pos + r × w`, `set_cell(p, head)` and then `set_cell(p + i, stub)` for `i` in
     /// `1..w`. The same cells and entries (data writes past the end are ignored, map entries
-    /// are stored at any key, as `set_cell` does), with the cell data written in one pass, the
-    /// combined strings inserted as one sorted batch and extended attributes the cells share
-    /// as one run, instead of a map insert per cell (review S7 round 4: an underline colour
-    /// made every printed cell a `BTreeMap` insert). REP's line fill and `insert_cells`' fill
-    /// use it.
+    /// are stored at any key, as `set_cell` does), with the cell data written in one pass and
+    /// the side-table entries the cells share as one run, instead of a map insert per cell
+    /// (review S7 round 4: an underline colour made every printed cell a `BTreeMap` insert;
+    /// plan M7 step 12: a combined string was a `String` per cell). The head's and the stub's
+    /// strings are one `Arc<str>` each per call. REP's line fill and `insert_cells`' fill use
+    /// it.
     pub fn set_cells_repeatedly(
         &mut self,
         pos: usize,
@@ -647,15 +763,24 @@ impl BufferLine {
         let is_head = |p: usize| (p - pos) % w == 0;
         let head_combined = head.content & Content::IS_COMBINED_MASK != 0;
         let stub_combined = stub.content & Content::IS_COMBINED_MASK != 0 && w > 1;
-        if head_combined || stub_combined {
+        let head_chars = head_combined.then(|| shared_str(&head.combined_data));
+        if let Some(chars) = head_chars
+            .as_ref()
+            .filter(|_| w == 1 || stub_combined && stub.combined_data == head.combined_data)
+        {
+            // every cell takes the same string: one run
+            if let Some(last) = end.checked_sub(1).filter(|&last| last >= pos) {
+                self.combined.assign(pos, last, Some(chars.clone()));
+            }
+        } else if head_combined || stub_combined {
+            let stub_chars = stub_combined.then(|| shared_str(&stub.combined_data));
             let updates = (pos..end)
-                .filter_map(|p| match (is_head(p), head_combined, stub_combined) {
-                    (true, true, _) => Some((p, head.combined_data.clone())),
-                    (false, _, true) => Some((p, stub.combined_data.clone())),
-                    _ => None,
+                .filter_map(|p| {
+                    let chars = if is_head(p) { &head_chars } else { &stub_chars };
+                    chars.as_ref().map(|chars| (p, chars.clone()))
                 })
                 .collect();
-            insert_sorted(&mut self.combined, updates);
+            self.combined.insert_ascending(updates);
         }
         let head_extended = head.bg & BgFlags::HAS_EXTENDED != 0;
         let stub_extended = stub.bg & BgFlags::HAS_EXTENDED != 0 && w > 1;
@@ -811,10 +936,12 @@ impl BufferLine {
         for c in pos..sources_end {
             let content = self.read(c, CELL_CONTENT);
             let bg = self.read(c, CELL_BG);
-            combined.push(
-                (content & Content::IS_COMBINED_MASK != 0)
-                    .then(|| self.combined.get(&c).cloned().unwrap_or_default()),
-            );
+            combined.push((content & Content::IS_COMBINED_MASK != 0).then(|| {
+                self.combined
+                    .get(&c)
+                    .cloned()
+                    .unwrap_or_else(|| shared_str(""))
+            }));
             extended.push(
                 (bg & BgFlags::HAS_EXTENDED != 0)
                     .then(|| self.extended_attrs.get(&c).copied().unwrap_or_default()),
@@ -843,7 +970,7 @@ impl BufferLine {
         // line-end fix-up's entry when that key is the last cell; the loop writes neither
         // there (a final key right of `edge`; at `edge` itself the loop's last shift copies
         // the old entries too). Those keys get their entries back before the pass below.
-        let restore: Vec<(usize, Option<String>, Option<ExtendedAttrs>)> = rewritten
+        let restore: Vec<(usize, Option<Arc<str>>, Option<ExtendedAttrs>)> = rewritten
             .iter()
             .map(|&i| pos + i + total)
             .filter(|&k| k > edge && k < len)
@@ -887,7 +1014,7 @@ impl BufferLine {
             next
         };
         // (empty where no source holds such an entry: every lookup then finds none)
-        let held_combined = |c: &[Option<String>]| match any_combined {
+        let held_combined = |c: &[Option<Arc<str>>]| match any_combined {
             true => next_held(&|i| c.get(i).is_some_and(Option::is_some)),
             false => Vec::new(),
         };
@@ -959,7 +1086,7 @@ impl BufferLine {
                 self.extended_attrs.insert(k, value);
             }
         }
-        insert_sorted(&mut self.combined, combined_updates);
+        self.combined.insert_ascending(combined_updates);
     }
 
     /// The cells of `insert_cells_repeatedly`'s rewritten sources (indexes from `pos`, moved
@@ -1088,7 +1215,7 @@ impl BufferLine {
             // optimization: just shrink the view on existing buffer
             self.data.truncate(uint32_cells);
             // Remove any cut off combined data
-            self.combined.retain(|&key, _| key < cols);
+            self.combined.truncate(cols);
             // remove any cut off extended attributes
             self.extended_attrs.truncate(cols);
         }
@@ -1198,10 +1325,8 @@ impl BufferLine {
         }
 
         // Move any combined data over as needed, FIXME: repeat for extended attrs
-        for (&key, value) in src.combined.range(src_col..) {
-            self.combined
-                .insert((key - src_col).saturating_add(dest_col), value.clone());
-        }
+        self.combined
+            .copy_shifted_from(&src.combined, src_col, dest_col);
     }
 
     fn copy_cell_from(&mut self, src: &BufferLine, src_col: usize, dest_col: usize, cell: usize) {
@@ -1247,11 +1372,7 @@ impl BufferLine {
         }
 
         // Move any combined data over as needed, FIXME: repeat for extended attrs
-        let keys: Vec<usize> = self
-            .combined
-            .range(src_col..)
-            .map(|(&key, _)| key)
-            .collect();
+        let keys = self.combined.keys_from(src_col);
         for key in keys {
             if let Some(value) = self.combined.get(&key).cloned() {
                 self.combined
@@ -1315,10 +1436,7 @@ impl BufferLine {
             let content = self.read(start_col, CELL_CONTENT);
             let cp = content & Content::CODEPOINT_MASK;
             let units = if content & Content::IS_COMBINED_MASK != 0 {
-                let chars = self
-                    .combined
-                    .get(&start_col)
-                    .map_or("", |chars| chars.as_str());
+                let chars = self.combined.get(&start_col).map_or("", |chars| &**chars);
                 result.push_str(chars);
                 chars.encode_utf16().count()
             } else if cp != 0 {
