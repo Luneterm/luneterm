@@ -368,7 +368,10 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
   them a few bytes of XTWINOPS 22/23 or REP queued gigabytes. The M7 events fit the same bound:
   `ClipboardWrite`, `CwdChanged` and `Progress` are last-wins per drain, replaced in place (O(1));
   `CommandMark` is exact; `UnknownOsc` is capped at 64 per drain (`UNKNOWN_OSC_LIMIT`); each
-  payload is at most the bytes that produced it. The weight is not the memory: a
+  payload is at most the bytes that produced it, except `ClipboardWrite`: invalid UTF-8 in the
+  decoded data becomes U+FFFD (3 bytes per bad byte), so its text can reach about 2.25x the
+  base64 that produced it (`////` gives 9 bytes); the drain bound still holds (`event_cost`
+  weighs the real length). The weight is not the memory: a
   queued `HostEvent` is 48 bytes, so 1 MiB of BEL holds about 48 MiB until drained (measured,
   48.5x). M9 sizes its drain cadence for about 50x the bytes of one write.
 - **Work per input byte** (fix rounds 1 and 2 of the M6 review; the S7 residuals in M7). Where
