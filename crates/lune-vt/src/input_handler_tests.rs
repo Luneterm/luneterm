@@ -3922,7 +3922,7 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
 /// replays one.
 #[test]
 fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded() {
-    const UNITS: [&str; 9] = [
+    const UNITS: [&str; 10] = [
         VS16,
         KEYCAP,
         EMOJI_ZWJ,
@@ -3932,6 +3932,12 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         "\u{4e2d}",
         "e\u{301}",
         "a",
+        // (review S3 round 2) a unit whose first code point joins: a lone combining mark left
+        // at `cols - 3` (wraparound off, a wide char skipped at the last column, the cursor on
+        // it); REP reads it and the cut applies. The construction repositions regardless of the
+        // random content before it, so the read cell is not always this bare unit — the
+        // comparison holds either way.
+        "\x1b[?7l\x1b[999C\x1b[2D\u{301}x\u{4f60}",
     ];
     const CONTENT: [&str; 22] = [
         "x",
@@ -3968,6 +3974,11 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         }
     };
     let (mut filled, mut batched, mut compared) = (0, 0, 0);
+    // (review F5) seeds whose uncapped print would not fit one `print` call: counted, not a
+    // failure. A unit of several code points stacked into one cell at a large count makes the
+    // repeated text longer than one parse buffer; REP and print still agree, but this harness
+    // drives the uncapped side in one chunk.
+    let mut skipped = 0u64;
     for seed in seeds {
         let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
         let mut next = |bound: usize| {
@@ -3978,7 +3989,10 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         };
         let cols = 2 + next(11);
         let rows = 1 + next(5);
-        let scrollback = next(7);
+        // (review S2 round 2) a large scrollback now and then: below a scroll region nothing
+        // enters it, so the floor must not grow with it. The `long` lines below stay short
+        // (kind 0 or 1), so this allocates a tall buffer, not a wide one.
+        let scrollback = if next(32) == 0 { 10_000 } else { next(7) };
         let screen_reader = next(6) == 0;
         let long = next(4);
         let mut setup = String::new();
@@ -4024,7 +4038,10 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
             }
         };
         let text = text.repeat(count);
-        assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
+        if text.len() >= MAX_PARSEBUFFER_LENGTH {
+            skipped += 1;
+            continue;
+        }
         uncapped.parse_str(&format!("{text}\x1b[}}"));
         assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
         compared += 1;
@@ -4033,6 +4050,14 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         // the line fill and the batched stuck inserts both ran
         assert!(filled > compared as u64 / 4, "{filled} of {compared}");
         assert!(batched > 0, "{batched} of {compared}");
+        // the skipped seeds stay rare (review F5): fewer than 1 in 10,000
+        assert!(
+            skipped < 1 + compared as u64 / 10_000,
+            "{skipped} skipped of {compared}"
+        );
+        eprintln!(
+            "rep diff: {compared} compared, {filled} filled, {batched} batched, {skipped} skipped"
+        );
     }
 }
 
@@ -7779,5 +7804,142 @@ fn line_insert_delete_and_scroll_walk_the_markers_once_per_sequence() {
             set.len() >= outside,
             "{seq:?}: markers outside the region survive"
         );
+    }
+}
+
+/// Review S2 round 2: below a scroll region nothing scrolls or trims (`print_wrap` clamps the
+/// cursor to the last row with `ybase`/`ydisp` fixed), so the REP cut floor drops the
+/// scrollback (`max_lines`). With a 10,000-line scrollback the floor stays small — the cut
+/// still fires at counts the old floor (which counted the scrollback) left uncut — and leaves
+/// the state of the uncapped print, with and without a long row in the normal buffer (a column
+/// shrink without reflow leaves such rows; `longer_lines` builds them directly).
+#[test]
+fn rep_below_region_large_scrollback_leaves_the_state_of_the_uncapped_print() {
+    type Setup = fn(&mut TestTerm);
+    // a region of rows 1..=2, the cursor on the last row, insert mode (so a long row's tail
+    // shifts): below the region, nothing enters the 10,000-line scrollback
+    const BELOW: &str = "\x1b[1;2r\x1b[999;1H\x1b[4h";
+    let cases: [(&str, Setup, &str); 5] = [
+        ("plain", |t| t.parse_str(BELOW), "a"),
+        ("cluster", |t| t.parse_str(BELOW), "e\u{301}"),
+        (
+            "VS16",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str(BELOW);
+            },
+            VS16,
+        ),
+        ("long row, len 3 x cols", |t| longer_lines(t, 1, BELOW), "a"),
+        (
+            "long row, cluster",
+            |t| longer_lines(t, 1, BELOW),
+            "e\u{301}",
+        ),
+    ];
+    // counts past every floor at these sizes but below the old scrollback floor; the uncapped
+    // text fits one parse buffer (VS16 is six bytes a repetition)
+    for &(cols, rows) in &[(8usize, 4usize), (16, 6), (80, 24)] {
+        for &(name, setup, unit) in &cases {
+            let count = 5_000;
+            let make = || {
+                let mut t = test_handler(cols, rows, [OptionValue::Scrollback(10_000)]);
+                setup(&mut t);
+                t.parse_str(unit);
+                t
+            };
+            let label = format!("{name} at {cols}x{rows} sb10000, REP {count}");
+            let mut capped = make();
+            let repeated = {
+                let buffer = capped.buffer();
+                let width = UnicodeService::extract_width(capped.handler.preceding_join_state);
+                let x = buffer.x.saturating_sub(width as usize);
+                buffer.lines.get(abs_y(buffer)).unwrap().get_string(x)
+            };
+            let units: Vec<u32> = repeated.chars().map(u32::from).collect();
+            let effective = capped.handler.rep_equivalent_repeats(&units, count);
+            // the floor no longer counts the 10,000-line scrollback, so a count of 5,000 is cut
+            // (the old floor, `rows + max_lines + 3` lines, would have left it uncut)
+            assert!(
+                effective < count,
+                "{label}: not cut ({effective} of {count})"
+            );
+            capped.parse_str(&format!("\x1b[{count}b"));
+            let mut uncapped = make();
+            let text = repeated.repeat(count);
+            assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
+            uncapped.parse_str(&format!("{text}\x1b[}}"));
+            assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+        }
+    }
+}
+
+/// Review S3 round 2: a REP whose unit's first code point joins — a lone combining mark left at
+/// `cols - 3` by a wide char skipped at the last column without wraparound, the cursor on it.
+/// Every repetition appends to the one cell before the cursor, which stops growing at
+/// `MAX_COMBINED_CODE_POINTS`, so the cut is `MAX_COMBINED_CODE_POINTS + 2` (the
+/// `A11Y_TEXT_LIMIT` floor under screen reader mode) and leaves the state of the uncapped
+/// print. The unit takes `print`, not the line fill (its base joins).
+#[test]
+fn rep_joining_base_cut_leaves_the_state_of_the_uncapped_print() {
+    for &(cols, rows, sb) in &[
+        (7usize, 3usize, 4usize),
+        (80, 24, 1_000),
+        (300, 100, 10_000),
+    ] {
+        for insert in [false, true] {
+            for vs16 in [false, true] {
+                for screen_reader in [false, true] {
+                    let count = if screen_reader { 3_001 } else { 211 };
+                    let make = || {
+                        let mut t = test_handler(cols, rows, [OptionValue::Scrollback(sb)]);
+                        if vs16 {
+                            with_11_vs16(&mut t);
+                        }
+                        if screen_reader {
+                            t.set_option(OptionValue::ScreenReaderMode(true));
+                        }
+                        let mut s = String::from("\x1b[?7l");
+                        if insert {
+                            s.push_str("\x1b[4h");
+                        }
+                        s.push_str("\x1b[999C\x1b[2D\u{301}x\u{4f60}");
+                        t.parse_str(&s);
+                        t
+                    };
+                    let label = format!(
+                        "{cols}x{rows} sb{sb} insert={insert} vs16={vs16} \
+                         screen_reader={screen_reader} REP {count}"
+                    );
+                    let mut capped = make();
+                    let repeated = {
+                        let buffer = capped.buffer();
+                        let width =
+                            UnicodeService::extract_width(capped.handler.preceding_join_state);
+                        let x = buffer.x.saturating_sub(width as usize);
+                        buffer.lines.get(abs_y(buffer)).unwrap().get_string(x)
+                    };
+                    assert_eq!(
+                        repeated, "\u{301}",
+                        "{label}: the unit begins with a joiner"
+                    );
+                    let units: Vec<u32> = repeated.chars().map(u32::from).collect();
+                    let effective = capped.handler.rep_equivalent_repeats(&units, count);
+                    let floor = if screen_reader {
+                        A11Y_TEXT_LIMIT
+                    } else {
+                        MAX_COMBINED_CODE_POINTS + 2
+                    };
+                    assert_eq!(effective, floor, "{label}: cut floor");
+                    capped.parse_str(&format!("\x1b[{count}b"));
+                    assert_eq!(capped.handler.rep_fills, 0, "{label}: took the fill path");
+                    let mut uncapped = make();
+                    let text = repeated.repeat(count);
+                    assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
+                    uncapped.parse_str(&format!("{text}\x1b[}}"));
+                    assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+                }
+            }
+        }
     }
 }
