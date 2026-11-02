@@ -2493,6 +2493,8 @@ impl InputHandler {
         }
         dirty_row_tracker.mark_dirty(buffer.y);
 
+        // (M7 fix round 1) the combined strings of a line filled afresh, shared by the next
+        let mut template = None;
         let mut left = count;
         while left > 0 {
             // goto next line if ch would overflow
@@ -2557,7 +2559,7 @@ impl InputHandler {
                     &cur_attr,
                 );
             }
-            buffer_row.set_cells_repeatedly(*x, w, fit, &head, &stub);
+            buffer_row.set_cells_repeatedly_shared(*x, w, fit, &head, &stub, &mut template);
             *x += fit * w;
             left -= fit;
         }

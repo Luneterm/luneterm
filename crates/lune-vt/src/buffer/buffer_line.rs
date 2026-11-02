@@ -12,7 +12,9 @@
 //!    keys with one value (`// LUNETERM:` review S7 round 4 for `_extendedAttrs`, so a line in
 //!    one underline colour or link is one run; plan M7 step 12, S7 residual 2, for `_combined`,
 //!    whose strings are shared `Arc<str>` values, so a line filled with one cluster is one run
-//!    and one allocation, not a `String` per cell). Writes to them are as unchecked as JS
+//!    and one allocation, not a `String` per cell; M7 fix round 1: lines share the `_combined`
+//!    map copy-on-write, [`SharedRunMap`], so lines REP fills afresh with a wide cluster share one
+//!    map of a run per cell). Writes to them are as unchecked as JS
 //!    object writes: a `set_cell` of a combined cell at an index `>= len()` stores the string
 //!    even though the data write is ignored. An `undefined` map value is represented by an absent key (every
 //!    reader treats the two alike).
@@ -372,6 +374,127 @@ impl<V: Clone + PartialEq> RunMap<V> {
     }
 }
 
+/// LUNETERM: (M7 fix round 1, wide cluster REP) a [`RunMap`] that lines share until one of
+/// them changes it (copy on write), with no allocation while empty. A line printed with a wide
+/// cluster holds a string at every other key (the stubs hold none), a run per cell that the
+/// tree stores one by one; REP's line fill gives every fresh line the same entries
+/// ([`BufferLine::set_cells_repeatedly_shared`]), so the lines share one map instead of
+/// building and dropping a tree each. It answers every read as the map it holds (none: no
+/// entry), and two compare equal when they hold the same entries.
+#[derive(Clone, Debug)]
+struct SharedRunMap<V>(Option<Arc<RunMap<V>>>);
+
+impl<V> Default for SharedRunMap<V> {
+    fn default() -> Self {
+        SharedRunMap(None)
+    }
+}
+
+impl<V: PartialEq> PartialEq for SharedRunMap<V> {
+    fn eq(&self, other: &Self) -> bool {
+        fn runs<V>(map: &SharedRunMap<V>) -> Option<&BTreeMap<usize, (usize, V)>> {
+            map.0
+                .as_deref()
+                .map(|map| &map.runs)
+                .filter(|r| !r.is_empty())
+        }
+        runs(self) == runs(other)
+    }
+}
+
+impl<V: Eq> Eq for SharedRunMap<V> {}
+
+impl<V: Clone + PartialEq> SharedRunMap<V> {
+    /// The map to change: this line's own (a shared one is copied first).
+    fn make_mut(&mut self) -> &mut RunMap<V> {
+        Arc::make_mut(self.0.get_or_insert_with(Default::default))
+    }
+
+    fn get(&self, key: &usize) -> Option<&V> {
+        self.0.as_deref()?.get(key)
+    }
+
+    #[cfg(test)]
+    fn entries(&self) -> Vec<(usize, V)> {
+        self.0.as_deref().map(RunMap::entries).unwrap_or_default()
+    }
+
+    fn keys_from(&self, start: usize) -> Vec<usize> {
+        self.0
+            .as_deref()
+            .map(|map| map.keys_from(start))
+            .unwrap_or_default()
+    }
+
+    fn len(&self) -> usize {
+        self.0.as_deref().map_or(0, RunMap::len)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.as_deref().is_none_or(|map| map.runs.is_empty())
+    }
+
+    fn clear(&mut self) {
+        self.0 = None;
+    }
+
+    fn insert(&mut self, key: usize, value: V) {
+        self.make_mut().insert(key, value);
+    }
+
+    fn remove(&mut self, key: &usize) {
+        if !self.is_empty() {
+            self.make_mut().remove(key);
+        }
+    }
+
+    fn truncate(&mut self, end: usize) {
+        if !self.is_empty() {
+            self.make_mut().truncate(end);
+        }
+    }
+
+    fn assign(&mut self, first: usize, last: usize, value: Option<V>) {
+        if value.is_some() || !self.is_empty() {
+            self.make_mut().assign(first, last, value);
+        }
+    }
+
+    fn copy_shifted_from(&mut self, src: &SharedRunMap<V>, src_col: usize, dest_col: usize) {
+        if let Some(src) = src.0.as_deref().filter(|map| !map.runs.is_empty()) {
+            self.make_mut().copy_shifted_from(src, src_col, dest_col);
+        }
+    }
+
+    fn insert_ascending(&mut self, updates: Vec<(usize, V)>) {
+        if !updates.is_empty() {
+            self.make_mut().insert_ascending(updates);
+        }
+    }
+
+    /// The runs `(first key, (last key, value))`, in key order.
+    #[cfg(test)]
+    fn runs(&self) -> impl Iterator<Item = (&usize, &(usize, V))> {
+        self.0
+            .as_deref()
+            .into_iter()
+            .flat_map(|map| map.runs.iter())
+    }
+}
+
+/// LUNETERM: (M7 fix round 1) the combined strings a [`BufferLine::set_cells_repeatedly_shared`]
+/// call left on a line that held none, with the call's arguments: another line that holds none
+/// gets the same strings from the same call, so it shares them.
+#[derive(Debug)]
+pub(crate) struct CombinedTemplate {
+    pos: usize,
+    w: usize,
+    times: usize,
+    head: CellData,
+    stub: CellData,
+    combined: SharedRunMap<Arc<str>>,
+}
+
 /// Typed array based bufferline implementation.
 ///
 /// There are 2 ways to insert data into the cell buffer:
@@ -396,7 +519,7 @@ impl<V: Clone + PartialEq> RunMap<V> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BufferLine {
     data: Vec<u32>,
-    combined: RunMap<Arc<str>>,
+    combined: SharedRunMap<Arc<str>>,
     extended_attrs: RunMap<ExtendedAttrs>,
     length: usize,
     pub is_wrapped: bool,
@@ -410,7 +533,7 @@ impl BufferLine {
     pub fn new(cols: usize, fill_cell_data: Option<&CellData>, is_wrapped: bool) -> Self {
         let mut line = BufferLine {
             data: vec![0; cols.saturating_mul(CELL_SIZE)],
-            combined: RunMap::default(),
+            combined: SharedRunMap::default(),
             extended_attrs: RunMap::default(),
             length: cols,
             is_wrapped,
@@ -454,8 +577,7 @@ impl BufferLine {
     #[cfg(test)]
     pub(crate) fn combined_runs(&self) -> Vec<(usize, usize, Arc<str>)> {
         self.combined
-            .runs
-            .iter()
+            .runs()
             .map(|(&first, (last, chars))| (first, *last, chars.clone()))
             .collect()
     }
@@ -753,10 +875,74 @@ impl BufferLine {
         head: &CellData,
         stub: &CellData,
     ) {
+        self.set_cells_repeatedly_with(pos, w, times, head, stub, true);
+    }
+
+    /// LUNETERM: (M7 fix round 1, wide cluster REP) [`set_cells_repeatedly`](Self::set_cells_repeatedly),
+    /// with the combined strings shared between the lines it fills afresh. On a line that holds
+    /// no combined string (no entry at any key), the call leaves exactly the entries it writes,
+    /// which depend on its arguments only; so the first such call keeps those entries in
+    /// `template`, and a later call with the same arguments on a line that holds none takes
+    /// them from it (one shared map, [`SharedRunMap`]) instead of writing them. Every other
+    /// call is `set_cells_repeatedly` itself. The same cells and entries either way.
+    pub(crate) fn set_cells_repeatedly_shared(
+        &mut self,
+        pos: usize,
+        w: usize,
+        times: usize,
+        head: &CellData,
+        stub: &CellData,
+        template: &mut Option<CombinedTemplate>,
+    ) {
+        // (the one-pass form only: `set_cells_repeatedly_with` skips the strings there)
+        let one_pass = w != 0
+            && w.checked_mul(times)
+                .and_then(|cells| pos.checked_add(cells))
+                .is_some();
+        if !one_pass || !self.combined.is_empty() {
+            self.set_cells_repeatedly(pos, w, times, head, stub);
+            return;
+        }
+        let same = template.as_ref().filter(|t| {
+            (t.pos, t.w, t.times) == (pos, w, times) && t.head == *head && t.stub == *stub
+        });
+        if let Some(template) = same {
+            self.set_cells_repeatedly_with(pos, w, times, head, stub, false);
+            self.combined = template.combined.clone();
+            return;
+        }
+        self.set_cells_repeatedly(pos, w, times, head, stub);
+        if !self.combined.is_empty() {
+            *template = Some(CombinedTemplate {
+                pos,
+                w,
+                times,
+                head: head.clone(),
+                stub: stub.clone(),
+                combined: self.combined.clone(),
+            });
+        }
+    }
+
+    /// [`set_cells_repeatedly`](Self::set_cells_repeatedly), the combined strings written only
+    /// with `write_combined`.
+    fn set_cells_repeatedly_with(
+        &mut self,
+        pos: usize,
+        w: usize,
+        times: usize,
+        head: &CellData,
+        stub: &CellData,
+        write_combined: bool,
+    ) {
         let end = w
             .checked_mul(times)
             .and_then(|cells| pos.checked_add(cells));
         let Some(end) = end.filter(|_| w != 0) else {
+            debug_assert!(
+                write_combined,
+                "the strings are skipped in the one-pass form only"
+            );
             for r in 0..times {
                 let p = pos.saturating_add(r.saturating_mul(w));
                 self.set_cell(p, head);
@@ -782,8 +968,9 @@ impl BufferLine {
         }
         // the entries, in key order: per cell, the head's or the stub's where flagged
         let is_head = |p: usize| (p - pos) % w == 0;
-        let head_combined = head.content & Content::IS_COMBINED_MASK != 0;
-        let stub_combined = stub.content & Content::IS_COMBINED_MASK != 0 && w > 1;
+        let head_combined = write_combined && head.content & Content::IS_COMBINED_MASK != 0;
+        let stub_combined =
+            write_combined && stub.content & Content::IS_COMBINED_MASK != 0 && w > 1;
         let head_chars = head_combined.then(|| shared_str(&head.combined_data));
         if let Some(chars) = head_chars
             .as_ref()

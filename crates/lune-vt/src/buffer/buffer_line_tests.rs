@@ -1498,6 +1498,93 @@ mod edge_semantics {
         }
         assert!(batched > 8000, "{batched}");
     }
+
+    /// LUNETERM: (M7 fix round 1, wide cluster REP) `set_cells_repeatedly_shared` leaves what
+    /// `set_cells_repeatedly` leaves, whole lines compared, on lines with and without combined
+    /// strings (stale ones included) and with templates from an earlier call with the same or
+    /// other arguments; a line that took the shared strings and then changes them leaves the
+    /// template and the other lines that share it unchanged (copy on write).
+    #[test]
+    fn setting_cells_repeatedly_shared_equals_setting_cells_repeatedly() {
+        let mut seed: u64 = 0x1405_7b7e_f767_814f;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let cell = |combined: bool, extended: bool, tag: usize, width: u32| {
+            let mut cell = CellData::new();
+            cell.content = (u32::from('a') + tag as u32) | (width << Content::WIDTH_SHIFT);
+            if combined {
+                cell.content = Content::IS_COMBINED_MASK | (width << Content::WIDTH_SHIFT);
+                cell.combined_data = format!("c{tag}\u{200d}");
+            }
+            if extended {
+                cell.bg |= BgFlags::HAS_EXTENDED;
+                cell.extended = ExtendedAttrs::new(tag as u32 + 1, 0);
+            }
+            cell
+        };
+        let (mut shared, mut isolated) = (0, 0);
+        for round in 0..5_000 {
+            let len = 1 + next(40);
+            let w = 1 + next(2);
+            let head = cell(next(4) != 0, next(3) == 0, round % 3, w as u32);
+            let stub = cell(next(6) == 0, next(3) == 0, 7, 0);
+            let mut template = None;
+            let mut fresh_lines: Vec<BufferLine> = Vec::new();
+            for _ in 0..4 {
+                let mut line = null_line(len);
+                if next(3) == 0 {
+                    // a line that already holds strings (stale or not)
+                    let c = next(len + 2);
+                    line.combined.insert(c, format!("old{c}").into());
+                    if next(2) == 0 {
+                        line.set_cell(c.min(len - 1), &cell(true, false, 9, 1));
+                    }
+                }
+                // mostly the arguments of the template's call, sometimes others
+                let (pos, times) = match next(4) {
+                    0 => (next(len), next(len / w + 2)),
+                    _ => (0, len / w),
+                };
+                let mut expected = line.clone();
+                expected.set_cells_repeatedly(pos, w, times, &head, &stub);
+                let mut got = line.clone();
+                let had_template = template.is_some();
+                got.set_cells_repeatedly_shared(pos, w, times, &head, &stub, &mut template);
+                assert_eq!(
+                    got, expected,
+                    "round {round}: pos {pos} w {w} times {times}"
+                );
+                if had_template && line.combined.is_empty() {
+                    shared += usize::from(
+                        got.combined
+                            .0
+                            .as_ref()
+                            .is_some_and(|map| Arc::strong_count(map) > 1),
+                    );
+                }
+                fresh_lines.push(got);
+            }
+            // changing one line's strings leaves the others as they were
+            let before: Vec<BufferLine> = fresh_lines.clone();
+            if let Some(first) = fresh_lines.first_mut() {
+                first.add_codepoint_to_cell(0, 0x301, 1);
+                first.combined.insert(1, "new".into());
+            }
+            for (got, was) in fresh_lines.iter().zip(&before).skip(1) {
+                assert_eq!(
+                    got, was,
+                    "round {round}: a shared map changed with another line"
+                );
+                isolated += 1;
+            }
+        }
+        assert!(shared > 3_000, "{shared}");
+        assert!(isolated > 10_000, "{isolated}");
+    }
 }
 
 /// LUNETERM: (review S7 round 4) `RunMap` answers as the per-key `BTreeMap` it replaces, and
