@@ -935,7 +935,6 @@ impl BufferLine {
                 continue;
             }
             // the window's last entry where a fix-up after each shift writes `fix` over a
-            // wide cell
             // wide cell (with no fix-up entry, the shifts' last entry)
             let fixed_up = |fix: Option<ExtendedAttrs>| match fix {
                 Some(fix) => (low..=high).step_by(n).find_map(|i| {
