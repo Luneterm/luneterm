@@ -430,9 +430,21 @@ impl Terminal {
             cursor_hidden: services.core.is_cursor_hidden,
             mouse_tracking,
             mouse_encoding,
-            kitty_keyboard_flags: 0,
-            modify_other_keys: 0,
+            kitty_keyboard_flags: self
+                .core
+                .input_handler()
+                .ext
+                .keyboard
+                .flags(services.buffer.buffers.is_alt_active()),
+            modify_other_keys: self.core.input_handler().ext.keyboard.modify_other_keys(),
         }
+    }
+
+    /// Clear the kitty keyboard stacks of both screens and the modifyOtherKeys level, as RIS and
+    /// DECSTR do. The host calls it when the application that set them is gone and the terminal
+    /// is reused (Lunegit ledger row 11: a program that exits without popping its flags).
+    pub fn reset_keyboard_protocol(&mut self) {
+        self.core.input_handler_mut().ext.keyboard.reset();
     }
 }
 
