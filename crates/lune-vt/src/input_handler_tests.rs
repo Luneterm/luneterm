@@ -4041,12 +4041,15 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
 /// replays one.
 #[test]
 fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded() {
-    const UNITS: [&str; 10] = [
+    const UNITS: [&str; 12] = [
         VS16,
         KEYCAP,
         EMOJI_ZWJ,
         "a\u{fe0f}",
         "\u{2764}\u{fe0f}\u{301}",
+        // (M7 fix round 7, code review F8) a joiner before the widening one
+        "a\u{301}\u{fe0f}",
+        "\u{2764}\u{301}\u{fe0f}",
         "\u{4e2d}\u{301}",
         "\u{4e2d}",
         "e\u{301}",
@@ -8083,6 +8086,9 @@ fn rep_below_region_large_scrollback_leaves_the_state_of_the_uncapped_print() {
 /// `rep_below_region_large_scrollback…` and the seeded tests; rows of `cols` up to `cols +
 /// 2,300` cells; every cell a string (no hidden tail without strings); counts below the strings'
 /// settle count (79 columns, 1,000: about 25 of 31 passes) and past it.
+///
+/// M7 fix round 7 (code review F8): `a U+0301 U+FE0F` joins VS16 and a keycap, a unit whose joiner
+/// before the widening one makes the wrapped cell 0 a combined cell.
 #[test]
 fn rep_widened_unit_at_odd_widths_over_rows_of_strings_leaves_the_state_of_the_uncapped_print() {
     // (columns, rows, scrollback, row length, below the region, rows above the last)
@@ -8106,7 +8112,8 @@ fn rep_widened_unit_at_odd_widths_over_rows_of_strings_leaves_the_state_of_the_u
         (79, 24, 100, 79 + 79 * 12, false, 0),
     ];
     for (cols, rows, scrollback, len, below, up) in setups {
-        for unit in [VS16, KEYCAP] {
+        // (M7 fix round 7, code review F8) and a unit with a joiner before the widening one
+        for unit in [VS16, KEYCAP, "a\u{301}\u{fe0f}"] {
             for insert in [false, true] {
                 // (at 79 columns two counts: each uncapped print walks rows of up to 2,379 cells)
                 let counts: &[usize] = if len == 9 + 175 {
@@ -8180,16 +8187,37 @@ fn rep_widened_unit_at_odd_widths_over_rows_of_strings_leaves_the_state_of_the_u
 /// 4 (cols - 1) + 3` cells long (`K mod (cols - 1) = 3`, so `m` is tight), at 7, 9 and 21
 /// columns; scrollback 0, 10 and 1,000; the cursor on the scroll bottom with `scroll_top` 0 and
 /// 2, and above a region at row 1 (descents into rows the scrolls never discard); insert mode
-/// on and off; VS16 and a keycap. Counts make the scrolls after the `m`-th exactly
-/// `max_length - 1`, `max_length` and `max_length + 1` (the last line full or holding one
-/// unit), plus a short REP where the chain's lines survive: REP leaves the state of the
-/// uncapped print every time, and `rep_chain_skips` fires exactly on the `>=` side. Axes (repo
-/// lesson): odd widths (the shape needs one; even widths never wrap from `cols - 1`), rows
-/// longer than `cols`, strings in every hidden cell; the mutants of the bound (`m - 1`, the
-/// discard bound `max_length - 1`, skipping on descent) fail it.
+/// on and off; VS16, a keycap, and (M7 fix round 7, code review F8) units with a joiner before
+/// the widening one (`a U+0301 U+FE0F`, `❤ U+0301 U+FE0F`), whose wrapped cell 0 is a combined
+/// cell the skipped copy would have brought a key 0 to. Counts make the scrolls after the
+/// `m`-th exactly `max_length - 1`, `max_length` and `max_length + 1` (the last line full or
+/// holding one unit), plus a short REP where the chain's lines survive: REP leaves the state of
+/// the uncapped print every time, and `rep_chain_skips` fires exactly on the `>=` side.
+///
+/// Three starts (M7 fix round 7, F8), the kind of the REP's first wrap being an axis of the
+/// bound (`plain` in `chain_copies_to_skip`): column 2 (the unit alone: the first line ends at
+/// `cols - 1`, the first wrap is a joiner wrap), column 3 (one plain cell before the unit: the
+/// first line ends at `cols`, the first wrap is a plain wrap, one more scroll to wait for at the
+/// scroll bottom) and column `cols` (the pending-wrap state: no unit fits, the first wrap is
+/// plain). Hidden side-table contents: strings in every cell, and at 7 columns also stale
+/// entries in the back half of the tail.
+///
+/// Axes (repo lesson): odd widths (the shape needs one; even widths never wrap from `cols -
+/// 1`), rows longer than `cols`, strings in every hidden cell (and stale ones), the start
+/// column; the mutants of the bound (`m - 1`, the discard bound `max_length - 1`, skipping on
+/// descent, `plain = 0`) fail it.
 #[test]
 fn rep_chain_copies_skipped_at_the_scroll_bottom_leave_the_state_of_the_uncapped_print() {
+    // (where the REP starts, as a cursor setup before the unit, whether the first wrap is plain)
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Start {
+        Joiner,
+        Plain,
+        Pending,
+    }
+    let units: [&str; 4] = [VS16, KEYCAP, "a\u{301}\u{fe0f}", "\u{2764}\u{301}\u{fe0f}"];
     let (mut fired, mut held_back) = (0, 0);
+    let mut by_start = [0u32; 3];
     for cols in [7usize, 9, 21] {
         let c = cols - 1;
         let per_line = cols / 2;
@@ -8198,6 +8226,7 @@ fn rep_chain_copies_skipped_at_the_scroll_bottom_leave_the_state_of_the_uncapped
         let key = len - 1;
         let m = key.div_ceil(c) - 1;
         let scrollbacks: &[usize] = if cols == 7 { &[0, 10, 1_000] } else { &[0, 10] };
+        let stales: &[bool] = if cols == 7 { &[false, true] } else { &[false] };
         for &scrollback in scrollbacks {
             let max_length = rows + scrollback;
             // (region, cursor row, descents to the scroll bottom)
@@ -8208,71 +8237,113 @@ fn rep_chain_copies_skipped_at_the_scroll_bottom_leave_the_state_of_the_uncapped
             ];
             for (region, row, descents) in &places {
                 for insert in [false, true] {
-                    for unit in [VS16, KEYCAP] {
-                        // (scrolls after the m-th skipped wrap, units on the last line)
-                        let mut shapes: Vec<(isize, usize)> = Vec::new();
-                        for delta in [-1isize, 0, 1] {
-                            shapes.push((delta, 1));
-                        }
-                        shapes.push((0, per_line));
-                        // a short REP: the chain's lines survive
-                        shapes.push((-(max_length as isize), 1));
-                        for (delta, last) in shapes {
-                            // the REP starts at column 2 (the unit printed once), so the first
-                            // line takes `per_line - 1` units and ends at `cols - 1`: the first
-                            // wrap is a joiner wrap
-                            let u0 = per_line - 1;
-                            let wraps = (descents + m + max_length) as isize + delta;
-                            let Ok(wraps) = usize::try_from(wraps) else {
-                                continue;
-                            };
-                            if wraps == 0 {
-                                continue;
+                    for unit in units {
+                        for start in [Start::Joiner, Start::Plain, Start::Pending] {
+                            // (the stale rows: one start each, enough to vary the axis)
+                            for &stale in stales {
+                                if stale && (start as usize) != (scrollback % 3) {
+                                    continue;
+                                }
+                                // (scrolls after the m-th skipped wrap, units on the last line)
+                                let mut shapes: Vec<(isize, usize)> = Vec::new();
+                                for delta in [-1isize, 0, 1] {
+                                    shapes.push((delta, 1));
+                                }
+                                shapes.push((0, per_line));
+                                // a short REP: the chain's lines survive
+                                shapes.push((-(max_length as isize), 1));
+                                for (delta, last) in shapes {
+                                    // units the REP's first line takes: from column 2 it ends at
+                                    // `cols - 1` (a joiner wrap); from column 3 at `cols`; from
+                                    // `cols` none fits (a pending wrap)
+                                    let u0 = match start {
+                                        Start::Joiner => per_line - 1,
+                                        Start::Plain => (cols - 3) / 2,
+                                        Start::Pending => 0,
+                                    };
+                                    // the first scrolling wrap is a plain wrap (no copy, not one
+                                    // of the `m` joiner wraps) when the REP starts at the scroll
+                                    // bottom and its first line ends at `cols`
+                                    let plain =
+                                        usize::from(*descents == 0 && start != Start::Joiner);
+                                    let wraps =
+                                        (descents + plain + m + max_length) as isize + delta;
+                                    let Ok(wraps) = usize::try_from(wraps) else {
+                                        continue;
+                                    };
+                                    if wraps == 0 {
+                                        continue;
+                                    }
+                                    let count = u0 + (wraps - 1) * per_line + last;
+                                    let make = || {
+                                        let mut t = test_handler(
+                                            cols,
+                                            rows,
+                                            [OptionValue::Scrollback(scrollback)],
+                                        );
+                                        with_11_vs16(&mut t);
+                                        let insert = if insert { "\x1b[4h" } else { "" };
+                                        string_lines(
+                                            &mut t,
+                                            len,
+                                            stale,
+                                            &format!("{region}\x1b[{row};1H{insert}"),
+                                        );
+                                        match start {
+                                            Start::Joiner => {}
+                                            Start::Plain => t.parse_str("x"),
+                                            // (the unit takes two cells: the REP starts at `cols`)
+                                            Start::Pending => {
+                                                t.parse_str(&format!("\x1b[{}G", cols - 1));
+                                            }
+                                        }
+                                        t.parse_str(unit);
+                                        t
+                                    };
+                                    let label = format!(
+                                        "{unit:?} at {cols}x{rows}+{scrollback}, {region:?} row \
+                                         {row}, insert {insert}, stale {stale}, start {start:?}, \
+                                         {wraps} wraps (m {m}, plain {plain}, delta {delta}), REP \
+                                         {count}"
+                                    );
+                                    let mut capped = make();
+                                    let at = capped.buffer().x;
+                                    let want = match start {
+                                        Start::Joiner => 2,
+                                        Start::Plain => 3,
+                                        Start::Pending => cols,
+                                    };
+                                    assert_eq!(at, want, "{label}: the REP's start column");
+                                    let units: Vec<u32> = unit.chars().map(u32::from).collect();
+                                    assert_eq!(
+                                        capped.handler.rep_equivalent_repeats(&units, count),
+                                        count,
+                                        "{label}: cut"
+                                    );
+                                    capped.parse_str(&format!("\x1b[{count}b"));
+                                    let expected = delta >= 0;
+                                    assert_eq!(
+                                        capped.handler.rep_chain_skips,
+                                        u64::from(expected),
+                                        "{label}: chain skips"
+                                    );
+                                    if expected {
+                                        fired += 1;
+                                    } else {
+                                        held_back += 1;
+                                    }
+                                    by_start[start as usize] += 1;
+                                    let mut uncapped = make();
+                                    let text = unit.repeat(count);
+                                    assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
+                                    uncapped.parse_str(&format!("{text}\x1b[}}"));
+                                    assert_eq!(
+                                        rep_state(&mut capped),
+                                        rep_state(&mut uncapped),
+                                        "{label}"
+                                    );
+                                }
                             }
-                            let count = u0 + (wraps - 1) * per_line + last;
-                            let make = || {
-                                let mut t =
-                                    test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
-                                with_11_vs16(&mut t);
-                                let insert = if insert { "\x1b[4h" } else { "" };
-                                string_lines(
-                                    &mut t,
-                                    len,
-                                    false,
-                                    &format!("{region}\x1b[{row};1H{insert}"),
-                                );
-                                t.parse_str(unit);
-                                t
-                            };
-                            let label = format!(
-                                "{unit:?} at {cols}x{rows}+{scrollback}, {region:?} row {row}, \
-                                 insert {insert}, {wraps} wraps (m {m}, delta {delta}), REP \
-                                 {count}"
-                            );
-                            let mut capped = make();
-                            let units: Vec<u32> = unit.chars().map(u32::from).collect();
-                            assert_eq!(
-                                capped.handler.rep_equivalent_repeats(&units, count),
-                                count,
-                                "{label}: cut"
-                            );
-                            capped.parse_str(&format!("\x1b[{count}b"));
-                            let expected = delta >= 0;
-                            assert_eq!(
-                                capped.handler.rep_chain_skips,
-                                u64::from(expected),
-                                "{label}: chain skips"
-                            );
-                            if expected {
-                                fired += 1;
-                            } else {
-                                held_back += 1;
-                            }
-                            let mut uncapped = make();
-                            let text = unit.repeat(count);
-                            assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
-                            uncapped.parse_str(&format!("{text}\x1b[}}"));
-                            assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
                         }
                     }
                 }
@@ -8283,6 +8354,62 @@ fn rep_chain_copies_skipped_at_the_scroll_bottom_leave_the_state_of_the_uncapped
         fired > 100 && held_back > 50,
         "{fired} fired, {held_back} held back"
     );
+    // the instrument: every start ran
+    assert!(by_start.iter().all(|&n| n > 100), "{by_start:?}");
+}
+
+/// M7 fix round 7 (code review F8): the visible case of the chain skip's `plain` term. A unit
+/// with a joiner before the widening one (`❤ U+0301 U+FE0F`) wraps through a combined cell 0, so
+/// a skipped copy that should not have been skipped leaves the head reading `U+FE0F` instead of
+/// `❤ U+0301 U+FE0F` (the review's probe seed 8320: 5x3, scrollback 0, the last row at column 2,
+/// REP 9; over rows of strings, so the copy has a key to bring). Over the counts around that one (the REP's first line ends at `cols - 1`: a joiner
+/// wrap first, so no plain term; one plain cell first: the first wrap is plain) the capped line
+/// reads like the uncapped one. The counter assertions of
+/// `rep_chain_copies_skipped_at_the_scroll_bottom_…` pin the bound itself.
+#[test]
+fn rep_chain_skip_of_a_unit_with_a_joiner_before_the_widening_one_keeps_the_visible_text() {
+    let text = |t: &mut TestTerm| {
+        let buffer = t.buffer();
+        (0..buffer.lines.len())
+            .map(|y| {
+                buffer
+                    .lines
+                    .get(y)
+                    .unwrap()
+                    .translate_to_string(false, None, None, None)
+            })
+            .collect::<Vec<_>>()
+    };
+    let units = ["\u{2764}\u{301}\u{fe0f}", "a\u{301}\u{fe0f}"];
+    let (mut skips, mut compared) = (0, 0);
+    for unit in units {
+        // (rows of strings: `cols` and a few more cells, and `cols + 4 (cols - 1) + 3`)
+        for len in [5usize, 9, 24] {
+            for pre in ["", "x"] {
+                for count in 1..=40usize {
+                    let make = || {
+                        let mut t = test_handler(5, 3, [OptionValue::Scrollback(0)]);
+                        with_11_vs16(&mut t);
+                        string_lines(&mut t, len, false, &format!("\x1b[3;1H{pre}"));
+                        t.parse_str(unit);
+                        t
+                    };
+                    let label = format!("{unit:?} after {pre:?}, rows of {len}, REP {count}");
+                    let mut capped = make();
+                    capped.parse_str(&format!("\x1b[{count}b"));
+                    skips += capped.handler.rep_chain_skips;
+                    let mut uncapped = make();
+                    uncapped.parse_str(&format!("{}\x1b[}}", unit.repeat(count)));
+                    assert_eq!(text(&mut capped), text(&mut uncapped), "{label}: text");
+                    assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+                    compared += 1;
+                }
+            }
+        }
+    }
+    // the instrument: the skip ran in some of them
+    assert_eq!(compared, 480);
+    assert!(skips > 0, "{skips} chain skips");
 }
 
 /// M7 fix round 5 (code review F6 residual): `print_widened_wrap` (REP's direct path for the
@@ -8305,12 +8432,13 @@ fn rep_widened_wrap_equals_print_inner() {
         state ^= state << 17;
         (state % bound as u64) as usize
     };
-    const UNITS: [&str; 5] = [
+    const UNITS: [&str; 6] = [
         VS16,
         KEYCAP,
         "a\u{fe0f}",
         "\u{2764}\u{fe0f}\u{301}",
         "\u{2764}\u{301}\u{fe0f}",
+        "a\u{301}\u{fe0f}",
     ];
     let (mut shared, mut unshared, mut compared) = (0, 0, 0);
     for round in 0..1_500 {

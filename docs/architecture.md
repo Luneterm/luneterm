@@ -535,8 +535,9 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     their strings' copy when at least `max_length` scrolls follow (the lines they land on are
     then discarded; proof in `InputHandler::chain_copies_to_skip`). State identity: the closed
     form against the loop of copies, the direct wrap against `print_inner`, the skip bound at
-    `max_length - 1 / 0 / +1`, the matrix, the 300k-seed differential; 11 mutants of the bounds
-    each fail a test (notes.md "fix round 5"). Cost (`bench-rep.sh` table "REP at odd widths over
+    `max_length - 1 / 0 / +1`, the matrix, the 300k-seed differential; 12 mutants of the bounds
+    (11 in fix round 5, the chain skip's `plain` term in fix round 7) each fail a test (notes.md
+    "fix round 5", "fix round 7"). Cost (`bench-rep.sh` table "REP at odd widths over
     narrowed rows of strings", Windows mode, sb10k, VS16, median of 5; before = fix round 4's
     tree with the same example, load ~4.5; after load ~3): below the region without insert at
     L = 2000, 543 us -> 12.1 us per byte at 79 columns and 1.38 ms -> 9.0 us at 21; linear in L
