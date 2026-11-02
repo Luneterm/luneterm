@@ -2277,11 +2277,17 @@ impl InputHandler {
     /// per code point effect of `print` is batched:
     ///  - Cells: every repetition writes the same head cell (the base and its joiners, built
     ///    once on a scratch line by the calls `print` makes) and, when wide, a stub.
+    ///  - Cells are written with [`BufferLine::set_cells_repeatedly`]: one pass over the data
+    ///    and one sorted batch per side table, where `print` makes a tree insert per cell
+    ///    with extended attributes (review S7 round 4).
     ///  - Insert mode: one [`BufferLine::insert_cells_repeatedly`] per line, the inserts of all
-    ///    the line's repetitions; the written cells are left of every later insert, so writing
-    ///    them after the inserts changes nothing. `print`'s own fix-up of a wide last cell
-    ///    never fires after `insert_cells`' when the line is `cols` long; a line of another
-    ///    length takes the per-repetition calls.
+    ///    the line's repetitions and `print`'s own fix-up of a wide cell at `cols - 1` after
+    ///    each (it fires only on a line longer than `cols`, left by a column shrink without
+    ///    reflow). The written cells are left of every later insert and of `cols - 1` while a
+    ///    later repetition follows (each repetition ends at or before `cols`), and the
+    ///    `pos - 1` fix-up of a later insert finds the head or stub written there narrow in
+    ///    `print` and the narrow fill without the writes, so writing them after the inserts
+    ///    changes nothing. A line shorter than `cols` takes the per-repetition calls.
     ///  - Link: `print` adds the cursor's line before each code point, so a repetition that
     ///    wraps adds the line it leaves. A second add of the same line with only cell writes in
     ///    between finds the marker the first one cached and changes nothing (the first add may
@@ -2324,13 +2330,10 @@ impl InputHandler {
             }
         }
 
-        // the head cell every repetition writes, made by `print`'s calls
-        let single = match fill.codes.as_slice() {
-            [code] => Some(*code),
-            _ => None,
-        };
-        let head = {
-            let mut scratch = BufferLine::new(w, None, false);
+        // the head cell every repetition writes and, for a wide unit, its stub, made by
+        // `print`'s calls
+        let (head, stub) = {
+            let mut scratch = BufferLine::new(2, None, false);
             let mut codes = fill.codes.iter().copied();
             if let Some(base) = codes.next() {
                 scratch.set_cell_from_codepoint(0, base, width, &cur_attr);
@@ -2338,9 +2341,11 @@ impl InputHandler {
             for code in codes {
                 scratch.add_codepoint_to_cell(0, code, width);
             }
-            let mut cell = CellData::new();
-            scratch.load_cell(0, &mut cell);
-            cell
+            scratch.set_cell_from_codepoint(1, 0, 0, &cur_attr);
+            let (mut head, mut stub) = (CellData::new(), CellData::new());
+            scratch.load_cell(0, &mut head);
+            scratch.load_cell(1, &mut stub);
+            (head, stub)
         };
 
         let buffer = services.buffer.buffer_mut();
@@ -2389,26 +2394,11 @@ impl InputHandler {
             let Some(buffer_row) = lines.get_mut(row) else {
                 return;
             };
-            let per_repetition_insert = insert_mode && buffer_row.len() != cols;
-            if insert_mode && !per_repetition_insert {
-                buffer_row.insert_cells_repeatedly(*x, w, fit, &null_cell);
-            }
-            if let (Some(code), false) = (single, insert_mode) {
-                // (the common case, kept a tight loop)
+            if insert_mode && buffer_row.len() < cols {
+                // a line shorter than `cols` (the buffer widens every line with the columns):
+                // `print`'s calls per repetition, since an insert past the line's end wraps
+                // around to its start
                 for _ in 0..fit {
-                    buffer_row.set_cell_from_codepoint(*x, code, width, &cur_attr);
-                    *x += 1;
-                    for _ in 1..w {
-                        buffer_row.set_cell_from_codepoint(*x, 0, 0, &cur_attr);
-                        *x += 1;
-                    }
-                }
-                left -= fit;
-                continue;
-            }
-            for _ in 0..fit {
-                if per_repetition_insert {
-                    // `print`'s insert-mode path, per repetition
                     buffer_row.insert_cells(*x, w, &null_cell);
                     if buffer_row.get_width(cols.saturating_sub(1)) == 2 {
                         buffer_row.set_cell_from_codepoint(
@@ -2418,18 +2408,25 @@ impl InputHandler {
                             &cur_attr,
                         );
                     }
+                    buffer_row.set_cells_repeatedly(*x, w, 1, &head, &stub);
+                    *x += w;
                 }
-                match single {
-                    // the same writes as `set_cell(head)` for a cell with no joiners
-                    Some(code) => buffer_row.set_cell_from_codepoint(*x, code, width, &cur_attr),
-                    None => buffer_row.set_cell(*x, &head),
-                }
-                *x += 1;
-                for _ in 1..w {
-                    buffer_row.set_cell_from_codepoint(*x, 0, 0, &cur_attr);
-                    *x += 1;
-                }
+                left -= fit;
+                continue;
             }
+            if insert_mode {
+                // `print`'s insert-mode shifts and fix-ups of the line's repetitions
+                buffer_row.insert_cells_repeatedly(
+                    *x,
+                    w,
+                    fit,
+                    &null_cell,
+                    cols.saturating_sub(1),
+                    &cur_attr,
+                );
+            }
+            buffer_row.set_cells_repeatedly(*x, w, fit, &head, &stub);
+            *x += fit * w;
             left -= fit;
         }
 

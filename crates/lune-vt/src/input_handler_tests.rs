@@ -2712,7 +2712,7 @@ fn rep_state(t: &mut TestTerm) -> RepState {
 #[test]
 fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
     type Setup = fn(&mut TestTerm);
-    let cases: [(&str, Setup, &str, bool, bool); 23] = [
+    let cases: [(&str, Setup, &str, bool, bool); 25] = [
         ("plain", |_| {}, "a", true, true),
         ("wide, odd cols", |_| {}, "\u{4e2d}", true, true),
         ("cluster", |_| {}, "e\u{301}", true, true),
@@ -2850,6 +2850,21 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
             true,
             true,
         ),
+        // review S7 round 4: extended attributes, batched per line
+        (
+            "underline colour",
+            |t| t.parse_str("\x1b[4:3;58:2::1:2:3m"),
+            "a",
+            true,
+            true,
+        ),
+        (
+            "underline colour, insert mode, open link, cluster",
+            |t| t.parse_str("xyz\r\n12\x1b[4:3;58:5:9m\x1b]8;;u\x07\x1b[H\x1b[4h"),
+            "e\u{301}",
+            true,
+            true,
+        ),
         // the cursor-moving join is not proven periodic: no cut
         ("joiner that widens", with_vs16, "a\u{fe0f}", false, false),
         // repetitions that alternate are not alike: no cut, no fill
@@ -2915,10 +2930,12 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
 /// Review S7 (cases from the round-3 code review's probe, plus the S7 variants): the line-fill
 /// path leaves the state of `print` over content already on screen (rows of wide chars at even
 /// and odd offsets, links, colours), with non-ASCII charsets, a pending wrap,
-/// insert mode, an open link, clusters, screen reader mode and lines of another length (the
-/// per-repetition insert path). Counts below the cut and one past a screen at the larger size.
+/// insert mode, an open link, clusters, screen reader mode, lines longer than `cols` (insert
+/// mode's fix-up at `cols - 1`, review S7 round 4) and extended attributes (batched per line,
+/// round 4). Counts below the cut and one past a screen at the larger size.
 #[test]
 fn rep_fill_leaves_the_state_of_print_over_existing_content() {
+    use crate::buffer::constants::BgFlags;
     type Setup = fn(&mut TestTerm, usize, usize);
     fn fill_wides(t: &mut TestTerm, cols: usize, rows: usize, pre: &str) {
         let mut s = String::new();
@@ -2944,7 +2961,28 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
         }
         t.parse_str("\x1b[4h");
     }
-    let cases: [(&str, Setup, &str); 18] = [
+    // (review S7 round 4) lines 5 cells longer than `cols`, as a column shrink without reflow
+    // leaves them, with wides on screen after `pre` and, past the screen's columns, a wide,
+    // a cluster and an underline-coloured wide; insert mode is left to the case
+    fn long_lines_of(t: &mut TestTerm, cols: usize, rows: usize, pre: &str) {
+        fill_wides(t, cols, rows, pre);
+        let mut coloured = AttributeData::default();
+        coloured.bg |= BgFlags::HAS_EXTENDED;
+        coloured.extended = ExtendedAttrs::new(0x0040_0000, 0);
+        let buffer = t.handler.services.buffer.buffer_mut();
+        for y in 0..rows {
+            let mut line = BufferLine::new(cols + 5, None, false);
+            line.copy_cells_from(buffer.lines.get(y).unwrap(), 0, 0, cols, false);
+            line.set_cell_from_codepoint(cols, u32::from('\u{4e2d}'), 2, &DEFAULT_ATTR_DATA);
+            line.set_cell_from_codepoint(cols + 1, 0, 0, &DEFAULT_ATTR_DATA);
+            line.set_cell_from_codepoint(cols + 2, u32::from('e'), 1, &coloured);
+            line.add_codepoint_to_cell(cols + 2, 0x301, 1);
+            line.set_cell_from_codepoint(cols + 3, u32::from('\u{4e2d}'), 2, &coloured);
+            line.set_cell_from_codepoint(cols + 4, 0, 0, &coloured);
+            buffer.lines.set(y, Some(line));
+        }
+    }
+    let cases: [(&str, Setup, &str); 28] = [
         // (a sequence between the unit and REP ends the print: REP repeats nothing)
         ("uk charset", |t, _, _| t.parse_str("\x1b(A"), "#"),
         ("over even wides", |t, c, r| fill_wides(t, c, r, ""), "a"),
@@ -3037,6 +3075,89 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
         ),
         ("insert into longer lines", long_lines, "a"),
         ("insert wide into longer lines", long_lines, "\u{4e2d}"),
+        // review S7 round 4: lines longer than `cols` in insert mode take the batched
+        // inserts, with `print`'s fix-up of a wide cell at `cols - 1`
+        (
+            "insert into longer lines with entries, odd wides",
+            |t, c, r| {
+                long_lines_of(t, c, r, "x");
+                t.parse_str("\x1b[4h");
+            },
+            "a",
+        ),
+        (
+            "insert wide into longer lines with entries, even wides",
+            |t, c, r| {
+                long_lines_of(t, c, r, "");
+                t.parse_str("\x1b[4h");
+            },
+            "\u{4e2d}",
+        ),
+        (
+            "insert cluster into longer lines, below the region",
+            |t, c, r| {
+                long_lines_of(t, c, r, "x");
+                t.parse_str("\x1b[1;2r\x1b[999;1H\x1b[4h");
+            },
+            "e\u{301}",
+        ),
+        (
+            "insert wide cluster into longer lines, underline colour, open link",
+            |t, c, r| {
+                long_lines_of(t, c, r, "x");
+                t.parse_str("\x1b]8;;u\x07\x1b[4:3;58:5:9m\x1b[4h");
+            },
+            "\u{4e2d}\u{301}",
+        ),
+        (
+            "insert into longer lines, underline colour, below the region",
+            |t, c, r| {
+                long_lines_of(t, c, r, "");
+                t.parse_str("\x1b[4:3;58:2::1:2:3m\x1b[1;2r\x1b[999;1H\x1b[4h");
+            },
+            "a",
+        ),
+        // review S7 round 4: extended attributes take one batched insert per line
+        (
+            "underline colour over odd wides",
+            |t, c, r| {
+                fill_wides(t, c, r, "x");
+                t.parse_str("\x1b[4:3;58:5:9m");
+            },
+            "a",
+        ),
+        (
+            "underline colour wide cluster under a link over coloured cells",
+            |t, c, r| {
+                t.parse_str("\x1b[58:5:3m");
+                fill_wides(t, c, r, "x");
+                t.parse_str("\x1b]8;;u\x07\x1b[4:2m");
+            },
+            "\u{4e2d}\u{301}",
+        ),
+        (
+            "insert, underline colour over coloured cells",
+            |t, c, r| {
+                t.parse_str("\x1b[4:3m");
+                fill_wides(t, c, r, "e\u{301}");
+                t.parse_str("\x1b[58:5:1m\x1b[4h");
+            },
+            "a",
+        ),
+        (
+            "insert wide, underline colour, below the region over coloured cells",
+            |t, c, r| {
+                t.parse_str("\x1b[4:5m");
+                fill_wides(t, c, r, "");
+                t.parse_str("\x1b[58:5:2m\x1b[1;2r\x1b[999;1H\x1b[4h");
+            },
+            "\u{4e2d}",
+        ),
+        (
+            "underline colour cluster, pending wrap",
+            |t, c, _| t.parse_str(&format!("{}\x1b[4:3;58:5:9m", "y".repeat(c - 1))),
+            "e\u{301}",
+        ),
     ];
     // (3 columns hold one wide character per line)
     let sizes = [
@@ -3083,7 +3204,7 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
         }
     }
     // every case takes the fill path
-    assert_eq!(filled, 18 * 6 * 11, "fill path cases");
+    assert_eq!(filled, 28 * 6 * 11, "fill path cases");
 }
 
 #[test]
