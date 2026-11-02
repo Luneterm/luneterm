@@ -2688,6 +2688,22 @@ fn check_shift_classes<V: Clone + PartialEq + SameValue + std::fmt::Debug>(
             unchanged_shared += 1;
         }
     }
+    // sparse high keys (up to `usize::MAX`): no dense index; nothing changed, the caller copies
+    // run by run (the self-copy then is the per-run copy itself)
+    for high in [usize::MAX, usize::MAX - 7, 1 << 40, 10_000] {
+        let mut map = RunMap::<V>::default();
+        map.assign(3, 5, Some(value_of(1)));
+        map.assign(high, high, Some(value_of(2)));
+        let before = map.clone();
+        assert!(!map.shift_classes_repeatedly(4, 3), "{high}");
+        assert_eq!(map, before);
+        let mut shared = SharedRunMap(Some(Arc::new(before.clone())));
+        let snapshot = shared.clone();
+        shared.copy_shifted_from(&snapshot, 4, 0);
+        let mut expected = before.clone();
+        expected.copy_shifted_from(&before, 4, 0);
+        assert_eq!(shared.entries(), expected.entries(), "{high}");
+    }
     // the instrument: every regime is exercised
     assert!(unsettled > 1_000, "{unsettled} unsettled");
     assert!(settled > 1_000, "{settled} settled");
