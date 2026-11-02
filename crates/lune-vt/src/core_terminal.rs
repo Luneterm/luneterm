@@ -296,8 +296,10 @@ fn to_i64(n: usize) -> i64 {
 pub(crate) fn core_reset(input_handler: &mut InputHandler) {
     input_handler.reset();
     // LUNETERM: (plan M7 D11) RIS clears the kitty keyboard stacks and modifyOtherKeys, as
-    // Lunegit's `ESC c` handler does; this is the one path RIS and `Terminal::reset` share.
-    input_handler.ext.keyboard.reset();
+    // Lunegit's `ESC c` handler does, and the other extension state a reset must not carry over
+    // (the OSC 52 stream, the OSC 133 command state; `ExtState::reset` lists what stays). This
+    // is the one path RIS and `Terminal::reset` share.
+    input_handler.ext.reset();
     let services = &mut input_handler.services;
     // LUNETERM: upstream drops the old buffers without disposing their markers, so an OSC 8
     // link alive at the reset stays in the OscLinkService forever (and a later link with the

@@ -446,6 +446,11 @@ impl Terminal {
         }
     }
 
+    /// The keyboard protocol state (read-only): the kitty stacks and the modifyOtherKeys level.
+    pub fn keyboard_protocol(&self) -> &crate::ext::KeyboardProtocol {
+        &self.core.input_handler().ext.keyboard
+    }
+
     /// Clear the kitty keyboard stacks of both screens and the modifyOtherKeys level, as RIS and
     /// DECSTR do. The host calls it when the application that set them is gone and the terminal
     /// is reused (Lunegit ledger row 11: a program that exits without popping its flags).

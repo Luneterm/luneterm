@@ -526,3 +526,43 @@ fn logs_carry_the_outcome_and_length_never_the_payload() {
         "oversize warning with length and cap"
     );
 }
+
+// --- reset (step 9) ------------------------------------------------------------------------------
+
+#[test]
+fn ris_frees_a_half_received_osc52_and_the_rest_never_writes() {
+    for use_ris in [true, false] {
+        let mut t = terminal(true);
+        let head = b64(&vec![b'x'; 3000]);
+        t.write(format!("\x1b]52;c;{head}").as_bytes());
+        let (len, _) = t.core().input_handler().ext.osc52.buffered();
+        assert_eq!(len, head.len());
+        if use_ris {
+            t.write(b"\x1bc");
+        } else {
+            t.reset();
+        }
+        assert_eq!(
+            t.core().input_handler().ext.osc52.buffered(),
+            (0, 0),
+            "ris {use_ris}"
+        );
+        // the host's reset leaves the parser inside the OSC: the rest ends as Malformed
+        if !use_ris {
+            t.write(format!("{}\x07", b64(b"tail")).as_bytes());
+            assert!(clipboard_events(&mut t).is_empty());
+        }
+        // the next OSC 52 works
+        t.write(&osc(&format!("c;{}", b64(b"ok"))));
+        assert_eq!(clipboard_events(&mut t), ["ok"], "ris {use_ris}");
+    }
+}
+
+#[test]
+fn a_reset_keeps_the_clipboard_gate_and_the_installation() {
+    let mut t = terminal(true);
+    t.write(b"\x1bc");
+    t.reset();
+    assert!(t.clipboard_write());
+    assert!(t.core().input_handler().ext.installed);
+}

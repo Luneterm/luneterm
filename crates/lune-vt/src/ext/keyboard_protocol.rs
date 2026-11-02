@@ -57,6 +57,12 @@ impl KeyboardProtocol {
         self.modify_other_keys
     }
 
+    /// The depth of the main and the alternate screen's kitty stack, each at most
+    /// [`KITTY_STACK_MAX`] (for the host's diagnostics and the engine fuzz bounds).
+    pub fn stack_depths(&self) -> (usize, usize) {
+        (self.main.len(), self.alt.len())
+    }
+
     /// Clear both stacks and the level (RIS, DECSTR, the host's reset hook).
     pub fn reset(&mut self) {
         self.main.clear();

@@ -92,7 +92,10 @@ fn payload_burst(rng: &mut Rng, out: &mut Vec<u8>) {
     let osc = rng.below(2) == 0;
     if osc {
         out.extend_from_slice(b"\x1b]");
-        const IDS: [&[u8]; 7] = [b"0", b"2", b"8", b"52", b"104", b"x", b""];
+        // 7, 9 and 133 are the identifiers of the M7 extensions (plan step 9)
+        const IDS: [&[u8]; 10] = [
+            b"0", b"2", b"8", b"52", b"104", b"x", b"", b"7", b"9", b"133",
+        ];
         out.extend_from_slice(rng.pick(&IDS).copied().unwrap_or(b"0"));
         out.push(b';');
     } else {

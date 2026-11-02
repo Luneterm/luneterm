@@ -141,6 +141,26 @@ pub struct ExtState {
     pub(crate) command: osc_command::CommandState,
 }
 
+impl ExtState {
+    /// What RIS and `Terminal::reset` clear (plan M7 D11; called from `core_reset`):
+    ///  - the keyboard protocol (kitty stacks, modifyOtherKeys);
+    ///  - the OSC 52 stream: its buffer (up to 1.4 MB) is freed, and an OSC 52 still in flight
+    ///    (the host's reset does not reset the parser) ends as Malformed, never as a write;
+    ///  - the OSC 133 command state and the 2026 latch, so a reset in the middle of a command
+    ///    leaves no stale `running` to turn the next `CSI ? 2026 h` into a
+    ///    [`crate::HostEvent::SyncUpdateInCommand`].
+    ///
+    /// Intentionally kept: `installed` and `clipboard_write` (the host's configuration, not
+    /// terminal state), and `unknown_osc_len` (a counter the next OSC resets at its start).
+    /// The cwd, progress and command handlers buffer at most 4 KiB each in their own closures,
+    /// cleared at the start of the next OSC of theirs; they hold no state that outlives it.
+    pub(crate) fn reset(&mut self) {
+        self.keyboard.reset();
+        self.osc52.abort();
+        self.command.reset();
+    }
+}
+
 /// The extension [`install`] registers: every handler of the standard set on one parser.
 struct StandardSet {
     xtversion: Option<String>,
