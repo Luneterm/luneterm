@@ -52,6 +52,9 @@ use crate::engine::{
 };
 use crate::ext::{ExtensionError, StandardExtensions};
 use crate::extension::Extension;
+use crate::input::key_encoder::{KeyboardModes, encode_key};
+use crate::input::key_event::{TerminalKey, TerminalKeyEvent, TerminalModifiers};
+use crate::input::legacy_key_encoder::{legacy_char_input, legacy_key_input};
 use crate::input_handler::InputHandler;
 use crate::parser::params::Params;
 use crate::parser::types::{FunctionIdentifier, HandlerId, IdentifierError};
@@ -445,6 +448,67 @@ impl Terminal {
     /// is reused (Lunegit ledger row 11: a program that exits without popping its flags).
     pub fn reset_keyboard_protocol(&mut self) {
         self.core.input_handler_mut().ext.keyboard.reset();
+    }
+
+    /// The live keyboard modes the key encoder reads: the kitty flags of the active screen, the
+    /// modifyOtherKeys level and DECCKM.
+    pub fn keyboard_modes(&self) -> KeyboardModes {
+        let handler = self.core.input_handler();
+        let services = handler.services();
+        KeyboardModes {
+            kitty_flags: handler
+                .ext
+                .keyboard
+                .flags(services.buffer.buffers.is_alt_active()),
+            modify_other_keys: handler.ext.keyboard.modify_other_keys(),
+            application_cursor_keys: services.core.dec_private_modes.application_cursor_keys,
+        }
+    }
+
+    /// The bytes to write to the PTY for a keystroke, under the live keyboard protocol state
+    /// (kitty, modifyOtherKeys, DECCKM; see [`encode_key`]). Lunegit's `GenerateKeyEvent`.
+    ///
+    /// Like upstream's user-input path it goes through `triggerDataEvent`: `None` with
+    /// `disable_stdin`, and with `scroll_on_user_input` the display scrolls to the bottom first.
+    /// `None` also when the key sends nothing (an invalid character code point), without
+    /// scrolling. The bytes are returned, not queued as a [`HostEvent::Response`].
+    pub fn key_event(&mut self, event: &TerminalKeyEvent) -> Option<Vec<u8>> {
+        let bytes = encode_key(event, self.keyboard_modes());
+        self.user_input(bytes)
+    }
+
+    /// Lunegit's `GenerateKeyInput`: the legacy bytes of a functional key with the live DECCKM
+    /// state, whatever the keyboard protocol (same `None` rules as [`Terminal::key_event`]).
+    pub fn key_input(&mut self, key: TerminalKey, modifiers: TerminalModifiers) -> Option<Vec<u8>> {
+        let decckm = self.keyboard_modes().application_cursor_keys;
+        self.user_input(legacy_key_input(key, modifiers, decckm).into_bytes())
+    }
+
+    /// Lunegit's `GenerateCharInput`: Ctrl folds `c` to its C0 byte, Alt prefixes ESC (same `None`
+    /// rules as [`Terminal::key_event`]).
+    pub fn char_input(&mut self, c: char, modifiers: TerminalModifiers) -> Option<Vec<u8>> {
+        self.user_input(legacy_char_input(c, modifiers).into_bytes())
+    }
+
+    /// `triggerDataEvent` for user input (plan M7 D6): the bytes to send, `None` if there are none
+    /// or stdin is disabled. The encoders only produce UTF-8, so the text passes through as is.
+    pub(crate) fn user_input(&mut self, bytes: Vec<u8>) -> Option<Vec<u8>> {
+        if bytes.is_empty() {
+            return None;
+        }
+        let data = String::from_utf8(bytes).ok()?;
+        let services = &mut self.core.input_handler_mut().services;
+        let event = services.core.trigger_data_event(
+            &data,
+            true,
+            services.buffer.buffer(),
+            services.options.options(),
+            &services.log,
+        )?;
+        if event.scroll_to_bottom {
+            self.core.scroll_to_bottom();
+        }
+        Some(data.into_bytes())
     }
 }
 
