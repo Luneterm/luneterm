@@ -1162,3 +1162,152 @@ fn trace_logging_never_carries_output_or_input_payloads() {
     assert!(messages.contains(&format!("parsing data ({len} bytes)")));
     assert!(messages.contains(&"sending data (17 bytes)".to_string()));
 }
+
+// ---- encoders: focus and paste (plan M7 step 6) ----------------------------------------------
+//
+// Added tests (no upstream counterpart: xterm.js's browser layer sends these). The focus bytes
+// are `CoreBrowserTerminal.ts:270-295`, the paste bytes `browser/Clipboard.ts:13-25` plus the
+// sanitizer of `input/paste.rs` (its own tests hold the invariant). Mouse and keys have their own
+// files (`input/mouse_event_tests.rs`, `input/key_encoder_tests.rs`).
+
+fn scrolled_up() -> Terminal {
+    let mut t = sized(20, 4);
+    for i in 0..30 {
+        t.write_str(&format!("line {i}\r\n"));
+    }
+    t.scroll_lines(-10);
+    assert!(!t.viewport().is_at_bottom);
+    t
+}
+
+#[test]
+fn focus_event_is_sent_only_after_decset_1004() {
+    let mut t = sized(80, 24);
+    assert_eq!(t.focus_event(true), None);
+    assert_eq!(t.focus_event(false), None);
+    t.write_str("\x1b[?1004h");
+    assert_eq!(t.focus_event(true).unwrap(), b"\x1b[I");
+    assert_eq!(t.focus_event(false).unwrap(), b"\x1b[O");
+    t.write_str("\x1b[?1004l");
+    assert_eq!(t.focus_event(true), None);
+    assert_eq!(t.focus_event(false), None);
+}
+
+#[test]
+fn focus_reporting_is_reset_by_ris() {
+    let mut t = sized(80, 24);
+    t.write_str("\x1b[?1004h");
+    assert!(t.focus_event(true).is_some());
+    t.write_str("\x1bc");
+    assert_eq!(t.focus_event(true), None);
+}
+
+#[test]
+fn focus_event_with_disable_stdin_sends_nothing() {
+    let mut t = sized(80, 24);
+    t.write_str("\x1b[?1004h");
+    t.set_option(OptionValue::DisableStdin(true)).unwrap();
+    assert_eq!(t.focus_event(true), None);
+}
+
+#[test]
+fn focus_event_does_not_scroll_and_queues_no_event() {
+    let mut t = scrolled_up();
+    t.write_str("\x1b[?1004h");
+    t.drain_events();
+    assert_eq!(t.focus_event(true).unwrap(), b"\x1b[I");
+    assert!(!t.viewport().is_at_bottom);
+    assert!(t.drain_events().is_empty());
+}
+
+#[test]
+fn paste_without_bracketed_mode_sends_the_text_with_cr_line_breaks() {
+    let mut t = sized(80, 24);
+    assert_eq!(t.paste("a\r\nb\nc").unwrap(), b"a\rb\rc");
+}
+
+#[test]
+fn paste_with_bracketed_mode_wraps_and_sanitizes() {
+    let mut t = sized(80, 24);
+    t.write_str("\x1b[?2004h");
+    assert_eq!(t.paste("ls\n").unwrap(), b"\x1b[200~ls\r\x1b[201~");
+    assert_eq!(
+        t.paste("x\x1b[201~rm -rf ~\n").unwrap(),
+        b"\x1b[200~xrm -rf ~\r\x1b[201~"
+    );
+    assert_eq!(t.paste("a\u{9b}b").unwrap(), b"\x1b[200~ab\x1b[201~");
+    t.write_str("\x1b[?2004l");
+    assert_eq!(t.paste("ls\n").unwrap(), b"ls\r");
+}
+
+#[test]
+fn paste_follows_the_live_bracketed_mode_and_ris_resets_it() {
+    let mut t = sized(80, 24);
+    t.write_str("\x1b[?2004h");
+    assert!(t.paste("a").unwrap().starts_with(b"\x1b[200~"));
+    t.write_str("\x1bc");
+    assert_eq!(t.paste("a").unwrap(), b"a");
+}
+
+#[test]
+fn paste_of_nothing_sends_nothing() {
+    let mut t = sized(80, 24);
+    assert_eq!(t.paste(""), None);
+    t.write_str("\x1b[?2004h");
+    assert_eq!(t.paste(""), None);
+}
+
+#[test]
+fn paste_with_disable_stdin_sends_nothing() {
+    let mut t = sized(80, 24);
+    t.set_option(OptionValue::DisableStdin(true)).unwrap();
+    assert_eq!(t.paste("hello"), None);
+    t.write_str("\x1b[?2004h");
+    assert_eq!(t.paste("hello"), None);
+    t.set_option(OptionValue::DisableStdin(false)).unwrap();
+    assert!(t.paste("hello").is_some());
+}
+
+#[test]
+fn paste_scrolls_to_the_bottom_when_the_option_is_on() {
+    let mut t = scrolled_up();
+    assert_eq!(t.paste("a").unwrap(), b"a");
+    assert!(t.viewport().is_at_bottom);
+
+    let mut t = scrolled_up();
+    t.set_option(OptionValue::ScrollOnUserInput(false)).unwrap();
+    assert_eq!(t.paste("a").unwrap(), b"a");
+    assert!(!t.viewport().is_at_bottom);
+}
+
+#[test]
+fn paste_queues_no_host_event_and_never_logs_the_text() {
+    use crate::services::log_service::Logger;
+    use crate::services::options_service::LogLevel;
+
+    struct Capture(Rc<RefCell<Vec<String>>>);
+    impl Logger for Capture {
+        fn log(&self, _level: LogLevel, message: &str) {
+            self.0.borrow_mut().push(message.to_string());
+        }
+    }
+    let mut t = sized(80, 24);
+    let messages = Rc::new(RefCell::new(Vec::new()));
+    t.set_logger(Some(Box::new(Capture(Rc::clone(&messages)))));
+    t.set_option(OptionValue::LogLevel(LogLevel::Trace))
+        .unwrap();
+    t.write_str("\x1b[?2004h");
+    t.drain_events();
+    let text = "pasted-secret-token";
+    assert!(t.paste(text).is_some());
+    assert!(t.drain_events().is_empty());
+    let messages = messages.borrow();
+    assert!(
+        messages.iter().any(|m| m.contains("sending data")),
+        "the sink saw the send"
+    );
+    assert!(
+        messages.iter().all(|m| !m.contains("pasted-secret")),
+        "paste text reached the log"
+    );
+}

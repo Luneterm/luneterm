@@ -55,9 +55,12 @@ use crate::extension::Extension;
 use crate::input::key_encoder::{KeyboardModes, encode_key};
 use crate::input::key_event::{TerminalKey, TerminalKeyEvent, TerminalModifiers};
 use crate::input::legacy_key_encoder::{legacy_char_input, legacy_key_input};
+use crate::input::mouse_event::TerminalMouseEvent;
+use crate::input::paste::paste_bytes;
 use crate::input_handler::InputHandler;
 use crate::parser::params::Params;
 use crate::parser::types::{FunctionIdentifier, HandlerId, IdentifierError};
+use crate::services::core_mouse_service::MouseReport;
 use crate::services::log_service::Logger;
 use crate::services::options_service::{OptionError, OptionKey, OptionValue, TerminalOptions};
 use crate::services::unicode_service::UnicodeService;
@@ -474,25 +477,96 @@ impl Terminal {
     /// scrolling. The bytes are returned, not queued as a [`HostEvent::Response`].
     pub fn key_event(&mut self, event: &TerminalKeyEvent) -> Option<Vec<u8>> {
         let bytes = encode_key(event, self.keyboard_modes());
-        self.user_input(bytes)
+        self.send_data(bytes, true)
     }
 
     /// Lunegit's `GenerateKeyInput`: the legacy bytes of a functional key with the live DECCKM
     /// state, whatever the keyboard protocol (same `None` rules as [`Terminal::key_event`]).
     pub fn key_input(&mut self, key: TerminalKey, modifiers: TerminalModifiers) -> Option<Vec<u8>> {
         let decckm = self.keyboard_modes().application_cursor_keys;
-        self.user_input(legacy_key_input(key, modifiers, decckm).into_bytes())
+        self.send_data(legacy_key_input(key, modifiers, decckm).into_bytes(), true)
     }
 
     /// Lunegit's `GenerateCharInput`: Ctrl folds `c` to its C0 byte, Alt prefixes ESC (same `None`
     /// rules as [`Terminal::key_event`]).
     pub fn char_input(&mut self, c: char, modifiers: TerminalModifiers) -> Option<Vec<u8>> {
-        self.user_input(legacy_char_input(c, modifiers).into_bytes())
+        self.send_data(legacy_char_input(c, modifiers).into_bytes(), true)
     }
 
-    /// `triggerDataEvent` for user input (plan M7 D6): the bytes to send, `None` if there are none
-    /// or stdin is disabled. The encoders only produce UTF-8, so the text passes through as is.
-    pub(crate) fn user_input(&mut self, bytes: Vec<u8>) -> Option<Vec<u8>> {
+    /// A pointer event as the bytes to write to the PTY, from the engine's own mouse state (the
+    /// protocol and encoding the application selected with DECSET; see [`TerminalMouseEvent`] for
+    /// the coordinate convention). `None` when no tracking is on, the protocol does not report
+    /// this event, the position is outside the terminal, the default encoding cannot express the
+    /// position, or `disable_stdin` is set. Reports other than the default encoding go through
+    /// `triggerDataEvent(.., true)` (so they scroll on user input); the default encoding's bytes
+    /// go through `triggerBinaryEvent` and are returned raw (a coordinate above 95 is one byte
+    /// above 0x7F, not UTF-8).
+    pub fn mouse_event(&mut self, event: &TerminalMouseEvent) -> Option<Vec<u8>> {
+        let core_event = event.to_core()?;
+        let services = &mut self.core.input_handler_mut().services;
+        let (cols, rows) = (services.buffer.cols, services.buffer.rows);
+        match services
+            .mouse
+            .trigger_mouse_event(&core_event, cols, rows)?
+        {
+            MouseReport::Data(report) => self.send_data(report.into_bytes(), true),
+            MouseReport::Binary(report) => {
+                let text = services.core.trigger_binary_event(
+                    &report,
+                    services.options.options(),
+                    &services.log,
+                )?;
+                // One byte per character (the encoding only produces U+0000..=U+00FF).
+                text.chars()
+                    .map(|c| u8::try_from(u32::from(c)).ok())
+                    .collect()
+            }
+            MouseReport::Suppressed => None,
+        }
+    }
+
+    /// The focus report: `ESC [ I` (gained) or `ESC [ O` (lost), only while the application has
+    /// focus reporting on (`CSI ? 1004 h`); `None` otherwise or with `disable_stdin`. As xterm.js's
+    /// browser terminal it is sent through `triggerDataEvent` without the user-input flag, so it
+    /// does not scroll.
+    pub fn focus_event(&mut self, focused: bool) -> Option<Vec<u8>> {
+        if !self
+            .core
+            .input_handler()
+            .services()
+            .core
+            .dec_private_modes
+            .send_focus
+        {
+            return None;
+        }
+        let report: &[u8] = if focused { b"\x1b[I" } else { b"\x1b[O" };
+        self.send_data(report.to_vec(), false)
+    }
+
+    /// The bytes to write to the PTY for pasting `text`: line breaks as `\r`, and with bracketed
+    /// paste on (`CSI ? 2004 h`) the sanitized text between `ESC [ 200 ~` and `ESC [ 201 ~` (see
+    /// [`paste_bytes`], which holds the invariant). `None` for an empty text or with
+    /// `disable_stdin`. Like xterm.js's `paste` it goes through `triggerDataEvent(.., true)`. The
+    /// text is never logged (the core logs lengths only).
+    pub fn paste(&mut self, text: &str) -> Option<Vec<u8>> {
+        if text.is_empty() {
+            return None;
+        }
+        let bracketed = self
+            .core
+            .input_handler()
+            .services()
+            .core
+            .dec_private_modes
+            .bracketed_paste_mode;
+        self.send_data(paste_bytes(text, bracketed), true)
+    }
+
+    /// `triggerDataEvent` (plan M7 D6): the bytes to send, `None` if there are none or stdin is
+    /// disabled; with `was_user_input` and `scroll_on_user_input` the display scrolls to the
+    /// bottom first. The encoders only produce UTF-8, so the text passes through as is.
+    fn send_data(&mut self, bytes: Vec<u8>, was_user_input: bool) -> Option<Vec<u8>> {
         if bytes.is_empty() {
             return None;
         }
@@ -500,7 +574,7 @@ impl Terminal {
         let services = &mut self.core.input_handler_mut().services;
         let event = services.core.trigger_data_event(
             &data,
-            true,
+            was_user_input,
             services.buffer.buffer(),
             services.options.options(),
             &services.log,
