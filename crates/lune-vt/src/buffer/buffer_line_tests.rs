@@ -1274,6 +1274,162 @@ mod edge_semantics {
         assert!(fast_fired > 600, "{fast_fired}");
     }
 
+    /// LUNETERM: (plan M7 step 13, S7 residual 5) `stuck_insert_repeatedly` leaves exactly
+    /// what its loop of per-unit stuck inserts leaves (`print`'s insert at `cols - 1`, its edge
+    /// fix-up there, the head written), whole lines compared: cells and both side tables,
+    /// stale entries included. Lines of `cols`, `cols + 1`, `3 cols` and past the REP floor
+    /// (`cols + MAX_COMBINED_CODE_POINTS + 3`), with narrow, wide, combined and extended
+    /// cells and stale entries in the shifted tail; heads narrow with and without a joiner
+    /// (combined) and extended attributes; plain and extended fills. Also the cases that run
+    /// the loop (a wide head or fill, a line shorter than `cols`).
+    #[test]
+    fn stuck_inserting_repeatedly_equals_the_loop_of_stuck_inserts() {
+        let mut seed: u64 = 0x5851_f42d_4c95_7f2d;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let ext = |v: usize| ExtendedAttrs::new(v as u32 + 1, v as u32);
+        let (mut fast, mut fast_combined_head, mut fast_line_end_fix, mut fast_short) =
+            (0, 0, 0, 0);
+        for round in 0..5_000 {
+            let cols = 2 + next(10);
+            let len = match next(6) {
+                0 => cols,
+                1 => cols + 1,
+                2 => 3 * cols,
+                3 => cols + MAX_COMBINED_CODE_POINTS + 3 + next(2 * cols),
+                4 => 1 + next(cols),
+                _ => cols + next(3 * cols),
+            };
+            let mut line = null_line(len);
+            let mut c = 0;
+            while c < len {
+                let mut cell = CellData::new();
+                let kind = next(5);
+                let width = if kind == 1 && c + 1 < len { 2 } else { 1 };
+                cell.content = match kind {
+                    0 => NULL_CELL_CODE | (NULL_CELL_WIDTH << Content::WIDTH_SHIFT),
+                    2 => {
+                        cell.combined_data =
+                            format!("e{}", char::from_u32(0x300 + c as u32).unwrap());
+                        Content::IS_COMBINED_MASK | (width << Content::WIDTH_SHIFT)
+                    }
+                    _ => (u32::from('a') + (c % 26) as u32) | (width << Content::WIDTH_SHIFT),
+                };
+                if next(3) == 0 {
+                    cell.bg |= BgFlags::HAS_EXTENDED;
+                    cell.extended = ext(next(4));
+                }
+                line.set_cell(c, &cell);
+                if next(4) == 0 {
+                    // a stale entry at a cell without the flag
+                    line.combined.insert(c, format!("stale{c}").into());
+                    line.extended_attrs.insert(c, ext(9));
+                }
+                if next(9) == 0 {
+                    // a flagged cell without an entry
+                    line.write(
+                        c,
+                        CELL_CONTENT,
+                        Content::IS_COMBINED_MASK | (width << Content::WIDTH_SHIFT),
+                    );
+                    line.combined.remove(&c);
+                }
+                if width == 2 {
+                    line.set_cell_from_codepoint(c + 1, 0, 0, &DEFAULT_ATTR_DATA);
+                }
+                c += width as usize;
+            }
+            // `print`'s current attributes: the fill (the null cell carrying them) and the edge
+            // fix-up's
+            let mut attrs = AttributeData {
+                fg: 0x0300_0011,
+                ..AttributeData::default()
+            };
+            if next(2) == 0 {
+                attrs.bg |= BgFlags::HAS_EXTENDED;
+                attrs.extended = ext(5 + round % 3);
+            }
+            let mut fill = null_cell();
+            fill.fg = attrs.fg;
+            fill.bg = attrs.bg;
+            fill.extended = attrs.extended;
+            match next(12) {
+                0 => fill.content = u32::from('w') | (2 << Content::WIDTH_SHIFT),
+                1 => {
+                    fill.content = Content::IS_COMBINED_MASK | (1 << Content::WIDTH_SHIFT);
+                    fill.combined_data = "fill".into();
+                }
+                _ => {}
+            }
+            // the head as `print` writes it: a base, then its joiners
+            let mut scratch = BufferLine::new(2, None, false);
+            let base = u32::from('e') + (round % 3) as u32;
+            let head_width = if next(12) == 0 { 2 } else { 1 };
+            // (mostly `print`'s attributes; sometimes others, to pin the side tables apart)
+            let head_attrs = match next(6) {
+                0 => AttributeData::default(),
+                1 => AttributeData {
+                    bg: BgFlags::HAS_EXTENDED,
+                    extended: ext(8),
+                    ..AttributeData::default()
+                },
+                _ => attrs,
+            };
+            scratch.set_cell_from_codepoint(0, base, head_width, &head_attrs);
+            for joiner in 0..next(3) {
+                scratch.add_codepoint_to_cell(0, 0x301 + joiner as u32, head_width);
+            }
+            let mut head = CellData::new();
+            scratch.load_cell(0, &mut head);
+            let pos = cols - 1;
+            if next(2) == 0 && pos < len {
+                // steady: the head already at `pos`, as after a stuck unit
+                line.set_cell(pos, &head);
+            }
+            let times = match next(4) {
+                0 => next(4),
+                1 => len + next(8),
+                _ => next(len + 2),
+            };
+
+            let mut looped = line.clone();
+            for _ in 0..times {
+                looped.insert_cells(pos, 1, &fill);
+                if looped.get_width(pos) == 2 {
+                    looped.set_cell_from_codepoint(pos, NULL_CELL_CODE, NULL_CELL_WIDTH, &attrs);
+                }
+                looped.set_cell(pos, &head);
+            }
+            let mut once = line.clone();
+            once.stuck_insert_repeatedly(pos, times, &fill, &head, &attrs);
+            assert_eq!(
+                once, looped,
+                "round {round}: {line:?} pos {pos} times {times} fill {fill:?} head {head:?}"
+            );
+
+            if times > 0 && pos < len && fill.get_width() != 2 && head_width == 1 {
+                fast += 1;
+                if head.is_combined() != 0 {
+                    fast_combined_head += 1;
+                }
+                if times < len - pos && line.get_width(len - 1 - times) == 2 {
+                    fast_line_end_fix += 1;
+                }
+                if len == cols {
+                    fast_short += 1;
+                }
+            }
+        }
+        assert!(fast > 2_800, "{fast}");
+        assert!(fast_combined_head > 1_800, "{fast_combined_head}");
+        assert!(fast_line_end_fix > 120, "{fast_line_end_fix}");
+        assert!(fast_short > 600, "{fast_short}");
+    }
+
     /// LUNETERM: (review S7 round 4) `set_cells_repeatedly` leaves exactly what its loop of
     /// `set_cell` calls leaves, over random lines with entries, heads and stubs with and
     /// without combined strings and extended attributes, widths 0 to 3 and runs past the end

@@ -2888,7 +2888,16 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
         (2, 1, 0, small),
         (9, 2, 7, small),
     ];
-    let mut skipped = check_rep_cut(&cases, &sizes, CUT_AT);
+    let mut stuck = Vec::new();
+    let mut skipped = check_rep_cut(&cases, &sizes, CUT_AT, &mut stuck);
+    // plan M7 step 13: only the narrow no-wrap insert case batches its stuck inserts, at every
+    // small size (it is at 300 columns only with the full matrix, below 300 units not)
+    for (name, label, batches) in &stuck {
+        let expected = *name == "no wraparound, insert mode, cluster" && !label.contains(" 300x");
+        if *name != "no wraparound, insert mode, cluster" || expected {
+            assert_eq!(*batches, u64::from(expected), "{label}: stuck path");
+        }
+    }
     let large_cases = [
         "plain",
         "insert mode",
@@ -2903,7 +2912,12 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
         (cases.copied().collect(), &[97, 9_008, 40_000])
     };
     assert_eq!(large_cases.len(), if full { 25 } else { 5 });
-    skipped.extend(check_rep_cut(&large_cases, &[(300, 100, 5, large)], CUT_AT));
+    skipped.extend(check_rep_cut(
+        &large_cases,
+        &[(300, 100, 5, large)],
+        CUT_AT,
+        &mut Vec::new(),
+    ));
     // only the five-byte units at the largest count
     assert_eq!(skipped.len(), if full { 5 } else { 0 }, "{skipped:?}");
 }
@@ -2918,11 +2932,13 @@ type RepCutCase = (&'static str, fn(&mut TestTerm), &'static str, bool, bool);
 type RepCutSize<'a> = (usize, usize, usize, &'a [usize]);
 
 /// For every case, size and count: REP leaves the state of the uncapped print of all of its
-/// repetitions. Returns the labels whose uncapped print would not fit one `print` call.
+/// repetitions. Returns the labels whose uncapped print would not fit one `print` call, and
+/// adds every run's case name, label and batched stuck inserts (plan M7 step 13) to `stuck`.
 fn check_rep_cut(
     cases: &[RepCutCase],
     sizes: &[RepCutSize],
     cut_at: (usize, usize, usize, usize),
+    stuck: &mut Vec<(&'static str, String, u64)>,
 ) -> Vec<String> {
     let mut skipped = Vec::new();
     for &(name, setup, unit, cut, fill) in cases {
@@ -2951,6 +2967,7 @@ fn check_rep_cut(
                 }
                 capped.parse_str(&format!("\x1b[{count}b"));
                 assert_eq!(capped.handler.rep_fills, u64::from(fill), "{label}: path");
+                stuck.push((name, label.clone(), capped.handler.rep_stuck_batches));
                 // the uncapped print of every repetition: one `print` call with all of them
                 // (one parse chunk), then a CSI with no handler, which ends the print as REP's
                 // CSI does
@@ -3123,7 +3140,8 @@ fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
         (9, 2, 7, &counts),
         (10, 3, 0, &counts),
     ];
-    let mut skipped = check_rep_cut(&cases, &sizes, (7, 3, 4, 1_009));
+    let mut stuck = Vec::new();
+    let mut skipped = check_rep_cut(&cases, &sizes, (7, 3, 4, 1_009), &mut stuck);
     // the screen reader floor (2048) comes first
     let screen_reader: [RepCutCase; 1] = [(
         "no wraparound, screen reader, open link, longest",
@@ -3136,8 +3154,67 @@ fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
         false,
     )];
     let sizes: [RepCutSize; 2] = [(7, 3, 4, &[2_503]), (10, 3, 0, &[2_503])];
-    skipped.extend(check_rep_cut(&screen_reader, &sizes, (7, 3, 4, 2_503)));
+    skipped.extend(check_rep_cut(
+        &screen_reader,
+        &sizes,
+        (7, 3, 4, 2_503),
+        &mut stuck,
+    ));
     assert!(skipped.is_empty(), "{skipped:?}");
+    // plan M7 step 13: which no-wrap insert cases batch their stuck inserts: the narrow units
+    // (one code point and a cluster) at every size and count; a stuck wide unit is skipped
+    // before its insert (nothing to batch) and the other cases wrap
+    let batched = [
+        "no wraparound, len cols + 1",
+        "no wraparound, len 3 x cols",
+        "no wraparound, longest",
+        "no wraparound, cluster from the second column, longest",
+        "no wraparound, screen reader, open link, longest",
+    ];
+    let mut seen = 0;
+    for (name, label, batches) in &stuck {
+        let expected = batched.contains(name);
+        seen += usize::from(expected);
+        assert_eq!(*batches, u64::from(expected), "{label}: stuck path");
+    }
+    assert_eq!(seen, 4 * 5 * 3 + 2, "batched runs");
+}
+
+/// Plan M7 step 13 (S7 residual 5), timing-free: a no-wrap insert REP of a narrow unit on a
+/// line longer than `cols` shifts the line at most `cols + 3` times through `print` (the units
+/// until the cursor sticks at the last column) and once batched, whatever the line's length;
+/// a REP that starts stuck, twice. Before, every unit up to the F9 floor shifted it once:
+/// `len - cols` more passes.
+#[test]
+fn rep_no_wrap_insert_on_a_long_line_makes_a_bounded_number_of_insert_passes() {
+    use crate::buffer::buffer_line::insert_passes;
+    const NO_WRAP: &str = "\x1b[?7l\x1b[999;1H\x1b[4h";
+    for (cols, kind) in [(7, 0), (7, 1), (7, 2), (10, 2), (80, 1), (80, 2)] {
+        for unit in ["a", "e\u{301}"] {
+            let label = format!("{unit:?} at {cols} cols, line kind {kind}");
+            let mut t = test_handler(cols, 3, [OptionValue::Scrollback(4)]);
+            longer_lines(&mut t, kind, NO_WRAP);
+            let len = t.buffer().lines.get(abs_y(t.buffer())).unwrap().len();
+            assert!(len > cols, "{label}");
+            t.parse_str(unit);
+            let before = insert_passes();
+            t.parse_str("\x1b[1048576b");
+            let passes = insert_passes() - before;
+            assert!(
+                passes <= cols as u64 + 4,
+                "{label}: {passes} passes over {len} cells"
+            );
+            assert_eq!(t.handler.rep_stuck_batches, 1, "{label}: stuck path");
+            assert_eq!(t.buffer().x, cols, "{label}");
+            // stuck already: one unit through `print`, the rest batched
+            t.parse_str(unit);
+            let before = insert_passes();
+            t.parse_str("\x1b[1048576b");
+            let passes = insert_passes() - before;
+            assert!(passes <= 2, "{label}, stuck: {passes} passes");
+            assert_eq!(t.handler.rep_stuck_batches, 2, "{label}: stuck path");
+        }
+    }
 }
 
 /// Review S7 (cases from the round-3 code review's probe, plus the S7 variants): the line-fill
