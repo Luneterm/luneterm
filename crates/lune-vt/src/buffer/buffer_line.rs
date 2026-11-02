@@ -948,6 +948,11 @@ impl<V: Clone + PartialEq + SameValue> SharedRunMap<V> {
         self.0.as_deref().map_or(0, RunMap::len)
     }
 
+    /// The number of runs, `O(1)`.
+    fn run_count(&self) -> usize {
+        self.0.as_deref().map_or(0, |map| map.runs.len())
+    }
+
     fn is_empty(&self) -> bool {
         self.0.as_deref().is_none_or(|map| map.runs.is_empty())
     }
@@ -1003,10 +1008,29 @@ impl<V: Clone + PartialEq + SameValue> SharedRunMap<V> {
         }
     }
 
+    /// [`RunMap::copy_shifted_from`]. (M7 fix round 5) Where `src` holds no key `>= src_col`
+    /// nothing is written, and no map is made for it (an empty map and none compare equal and
+    /// answer alike). Where `src` is this very map (shared, as a joiner wrap's snapshot of the
+    /// row it lands on below the scroll region) and `dest_col` is 0, the copy is one self-copy
+    /// with shift `src_col`: [`SharedRunMap::shift_classes_repeatedly`] with `k = 1`, which
+    /// costs a walk of the runs and leaves the map shared when nothing changes, where the
+    /// per-run copy copies the shared map first and assigns every run.
     fn copy_shifted_from(&mut self, src: &SharedRunMap<V>, src_col: usize, dest_col: usize) {
-        if let Some(src) = src.0.as_deref().filter(|map| !map.runs.is_empty()) {
-            self.make_mut().copy_shifted_from(src, src_col, dest_col);
+        let Some(map) = src.0.as_ref() else {
+            return;
+        };
+        let reaches = map
+            .runs
+            .last_key_value()
+            .is_some_and(|(_, (last, _))| *last >= src_col);
+        if !reaches {
+            return;
         }
+        let itself = self.0.as_ref().is_some_and(|own| Arc::ptr_eq(own, map));
+        if itself && dest_col == 0 && self.shift_classes_repeatedly(src_col, 1) {
+            return;
+        }
+        self.make_mut().copy_shifted_from(map, src_col, dest_col);
     }
 
     fn insert_ascending(&mut self, updates: Vec<(usize, V)>) {
@@ -1071,7 +1095,8 @@ type RangeRuns<V> = (Vec<(usize, usize, usize)>, Vec<V>);
 
 /// LUNETERM: (M7 fix round 1) the combined strings a [`BufferLine::set_cells_repeatedly_shared`]
 /// call left on a line that held none, with the call's arguments: another line that holds none
-/// gets the same strings from the same call, so it shares them.
+/// gets the same strings from the same call, so it shares them. (M7 fix round 5) Or that held
+/// one run of strings, `before`: another line holding exactly those entries gets the same.
 #[derive(Debug)]
 pub(crate) struct CombinedTemplate {
     pos: usize,
@@ -1079,6 +1104,23 @@ pub(crate) struct CombinedTemplate {
     times: usize,
     head: CellData,
     stub: CellData,
+    before: SharedRunMap<Arc<str>>,
+    combined: SharedRunMap<Arc<str>>,
+}
+
+/// LUNETERM: (M7 fix round 5, code review F6 residual) what
+/// [`BufferLine::copy_cells_from`] reads of its source for a copy of at most two cells: those
+/// cells' slots (0 past the line's end, as a typed array reads), each one's extended entry, and
+/// the combined strings (shared, an `Arc` clone). A joiner's wrap (`print_wrap`) copies one or
+/// two cells of the old row; taking this instead of a clone of the whole row makes that wrap
+/// cost `O(1)` plus the strings' copy, where the clone was `O(len)` (a long row left by a
+/// narrowing). [`BufferLine::copy_cells_from_source`] writes what `copy_cells_from` writes.
+#[derive(Clone, Debug)]
+pub(crate) struct CellsSource {
+    src_col: usize,
+    len: usize,
+    slots: [[u32; CELL_SIZE]; 2],
+    extended: [Option<ExtendedAttrs>; 2],
     combined: SharedRunMap<Arc<str>>,
 }
 
@@ -1647,8 +1689,13 @@ impl BufferLine {
     /// no combined string (no entry at any key), the call leaves exactly the entries it writes,
     /// which depend on its arguments only; so the first such call keeps those entries in
     /// `template`, and a later call with the same arguments on a line that holds none takes
-    /// them from it (one shared map, [`SharedRunMap`]) instead of writing them. Every other
-    /// call is `set_cells_repeatedly` itself. The same cells and entries either way.
+    /// them from it (one shared map, [`SharedRunMap`]) instead of writing them. (M7 fix round 5,
+    /// code review F6 residual) The same holds for a line holding one run of strings (a widened
+    /// unit's joiner wrap leaves the unit's head string at column 0 of every line it fills at an
+    /// odd number of columns): the entries the call leaves depend on its arguments and the
+    /// entries the line held before, so a line holding exactly the template's `before` entries
+    /// (compared by value, cheap for one run) takes the template's. Every other call is
+    /// `set_cells_repeatedly` itself. The same cells and entries either way.
     pub(crate) fn set_cells_repeatedly_shared(
         &mut self,
         pos: usize,
@@ -1663,18 +1710,22 @@ impl BufferLine {
             && w.checked_mul(times)
                 .and_then(|cells| pos.checked_add(cells))
                 .is_some();
-        if !one_pass || !self.combined.is_empty() {
+        if !one_pass || self.combined.run_count() > 1 {
             self.set_cells_repeatedly(pos, w, times, head, stub);
             return;
         }
         let same = template.as_ref().filter(|t| {
-            (t.pos, t.w, t.times) == (pos, w, times) && t.head == *head && t.stub == *stub
+            (t.pos, t.w, t.times) == (pos, w, times)
+                && t.head == *head
+                && t.stub == *stub
+                && t.before == self.combined
         });
         if let Some(template) = same {
             self.set_cells_repeatedly_with(pos, w, times, head, stub, false);
             self.combined = template.combined.clone();
             return;
         }
+        let before = self.combined.clone();
         self.set_cells_repeatedly(pos, w, times, head, stub);
         if !self.combined.is_empty() {
             *template = Some(CombinedTemplate {
@@ -1683,6 +1734,7 @@ impl BufferLine {
                 times,
                 head: head.clone(),
                 stub: stub.clone(),
+                before,
                 combined: self.combined.clone(),
             });
         }
@@ -2656,6 +2708,8 @@ impl BufferLine {
                     (t.pos, t.w, t.times) == (pos, stride, times)
                         && t.head == *overlay.head
                         && t.stub == *overlay.stub
+                        // (M7 fix round 5) a template left on a line that held no string
+                        && t.before.is_empty()
                 })
             })
             .map(|t| t.combined.clone());
@@ -2940,6 +2994,7 @@ impl BufferLine {
                         times,
                         head: head.clone(),
                         stub: stub.clone(),
+                        before: SharedRunMap::default(),
                         combined: self.combined.clone(),
                     });
                 }
@@ -3667,6 +3722,62 @@ impl BufferLine {
         // Move any combined data over as needed, FIXME: repeat for extended attrs
         self.combined
             .copy_shifted_from(&src.combined, src_col, dest_col);
+    }
+
+    /// LUNETERM: (M7 fix round 5) what [`copy_cells_from`](Self::copy_cells_from) of `len`
+    /// cells from `src_col` reads of this line ([`CellsSource`]); `None` for more than two
+    /// cells.
+    pub(crate) fn cells_source(&self, src_col: usize, len: usize) -> Option<CellsSource> {
+        if len > 2 {
+            return None;
+        }
+        let mut source = CellsSource {
+            src_col,
+            len,
+            slots: [[0; CELL_SIZE]; 2],
+            extended: [None; 2],
+            combined: self.combined.clone(),
+        };
+        for cell in 0..len {
+            let index = src_col.saturating_add(cell);
+            if let Some(slots) = source.slots.get_mut(cell) {
+                for (field, slot) in slots.iter_mut().enumerate() {
+                    *slot = self.read(index, field);
+                }
+            }
+            if let Some(extended) = source.extended.get_mut(cell) {
+                *extended = self.extended_attrs.get(&index).copied();
+            }
+        }
+        Some(source)
+    }
+
+    /// LUNETERM: (M7 fix round 5) [`copy_cells_from`](Self::copy_cells_from)`(src_line,
+    /// src.src_col, dest_col, src.len, false)` from what it reads of `src_line`
+    /// ([`BufferLine::cells_source`]): the same per-cell loop (each field written, the
+    /// extended entry copied or removed where the source cell carries the flag) and the same
+    /// copy of the combined strings from `src_col` on.
+    pub(crate) fn copy_cells_from_source(&mut self, src: &CellsSource, dest_col: usize) {
+        for cell in 0..src.len {
+            let dest_index = dest_col.saturating_add(cell);
+            let Some(slots) = src.slots.get(cell) else {
+                continue;
+            };
+            for (field, &value) in slots.iter().enumerate() {
+                self.write(dest_index, field, value);
+            }
+            if slots
+                .get(CELL_BG)
+                .is_some_and(|bg| bg & BgFlags::HAS_EXTENDED != 0)
+            {
+                match src.extended.get(cell).copied().flatten() {
+                    Some(attrs) => self.extended_attrs.insert(dest_index, attrs),
+                    None => self.extended_attrs.remove(&dest_index),
+                }
+            }
+        }
+        self.combined
+            .copy_shifted_from(&src.combined, src.src_col, dest_col);
     }
 
     fn copy_cell_from(&mut self, src: &BufferLine, src_col: usize, dest_col: usize, cell: usize) {

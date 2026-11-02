@@ -120,7 +120,7 @@ use std::sync::Arc;
 use crate::buffer::attribute_data::AttributeData;
 use crate::buffer::buffer::Buffer;
 use crate::buffer::buffer_line::{
-    BufferLine, DEFAULT_ATTR_DATA, MAX_COMBINED_CODE_POINTS, RangeState,
+    BufferLine, CellsSource, DEFAULT_ATTR_DATA, MAX_COMBINED_CODE_POINTS, RangeState,
 };
 use crate::buffer::buffer_set::BufferActivate;
 use crate::buffer::cell_data::CellData;
@@ -4281,17 +4281,25 @@ fn print_wrap(
     let old_width = usize::try_from(old_width).unwrap_or(0);
     let buffer = services.buffer.buffer_mut();
     let old_col = buffer.x.saturating_sub(old_width);
+    // LUNETERM: (M7 fix round 5, code review F6 residual) what the copy below reads of the old
+    // row, taken now: its `old_width` cells from `old_col` and its combined strings (shared),
+    // not a clone of the whole row (`O(len)` per wrap on a long row). Upstream reads the row
+    // after the scroll, which leaves the old row's cells alone unless the row leaves the list
+    // (the case it was cloned for before), so the cells read are the same.
+    let source = match old_width {
+        0 => None,
+        _ => buffer.lines.get(old_row).map(|line| {
+            line.cells_source(old_col, old_width)
+                .map_or_else(|| WrapSource::Line(line.clone()), WrapSource::Cells)
+        }),
+    };
     buffer.x = old_width;
     buffer.y += 1;
-    // where `oldRow` is after this branch, and its cells if it leaves the list
+    // where `oldRow` is after this branch
     let old_row_after;
-    let mut detached = None;
     if buffer.y == buffer.scroll_bottom.saturating_add(1) {
         buffer.y -= 1;
         old_row_after = old_row_after_scroll(buffer, old_row);
-        if old_width > 0 && old_row_after.is_none() {
-            detached = buffer.lines.get(old_row).cloned();
-        }
         let erase = erase_attr(erase_internal, cur_attr);
         services.buffer.scroll(&erase, true);
         scrolled(damage, tracker, services.buffer.buffer());
@@ -4311,12 +4319,13 @@ fn print_wrap(
     let has_row = buffer.lines.get(row).is_some();
     if old_width > 0 && has_row {
         // Combining character widens 1 column to 2. Move old character to next line.
-        let source = match old_row_after {
-            Some(index) => buffer.lines.get(index).cloned(),
-            None => detached,
-        };
         if let (Some(source), Some(buffer_row)) = (source, line_mut(buffer, row)) {
-            buffer_row.copy_cells_from(&source, old_col, 0, old_width, false);
+            match source {
+                WrapSource::Cells(cells) => buffer_row.copy_cells_from_source(&cells, 0),
+                WrapSource::Line(line) => {
+                    buffer_row.copy_cells_from(&line, old_col, 0, old_width, false);
+                }
+            }
         }
     }
     // clear left over cells to the right (on a detached old row: no visible effect)
@@ -4327,6 +4336,14 @@ fn print_wrap(
     }
     // upstream throws on the next use of a missing row
     has_row.then_some(row)
+}
+
+/// LUNETERM: (M7 fix round 5) what `print_wrap`'s copy reads of the old row: the cells it
+/// copies and the shared strings ([`CellsSource`]), or (more than two cells, which no width
+/// gives) the whole row.
+enum WrapSource {
+    Cells(CellsSource),
+    Line(BufferLine),
 }
 
 #[cfg(test)]
