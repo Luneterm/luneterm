@@ -3833,8 +3833,14 @@ impl BufferLine {
     /// src.src_col, dest_col, src.len, false)` from what it reads of `src_line`
     /// ([`BufferLine::cells_source`]): the same per-cell loop (each field written, the
     /// extended entry copied or removed where the source cell carries the flag) and the same
-    /// copy of the combined strings from `src_col` on.
-    pub(crate) fn copy_cells_from_source(&mut self, src: &CellsSource, dest_col: usize) {
+    /// copy of the combined strings from `src_col` on — without `strings`, the cells only (M7
+    /// fix round 5: REP skips the strings' copy of a joiner wrap whose line it discards).
+    pub(crate) fn copy_cells_from_source(
+        &mut self,
+        src: &CellsSource,
+        dest_col: usize,
+        strings: bool,
+    ) {
         for cell in 0..src.len {
             let dest_index = dest_col.saturating_add(cell);
             let Some(slots) = src.slots.get(cell) else {
@@ -3853,8 +3859,10 @@ impl BufferLine {
                 }
             }
         }
-        self.combined
-            .copy_shifted_from(&src.combined, src.src_col, dest_col);
+        if strings {
+            self.combined
+                .copy_shifted_from(&src.combined, src.src_col, dest_col);
+        }
     }
 
     fn copy_cell_from(&mut self, src: &BufferLine, src_col: usize, dest_col: usize, cell: usize) {

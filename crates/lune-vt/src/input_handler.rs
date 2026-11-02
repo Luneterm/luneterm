@@ -422,6 +422,10 @@ pub struct InputHandler {
     /// through `print`'s own steps (M7 fix round 5; tests bound them per REP).
     #[cfg(test)]
     pub(crate) rep_joiner_wraps: u64,
+    /// REPs that skipped the strings' copy of their first joiner wraps at the scroll bottom
+    /// (M7 fix round 5, `chain_copies_to_skip`; tests check the bound).
+    #[cfg(test)]
+    pub(crate) rep_chain_skips: u64,
 }
 
 impl ParserHost for InputHandler {
@@ -699,6 +703,8 @@ impl InputHandler {
             rep_copy_batches: 0,
             #[cfg(test)]
             rep_joiner_wraps: 0,
+            #[cfg(test)]
+            rep_chain_skips: 0,
         }
     }
 
@@ -1128,15 +1134,23 @@ impl InputHandler {
 
     /// Print `data` (code points) at the cursor.
     pub fn print(&mut self, data: &[u32]) {
-        self.print_inner(data, true, true);
+        self.print_inner(data, true, true, true);
     }
 
     /// LUNETERM: (M7 fix round 1) `print`'s body (upstream's). REP's line fill prints a
     /// repetition in the middle of its stream through here ([`InputHandler::print_repeated`]):
     /// without the end fix-up (`fix_up_end`), which `print` makes once after its last code point,
-    /// and without the screen reader text (`voice`), which the fill queues up front. Returns
+    /// and without the screen reader text (`voice`), which the fill queues up front; (M7 fix
+    /// round 5) and without the strings' copy of a joiner's wrap (`wrap_strings`, see
+    /// `print_wrap`) where the line fill's own scrolls discard the line it lands on. Returns
     /// false where `print` stops early (a missing line).
-    fn print_inner(&mut self, data: &[u32], fix_up_end: bool, voice: bool) -> bool {
+    fn print_inner(
+        &mut self,
+        data: &[u32],
+        fix_up_end: bool,
+        voice: bool,
+        wrap_strings: bool,
+    ) -> bool {
         let InputHandler {
             services,
             cur_attr_data,
@@ -1206,6 +1220,7 @@ impl InputHandler {
                         &cur_attr,
                         row,
                         old_width,
+                        wrap_strings,
                     ) {
                         Some(new_row) => row = new_row,
                         // upstream throws on the missing line
@@ -2451,21 +2466,7 @@ impl InputHandler {
             // from `cols - 1` on to the new row, `cols - 1` to the left (see the doc comment)
             let base = to_usize(i64::from(base_width));
             if base < w && per_line.saturating_mul(w).saturating_add(base) <= cols {
-                let first = abs_y(buffer);
-                let last = buffer.ybase.saturating_add(rows).saturating_sub(1);
-                let reach = (first..=last)
-                    .filter_map(|row| buffer.lines.get(row))
-                    .filter_map(|line| {
-                        let key = line.last_combined_key();
-                        match insert_mode {
-                            // (an insert writes the strings of the cells it shifts, up to the
-                            // line's end)
-                            true => Some(key.unwrap_or(0).max(line.len().saturating_sub(1))),
-                            false => key,
-                        }
-                    })
-                    .max();
-                if let Some(reach) = reach {
+                if let Some(reach) = self.copy_reach() {
                     // `ceil((reach + 1) / (cols - 1)) + 1` lines of units
                     lines = lines
                         .saturating_add(reach / cols.saturating_sub(1).max(1))
@@ -2499,6 +2500,30 @@ impl InputHandler {
             return repeats;
         }
         floor + (repeats - floor) % period
+    }
+
+    /// LUNETERM: (M7 fix round 4, code review F6) how far a widened unit's joiner wraps can
+    /// copy strings from (see [`InputHandler::rep_equivalent_repeats`]): the largest combined
+    /// key over the rows from the cursor's down to the buffer's last, in insert mode at least
+    /// each row's last cell (an insert writes the strings of the cells it shifts, up to the
+    /// line's end); `None` where no such row holds one (and, in insert mode, none exists).
+    /// `O(rows × log n)` ([`BufferLine::last_combined_key`]).
+    fn copy_reach(&self) -> Option<usize> {
+        let insert_mode = self.services.core.modes.insert_mode;
+        let rows = self.services.buffer.rows;
+        let buffer = self.services.buffer.buffer();
+        let first = abs_y(buffer);
+        let last = buffer.ybase.saturating_add(rows).saturating_sub(1);
+        (first..=last)
+            .filter_map(|row| buffer.lines.get(row))
+            .filter_map(|line| {
+                let key = line.last_combined_key();
+                match insert_mode {
+                    true => Some(key.unwrap_or(0).max(line.len().saturating_sub(1))),
+                    false => key,
+                }
+            })
+            .max()
     }
 
     /// LUNETERM: (review S3 round 2) the fewest repetitions of `unit` that leave the state
@@ -2711,6 +2736,14 @@ impl InputHandler {
     ///    `p - 1` passes' copies taken in closed form and one real pass
     ///    ([`InputHandler::copy_passes_at_once`] has the proof), `O(K + runs)` where they cost
     ///    `O(len)` each.
+    ///  - (M7 fix round 5) At the scroll bottom, that widened unit's wraps chain the strings
+    ///    from line to line (each copy brings the old row's keys `>= cols - 1` onto the fresh
+    ///    line); the first ones skip that copy where the REP's own later scrolls discard the
+    ///    lines it would land on ([`InputHandler::chain_copies_to_skip`] has the bound and the
+    ///    proof). Its repetition that wraps goes through [`InputHandler::print_widened_wrap`]
+    ///    (`print`'s steps, the head shared by the lines that hold no other string), and the
+    ///    line fill's template then takes the line's strings in `O(1)`: a line costs about what
+    ///    a line of plain cells does.
     fn print_repeated(&mut self, fill: &RepFill, count: usize) {
         #[cfg(test)]
         {
@@ -2773,6 +2806,16 @@ impl InputHandler {
         let wrap_copies = fill.widens_at.is_some() && span + inserted <= cols;
         // where the last pass started: the units left and what it read
         let mut last_pass: Option<(usize, RangeState)> = None;
+        // (M7 fix round 5) the joiner wraps at the scroll bottom, from the first, whose
+        // strings' copy lands on a line this REP's own scrolls discard
+        let mut chain_skips = match wrap_copies {
+            true => self.chain_copies_to_skip(count, w, inserted),
+            false => 0,
+        };
+        #[cfg(test)]
+        {
+            self.rep_chain_skips += u64::from(chain_skips > 0);
+        }
         let mut left = count;
         while left > 0 {
             let x = self.services.buffer.buffer().x;
@@ -2844,7 +2887,10 @@ impl InputHandler {
                         self.rep_joiner_wraps += 1;
                     }
                 }
-                if !self.print_widened_wrap(fill, &head, &mut joined) {
+                let buffer = self.services.buffer.buffer();
+                let skip = chain_skips > 0 && buffer.y == buffer.scroll_bottom;
+                chain_skips -= usize::from(skip);
+                if !self.print_widened_wrap(fill, &head, &mut joined, !skip) {
                     return;
                 }
                 left -= 1;
@@ -2873,6 +2919,7 @@ impl InputHandler {
                     &cur_attr,
                     row,
                     0,
+                    true,
                 ) {
                     Some(new_row) => row = new_row,
                     // upstream throws on the missing line
@@ -2964,7 +3011,7 @@ impl InputHandler {
     }
 
     /// LUNETERM: (M7 fix round 5, code review F6 residual) `print_inner(&fill.codes, false,
-    /// false)` for [`InputHandler::print_repeated`]'s repetition whose base lands on the line
+    /// false, strings)` for [`InputHandler::print_repeated`]'s repetition whose base lands on the line
     /// and whose widening joiner wraps it (`x + 1 <= cols < x + 2`), for a unit whose first
     /// joiner is the widening one (a base of one cell; VS16, a keycap); any other unit takes
     /// `print_inner`. The same steps in the same order, from what `rep_alike` read of the unit
@@ -2986,9 +3033,10 @@ impl InputHandler {
         fill: &RepFill,
         head: &CellData,
         joined: &mut Option<JoinedHead>,
+        strings: bool,
     ) -> bool {
         if fill.widens_at != Some(1) || fill.base_width != 1 || fill.codes.len() < 2 {
-            return self.print_inner(&fill.codes, false, false);
+            return self.print_inner(&fill.codes, false, false, strings);
         }
         let InputHandler {
             services,
@@ -3053,6 +3101,7 @@ impl InputHandler {
             &cur_attr,
             row,
             1,
+            strings,
         ) else {
             return false;
         };
@@ -3086,6 +3135,91 @@ impl InputHandler {
         *preceding_join_state = fill.end_state;
         dirty_row_tracker.mark_dirty(services.buffer.buffer().y);
         true
+    }
+
+    /// LUNETERM: (M7 fix round 5, code review F6 residual) how many of the first joiner wraps
+    /// that scroll at the scroll bottom may skip their strings' copy, for `count` repetitions of
+    /// a widened unit (`w` = 2 cells, `inserted` = 1) whose joiner wraps its base (an odd number
+    /// of columns, `wrap_copies`), from the cursor; 0 below the scroll region (no wrap scrolls
+    /// there) or where the REP is too short. Each such wrap runs upstream's `copyCellsFrom`
+    /// FIXME copy of the old row's strings from `c = cols - 1` on, `c` to the left, onto the
+    /// fresh line the scroll made, keys past its end included: a chain from line to line that
+    /// costs `Σ (K - i c)` entry copies and leaves stale entries on the lines.
+    ///
+    /// Let `K` be [`InputHandler::copy_reach`] (the floor's reach), `m = ceil(K / c) - 1` (0
+    /// for `K < c + 1`) and `max_length` = the buffer's line capacity (`rows + scrollback`,
+    /// buffer.rs `max_length`). Skipping the strings' copy of the first `m` joiner wraps that
+    /// scroll, counted from the first, leaves the state of the print with every copy, when at
+    /// least `max_length` scrolls follow the `m`-th of them:
+    ///  - (i) A line a scroll at the scroll bottom made is out of the buffer after `max_length`
+    ///    more scrolls. With `scroll_top` 0 every scroll inserts one line right after the
+    ///    bottom row, that is after this line (buffer_service.rs `scroll`; the oldest line is
+    ///    recycled through `copy_from` of a blank line once the list is full), and trims the
+    ///    first line once the list is full: the line starts at an index at most `len - 1` and
+    ///    its index drops by one per scroll once full, so it is trimmed within `(max_length -
+    ///    len) + len` scrolls. With `scroll_top > 0` the region's lines move up one per scroll
+    ///    and the top one is dropped: within the region's height, at most `rows`.
+    ///  - (ii) The chain dies out after `m` lines. The first scrolling wrap's old row holds no
+    ///    key above `K`: at the REP's start no row from the cursor's down to the last does, a
+    ///    pass writes keys below `cols` (and in insert mode shifts strings within a row, below
+    ///    its length, which `K` counts), and a copy into an existing row by descent writes keys
+    ///    up to `K - c`. A scrolling wrap's new line is blank; it takes the old row's keys
+    ///    `>= c`, `c` lower, then the pass writes keys below `cols`, and an insert moves only
+    ///    the strings of flagged cells (the pass's own; the copied entries sit on cells without
+    ///    the flag, but column 0, which no insert moves). So the `i`-th new line holds no copied
+    ///    key above `K - i c`, and the `m`-th none above `c` (`K - m c <= c`).
+    ///  - (iii) Hence the `(m + 1)`-th wrap's copy reads the same keys above `c` in both prints
+    ///    (none), and the value at `c` it carries to key 0 of its new line is overwritten there
+    ///    before anything reads it (the joiners rebuild the head from the base, which carries no
+    ///    string; with a joiner before the widening one, `c` itself is rewritten before the
+    ///    copy in both). The lines that can differ are the `m` lines the skipped copies made,
+    ///    only in their strings, and nothing reads those but the next wrap's copy (keys `>= c`)
+    ///    and their own pass (inserts, the fill's template); with `max_length` scrolls after
+    ///    the `m`-th, (i) discards all `m` before the REP ends. Copies into rows reached by
+    ///    descent (above the region, or before the first scroll) are never skipped.
+    ///
+    /// The scrolls that follow are counted from the REP's own wraps: from column `x` the first
+    /// line takes `u0 = (cols - x) / 2` more units where the unit fits there (else 0), then a
+    /// wrap; every later line takes `per_line = cols / 2` units (a joiner wrap's line: the
+    /// wrapped unit and `per_line - 1`; after a plain wrap from column `cols`: `per_line`), so
+    /// the REP wraps `W = ceil((count - u0) / per_line)` times. The first `d = scroll_bottom -
+    /// y` of them descend; the first scrolling one is a plain wrap (no copy) when `d = 0` and
+    /// the first line ends at column `cols`. The skip applies when `W >= d + plain + m +
+    /// max_length`.
+    fn chain_copies_to_skip(&self, count: usize, w: usize, inserted: usize) -> usize {
+        let cols = self.services.buffer.cols;
+        let buffer = self.services.buffer.buffer();
+        let (x, y) = (buffer.x, buffer.y);
+        let c = cols.saturating_sub(1);
+        let per_line = cols / w.max(1);
+        if y > buffer.scroll_bottom || c == 0 || per_line == 0 {
+            return 0;
+        }
+        let Some(reach) = self.copy_reach() else {
+            return 0;
+        };
+        // `ceil(K / c) - 1`
+        let m = reach.saturating_sub(1) / c;
+        if m == 0 {
+            return 0;
+        }
+        let u0 = match x + w <= cols {
+            true => (cols - x) / w,
+            false => 0,
+        };
+        let wraps = count.saturating_sub(u0).div_ceil(per_line);
+        let descents = buffer.scroll_bottom - y;
+        let first_end = x + w * u0.min(count);
+        let plain = usize::from(descents == 0 && first_end + inserted > cols);
+        let max_length = buffer.lines.max_length();
+        let needed = descents
+            .saturating_add(plain)
+            .saturating_add(m)
+            .saturating_add(max_length);
+        match wraps >= needed {
+            true => m,
+            false => 0,
+        }
     }
 
     /// LUNETERM: (M7 fix round 5, code review F6 residual) [`InputHandler::print_repeated`]'s
@@ -4379,6 +4513,12 @@ fn set_slot(accu: &mut [Option<i32>; 6], index: usize, value: Option<i32>) {
 /// (scrolling at the bottom margin), carries the cells a joining character widens over, and
 /// clears the rest of the old row. Returns the new cursor row, or `None` where upstream throws
 /// on a missing line.
+///
+/// LUNETERM: (M7 fix round 5) without `strings` the carry copies the cells but not the old
+/// row's combined strings from `old_col` on (upstream's copy); only REP's line fill asks for
+/// that, for a wrap whose new line its own later scrolls discard
+/// ([`InputHandler::chain_copies_to_skip`]).
+#[allow(clippy::too_many_arguments)]
 fn print_wrap(
     services: &mut CoreServices,
     tracker: &mut DirtyRowTracker,
@@ -4387,6 +4527,7 @@ fn print_wrap(
     cur_attr: &AttributeData,
     old_row: usize,
     old_width: u32,
+    strings: bool,
 ) -> Option<usize> {
     let cols = services.buffer.cols;
     let rows = services.buffer.rows;
@@ -4433,7 +4574,9 @@ fn print_wrap(
         // Combining character widens 1 column to 2. Move old character to next line.
         if let (Some(source), Some(buffer_row)) = (source, line_mut(buffer, row)) {
             match source {
-                WrapSource::Cells(cells) => buffer_row.copy_cells_from_source(&cells, 0),
+                WrapSource::Cells(cells) => {
+                    buffer_row.copy_cells_from_source(&cells, 0, strings);
+                }
                 WrapSource::Line(line) => {
                     buffer_row.copy_cells_from(&line, old_col, 0, old_width, false);
                 }
