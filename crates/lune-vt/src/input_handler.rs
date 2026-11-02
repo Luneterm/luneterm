@@ -268,7 +268,7 @@ impl DirtyRowTracker {
 ///    not fit ends voicing until the next drain.
 ///
 ///
-/// LUNETERM (plan M7 D8): three more events keep only the last (the host acts on the latest
+/// LUNETERM: (plan M7 D8) three more events keep only the last (the host acts on the latest
 /// value), replaced in place at the position of the first one queued since the last drain, so a
 /// stream of them costs one event and one payload ([`HostEvent::ClipboardWrite`],
 /// [`HostEvent::CwdChanged`], [`HostEvent::Progress`]); [`HostEvent::UnknownOsc`] stops after
@@ -398,7 +398,7 @@ pub struct InputHandler {
     /// Upstream's `onLineFeed` listener for the Windows wrapping heuristics (`CoreTerminal`'s
     /// `_handleWindowsPtyOptionChange`, plan M6 D6). Off until the host turns it on.
     pub(crate) windows_heuristics: bool,
-    /// LUNETERM (plan M7 D1): the standard extensions' state. It lives here so the parser
+    /// LUNETERM: (plan M7 D1) the standard extensions' state. It lives here so the parser
     /// closures (which get `&mut InputHandler`) and the encoders (which get the terminal) see
     /// the same state, with no reference back to the host.
     pub(crate) ext: ExtState,
