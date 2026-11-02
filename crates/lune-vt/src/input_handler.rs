@@ -120,7 +120,7 @@ use std::sync::Arc;
 use crate::buffer::attribute_data::AttributeData;
 use crate::buffer::buffer::Buffer;
 use crate::buffer::buffer_line::{
-    BufferLine, CellsSource, DEFAULT_ATTR_DATA, MAX_COMBINED_CODE_POINTS, RangeState,
+    BufferLine, CellsSource, DEFAULT_ATTR_DATA, JoinedHead, MAX_COMBINED_CODE_POINTS, RangeState,
 };
 use crate::buffer::buffer_set::BufferActivate;
 use crate::buffer::cell_data::CellData;
@@ -2738,23 +2738,7 @@ impl InputHandler {
             }
         }
 
-        // the head cell every repetition writes and, for a wide unit, its stub, made by
-        // `print`'s calls
-        let (head, stub) = {
-            let mut scratch = BufferLine::new(2, None, false);
-            let mut codes = fill.codes.iter().copied().zip(fill.widths.iter().copied());
-            if let Some((base, width)) = codes.next() {
-                scratch.set_cell_from_codepoint(0, base, width, &cur_attr);
-            }
-            for (code, width) in codes {
-                scratch.add_codepoint_to_cell(0, code, width);
-            }
-            scratch.set_cell_from_codepoint(1, 0, 0, &cur_attr);
-            let (mut head, mut stub) = (CellData::new(), CellData::new());
-            scratch.load_cell(0, &mut head);
-            scratch.load_cell(1, &mut stub);
-            (head, stub)
-        };
+        let (head, stub) = rep_head(fill, &cur_attr);
 
         {
             let buffer = self.services.buffer.buffer_mut();
@@ -2774,6 +2758,9 @@ impl InputHandler {
 
         // (M7 fix round 1) the combined strings of a line filled afresh, shared by the next
         let mut template = None;
+        // (M7 fix round 5) the head string a widened unit's joiner wrap leaves at column 0,
+        // shared by the lines it lands on
+        let mut joined = None;
         // (M7 fix round 3, review S2) whole passes over the last row below the scroll region:
         // from the cursor at `span` (where a pass ends), `per_line` units (a wrap and a line's
         // worth; or, for a widened unit on an odd number of columns, the unit its joiner wraps
@@ -2857,7 +2844,7 @@ impl InputHandler {
                         self.rep_joiner_wraps += 1;
                     }
                 }
-                if !self.print_inner(&fill.codes, false, false) {
+                if !self.print_widened_wrap(fill, &head, &mut joined) {
                     return;
                 }
                 left -= 1;
@@ -2974,6 +2961,131 @@ impl InputHandler {
         }
         let y = buffer.y;
         self.dirty_row_tracker.mark_dirty(y);
+    }
+
+    /// LUNETERM: (M7 fix round 5, code review F6 residual) `print_inner(&fill.codes, false,
+    /// false)` for [`InputHandler::print_repeated`]'s repetition whose base lands on the line
+    /// and whose widening joiner wraps it (`x + 1 <= cols < x + 2`), for a unit whose first
+    /// joiner is the widening one (a base of one cell; VS16, a keycap); any other unit takes
+    /// `print_inner`. The same steps in the same order, from what `rep_alike` read of the unit
+    /// (every repetition prints alike, so each code point's width and join are known): the
+    /// start fix-up and dirty row; the base (link add, insert-mode shift and edge fix-up,
+    /// write); the widening joiner (link add on the old row, `print_wrap` with `old_width` 1,
+    /// the joiner added to column 0, the stub at 1); each later joiner (link add on the new
+    /// row, added to column 0, which the stub puts two cells back); the dirty row. One step
+    /// differs in how, not in what: where the new row holds no string and its first cell the
+    /// base alone (the copy brought none), the joiners' `add_codepoint_to_cell` calls are
+    /// [`BufferLine::join_head_shared`], which leaves the same cell and strings from `head` (the
+    /// cell every repetition writes, built by the same calls) with one map shared by every such
+    /// line instead of a string and a map made and then dropped per line (the line fill's
+    /// template then takes it in `O(1)`). `rep_widened_wrap_equals_print_inner` compares the
+    /// two over rows the wrap scrolls in, the same row below the region and rows reached by
+    /// descent. Returns false where `print_inner` would (a missing line).
+    fn print_widened_wrap(
+        &mut self,
+        fill: &RepFill,
+        head: &CellData,
+        joined: &mut Option<JoinedHead>,
+    ) -> bool {
+        if fill.widens_at != Some(1) || fill.base_width != 1 || fill.codes.len() < 2 {
+            return self.print_inner(&fill.codes, false, false);
+        }
+        let InputHandler {
+            services,
+            cur_attr_data,
+            erase_attr_data_internal,
+            dirty_row_tracker,
+            preceding_join_state,
+            damage,
+            ..
+        } = self;
+        let cols = services.buffer.cols;
+        let insert_mode = services.core.modes.insert_mode;
+        let cur_attr = *cur_attr_data;
+        let link_id = cur_attr.extended.url_id();
+        let null_cell = services.buffer.buffer().get_null_cell(Some(&cur_attr));
+        let base = fill.codes.first().copied().unwrap_or(0);
+
+        let buffer = services.buffer.buffer_mut();
+        let row = abs_y(buffer);
+        let x = buffer.x;
+        let Some(buffer_row) = line_mut(buffer, row) else {
+            return false;
+        };
+        // handle wide chars: reset start_cell-1 if we would overwrite the second cell of a wide
+        // char
+        if x != 0 && buffer_row.get_width(x - 1) == 2 {
+            buffer_row.set_cell_from_codepoint(x - 1, 0, 1, &cur_attr);
+        }
+        dirty_row_tracker.mark_dirty(buffer.y);
+
+        // the base: it fits (`x + 1 <= cols`)
+        if link_id != 0 {
+            add_cursor_line_to_link(services, link_id);
+        }
+        let Buffer { lines, x, .. } = services.buffer.buffer_mut();
+        let Some(buffer_row) = lines.get_mut(row) else {
+            return false;
+        };
+        if insert_mode {
+            buffer_row.insert_cells(*x, 1, &null_cell);
+            if buffer_row.get_width(cols.saturating_sub(1)) == 2 {
+                buffer_row.set_cell_from_codepoint(
+                    cols.saturating_sub(1),
+                    NULL_CELL_CODE,
+                    NULL_CELL_WIDTH,
+                    &cur_attr,
+                );
+            }
+        }
+        buffer_row.set_cell_from_codepoint(*x, base, 1, &cur_attr);
+        *x += 1;
+
+        // the widening joiner: `x + 2 - 1 > cols`, so it wraps the base to the next line
+        if link_id != 0 {
+            add_cursor_line_to_link(services, link_id);
+        }
+        let Some(row) = print_wrap(
+            services,
+            dirty_row_tracker,
+            damage,
+            erase_attr_data_internal,
+            &cur_attr,
+            row,
+            1,
+        ) else {
+            return false;
+        };
+        let Buffer { lines, x, .. } = services.buffer.buffer_mut();
+        let Some(buffer_row) = lines.get_mut(row) else {
+            return false;
+        };
+        // (x is 1: the base at 0, one cell back)
+        let shared = buffer_row.join_head_shared(0, head, joined);
+        if !shared {
+            if let (Some(&code), Some(&width)) = (fill.codes.get(1), fill.widths.get(1)) {
+                buffer_row.add_codepoint_to_cell(0, code, width);
+            }
+        }
+        buffer_row.set_cell_from_codepoint(*x, 0, 0, &cur_attr);
+        *x += 1;
+
+        // the later joiners: they keep the width, so they neither wrap nor move the cursor;
+        // the stub at 1 puts them two cells back, on column 0
+        for (&code, &width) in fill.codes.iter().zip(&fill.widths).skip(2) {
+            if link_id != 0 {
+                add_cursor_line_to_link(services, link_id);
+            }
+            if !shared {
+                if let Some(buffer_row) = line_mut(services.buffer.buffer_mut(), row) {
+                    buffer_row.add_codepoint_to_cell(0, code, width);
+                }
+            }
+        }
+
+        *preceding_join_state = fill.end_state;
+        dirty_row_tracker.mark_dirty(services.buffer.buffer().y);
+        true
     }
 
     /// LUNETERM: (M7 fix round 5, code review F6 residual) [`InputHandler::print_repeated`]'s
@@ -4336,6 +4448,24 @@ fn print_wrap(
     }
     // upstream throws on the next use of a missing row
     has_row.then_some(row)
+}
+
+/// LUNETERM: (review S3, S7) the head cell every repetition of `fill` writes and, for a wide
+/// unit, its stub, made by `print`'s calls on a scratch line.
+fn rep_head(fill: &RepFill, cur_attr: &AttributeData) -> (CellData, CellData) {
+    let mut scratch = BufferLine::new(2, None, false);
+    let mut codes = fill.codes.iter().copied().zip(fill.widths.iter().copied());
+    if let Some((base, width)) = codes.next() {
+        scratch.set_cell_from_codepoint(0, base, width, cur_attr);
+    }
+    for (code, width) in codes {
+        scratch.add_codepoint_to_cell(0, code, width);
+    }
+    scratch.set_cell_from_codepoint(1, 0, 0, cur_attr);
+    let (mut head, mut stub) = (CellData::new(), CellData::new());
+    scratch.load_cell(0, &mut head);
+    scratch.load_cell(1, &mut stub);
+    (head, stub)
 }
 
 /// LUNETERM: (M7 fix round 5) what `print_wrap`'s copy reads of the old row: the cells it

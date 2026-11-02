@@ -133,6 +133,19 @@ fn count_one_shift_fill() {
     ONE_SHIFT_FILLS.with(|count| count.set(count.get() + 1));
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Joiners added as one shared head by this thread's lines (M7 fix round 5,
+    /// `join_head_shared`).
+    static JOINED_HEADS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The number of `join_head_shared` calls that wrote the shared head so far.
+#[cfg(test)]
+pub(crate) fn joined_heads() -> u64 {
+    JOINED_HEADS.with(std::cell::Cell::get)
+}
+
 /// LUNETERM: (M7 fix round 3) equality of side-table values with a cheap first check: the same
 /// allocation for a shared string (`Arc<str>`'s `==` compares the bytes every time).
 trait SameValue {
@@ -1124,6 +1137,16 @@ pub(crate) struct CellsSource {
     combined: SharedRunMap<Arc<str>>,
 }
 
+/// LUNETERM: (M7 fix round 5, code review F6 residual) a line's combined strings when they are
+/// exactly one widened unit's head string at one key, shared by the lines
+/// [`BufferLine::join_head_shared`] writes it on (one map, no allocation per line).
+#[derive(Debug)]
+pub(crate) struct JoinedHead {
+    index: usize,
+    head: CellData,
+    combined: SharedRunMap<Arc<str>>,
+}
+
 /// Typed array based bufferline implementation.
 ///
 /// There are 2 ways to insert data into the cell buffer:
@@ -1535,6 +1558,60 @@ impl BufferLine {
             content |= width << Content::WIDTH_SHIFT;
         }
         self.write(index, CELL_CONTENT, content);
+    }
+
+    /// LUNETERM: (M7 fix round 5, code review F6 residual) `add_codepoint_to_cell(index, j,
+    /// width)` for every joiner `j` of `head` (a combined cell: a base code point and its
+    /// joiners, built by those calls), on a line holding no combined string whose cell
+    /// `index` holds `head`'s base alone (its code point, no string): the first call moves the
+    /// base and the joiner into a string at `index` and sets the combined flag, the later ones
+    /// append, each sets the width, and the content's other bits stay; so the cell's content
+    /// becomes the base's with the code point cleared, the flag set and `head`'s width, and the
+    /// line's strings exactly `{index: head's string}` (the cap on code points applies alike,
+    /// `head` was built through it). Those strings are taken from `cache` (one shared map,
+    /// made on the first call for this `index` and `head`), so a line costs no allocation where
+    /// the calls cost a string, its shared copy and a map. Returns false, having done nothing,
+    /// in every other case (the caller makes the calls).
+    pub(crate) fn join_head_shared(
+        &mut self,
+        index: usize,
+        head: &CellData,
+        cache: &mut Option<JoinedHead>,
+    ) -> bool {
+        let content = self.read(index, CELL_CONTENT);
+        let code = content & Content::CODEPOINT_MASK;
+        let base_alone = index < self.length
+            && content & Content::IS_COMBINED_MASK == 0
+            && code != 0
+            && head.content & Content::IS_COMBINED_MASK != 0
+            && head.combined_data.chars().next().map(u32::from) == Some(code)
+            && head.combined_data.chars().count() > 1;
+        if !base_alone || !self.combined.is_empty() {
+            return false;
+        }
+        let fresh = cache
+            .as_ref()
+            .is_none_or(|cached| cached.index != index || cached.head != *head);
+        if fresh {
+            let mut combined = SharedRunMap::default();
+            combined.insert(index, shared_str(&head.combined_data));
+            *cache = Some(JoinedHead {
+                index,
+                head: head.clone(),
+                combined,
+            });
+        }
+        let Some(cached) = cache.as_ref() else {
+            return false;
+        };
+        self.combined = cached.combined.clone();
+        #[cfg(test)]
+        JOINED_HEADS.with(|count| count.set(count.get() + 1));
+        let joined = (content & !Content::CODEPOINT_MASK & !Content::WIDTH_MASK)
+            | Content::IS_COMBINED_MASK
+            | (head.content & Content::WIDTH_MASK);
+        self.write(index, CELL_CONTENT, joined);
+        true
     }
 
     pub fn insert_cells(&mut self, pos: usize, n: usize, fill_cell_data: &CellData) {
