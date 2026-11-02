@@ -41,6 +41,7 @@ use crate::parser::escape_sequence_parser::EscapeSequenceParser;
 use crate::parser::types::IdentifierError;
 
 pub mod keyboard_protocol;
+pub mod osc52;
 mod unknown_osc;
 pub mod vs16;
 mod xtversion;
@@ -49,6 +50,8 @@ mod xtversion;
 mod ext_tests;
 #[cfg(test)]
 mod keyboard_protocol_tests;
+#[cfg(test)]
+mod osc52_tests;
 #[cfg(test)]
 mod vs16_tests;
 
@@ -69,6 +72,11 @@ pub struct StandardExtensions {
     /// cells wide. `false`: nothing is registered and the active version is untouched. The
     /// host can switch versions afterwards through [`crate::Terminal::unicode_mut`].
     pub vs16: bool,
+    /// The initial value of the OSC 52 clipboard-write gate. `false` (the default): a valid OSC 52
+    /// write is consumed and dropped; `true`: it is queued as [`crate::HostEvent::ClipboardWrite`].
+    /// The host can flip it at any time ([`crate::Terminal::set_clipboard_write`]). Queries are
+    /// never answered either way.
+    pub clipboard_write: bool,
 }
 
 /// Why [`crate::Terminal::install_standard_extensions`] refused.
@@ -116,6 +124,10 @@ pub struct ExtState {
     pub(crate) installed: bool,
     /// Payload code points of the unknown OSC being received (reset at its start).
     pub(crate) unknown_osc_len: usize,
+    /// The OSC 52 being received.
+    pub(crate) osc52: osc52::Osc52State,
+    /// The OSC 52 write gate (plan M7 D9).
+    pub(crate) clipboard_write: bool,
 }
 
 /// The extension [`install`] registers: every handler of the standard set on one parser.
@@ -136,6 +148,7 @@ impl Extension<InputHandler> for StandardSet {
             xtversion::register(parser, name)?;
         }
         keyboard_protocol::register(parser)?;
+        osc52::register(parser);
         unknown_osc::register(parser);
         Ok(())
     }
@@ -158,6 +171,7 @@ pub(crate) fn install(
         }
     }
     input_handler.ext.installed = true;
+    input_handler.ext.clipboard_write = config.clipboard_write;
     if config.vs16 {
         let unicode = &mut input_handler.services.unicode;
         unicode.register(Box::new(UnicodeV11Vs16::new()));
