@@ -11,8 +11,9 @@
 //! (`input_handler`: every handler upstream registers), `CoreTerminal` (`core_terminal`) and the
 //! headless `Terminal` (`headless::terminal`). Replaced rather than ported: `WriteBuffer`
 //! (`Terminal::write` is synchronous), the DI container, the renderer-side decoration service
-//! and the JS buffer API objects. Not yet written: the keyboard encoders (`Keyboard.ts`) and
-//! Lunegit's additions (M7).
+//! and the JS buffer API objects. `Keyboard.ts` is superseded by the key encoders of
+//! `input::key_encoder` (Lunegit's `TerminalKeyEncoder`; plan M7 D4). Lunegit's additions (M7)
+//! are in `ext` and `input`.
 //!
 //! The public face is [`Terminal`], which implements [`VtEngine`] (`engine`): bytes in with
 //! `write`, then `drain_events`, `take_damage` and `viewport` out. The engine has no callbacks,
@@ -48,6 +49,8 @@ pub use engine::{
 pub use ext::{ExtensionError, StandardExtensions};
 pub use extension::Extension;
 pub use headless::terminal::Terminal;
+pub use input::key_encoder::{KeyboardModes, encode_key};
+pub use input::key_event::{TerminalKey, TerminalKeyEvent, TerminalModifiers};
 
 /// xterm.js release this crate ports.
 pub const XTERM_JS_TAG: &str = "6.0.0";
