@@ -24,6 +24,11 @@
 //! - `mouse_event.rs`: `TerminalMouseEvent` mapped onto the ported `CoreMouseService` (plan D5).
 //! - `paste.rs`: `paste_bytes`, xterm.js's `Clipboard.ts` plus the bracketed-paste sanitizer
 //!   (plan D7).
+//!
+//! The encoders are reached through `Terminal` (`key_event`, `key_input`, `char_input`,
+//! `mouse_event`, `focus_event`, `paste`): they read the live modes and return the bytes the
+//! host writes to the PTY, `None` when nothing is sent. The pure functions (`encode_key`,
+//! `paste_bytes`) are public for hosts that hold the modes themselves.
 
 // No-panic gate (plan M4): ported non-test code must not index, unwrap or panic. Tests are
 // exempt; every other lint stays at the workspace level.

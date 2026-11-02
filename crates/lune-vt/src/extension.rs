@@ -5,6 +5,14 @@
 //! D6): handlers for one identifier are tried newest-first, and the first that returns `true`
 //! consumes the sequence. Built-in behaviour is registered first, so an extension can override
 //! it without touching ported code. There is no second dispatch mechanism beside the parser's.
+//!
+//! **The CSI `t` guard does not apply here.** [`crate::input_handler::InputHandler::register_csi_handler`]
+//! (what `Terminal::register_csi_handler` calls) wraps a plain CSI `t` handler so it runs only
+//! for window options the `window_options` setting allows, as xterm.js's `registerCsiHandler`
+//! does. [`Extension::register`] receives the raw parser, so a plain CSI `t` handler registered
+//! here is *not* wrapped and sees every XTWINOPS sequence the application sends. An extension
+//! that registers CSI `t` must check `TerminalOptions::window_options` itself, as
+//! [`crate::input_handler::param_to_window_option`] does (the standard extensions register none).
 
 use crate::parser::escape_sequence_parser::EscapeSequenceParser;
 use crate::parser::types::{IdentifierError, ParserHost};

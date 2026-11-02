@@ -1,8 +1,9 @@
 //! The legacy (xterm) key and character generators. Port of the key and char parts of Lunegit's
 //! `Lunegit.Infrastructure/Terminal/XtermVtInputEncoder.cs` (`GenerateKeyInput`,
 //! `GenerateCharInput`; plan M7 step 5), itself a byte-for-byte port of XTerm.NET's
-//! `KeyboardInputGenerator`. Headless xterm.js has no input encoder, so these are what Lunegit
-//! sends; they are not xterm.js `Keyboard.ts` (see `key_encoder_tests.rs` for how its tests map).
+//! `KeyboardInputGenerator` (MIT, `licenses/XTerm.NET-LICENSE`). Headless xterm.js has no input
+//! encoder, so these are what Lunegit sends; they are not xterm.js `Keyboard.ts` (see
+//! `key_encoder_tests.rs` for how its tests map).
 //!
 //! Mouse is not here: [`crate::services::core_mouse_service`] encodes it from the engine's own
 //! mode state (plan D5).
