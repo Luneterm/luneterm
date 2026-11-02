@@ -607,6 +607,128 @@ impl<V: Clone + PartialEq + SameValue> RunMap<V> {
         (values, index)
     }
 
+    /// LUNETERM: (M7 fix round 5, code review F6 residual) `k` self-copies `S` of the map with
+    /// shift `c`: `k` times `self.copy_shifted_from(&snapshot, c, 0)`, `snapshot` a copy of the
+    /// map taken before each (upstream's `copyCellsFrom` FIXME copy of a row onto itself, which
+    /// a widened unit's joiner wrap makes below the scroll region on an odd number of columns).
+    /// `S` gives key `j` the value at `j + c` where that key is held and keeps its own value
+    /// otherwise (it only sets). Closed form, with `M` the map before:
+    ///
+    /// ```text
+    /// F_k(M)[j] = M[j + i c] for the largest i in 0..=k with j + i c held; unheld if none
+    /// ```
+    ///
+    /// `F_k = S^k`, since `S(F_{k-1}(M)) = F_k(M)`: at `j`, `F_{k-1}(M)[j + c]` is
+    /// `M[j + i' c]` for the largest held `i'` in `1..=k`; where none is held it is unheld and
+    /// `S` keeps `F_{k-1}(M)[j]`, which is then `M[j]` (`i = 0`, the only one left) or unheld,
+    /// as `F_k(M)[j]` is. `F_0` is the identity. So every key `j <= K` (the last key) holds the
+    /// value of the largest held key of its class (`j mod c`) in `j..=j + k c`; keys past `K`
+    /// stay unheld (`F` never makes an entry from nothing, and keeps `M[j]` when nothing above
+    /// it in the window is held). Once `k c > K` every window reaches the class's last key: the
+    /// settled form, the same for every larger `k`.
+    ///
+    /// Cost `O(K + runs)`: one walk of the runs checks whether the map is a fixed point of `S`
+    /// (then `F_k(M) = M`, and later REPs over a settled row cost that walk only); otherwise
+    /// one index of the keys `0..=K` ([`RunMap::dense_indexed`]), the largest held key at or
+    /// below each key on its class in one ascending pass, each key's window read off it, and
+    /// the runs rebuilt in key order with touching equal values merged (the one form) in one
+    /// bulk build — or nothing when no key changes. Returns false, having changed nothing,
+    /// where the last key is `usize::MAX` (no index of `K + 1` keys). (Lines hold the map
+    /// shared: [`SharedRunMap::shift_classes_repeatedly`]; this one is for the tests.)
+    #[cfg(test)]
+    fn shift_classes_repeatedly(&mut self, c: usize, k: usize) -> bool {
+        match self.classes_shifted(c, k) {
+            Some(Some(runs)) => {
+                self.runs = runs;
+                true
+            }
+            Some(None) => true,
+            None => false,
+        }
+    }
+
+    /// [`RunMap::shift_classes_repeatedly`]'s runs: `Some(None)` when no key changes, `None`
+    /// where it cannot be computed (the last key is `usize::MAX`).
+    #[allow(clippy::type_complexity)]
+    fn classes_shifted(&self, c: usize, k: usize) -> Option<Option<BTreeMap<usize, (usize, V)>>> {
+        if k == 0 || c == 0 {
+            return Some(None);
+        }
+        let Some(&(last, _)) = self.runs.last_key_value().map(|(_, run)| run) else {
+            return Some(None);
+        };
+        if last < c || self.fixed_under_shift(c) {
+            // (no key a copy reads, or every one already equal to the key it writes)
+            return Some(None);
+        }
+        let n = last.checked_add(1)?;
+        let (values, index) = self.dense_indexed(0, n);
+        // per key, the largest held key at or below it on its class (`NONE`: none)
+        const NONE: usize = usize::MAX;
+        let mut below: Vec<usize> = Vec::with_capacity(n);
+        for (j, id) in index.iter().enumerate() {
+            let held = match (id, j.checked_sub(c)) {
+                (Some(_), _) => j,
+                (None, Some(before)) => below.get(before).copied().unwrap_or(NONE),
+                (None, None) => NONE,
+            };
+            below.push(held);
+        }
+        let mut changed = false;
+        // (first, last, value index), touching equal values merged
+        let mut built: Vec<(usize, usize, usize)> = Vec::new();
+        for (j, &id_before) in index.iter().enumerate() {
+            // the window's top key on the class, `j + min(k, (K - j) / c) c <= K`
+            let top = j + k.min((last - j) / c) * c;
+            let id = below
+                .get(top)
+                .copied()
+                .filter(|&q| q != NONE && q >= j)
+                .and_then(|q| index.get(q).copied().flatten());
+            changed |= id != id_before;
+            let Some(id) = id else {
+                continue;
+            };
+            match built.last_mut() {
+                Some((_, end, held))
+                    if end.checked_add(1) == Some(j)
+                        && (*held == id || values.get(*held) == values.get(id)) =>
+                {
+                    *end = j;
+                }
+                _ => built.push((j, j, id)),
+            }
+        }
+        if !changed {
+            return Some(None);
+        }
+        let runs = built
+            .into_iter()
+            .filter_map(|(first, end, id)| {
+                values.get(id).map(|value| (first, (end, value.clone())))
+            })
+            .collect();
+        Some(Some(runs))
+    }
+
+    /// Whether the self-copy with shift `c` ([`RunMap::shift_classes_repeatedly`]'s `S`)
+    /// leaves the map as it is: every key `k >= c` held has `k - c` held with the same value.
+    /// One walk of the runs: each run from `c` on, moved down by `c`, must lie inside one run
+    /// of the same value (touching equal values are one run), and those ranges ascend.
+    fn fixed_under_shift(&self, c: usize) -> bool {
+        let mut dest = self.runs.iter().peekable();
+        for (first, last, value) in self.runs_cut(c, None) {
+            let (lo, hi) = (first - c, last - c);
+            while dest.next_if(|(_, (end, _))| *end < lo).is_some() {}
+            match dest.peek() {
+                Some(&(&start, (end, held)))
+                    if start <= lo && *end >= hi && held.same_value(value) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
     /// (M7 fix round 3) the values at ascending keys from `lo` on, each found in amortized
     /// O(1) by walking the runs once (`get` searches the tree per key).
     fn cursor(&self, lo: usize) -> RunCursor<'_, V> {
@@ -866,6 +988,21 @@ impl<V: Clone + PartialEq + SameValue> SharedRunMap<V> {
         }
     }
 
+    /// [`RunMap::shift_classes_repeatedly`], without copying a shared map that does not change.
+    fn shift_classes_repeatedly(&mut self, c: usize, k: usize) -> bool {
+        let Some(map) = self.0.as_deref() else {
+            return true;
+        };
+        match map.classes_shifted(c, k) {
+            Some(Some(runs)) => {
+                self.0 = Some(Arc::new(RunMap { runs }));
+                true
+            }
+            Some(None) => true,
+            None => false,
+        }
+    }
+
     fn copy_shifted_from(&mut self, src: &SharedRunMap<V>, src_col: usize, dest_col: usize) {
         if let Some(src) = src.0.as_deref().filter(|map| !map.runs.is_empty()) {
             self.make_mut().copy_shifted_from(src, src_col, dest_col);
@@ -1027,6 +1164,17 @@ impl BufferLine {
     /// copy of the strings from a column on (`copy_cells_from`'s FIXME) can reach.
     pub fn last_combined_key(&self) -> Option<usize> {
         self.combined.last_key()
+    }
+
+    /// LUNETERM: (M7 fix round 5, code review F6 residual) the combined strings after `k`
+    /// copies of the line's strings from `c` on onto the line itself, `c` to the left (`k`
+    /// times the map part of `copy_cells_from(&snapshot, c, 0, ..)`, `snapshot` this line
+    /// before each), in `O(K + runs)` (`K` = the last key) instead of `k` copies of every
+    /// entry ([`RunMap::shift_classes_repeatedly`] has the closed form and its proof). Cells
+    /// and extended attributes are left alone. Returns false, having changed nothing, where it
+    /// cannot (the last key is `usize::MAX`).
+    pub(crate) fn shift_combined_classes_repeatedly(&mut self, c: usize, k: usize) -> bool {
+        self.combined.shift_classes_repeatedly(c, k)
     }
 
     /// The combined strings as runs `(first key, last key, string)`, for tests that pin how
