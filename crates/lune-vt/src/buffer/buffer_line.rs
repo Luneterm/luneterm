@@ -646,7 +646,8 @@ impl<V: Clone + PartialEq + SameValue> RunMap<V> {
     /// below each key on its class in one ascending pass, each key's window read off it, and
     /// the runs rebuilt in key order with touching equal values merged (the one form) in one
     /// bulk build — or nothing when no key changes. Returns false, having changed nothing,
-    /// where the last key is `usize::MAX` (no index of `K + 1` keys). (Lines hold the map
+    /// where that index would be large against the keys held (`K + 1` more than twice them
+    /// plus 4096: sparse high keys, up to `usize::MAX`; the callers then copy run by run). (Lines hold the map
     /// shared: [`SharedRunMap::shift_classes_repeatedly`]; this one is for the tests.)
     #[cfg(test)]
     fn shift_classes_repeatedly(&mut self, c: usize, k: usize) -> bool {
@@ -661,7 +662,7 @@ impl<V: Clone + PartialEq + SameValue> RunMap<V> {
     }
 
     /// [`RunMap::shift_classes_repeatedly`]'s runs: `Some(None)` when no key changes, `None`
-    /// where it cannot be computed (the last key is `usize::MAX`).
+    /// where the dense index is not affordable (see there).
     #[allow(clippy::type_complexity)]
     fn classes_shifted(&self, c: usize, k: usize) -> Option<Option<BTreeMap<usize, (usize, V)>>> {
         if k == 0 || c == 0 {
@@ -675,6 +676,9 @@ impl<V: Clone + PartialEq + SameValue> RunMap<V> {
             return Some(None);
         }
         let n = last.checked_add(1)?;
+        if n > self.len().saturating_mul(2).saturating_add(4096) {
+            return None;
+        }
         let (values, index) = self.dense_indexed(0, n);
         // per key, the largest held key at or below it on its class (`NONE`: none)
         const NONE: usize = usize::MAX;
@@ -1237,7 +1241,7 @@ impl BufferLine {
     /// before each), in `O(K + runs)` (`K` = the last key) instead of `k` copies of every
     /// entry ([`RunMap::shift_classes_repeatedly`] has the closed form and its proof). Cells
     /// and extended attributes are left alone. Returns false, having changed nothing, where it
-    /// cannot (the last key is `usize::MAX`).
+    /// cannot cheaply (sparse high keys, [`RunMap::shift_classes_repeatedly`]).
     pub(crate) fn shift_combined_classes_repeatedly(&mut self, c: usize, k: usize) -> bool {
         self.combined.shift_classes_repeatedly(c, k)
     }

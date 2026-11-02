@@ -3230,7 +3230,7 @@ impl InputHandler {
     /// the row's combined strings the effect of the first `p - 1` passes
     /// ([`BufferLine::shift_combined_classes_repeatedly`] with `c = cols - 1`, `k = p - 1`) and
     /// returns true; the caller drops those `(p - 1) × per_line` units, and the last whole pass
-    /// then prints for real. Otherwise (or where the last key is `usize::MAX`) it changes
+    /// then prints for real. Otherwise (or where the strings are sparse high keys) it changes
     /// nothing and returns false.
     ///
     /// A pass from `span` is `per_line` units: the one whose base lands on the last column `c`
@@ -4535,17 +4535,15 @@ fn print_wrap(
     let buffer = services.buffer.buffer_mut();
     let old_col = buffer.x.saturating_sub(old_width);
     // LUNETERM: (M7 fix round 5, code review F6 residual) what the copy below reads of the old
-    // row, taken now: its `old_width` cells from `old_col` and its combined strings (shared),
-    // not a clone of the whole row (`O(len)` per wrap on a long row). Upstream reads the row
-    // after the scroll, which leaves the old row's cells alone unless the row leaves the list
-    // (the case it was cloned for before), so the cells read are the same.
-    let source = match old_width {
-        0 => None,
-        _ => buffer.lines.get(old_row).map(|line| {
-            line.cells_source(old_col, old_width)
-                .map_or_else(|| WrapSource::Line(line.clone()), WrapSource::Cells)
-        }),
+    // row: its `old_width` cells from `old_col` and its combined strings (shared), not a clone of
+    // the whole row (`O(len)` per wrap on a long row). Read where upstream reads it: the old
+    // row's place after the scroll (which, with one row and no scrollback, is the recycled
+    // blank row), or the row itself, taken before the scroll, when it leaves the list.
+    let source_of = |line: &BufferLine| {
+        line.cells_source(old_col, old_width)
+            .map_or_else(|| WrapSource::Line(line.clone()), WrapSource::Cells)
     };
+    let mut detached = None;
     buffer.x = old_width;
     buffer.y += 1;
     // where `oldRow` is after this branch
@@ -4553,6 +4551,9 @@ fn print_wrap(
     if buffer.y == buffer.scroll_bottom.saturating_add(1) {
         buffer.y -= 1;
         old_row_after = old_row_after_scroll(buffer, old_row);
+        if old_width > 0 && old_row_after.is_none() {
+            detached = buffer.lines.get(old_row).map(source_of);
+        }
         let erase = erase_attr(erase_internal, cur_attr);
         services.buffer.scroll(&erase, true);
         scrolled(damage, tracker, services.buffer.buffer());
@@ -4572,6 +4573,10 @@ fn print_wrap(
     let has_row = buffer.lines.get(row).is_some();
     if old_width > 0 && has_row {
         // Combining character widens 1 column to 2. Move old character to next line.
+        let source = match old_row_after {
+            Some(index) => buffer.lines.get(index).map(source_of),
+            None => detached,
+        };
         if let (Some(source), Some(buffer_row)) = (source, line_mut(buffer, row)) {
             match source {
                 WrapSource::Cells(cells) => {
