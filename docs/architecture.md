@@ -475,13 +475,31 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     after the scrollback was dropped from the below-region floor, plain below-region REP is
     540 ns / 5.9 us (80x24 / 300x100 sb10k), VS16 short-line 6.5 us (was 2.50 ms, ~385x), the
     no-reflow long-row `e U+0301` L=2000 is 363.8 us (was 48.4 ms, ~133x), and the joining-base
-    REP is ~400 ns at every size (was ~0.9 ms, ~2000x). Two sub-targets are not met and are left
-    for user acceptance (the findings' fallback, like Q23): below a region the combined units are
-    ~10-14x plain — the inherent per-combined-cell cost, not the scrollback (the ratio is the same
-    before and after the fix); and the below-region wraparound-on insert on a long row is
-    O(L^2 / cols) (each of `L/cols` passes shifts the whole row), so `e U+0301`/VS16 at L=2000 are
-    364 / 189 us. A follow-up could share the combined write in that insert fill and batch the
-    wrapping below-region insert as step 13 batched the no-wrap one.
+    REP is ~400 ns at every size (was ~0.9 ms, ~2000x). Two sub-targets were left open there and
+    are met by fix round 3 (next item).
+  - **M7 fix round 3** (review S2's two open targets; figures `bench-rep.sh`, load 9.7, ratios
+    within a table). Below a scroll region in insert mode every wrap lands on the last row, so
+    `print_repeated` compares the state a whole pass reads (the row's first `cols` cells, or the
+    whole line and its entries past it when the hidden tail is no longer than what a pass pushes
+    into it) before and after each pass, and once a pass leaves it as it found it takes the rest
+    of the whole passes at once: nothing to do on a short row, one
+    `BufferLine::insert_block_repeatedly` (O(len), proven against its loop) on a long row's tail.
+    The line fill's insert passes lost their per-cell side-table work where the writes hide the
+    inserts' entries (`insert_cells_repeatedly_then_set`, `insert_cell_strided_then_set`: one
+    shift, the fix-ups, the writes), `insert_cells`' shift is one pass (`shift_cells_right`), and
+    the `RunMap`s read in one walk (indexed dense reads, cut-run walks, a cursor, range splicing).
+    Below-region REP at 80x24 / 300x100 sb10k: plain 101 / 234 ns, `e U+0301` 144 / 295 ns (1.4x /
+    1.3x), wide cluster 2.2x / 2.3x, VS16 2.4x / 2.4x, keycap 2.4x / 2.3x, `a` in a link or with an
+    underline colour 1.5x (was 9.8-14.2x plain, and 2.5-3.1 ms per byte before round 2). The
+    no-reflow long row (Windows 10 after a narrowing, wraparound on) is linear in L: `e U+0301` at
+    L = 300 / 1000 / 2000 is 1.9 / 6.0 / 12.5 us (was 363.8 us at 2000, and 48.4 ms before round
+    2), VS16 9.2 us, `a` in a link 13.0 us, with an underline colour 12.3 us (the review's 51.6 /
+    44.4 ms), against 10.1 us for the step-13 no-wrap insert of `e U+0301` from 2000 in the same
+    run (itself 26.7 us before this round). Left: a widened unit (VS16, keycap) on an odd number
+    of columns is wrapped by its joiner, whose wrap copies the old row's strings from `cols - 1`
+    on, the tail's included (upstream's copy), so on a long row its passes settle only with the
+    tail: 53.6 us per byte at L = 2000 narrowed to 79 columns (12.5x plain there; short rows 3.1x
+    / 3.4x).
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as
