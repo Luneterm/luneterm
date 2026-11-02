@@ -31,6 +31,11 @@
 //!    keycap at 79x24 and 299x100, and on a row of 2,000 cells narrowed to 79 columns in
 //!    Windows mode; a widened unit's joiner wraps its base there, and that wrap copies the old
 //!    row's strings (upstream), so the long row's passes settle only with its tail.
+//!  - **REP at odd widths over narrowed rows of strings** (M7 fix round 4, code review F6):
+//!    rows of L cells each holding a letter and a combining mark, narrowed to 79 or 21 columns
+//!    in Windows mode, below a region and at the scroll bottom, with and without insert mode;
+//!    a widened unit's wraps copy the rows' strings there, so the cut floor grows with the
+//!    rows' last key. Plain `a` in the same setup is the reference.
 //!  - **REP of a joining-base unit** (M7 fix round 2, review S3): a lone combining mark the
 //!    cursor sits on (wraparound off, a wide char skipped at the last column); every repetition
 //!    appends to the one capped cell, so the cost tracks plain REP.
@@ -585,6 +590,104 @@ fn below_region_odd() {
     }
 }
 
+/// REP of a widened unit at odd widths over narrowed rows of strings (M7 fix round 4, code
+/// review F6): Windows mode (no reflow), every row written as L cells each holding a letter and a
+/// combining mark (the marks cycle through U+0300..U+036F, so neighbouring strings differ), then
+/// shrunk to `cols` (odd); below a region of rows 1..=10 (the cursor on the last row) and at the
+/// scroll bottom, with and without insert mode. A widened unit's joiner wraps its base on an odd
+/// number of columns, and each such wrap copies the old row's strings from the last column on,
+/// `cols - 1` to the left (upstream's copy), so the REP cut floor grows with the rows' last key:
+/// `ceil((K + 1) / (cols - 1)) + 1` more lines of units. Plain `a` in the same setup is the
+/// reference.
+fn odd_widths_over_strings() {
+    println!();
+    println!(
+        "REP at odd widths over narrowed rows of strings, Windows mode, scrollback 10,000 (ns per \
+         input byte, median of {RUNS})"
+    );
+    let configs: [(usize, usize); 4] = [(79, 300), (79, 1_000), (79, 2_000), (21, 2_000)];
+    let mut header = format!("{:<34}", "variant");
+    for (cols, l) in configs {
+        header.push_str(&format!(" {:>14}", format!("L={l} -> {cols}")));
+    }
+    println!("{header}");
+    const BELOW: &str = "\x1b[1;10r\x1b[999;1H";
+    const BOTTOM: &str = "\x1b[999;1H";
+    let cases: [(&str, &str, &str, Make); 7] = [
+        (
+            "plain a, below, insert",
+            "a",
+            "\x1b[4h",
+            new_winmode_terminal,
+        ),
+        ("plain a, below", "a", "", new_winmode_terminal),
+        (
+            "VS16, below, insert",
+            VS16,
+            "\x1b[4h",
+            new_winmode_vs16_terminal,
+        ),
+        ("VS16, below", VS16, "", new_winmode_vs16_terminal),
+        ("keycap, below", KEYCAP, "", new_winmode_vs16_terminal),
+        (
+            "VS16, scroll bottom, insert",
+            VS16,
+            "\x1b[4h",
+            new_winmode_vs16_terminal,
+        ),
+        ("VS16, scroll bottom", VS16, "", new_winmode_vs16_terminal),
+    ];
+    for (name, unit, modes, new_term) in cases {
+        let data = stream(unit);
+        let place = if name.contains("below") {
+            BELOW
+        } else {
+            BOTTOM
+        };
+        let mut row = format!("{name:<34}");
+        for (cols, l) in configs {
+            let make = || {
+                let mut term = new_term(l, 24, 10_000);
+                let mut text = String::new();
+                for c in 0..l {
+                    text.push(char::from(b'a' + (c % 26) as u8));
+                    text.push(char::from_u32(0x300 + (c % 112) as u32).unwrap_or('\u{301}'));
+                }
+                for _ in 0..24 {
+                    term.write(text.as_bytes());
+                }
+                term.resize(cols, 24);
+                term.write(place.as_bytes());
+                term.write(modes.as_bytes());
+                term
+            };
+            // the long row survived the shrink and holds its strings
+            {
+                let term = make();
+                let buffer = term.core().input_handler().services().buffer.buffer();
+                let last = buffer.lines.get(buffer.ybase + 23);
+                assert_eq!(
+                    last.map_or(0, |line| line.len()),
+                    l,
+                    "the long row did not survive"
+                );
+                assert!(
+                    last.is_some_and(|line| line.combined_len() + 2 >= l),
+                    "the long row lost its strings"
+                );
+            }
+            let ns = measure(make, &data, |t| {
+                assert!(
+                    some_cell_has(t, unit),
+                    "odd-width string-row REP printed nothing"
+                );
+            });
+            row.push_str(&format!(" {:>14}", format_ns(ns)));
+        }
+        println!("{row}");
+    }
+}
+
 /// REP of a unit whose first code point joins (review S3 round 2): a lone combining mark left
 /// at `cols - 3` by a wide char skipped at the last column without wraparound, the cursor on
 /// it; `3 x REP` after the one construction. Every repetition appends to the one cell, which
@@ -657,6 +760,7 @@ fn main() {
     below_region();
     below_region_no_reflow();
     below_region_odd();
+    odd_widths_over_strings();
     joining_base();
     println!();
     println!("load average after: {}", load_average());
