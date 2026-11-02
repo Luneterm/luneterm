@@ -201,7 +201,7 @@ mod osc52 {
     use super::{Result, bytes_hex, field, num, section};
 
     /// SHA-256 (FIPS 180-4), so the golden's text digests can be checked without a dependency.
-    fn sha256(data: &[u8]) -> String {
+    pub(super) fn sha256(data: &[u8]) -> String {
         const K: [u32; 64] = [
             0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
             0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
@@ -419,6 +419,241 @@ mod osc52 {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
         // the instrument saw real copies (a loop that checks nothing would pass the rest)
         assert!(copies > 40, "{copies}");
+        Ok(())
+    }
+}
+
+// --- OSC 7 / 9;9 / 9;4 / 133 and the 2026 latch (plan M7 step 8) ----------------------------------
+//
+// The three scanner goldens are replayed through `Terminal::write`, step by step, one terminal per
+// case (the scanner state carries across the steps of a case, so does the terminal). The golden
+// columns are the scanner's state after each step; the terminal reports events, so each file has a
+// small model that folds the events into the same state. Differences from Lunegit, all listed:
+//  - framing (plan M7 D3): the parser's OSC framing is used, not a byte scanner's. No golden row
+//    depends on it: none has an ESC, CAN, SUB or C1 control inside an OSC body, a payload over the
+//    parser's limit, or a C0 control the parser would drop;
+//  - the control-character tightening: a cwd with a C0, DEL or C1 control after decoding is
+//    dropped (row `osc7_nul_escape`: Lunegit gives "/" + NUL, here: no event);
+//  - `sync_intermediate` (`CSI ? 2026 SP h`): Lunegit's scanner ignores intermediates and latches;
+//    with an intermediate the sequence is a different function in the parser, so the latch does
+//    not set and nothing is queued;
+//  - the latch is visible to the host only while a command runs (`SyncUpdateInCommand`), so the
+//    golden's `sync` column is compared as `sync && running`;
+//  - a lone ESC inside an OSC ends it at the ESC (the parser's table, as upstream), where
+//    Lunegit's scanner waits for the `\` of ST. A step that ends with ESC and is followed by a
+//    step that is `5c` is therefore compared with the state after the `5c` step.
+
+mod osc_scanners {
+    use lune_vt::{CommandMarkKind, HostEvent, ProgressState, StandardExtensions, Terminal};
+    use lune_vt_conformance::lunegit_input::{InputKind, InputSection, expand_spec, load_input};
+
+    use super::osc52::sha256;
+    use super::{Result, field, num, section};
+
+    /// The golden row to compare step `i` against: the next one when step `i` ends with ESC and
+    /// the next step is the `\` of ST (see the header).
+    fn expected_row<'a>(
+        s: &InputSection,
+        steps: &[&'a Vec<String>],
+        i: usize,
+    ) -> Result<&'a Vec<String>> {
+        let row = steps.get(i).ok_or("no step")?;
+        let ends_with_esc = field(s, row, "bytes")?.ends_with("1b");
+        if let (true, Some(next)) = (ends_with_esc, steps.get(i + 1)) {
+            if field(s, next, "bytes")? == "5c" {
+                return Ok(next);
+            }
+        }
+        Ok(row)
+    }
+
+    /// A case name and its rows, one per step.
+    type Case<'a> = (&'a str, Vec<&'a Vec<String>>);
+
+    /// The rows of a section grouped by `case`, steps in file order.
+    fn cases(s: &InputSection) -> Result<Vec<Case<'_>>> {
+        let mut out: Vec<Case<'_>> = Vec::new();
+        for row in &s.rows {
+            let case = field(s, row, "case")?;
+            let step: usize = field(s, row, "step")?.parse()?;
+            match out.last_mut() {
+                Some((name, steps)) if *name == case => {
+                    if steps.len() != step {
+                        return Err(format!("{case}: step {step} out of order").into());
+                    }
+                    steps.push(row);
+                }
+                _ => {
+                    if step != 0 {
+                        return Err(format!("{case}: first step is {step}").into());
+                    }
+                    out.push((case, vec![row]));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn terminal() -> Result<Terminal> {
+        let mut t = Terminal::new([]);
+        t.install_standard_extensions(&StandardExtensions::default())?;
+        Ok(t)
+    }
+
+    #[test]
+    fn osc_cwd_golden_rows_are_reproduced() -> Result<()> {
+        let golden = load_input(InputKind::OscCwd)?;
+        let s = section(&golden, "feed")?;
+        let mut failures = Vec::new();
+        let (mut steps_checked, mut tightened) = (0, 0);
+        for (case, steps) in cases(s)? {
+            let mut t = terminal()?;
+            let mut latest: Option<Vec<u8>> = None;
+            let mut want_latest: Option<(Option<Vec<u8>>, usize, String)> = None;
+            for (i, row) in steps.iter().enumerate() {
+                t.write(&expand_spec(field(s, row, "bytes")?)?);
+                for event in t.drain_events() {
+                    if let HostEvent::CwdChanged(path) = event {
+                        latest = Some(path.into_bytes());
+                    }
+                }
+                let want_row = expected_row(s, &steps, i)?;
+                // the value is in `cwd-hex`, or, past 256 characters, only its length and digest
+                let golden_cwd: Option<(Option<Vec<u8>>, usize, String)> = match (
+                    field(s, want_row, "cwd-hex")?,
+                    field(s, want_row, "cwd-bytes")?,
+                ) {
+                    ("-", "-") => None,
+                    ("-", len) => Some((
+                        None,
+                        len.parse()?,
+                        field(s, want_row, "cwd-sha256")?.to_owned(),
+                    )),
+                    (hex, len) => Some((
+                        Some(expand_spec(hex)?),
+                        len.parse()?,
+                        field(s, want_row, "cwd-sha256")?.to_owned(),
+                    )),
+                };
+                let golden_cwd = match golden_cwd {
+                    Some((Some(bytes), _, _)) if bytes.iter().any(|b| *b < 0x20 || *b == 0x7f) => {
+                        // the tightening: dropped, so the state does not move
+                        tightened += 1;
+                        want_latest.clone()
+                    }
+                    other => other,
+                };
+                want_latest = golden_cwd;
+                let same = match (&latest, &want_latest) {
+                    (None, None) => true,
+                    (Some(got), Some((hex, len, sha))) => {
+                        got.len() == *len
+                            && hex.as_ref().is_none_or(|bytes| bytes == got)
+                            && sha256(got) == *sha
+                    }
+                    _ => false,
+                };
+                if !same {
+                    failures.push(format!(
+                        "{case} step {}: latest {} bytes, want {} bytes",
+                        field(s, row, "step")?,
+                        latest.as_ref().map_or(0, Vec::len),
+                        want_latest.as_ref().map_or(0, |(_, len, _)| *len)
+                    ));
+                }
+                steps_checked += 1;
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert_eq!(tightened, 1, "the one row with a control character");
+        assert_eq!(steps_checked, s.rows.len());
+        Ok(())
+    }
+
+    #[test]
+    fn osc_progress_golden_rows_are_reproduced() -> Result<()> {
+        let golden = load_input(InputKind::OscProgress)?;
+        let s = section(&golden, "feed")?;
+        let mut failures = Vec::new();
+        for (case, steps) in cases(s)? {
+            let mut t = terminal()?;
+            let mut latest = (ProgressState::None, 0u8);
+            for (i, row) in steps.iter().enumerate() {
+                t.write(&expand_spec(field(s, row, "bytes")?)?);
+                for event in t.drain_events() {
+                    if let HostEvent::Progress(p) = event {
+                        latest = (p.state, p.percent);
+                    }
+                }
+                let row = expected_row(s, &steps, i)?;
+                let state = match field(s, row, "state")? {
+                    "None" => ProgressState::None,
+                    "Normal" => ProgressState::Normal,
+                    "Error" => ProgressState::Error,
+                    "Indeterminate" => ProgressState::Indeterminate,
+                    "Warning" => ProgressState::Warning,
+                    other => return Err(format!("unknown state {other}").into()),
+                };
+                let want = (state, u8::try_from(num(field(s, row, "percent")?)?)?);
+                if latest != want {
+                    failures.push(format!(
+                        "{case} step {}: got {:?} want {want:?}",
+                        field(s, row, "step")?,
+                        latest
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn osc_command_golden_rows_are_reproduced() -> Result<()> {
+        let golden = load_input(InputKind::OscCommand)?;
+        let s = section(&golden, "feed")?;
+        let mut failures = Vec::new();
+        for (case, steps) in cases(s)? {
+            let mut t = terminal()?;
+            let (mut running, mut starts, mut sync) = (false, 0u32, false);
+            for (i, row) in steps.iter().enumerate() {
+                t.write(&expand_spec(field(s, row, "bytes")?)?);
+                let row = expected_row(s, &steps, i)?;
+                for event in t.drain_events() {
+                    match event {
+                        HostEvent::CommandMark(mark) => match mark.kind {
+                            CommandMarkKind::OutputStart => {
+                                running = true;
+                                starts += 1;
+                                sync = false;
+                            }
+                            CommandMarkKind::PromptStart | CommandMarkKind::CommandFinished => {
+                                running = false;
+                                sync = false;
+                            }
+                            CommandMarkKind::PromptEnd => {}
+                        },
+                        HostEvent::SyncUpdateInCommand => sync = true,
+                        _ => {}
+                    }
+                }
+                let want_running = field(s, row, "running")? == "1";
+                let want_starts = num(field(s, row, "starts")?)?;
+                // the host sees the latch only while a command runs
+                let mut want_sync = field(s, row, "sync")? == "1" && want_running;
+                if case == "sync_intermediate" && field(s, row, "step")? != "0" {
+                    want_sync = false;
+                }
+                if (running, starts, sync) != (want_running, want_starts, want_sync) {
+                    failures.push(format!(
+                        "{case} step {}: got running {running} starts {starts} sync {sync}, \
+                         want {want_running} {want_starts} {want_sync}",
+                        field(s, row, "step")?
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
         Ok(())
     }
 }
