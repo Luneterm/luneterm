@@ -295,7 +295,7 @@ fn to_i64(n: usize) -> i64 {
 /// `CoreTerminal.reset` on the handler alone, so the RIS handler (inside a parse) can run it.
 pub(crate) fn core_reset(input_handler: &mut InputHandler) {
     input_handler.reset();
-    // LUNETERM (plan M7 D11): RIS clears the kitty keyboard stacks and modifyOtherKeys, as
+    // LUNETERM: (plan M7 D11) RIS clears the kitty keyboard stacks and modifyOtherKeys, as
     // Lunegit's `ESC c` handler does; this is the one path RIS and `Terminal::reset` share.
     input_handler.ext.keyboard.reset();
     let services = &mut input_handler.services;
