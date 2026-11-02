@@ -4,7 +4,8 @@
 //! Rust notes (see `docs/porting-xterm.md` and plan M5 D1):
 //!  - Upstream holds `IMarker` objects and registers `marker.onDispose(() => _removeMarkerFromLink)`
 //!    on each. Markers here are [`MarkerId`]s in the buffer's [`MarkerSet`], and disposal is a
-//!    log the buffer keeps. **Host duty (M6):** after anything that can dispose markers (a scroll
+//!    log the buffer keeps. **Host duty (done by `InputHandler::forward_disposed_markers`, which
+//!    `CoreTerminal` calls after every public mutation):** after anything that can dispose markers (a scroll
 //!    that trims, `clear_markers`, resize, activating the normal buffer), drain
 //!    `Buffer::take_disposed_markers()` of *both* buffers of the [`BufferService`] and pass the
 //!    ids to [`OscLinkService::on_markers_disposed`], before the next call to this service.
@@ -17,15 +18,40 @@
 //!    its id.
 //!  - `registerLink` returns the link id, a `u32` (it is stored in a cell's `urlId`, a 32-bit
 //!    field). Ids start at 1. After 2^32 - 1 registrations the counter wraps to 1 (upstream's
-//!    JS number keeps counting but `urlId` would truncate it as well); an id still in use is not
-//!    skipped.
+//!    JS number keeps counting but `urlId` would truncate it as well). `// LUNETERM:` (review
+//!    F5) an id still in use is skipped, so a wrap never replaces a live link (the caps keep at
+//!    most `MAX_LINKS + 1` ids in use, so the search ends); ids after a wrap differ from
+//!    upstream's, which would overwrite the live entry.
+//!  - `// LUNETERM:` (review S2) upstream frees a link only when every line it marks is trimmed, so
+//!    a program that repeats `ESC ] 8 ; ; uri BEL` on one line grows the table (and the
+//!    buffer's marker list, which every scroll, insert and delete walks) without bound. Here
+//!    live links are capped at [`MAX_LINKS`] and the markers they hold at [`MAX_LINK_MARKERS`].
+//!    Past either cap the least recently extended link (registered, or given a new line) is
+//!    evicted: its markers are disposed and its data dropped, so cells that still carry its id
+//!    keep their attributes but [`OscLinkService::get_link_data`] returns `None` for them (they
+//!    render as plain text). The link being registered or extended is never the one evicted,
+//!    so one link open across the whole buffer keeps every line (one marker per line).
 //!  - `_entriesWithId` keys are upstream's `` `${id};;${uri}` `` strings, so a `;;` inside an id
 //!    or uri can make two different links share a key, as upstream.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::buffer::marker::MarkerId;
 use crate::services::buffer_service::BufferService;
+
+/// LUNETERM: most links alive at once; registering one more evicts the least recently extended
+/// (module notes, review S2). Far above what real output keeps in a buffer: `ls --hyperlink`
+/// makes one link per file name, and the default buffer holds about 1000 lines.
+pub const MAX_LINKS: usize = 4096;
+
+/// LUNETERM: most markers all links hold, not counting the link being registered or extended
+/// (module notes, review S2). Every list event walks the buffer's markers, so this bounds that
+/// walk; one link that spans many lines holds one marker per line.
+pub const MAX_LINK_MARKERS: usize = 8192;
+
+/// How many marker-list entries one marker lookup (a binary search by id) is worth, when
+/// `add_line_to_link` picks between walking a link's markers and scanning the marker lists.
+const LOOKUP_COST: usize = 16;
 
 /// Upstream `IOscLinkData`: the `id=` parameter of the OSC 8 sequence (if any) and its URI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,7 +73,17 @@ struct Entry {
     data: OscLinkData,
     /// `Some` for a link with an id: the `_entriesWithId` key.
     key: Option<String>,
+    /// In the order the markers were added, which is ascending id (ids only grow).
     lines: Vec<LinkMarker>,
+    /// LUNETERM: the marker [`OscLinkService::add_line_to_link`] last found on, or added to,
+    /// the line it was asked about. `print` asks once per character for the cursor line, so
+    /// checking this marker first answers almost every call with one lookup instead of a walk
+    /// over every marker of the link (a link open across the buffer holds one per line;
+    /// review F1/S1). The answer is the same as the walk's: a hit is a live marker of this
+    /// link on that line.
+    last: Option<LinkMarker>,
+    /// LUNETERM: the key of this entry in [`OscLinkService::by_age`].
+    age: u64,
 }
 
 /// Maps OSC 8 hyperlinks to the link ids stored in cells and frees them when the lines that
@@ -62,6 +98,17 @@ pub struct OscLinkService {
     data_by_link_id: HashMap<u32, Entry>,
     /// The link each marker keeps alive (upstream: the closure of `marker.onDispose`).
     link_of_marker: HashMap<MarkerId, u32>,
+    /// LUNETERM: live links, least recently extended first (eviction order; module notes).
+    by_age: BTreeMap<u64, u32>,
+    next_age: u64,
+    /// Markers `add_line_to_link` looked at (tests pin that it stays O(1) per call on the
+    /// same line).
+    #[cfg(test)]
+    pub(crate) marker_visits: u64,
+    /// Entries of links' marker lists `on_markers_disposed` looked at (tests pin one pass per
+    /// affected link per batch).
+    #[cfg(test)]
+    pub(crate) line_visits: u64,
 }
 
 impl Default for OscLinkService {
@@ -77,6 +124,13 @@ impl OscLinkService {
             entries_with_id: HashMap::new(),
             data_by_link_id: HashMap::new(),
             link_of_marker: HashMap::new(),
+            by_age: BTreeMap::new(),
+            // 0 is the placeholder of an entry not yet touched, never a key
+            next_age: 1,
+            #[cfg(test)]
+            marker_visits: 0,
+            #[cfg(test)]
+            line_visits: 0,
         }
     }
 
@@ -99,8 +153,12 @@ impl OscLinkService {
                     data,
                     key: None,
                     lines: vec![LinkMarker { id: marker, alt }],
+                    last: Some(LinkMarker { id: marker, alt }),
+                    age: 0,
                 },
             );
+            self.touch(link_id);
+            self.enforce_caps(buffers, link_id);
             return link_id;
         };
 
@@ -122,8 +180,12 @@ impl OscLinkService {
                 data,
                 key: Some(key),
                 lines: vec![LinkMarker { id: marker, alt }],
+                last: Some(LinkMarker { id: marker, alt }),
+                age: 0,
             },
         );
+        self.touch(link_id);
+        self.enforce_caps(buffers, link_id);
         link_id
     }
 
@@ -134,21 +196,62 @@ impl OscLinkService {
             return;
         };
         let y = to_i64(y);
-        let holds_line = entry.lines.iter().any(|m| {
+        #[cfg(test)]
+        let visits = &mut self.marker_visits;
+        #[cfg(test)]
+        let mut visit = |n: usize| *visits += n as u64;
+        #[cfg(not(test))]
+        let visit = |_: usize| {};
+        let (normal, alt) = (buffers.buffers.normal(), buffers.buffers.alt());
+        let on_line = |m: &LinkMarker| {
             // A marker disposed but not yet forwarded is already gone upstream.
-            let buffer = if m.alt {
-                buffers.buffers.alt()
-            } else {
-                buffers.buffers.normal()
-            };
+            let buffer = if m.alt { alt } else { normal };
             buffer.marker(m.id).is_some_and(|marker| marker.line == y)
-        });
-        if !holds_line {
-            let alt = buffers.buffers.is_alt_active();
-            let marker = buffers.buffer_mut().add_marker(y);
-            entry.lines.push(LinkMarker { id: marker, alt });
-            self.link_of_marker.insert(marker, link_id);
+        };
+        // LUNETERM: (review F1/S1) upstream walks every marker of the link, each a lookup here.
+        // The same answer, cheaper: the cached marker first (see `Entry::last`); then, for a
+        // link with many markers, one pass over the buffers' marker lists, which costs about
+        // what the marker walk of every scroll already costs.
+        visit(1);
+        if entry.last.as_ref().is_some_and(on_line) {
+            return;
         }
+        let total = normal.markers().len().saturating_add(alt.markers().len());
+        let found = if entry.lines.len().saturating_mul(LOOKUP_COST) <= total {
+            visit(entry.lines.len());
+            entry.lines.iter().copied().find(|m| on_line(m))
+        } else {
+            visit(total);
+            let link_of_marker = &self.link_of_marker;
+            let mine = |m: &&crate::buffer::marker::Marker| {
+                m.line == y && link_of_marker.get(&m.id) == Some(&link_id)
+            };
+            normal
+                .markers()
+                .iter()
+                .find(mine)
+                .map(|m| LinkMarker {
+                    id: m.id,
+                    alt: false,
+                })
+                .or_else(|| {
+                    alt.markers().iter().find(mine).map(|m| LinkMarker {
+                        id: m.id,
+                        alt: true,
+                    })
+                })
+        };
+        if let Some(found) = found {
+            entry.last = Some(found);
+            return;
+        }
+        let alt = buffers.buffers.is_alt_active();
+        let marker = buffers.buffer_mut().add_marker(y);
+        entry.lines.push(LinkMarker { id: marker, alt });
+        entry.last = Some(LinkMarker { id: marker, alt });
+        self.link_of_marker.insert(marker, link_id);
+        self.touch(link_id);
+        self.enforce_caps(buffers, link_id);
     }
 
     /// The data of a link id, `None` if unknown or freed.
@@ -159,22 +262,54 @@ impl OscLinkService {
     /// Upstream `_removeMarkerFromLink` for each disposed marker (the host forwards
     /// `Buffer::take_disposed_markers()`; see the module notes). A link whose last marker is
     /// gone is freed.
+    ///
+    /// LUNETERM: (review F6) upstream removes each marker from its link's list on its own
+    /// dispose event, a search and a removal per marker: quadratic when ED 3, RIS or a trim
+    /// disposes the markers of a link over a long buffer at once. Here the batch is grouped by
+    /// link and each affected list is filtered once, by a merge of the sorted ids against the
+    /// list, which is in creation order and so sorted by id (`Entry::lines`); a single trimmed
+    /// line costs what upstream's one removal costs. The end state is the same; links freed by
+    /// one batch are freed in another order, which nothing observes.
     pub fn on_markers_disposed(&mut self, ids: &[MarkerId]) {
+        let mut gone: HashMap<u32, Vec<MarkerId>> = HashMap::new();
         for &marker in ids {
-            let Some(link_id) = self.link_of_marker.remove(&marker) else {
-                continue;
-            };
+            if let Some(link_id) = self.link_of_marker.remove(&marker) {
+                gone.entry(link_id).or_default().push(marker);
+            }
+        }
+        for (link_id, mut markers) in gone {
             let Some(entry) = self.data_by_link_id.get_mut(&link_id) else {
                 continue;
             };
-            let Some(index) = entry.lines.iter().position(|m| m.id == marker) else {
-                continue;
-            };
-            entry.lines.remove(index);
-            if entry.lines.is_empty() {
+            #[cfg(test)]
+            {
+                self.line_visits += entry.lines.len() as u64;
+            }
+            markers.sort_unstable();
+            markers.dedup();
+            let before = entry.lines.len();
+            if let [marker] = markers.as_slice() {
+                // the common case (one trimmed line): one search and one removal
+                if let Ok(index) = entry.lines.binary_search_by_key(marker, |m| m.id) {
+                    entry.lines.remove(index);
+                }
+            } else {
+                let mut next = markers.iter().peekable();
+                entry.lines.retain(|m| {
+                    while next.next_if(|&&id| id < m.id).is_some() {}
+                    next.next_if(|&&id| id == m.id).is_none()
+                });
+            }
+            if before - entry.lines.len() != markers.len() {
+                // not sorted after all (never expected): remove the rest by lookup
+                let markers: HashSet<MarkerId> = markers.into_iter().collect();
+                entry.lines.retain(|m| !markers.contains(&m.id));
+            }
+            if entry.lines.len() != before && entry.lines.is_empty() {
                 if let Some(key) = entry.key.take() {
                     self.entries_with_id.remove(&key);
                 }
+                self.by_age.remove(&entry.age);
                 self.data_by_link_id.remove(&link_id);
             }
         }
@@ -206,10 +341,71 @@ impl OscLinkService {
         self.link_of_marker.len()
     }
 
+    /// LUNETERM: marks a link as the most recently extended (module notes).
+    fn touch(&mut self, link_id: u32) {
+        let Some(entry) = self.data_by_link_id.get_mut(&link_id) else {
+            return;
+        };
+        self.by_age.remove(&entry.age);
+        entry.age = self.next_age;
+        self.next_age = self.next_age.wrapping_add(1);
+        self.by_age.insert(entry.age, link_id);
+    }
+
+    /// LUNETERM: evicts the least recently extended links other than `keep` until both caps
+    /// hold (module notes, review S2).
+    fn enforce_caps(&mut self, buffers: &mut BufferService, keep: u32) {
+        while self.data_by_link_id.len() > MAX_LINKS || self.link_of_marker.len() > MAX_LINK_MARKERS
+        {
+            let Some((age, victim)) = self
+                .by_age
+                .iter()
+                .map(|(&age, &id)| (age, id))
+                .find(|&(_, id)| id != keep)
+            else {
+                return;
+            };
+            // Taken out here, not only by `evict`: every iteration removes a key, so the loop
+            // ends even if a key outlived its entry (review F5).
+            self.by_age.remove(&age);
+            self.evict(buffers, victim);
+        }
+    }
+
+    /// LUNETERM: drops a link and disposes its markers. Their disposal is logged by the buffer
+    /// like any other; forwarded later, the ids are unknown here and ignored. The markers of
+    /// each buffer go in one walk of its marker list (review F6), logged in creation order,
+    /// which is the order the link added them.
+    fn evict(&mut self, buffers: &mut BufferService, link_id: u32) {
+        let Some(entry) = self.data_by_link_id.remove(&link_id) else {
+            return;
+        };
+        self.by_age.remove(&entry.age);
+        if let Some(key) = entry.key {
+            self.entries_with_id.remove(&key);
+        }
+        let (mut normal, mut alt) = (HashSet::new(), HashSet::new());
+        for marker in entry.lines {
+            self.link_of_marker.remove(&marker.id);
+            if marker.alt {
+                alt.insert(marker.id);
+            } else {
+                normal.insert(marker.id);
+            }
+        }
+        buffers.buffers.normal_mut().dispose_markers(&normal);
+        buffers.buffers.alt_mut().dispose_markers(&alt);
+    }
+
+    /// LUNETERM: (review F5) the next id not in use (module notes).
     fn take_id(&mut self) -> u32 {
-        let id = self.next_id;
-        self.next_id = self.next_id.checked_add(1).unwrap_or(1);
-        id
+        loop {
+            let id = self.next_id;
+            self.next_id = self.next_id.checked_add(1).unwrap_or(1);
+            if !self.data_by_link_id.contains_key(&id) {
+                return id;
+            }
+        }
     }
 }
 

@@ -8,8 +8,8 @@
 //! - `TextDecoder.ts` → `text_decoder.rs` (streaming UTF-8; keeps the split-multibyte
 //!   regression from Lunegit's `PtyTerminalSessionDecodeRegressionTests`).
 //!
-//! Pending: `Keyboard.ts` (legacy xterm key encoding, M7) and `WriteBuffer.ts` (chunked writes
-//! and flow control, M6).
+//! Pending: `Keyboard.ts` (legacy xterm key encoding, M7). `WriteBuffer.ts` is replaced: the
+//! engine's `write` is synchronous and flow control is the host's job (plan M6 D3).
 //!
 //! Not xterm.js: modifyOtherKeys, the kitty keyboard protocol and mouse encoding come from
 //! Lunegit's `driver.js` and `XtermVtInputEncoder`, and are built as extensions or here.

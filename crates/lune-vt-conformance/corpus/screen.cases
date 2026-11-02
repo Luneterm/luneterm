@@ -1,6 +1,11 @@
 # Screen corpus. Syntax: see ../FORMAT.md ("Corpus files"). Each case is written through a
 # headless xterm.js 6.0.0 terminal (Unicode 11 active) and dumped (attributes, modes, responses,
 # title, links). `size` defaults to 80 24.
+#
+# `random` makes goldens/screen/random.golden (srand_0001 ...): grammar-biased streams of whole
+# registered sequences, see FORMAT.md. No case sends RIS and OSC 8 links together: lune-vt frees a
+# reset buffer's links (decision Q9), upstream leaks them, so url ids after a reset differ by design.
+random 200 seed 0x5c4ee7
 
 case sgr_attributes
 size 40 6
@@ -249,3 +254,429 @@ case chunked_utf8_split_after_80
 source E2 80 | 99 loses U+2019 in upstream Utf8ToUtf32 (TextDecoder.ts:161); the unsplit dump is expected
 size 20 3
 input "a" hex:e280 | hex:99 "b"
+
+# Charset designators: every intermediate x every flag, each then printed through the
+# designated set (G1 via SO, G2 via ESC n, G3 via ESC o; SI returns to G0).
+
+case charset_designate_g0_paren
+size 20 18
+input "\e(0#$@[\\]^_`{|}~az\r\n\e(A#$@[\\]^_`{|}~az\r\n\e(B#$@[\\]^_`{|}~az\r\n\e(4#$@[\\]^_`{|}~az\r\n\e(C#$@[\\]^_`{|}~az\r\n\e(5#$@[\\]^_`{|}~az\r\n\e(R#$@[\\]^_`{|}~az\r\n\e(Q#$@[\\]^_`{|}~az\r\n\e(K#$@[\\]^_`{|}~az\r\n\e(Y#$@[\\]^_`{|}~az\r\n\e(E#$@[\\]^_`{|}~az\r\n\e(6#$@[\\]^_`{|}~az\r\n\e(Z#$@[\\]^_`{|}~az\r\n\e(H#$@[\\]^_`{|}~az\r\n\e(7#$@[\\]^_`{|}~az\r\n\e(=#$@[\\]^_`{|}~az"
+
+case charset_designate_g1_rparen
+size 20 18
+input "\e)0\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)A\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)B\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)4\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)C\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)5\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)R\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)Q\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)K\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)Y\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)E\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)6\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)Z\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)H\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)7\x0e#$@[\\]^_`{|}~az\x0f\r\n\e)=\x0e#$@[\\]^_`{|}~az\x0f"
+
+case charset_designate_g2_star
+size 20 18
+input "\e*0\en#$@[\\]^_`{|}~az\x0f\r\n\e*A\en#$@[\\]^_`{|}~az\x0f\r\n\e*B\en#$@[\\]^_`{|}~az\x0f\r\n\e*4\en#$@[\\]^_`{|}~az\x0f\r\n\e*C\en#$@[\\]^_`{|}~az\x0f\r\n\e*5\en#$@[\\]^_`{|}~az\x0f\r\n\e*R\en#$@[\\]^_`{|}~az\x0f\r\n\e*Q\en#$@[\\]^_`{|}~az\x0f\r\n\e*K\en#$@[\\]^_`{|}~az\x0f\r\n\e*Y\en#$@[\\]^_`{|}~az\x0f\r\n\e*E\en#$@[\\]^_`{|}~az\x0f\r\n\e*6\en#$@[\\]^_`{|}~az\x0f\r\n\e*Z\en#$@[\\]^_`{|}~az\x0f\r\n\e*H\en#$@[\\]^_`{|}~az\x0f\r\n\e*7\en#$@[\\]^_`{|}~az\x0f\r\n\e*=\en#$@[\\]^_`{|}~az\x0f"
+
+case charset_designate_g3_plus
+size 20 18
+input "\e+0\eo#$@[\\]^_`{|}~az\x0f\r\n\e+A\eo#$@[\\]^_`{|}~az\x0f\r\n\e+B\eo#$@[\\]^_`{|}~az\x0f\r\n\e+4\eo#$@[\\]^_`{|}~az\x0f\r\n\e+C\eo#$@[\\]^_`{|}~az\x0f\r\n\e+5\eo#$@[\\]^_`{|}~az\x0f\r\n\e+R\eo#$@[\\]^_`{|}~az\x0f\r\n\e+Q\eo#$@[\\]^_`{|}~az\x0f\r\n\e+K\eo#$@[\\]^_`{|}~az\x0f\r\n\e+Y\eo#$@[\\]^_`{|}~az\x0f\r\n\e+E\eo#$@[\\]^_`{|}~az\x0f\r\n\e+6\eo#$@[\\]^_`{|}~az\x0f\r\n\e+Z\eo#$@[\\]^_`{|}~az\x0f\r\n\e+H\eo#$@[\\]^_`{|}~az\x0f\r\n\e+7\eo#$@[\\]^_`{|}~az\x0f\r\n\e+=\eo#$@[\\]^_`{|}~az\x0f"
+
+case charset_designate_g1_minus
+size 20 18
+input "\e-0\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-A\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-B\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-4\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-C\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-5\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-R\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-Q\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-K\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-Y\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-E\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-6\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-Z\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-H\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-7\x0e#$@[\\]^_`{|}~az\x0f\r\n\e-=\x0e#$@[\\]^_`{|}~az\x0f"
+
+case charset_designate_g2_dot
+size 20 18
+input "\e.0\en#$@[\\]^_`{|}~az\x0f\r\n\e.A\en#$@[\\]^_`{|}~az\x0f\r\n\e.B\en#$@[\\]^_`{|}~az\x0f\r\n\e.4\en#$@[\\]^_`{|}~az\x0f\r\n\e.C\en#$@[\\]^_`{|}~az\x0f\r\n\e.5\en#$@[\\]^_`{|}~az\x0f\r\n\e.R\en#$@[\\]^_`{|}~az\x0f\r\n\e.Q\en#$@[\\]^_`{|}~az\x0f\r\n\e.K\en#$@[\\]^_`{|}~az\x0f\r\n\e.Y\en#$@[\\]^_`{|}~az\x0f\r\n\e.E\en#$@[\\]^_`{|}~az\x0f\r\n\e.6\en#$@[\\]^_`{|}~az\x0f\r\n\e.Z\en#$@[\\]^_`{|}~az\x0f\r\n\e.H\en#$@[\\]^_`{|}~az\x0f\r\n\e.7\en#$@[\\]^_`{|}~az\x0f\r\n\e.=\en#$@[\\]^_`{|}~az\x0f"
+
+case charset_designate_g3_slash
+size 20 18
+input "\e/0\eo#$@[\\]^_`{|}~az\x0f\r\n\e/A\eo#$@[\\]^_`{|}~az\x0f\r\n\e/B\eo#$@[\\]^_`{|}~az\x0f\r\n\e/4\eo#$@[\\]^_`{|}~az\x0f\r\n\e/C\eo#$@[\\]^_`{|}~az\x0f\r\n\e/5\eo#$@[\\]^_`{|}~az\x0f\r\n\e/R\eo#$@[\\]^_`{|}~az\x0f\r\n\e/Q\eo#$@[\\]^_`{|}~az\x0f\r\n\e/K\eo#$@[\\]^_`{|}~az\x0f\r\n\e/Y\eo#$@[\\]^_`{|}~az\x0f\r\n\e/E\eo#$@[\\]^_`{|}~az\x0f\r\n\e/6\eo#$@[\\]^_`{|}~az\x0f\r\n\e/Z\eo#$@[\\]^_`{|}~az\x0f\r\n\e/H\eo#$@[\\]^_`{|}~az\x0f\r\n\e/7\eo#$@[\\]^_`{|}~az\x0f\r\n\e/=\eo#$@[\\]^_`{|}~az\x0f"
+
+# ---------------------------------------------------------------------------------------------
+# M6 step 9: per-handler cases (every InputHandler registration, edge cases of print and scrolling).
+
+case print_wrap_in_scroll_region
+size 6 5
+input "\e[2;4r\e[4;1Habcdefghijklmnopqr\e[r\e[1;1Htop"
+
+case print_wrap_scrolls_full_screen
+size 5 3
+input "aaaaabbbbbcccccdddddeeee\e[?7lffffffgg"
+
+case print_wrapped_line_flag_after_erase
+size 5 3
+input "abcdefghij\e[1;3H\e[K\e[2;1H\e[2K\e[3;5Hxy"
+
+case print_full_scrollback_trims
+size 10 3
+input "top\r\n" "\r\n"*1021 "mid\r\n" "\r\n"*5 "end"
+
+case link_reregistered_after_trim
+size 10 3
+input "\e]8;id=k;http://a.example/\x07link\e]8;;\x07\r\n" "\r\n"*1100 "\e]8;id=k;http://a.example/\x07again\e]8;;\x07"
+
+case link_spans_lines_and_wraps
+size 8 4
+input "\e]8;;http://x.example/long\x07abcdefghijklmnopqrstu\r\nv\e]8;;\x07w\e]8;;http://y.example/\x07z\e]8;;\x07"
+
+case one_row_terminal
+size 8 1
+input "abc\r\ndef\r\n\e[Lg\e[M\n\eM\e[S\e[T\e[1;1r\e[2;1Hq\e[?1049hALT\e[?1049lback"
+
+case one_row_wrap_and_region
+size 4 1
+input "abcdefgh\e[1;1r\e[?6hxyz\e[?6l\e[2K\e[2Jend\e[?47hZ\e[?47l"
+
+case two_by_one_terminal
+size 2 1
+input "ab你cd\r\n\e[?7l\r\nef\e[4h12\e[4l\e[3~"
+
+case two_by_two_terminal
+size 2 2
+input "abcdef\e[2;1r\e[1;1H\eM\eM\eD\eD\e[2L\e[3M\e[5P\e[5@\e[5X"
+
+case csi_cursor_movement
+size 20 8
+input "\e[5;5Hx\e[2Ay\e[3Bz\e[4Cw\e[2Dv\e[2Eu\e[1Ft\e[9Gs\e[3dr\e[2eq\e[7`p\e[3ao\e[2;9fn\e[0Am\e[0Bl\e[0Ck\e[0Dj\e[0E\e[0Fh\e[0G\e[0d\e[0e\e[0`\e[0a\e[0;0H\e[999;999H*"
+
+case csi_cursor_movement_origin_region
+size 20 8
+input "\e[3;6r\e[?6h\e[1;1Ha\e[9;9Hb\e[2Ac\e[9Bd\e[5;5Hx\e[3dy\e[1;1H\e[99Az\e[?6l\e[99;99H!"
+
+case tabs_forward_backward_clear
+size 40 5
+input "\e[3I>\e[2Z<\e[1;1H\e[0g\e[5G\eH\e[1;20H\eH\e[1;1H\tA\tB\tC\e[3g\e[1;1H\tD\r\n\e[?5W\e[2I\e[3Z\e[1g\e[2g"
+
+case tabs_default_after_clear_and_reset
+size 30 3
+input "\e[3g\e[1;7H\eH\e[1;1H\t\tA\e[!p\e[1;1H\tB\ec\tC"
+
+case erase_in_display_all_modes
+size 12 5
+input "\e[44;31mxxxxxxxxxxxx\r\nxxxxxxxxxxxx\r\nxxxxxxxxxxxx\r\nxxxxxxxxxxxx\r\nxxxxxxxxxxxx\e[3;6H\e[0J\e[1;1H\e[1J\e[2;5H\e[0m\e[2J\e[3;1Habc\e[3J"
+
+case erase_in_display_3_clears_scrollback
+size 8 3
+input "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\e[3J\r\nh"
+
+case erase_in_line_all_modes
+size 12 4
+input "\e[42mxxxxxxxxxxxx\r\nxxxxxxxxxxxx\r\nxxxxxxxxxxxx\e[1;6H\e[0K\e[2;6H\e[1K\e[3;6H\e[2K\e[0m\e[4;1Habcdefghijkl\e[4;6H\e[K"
+
+case selective_erase_decsca_decsed_decsel
+size 12 4
+input "\e[1\"qPPPP\e[0\"qUUUU\e[1\"qPPPP\r\n\e[0\"quuuuuuuuuuuu\e[1;1H\e[?0K\e[2;1H\e[?2K\e[1\"q\e[3;1Hpppp\e[0\"qxxxx\e[?0J\e[1;5H\e[?1J\e[?2J\e[?3J"
+
+case selective_erase_with_attributes
+size 12 3
+input "\e[1\"q\e[31mRR\e[0\"q\e[32mGG\e[0m\e[1\"q\e[4mUU\e[0\"q\e[1;1H\e[?2K\e[2\"qZ\e[2;1H\e[?0J"
+
+case insert_delete_chars
+size 12 3
+input "abcdefghijkl\e[1;3H\e[3@\e[1;3H\e[2P\e[1;12H\e[5P\e[2;1Hmnopqr\e[2;3H\e[100@\e[3;1Hstuv\e[3;3H\e[100P\e[1;5H\e[0@\e[0P"
+
+case insert_delete_chars_wide
+size 10 2
+input "你好世界你\e[1;2H\e[1@\e[1;4H\e[1P\e[2;1H你好\e[2;2H\e[2X"
+
+case insert_delete_lines_in_region
+size 8 6
+input "1\r\n2\r\n3\r\n4\r\n5\r\n6\e[2;5r\e[3;1H\e[2L\e[1;1H\e[L\e[4;1H\e[M\e[2;1H\e[0L\e[0M\e[6;1H\e[3M\e[r\e[3;1H\e[2M\e[3L"
+
+case insert_delete_lines_outside_region
+size 8 5
+input "1\r\n2\r\n3\r\n4\r\n5\e[2;3r\e[1;1H\e[L\e[M\e[4;1H\e[L\e[M\e[r"
+
+case insert_delete_columns
+size 10 4
+input "\e[?69h\e[3;8s\e[1;1H0123456789\r\nabcdefghij\r\nABCDEFGHIJ\r\nklmnopqrst\e[2;5H\e['}\e[4'}\e[3;5H\e['~\e[3'~\e[1;1H\e[2'}\e[100'~\e[100'}\e[0'~\e[?69l\e[2;2H\e[2'}"
+
+case insert_delete_columns_with_wide
+size 10 2
+input "\e[?69h\e[2;9s你好世界ab\e[1;4H\e['}\e[1;6H\e['~\e[2;1H你你你\e[2;2H\e[3'}"
+
+case scroll_up_down_regions
+size 8 6
+input "1\r\n2\r\n3\r\n4\r\n5\r\n6\e[2S\e[1T\e[2;5r\e[2S\e[T\e[3S\e[9T\e[0S\e[0T\e[r\e[1S\e[100T\e[1;1H\e[100S"
+
+case scroll_left_right_with_margins
+size 10 4
+input "0123456789\r\nabcdefghij\r\nABCDEFGHIJ\r\nklmnopqrst\e[2 @\e[1 A\e[?69h\e[3;8s\e[2;2r\e[1 @\e[2 A\e[0 @\e[0 A\e[r\e[100 @\e[100 A"
+
+case scroll_horizontal_with_attributes
+size 10 3
+input "\e[31m01234\e[44m56789\r\n\e[0;1mabcdefghij\e[3 @\e[1;1H\e[7m\e[2 A\e[0m"
+
+case ech_variants
+size 12 3
+input "\e[41mabcdefghijkl\e[1;3H\e[3X\e[2;1H\e[0X\e[1;12H\e[100X\e[3;1H你好你好\e[3;2H\e[1X\e[3;4H\e[2X"
+
+case rep_variants
+size 12 4
+input "a\e[3b\e[0b\e[b\r\n你\e[2b\r\n\e[31mx\e[5b\e[0m\r\n\e7\e[4b\e[1;1H\e[1b"
+
+case rep_after_combining_and_cursor_move
+size 12 3
+input "e\u{301}\e[2b\r\n\e[1;5H\e[2b\r\n\u{1F44D}\e[1b\u{200D}\e[1b"
+
+case sgr_reset_and_default_forms
+size 30 3
+input "\e[1;31;42;4;7mA\em\e[mB\e[;mC\e[0;;1mD\e[0:1mE\e[0m"
+
+case sgr_colon_edge_forms
+size 40 4
+input "\e[38:2:1:2:3:4:5mA\e[38:2::1:2mB\e[38:5mC\e[38::5:9mD\e[4:mE\e[4::mF\e[4:7mG\e[58:2mH\e[0m\e[38:2:::mI\e[48:5:300mJ\e[38;2;300;0;0mK\e[0m"
+
+case sgr_extreme_params
+size 30 3
+input "\e[0;65535mA\e[2147483647mB\e[38;5;2147483647mC\e[38;2;65535;65535;65535mD\e[4:65535mE\e[58;5;65535mF\e[107;65535;1mG\e[0m"
+
+case sgr_combined_resets_and_alias
+size 30 3
+input "\e[1;2mA\e[21mB\e[22mC\e[1;2;22;1mD\e[3;4;5;7;8;9;53mE\e[23;24;25;27;28;29;55mF\e[38;5;1;48;5;2;58;5;3mG\e[39;49;59mH"
+
+case modes_ansi_set_reset
+size 20 4
+input "\e[2h\e[4h\e[12h\e[20h\e[2l\e[4l\e[12l\e[20l\e[3h\e[3l\e[4h\e[0h\e[0l"
+
+case modes_ansi_lnm
+size 12 4
+input "\e[20habc\ndef\rghi\x0bjkl\x0cmno\e[20lpqr\ns"
+
+case modes_dec_private_wide
+size 30 6
+input "\e[?1h\e[?3h\e[?5h\e[?6h\e[?7l\e[?8h\e[?9h\e[?12h\e[?25l\e[?45h\e[?66h\e[?69h\e[?80h\e[?95h\e[?1000h\e[?1001h\e[?1002h\e[?1003h\e[?1004h\e[?1005h\e[?1006h\e[?1007h\e[?1015h\e[?1016h\e[?2004h\e[?2026h"
+
+case modes_dec_private_reset_wide
+size 30 6
+input "\e[?1h\e[?3h\e[?5h\e[?6h\e[?7l\e[?8h\e[?9h\e[?12h\e[?25l\e[?45h\e[?66h\e[?69h\e[?80h\e[?95h\e[?1000h\e[?1002h\e[?1003h\e[?1004h\e[?1005h\e[?1006h\e[?1007h\e[?1015h\e[?1016h\e[?2004h\e[?2026h\e[?1l\e[?3l\e[?5l\e[?6l\e[?7h\e[?8l\e[?9l\e[?12l\e[?25h\e[?45l\e[?66l\e[?69l\e[?80l\e[?95l\e[?1000l\e[?1002l\e[?1003l\e[?1004l\e[?1005l\e[?1006l\e[?1007l\e[?1015l\e[?1016l\e[?2004l\e[?2026l"
+
+case modes_dec_private_multi_param
+size 30 4
+input "\e[?1;6;7;2004h\e[?7;6;1l\e[?1000;1006h\e[?1000;1006l\e[?;h\e[?1;;6h\e[?99999;1h"
+
+case decrqm_all_modes
+size 20 3
+input "\e[?1$p\e[?2$p\e[?3$p\e[?5$p\e[?6$p\e[?7$p\e[?8$p\e[?9$p\e[?12$p\e[?25$p\e[?45$p\e[?47$p\e[?66$p\e[?69$p\e[?80$p\e[?95$p\e[?1000$p\e[?1001$p\e[?1002$p\e[?1003$p\e[?1004$p\e[?1005$p\e[?1006$p\e[?1007$p\e[?1015$p\e[?1016$p\e[?1047$p\e[?1048$p\e[?1049$p\e[?2004$p\e[?2026$p\e[1$p\e[2$p\e[3$p\e[4$p\e[12$p\e[20$p\e[0$p\e[$p\e[?$p"
+
+case decrqm_after_set
+size 20 3
+input "\e[2h\e[?1h\e[?3h\e[?6h\e[?45h\e[?66h\e[?9h\e[?1004h\e[?1005h\e[?1007h\e[?1049h\e[2$p\e[?1$p\e[?3$p\e[?6$p\e[?45$p\e[?66$p\e[?9$p\e[?1004$p\e[?1005$p\e[?1007$p\e[?1049$p"
+
+case da_variants
+size 20 3
+input "\e[c\e[1c\e[0c\e[>c\e[>1c\e[>0c\e[?c\e[=c\e[?1c\e[>0;1c\e[=0c"
+
+case dsr_variants
+size 20 5
+input "\e[3;7H\e[5n\e[6n\e[0n\e[1n\e[7n\e[?6n\e[?15n\e[?25n\e[?26n\e[?53n\e[?55n\e[?56n\e[?62n\e[?63n\e[?75n\e[?85n\e[n\e[?n"
+
+case dsr_6_in_region_and_origin
+size 20 6
+input "\e[3;5r\e[2;8H\e[6n\e[?6h\e[6n\e[1;1H\e[6n\e[99;99H\e[6n\e[?6l\e[6n"
+
+case soft_reset_decstr
+size 20 5
+input "\e[1;31;42mA\e[?25l\e[?1h\e[?6h\e[?7l\e[4h\e[2;4r\e(0\x0e\e7\e[!pB\e[?1$p\e[?6$p\e[?7$p\e[?25$p\e[4$p\e[6n\e(B\x0fC"
+
+case soft_reset_resets_cursor_style
+size 20 3
+input "\e[3 q\e[?12l\e[!p\e[?12$p\e[!pZ"
+
+case cursor_style_variants
+size 20 3
+input "\e[ q\e[0 q\e[1 q\e[2 q\e[3 q\e[4 q\e[5 q\e[6 q\e[7 q\e[99 q\e[3;4 q\e[?12h\e[1 q\e[?12l\e[2 q\e[2;1 q"
+
+case xtwinops_defaults
+size 20 4
+input "\e[t\e[0t\e[1t\e[2t\e[3t\e[4t\e[5t\e[6t\e[7t\e[8t\e[9t\e[10t\e[11t\e[13t\e[14t\e[15t\e[16t\e[18t\e[19t\e[20t\e[21t\e[22t\e[23t\e[24t\e[99t"
+
+case xtwinops_reports_and_stack
+size 20 4
+input "\e[14;2t\e[14;0t\e[16t\e[18t\e[19t\e[22;0t\e[22;1t\e[22;2t\e[22;3t\e[23;0t\e[23;1t\e[23;2t\e[23;3t\e[8;10;40t\e[3;5;5t\e[1;1t"
+
+case xtwinops_title_stack_deep
+size 20 3
+input "\e]0;a\x07\e[22t\e]0;b\x07\e[22;2t\e]0;c\x07\e[22;1t\e]0;d\x07\e[23t\e[23t\e[23t\e[23t\e[23;1t"
+
+case osc_52_query_and_write
+size 20 3
+input "\e]52;c;?\x07\e]52;c;aGVsbG8=\x07\e]52;pc;SGk=\e\\\e]52;;\x07\e]52\x07after"
+
+case osc_unregistered_set
+size 20 3
+input "\e]3;prop=value\x07\e]5;1\x07\e]6;1\x07\e]7;file:///tmp\x07\e]9;note\x07\e]13;red\x07\e]17;blue\x07\e]19;blue\x07\e]50;font\x07\e]133;A\x07\e]777;x\x07\e]999;y\x07\e]105;1\x07\e]106;1;1\x07\e]113;\x07\e]119;\x07ok"
+
+case osc_color_set_and_reset
+size 20 3
+input "\e]4;1;rgb:00/ff/00;2;#123456\x07\e]4;1;?;2;?;300;?\x07\e]10;rgb:12/34/56\x07\e]11;#abcdef\x07\e]12;rgb:ff/ff/00\x07\e]10;?\x07\e]11;?\x07\e]12;?\x07\e]104;1\x07\e]104;1;2;3\x07\e]104\x07\e]110\x07\e]111\x07\e]112\x07\e]110;x\x07\e]4;1;?\x07"
+
+case osc_color_forms_and_invalid
+size 20 3
+input "\e]4;1;rgb:0/0/0\x07\e]4;1;rgb:f/f/f\x07\e]4;1;rgb:ffff/0000/0000\x07\e]4;1;#fff\x07\e]4;1;#ffffffffffff\x07\e]4;1;nonsense\x07\e]4;x;rgb:00/00/00\x07\e]4;;\x07\e]4\x07\e]4;256;rgb:00/00/00\x07\e]4;255;rgb:00/00/00\x07\e]10;;\x07\e]10;?;?\x07\e]10;rgb:00/00/00;rgb:11/11/11\x07\e]11;rgb:00/00/00;rgb:11/11/11\x07\e]12;a;b\x07"
+
+case osc_title_variants
+size 20 3
+input "\e]0;\x07\e]2;only title\x07\e]1;only icon\x07\e]0;a;b;c\x07\e]2;\xc3\xa9\xc3\xa8\x07\e]0\x07\e]2;x\e\\\e]0;unterminated\e[1m"
+
+case osc_numeric_edges
+size 20 3
+input "\e];no id\x07\e]x;bad\x07\e]00;zero zero\x07\e]02;two\x07\e]99999999999999;big\x07\e]8\x07\e]8;\x07\e]8;;\x07\e]8;a;b;c;d\x07"
+
+case osc8_params_and_edges
+size 40 4
+input "\e]8;id=a:foo=bar;http://p.example/\x07A\e]8;;\x07\e]8;foo=bar;http://q.example/\x07B\e]8;;\x07\e]8;id=;http://r.example/\x07C\e]8;;\x07\e]8;id=a;\x07D\e]8;id=a:id=b;http://s.example/\x07E\e]8;;\x07\r\n\e]8;;http://t.example/?a=1;b=2\x07F\e]8;;\x07\e]8;;\x07G"
+
+case osc8_link_over_erase_and_scroll
+size 16 3
+input "\e]8;;http://a.example/\x07hello world\e[1;3H\e[3X\e[2K\e[K\r\nabc\r\ndef\r\nghi\e]8;;\x07\e[1;1H\e[2L\e[M"
+
+case dcs_decrqss_variants
+size 20 8
+input "\eP$qm\e\\\eP$qr\e\\\eP$q q\e\\\eP$q\"q\e\\\eP$q\"p\e\\\eP$qs\e\\\eP$qz\e\\\eP$q\e\\\eP1$qm\e\\\eP$qm\x18x\eP$qr\x1b[1mt\e[2;4r\eP$qr\e\\\e[5 q\eP$q q\e\\"
+
+case dcs_decrqss_after_sgr
+size 20 4
+input "\e[1;2;3;4;5;7;8;9;53;38;5;12;48;2;1;2;3;58;5;7m\eP$qm\e\\\e[0;4:3;38:2::9:8:7m\eP$qm\e\\\e[0m\e[22;24m\eP$qm\e\\\e[90;103;38;5;250m\eP$qm\e\\"
+
+case dcs_unknown_and_nesting
+size 20 3
+input "\ePabc\e\\\eP1;2+qxx\e\\\eP$qm\e[1mx\e\\\eP0;1|data\e\\\eP>|q\e\\ok"
+
+case ris_mid_chunk
+size 20 4
+input "text\e[1;31m\ec\e[1mB\e]0;t\x07 z\r\nnext"
+
+case ris_at_chunk_end
+size 20 4
+input "abc\e[7m\ec" | "[1mQ" | "\e" | "c[1m" | "Z"
+
+case ris_resets_modes_and_buffers
+size 12 4
+input "\e[?1049h\e[?1h\e[?6h\e[4h\e(0\x0e\e[2;3r\e]0;ttl\x07\e[3 q\e[?25lx\ec\e[?1$p\e[?6$p\e[?25$p\e[4$p\e[6nhello"
+
+case ris_with_scrollback
+size 8 3
+input "a\r\nb\r\nc\r\nd\r\ne\ecf"
+
+case esc_variants_all
+size 20 5
+input "\e7\e[3;3Hx\e8y\eD\eE\eM\eH\e=\e>\ec\e7\e[2;2Hq\e8\en\eo\e|\e}\e~\e%G\e%@\e#8\e#3\e#5\e#6\eZ\ex\e\\\e[1;1Hdone"
+
+case esc_index_reverse_index_regions
+size 8 5
+input "1\r\n2\r\n3\r\n4\r\n5\e[2;4r\e[4;1H\eD\eD\e[2;1H\eM\eM\e[1;1H\eM\e[5;1H\eD\e[r\e[1;1H\eM\eE\eE"
+
+case esc_index_with_margins
+size 10 4
+input "0123456789\r\nabcdefghij\r\nABCDEFGHIJ\r\nklmnopqrst\e[?69h\e[3;8s\e[2;3r\e[3;5H\eD\e[2;5H\eM\eM\e[?69l"
+
+case c1_8bit_controls
+size 20 4
+input "ab" hex:c284 "c" hex:c285 "d" hex:c288 hex:c28d hex:c280 "e\e[1;5H" hex:c288 "\e[1;1H\t\tf"
+
+case c0_controls_all
+size 20 4
+input "a\x07b\x08\x08c\x09d\x0ae\x0bf\x0cg\x0dh\x0eÀ\x0fi\x00j\x7fk\x01\x02\x03\x04\x05\x06\x10\x11\x12\x13\x14\x15\x16\x17\x19\x1c\x1d\x1e\x1f"
+
+case c0_interrupting_sequences
+size 20 3
+input "\e[1\x18m x\e[2\x1am y\e[3\ec z\e]0;t\x18w\e]0;t\x1aw\ePx\x18v\e[1;\x08\x09\x0a31mq"
+
+case backspace_reverse_wrap
+size 6 4
+input "abcdef\x08\x08Z\r\n\e[?45h\e[2;1H\x08\x08Y\e[?7l\x08X\e[?7h\e[4;1H\e[?45hxxxxxxx\x08\x08\x08\x08\x08\x08\x08\x08\x08"
+
+case reverse_wrap_in_region_and_extended
+size 6 5
+input "\e[?45h\e[?1045h\e[2;4r\e[2;1H\x08\x08ab\e[4;1H\x08\x08\x08\e[r\e[1;1H\x08Z"
+
+case decsc_decrc_attributes_and_modes
+size 20 4
+input "\e[1;31;42m\e(0\x0e\e[?6h\e[2;3r\e[?7l\e7\e[0m\e(B\x0f\e[?6l\e[r\e[?7h\e[1;1Hlq\e8lq\e[?6$p\e[?7$p\e[6n"
+
+case decsc_decrc_wrap_pending
+size 6 3
+input "abcdef\e7\e[1;1HX\e8Y\e[1;1H\e[ss\e[1;3Hu\e[uZ"
+
+case decrc_without_save
+size 10 3
+input "\e[2;4Hab\e8c\e[u\e[1;1Hd"
+
+case decstbm_variants
+size 8 6
+input "\e[2;4r\e[6n\e[r\e[6n\e[0;0r\e[3;3r\e[3;2r\e[1;99r\e[4;r\e[;3r\e[0;3r\e[9;9r\e[6n\e[2;3r\e[6n"
+
+case decslrm_vs_scosc
+size 12 3
+input "\e[s\e[1;5Hx\e[u\e[?69h\e[3;8s\e[1;1Habcdefghijkl\e[s\e[?69l\e[1;1H\e[s\e[u"
+
+case left_right_margins_print_and_erase
+size 12 4
+input "\e[?69h\e[3;8s\e[1;1H\e[2J\e[1;3Habcdefghijkl\e[2;4H\e[2K\e[3;4H\e[1J\e[K\e[2;5H\e[4h\e[3@XYZ\e[4l\e[100P\e[?69l"
+
+case left_right_margins_newline_and_cr
+size 12 4
+input "\e[?69h\e[3;8s\e[1;5Habc\r\nxyz\x08\x08\x08\x08\x08\x08\tT\r\n\r\n\eD\eD\eD\eM\e[?69l\r\nend"
+
+case left_right_margins_invalid
+size 12 4
+input "\e[?69h\e[5;3s\e[0;0s\e[1;1s\e[3;99s\e[12;12s\e[2;12s\e[;5s\e[?69l\e[3;8s\e[?69h\e[3;4s\e[1;1H\e[6n"
+
+case insert_mode_with_wide_and_margins
+size 8 3
+input "\e[4h12345678\e[1;3H你\e[1;8H你\e[2;1H\e[?7l12345678你\e[4l"
+
+case alt_screen_buffer_semantics
+size 16 4
+input "main\e[2;3Hx\e[?1049h\e[3 q\e[1;31mALT\e[?1049lmore\e[?1049h\e[?1049lagain\e[?47h\e[?47h\e[?47l\e[?1047h\e[?1047l\e[?1048h\e[1;1H\e[?1048l"
+
+case alt_screen_with_scrollback_and_resize
+size 8 3
+input "a\r\nb\r\nc\r\nd\r\ne\e[?1049hALT\r\n2\r\n3\r\n4\e[?1049l"
+
+case alt_screen_cursor_save_restore
+size 12 3
+input "\e[2;3H\e7\e[?1049h\e[1;1HX\e8Y\e[?1049l\e[1;1HZ\e[?1048h\e[3;5H\e[?1049h\e[?1049l"
+
+case mouse_modes_priority
+size 20 3
+input "\e[?9h\e[?1000h\e[?1002h\e[?1003h\e[?1003l\e[?1002l\e[?1000l\e[?9l\e[?1003h\e[?1000h\e[?1000l\e[?1006h\e[?1015h\e[?1005h\e[?1016h\e[?1006l\e[?1016l\e[?1005l\e[?1015l"
+
+case keypad_mode_variants
+size 20 3
+input "\e=\e[?66$p\e>\e[?66$p\e[?66h\e[?66$p\e[?66l\e[?66$p"
+
+case keypad_with_ris_and_softreset
+size 20 3
+input "\e=\e[!p\e[?66$p\e=\ec\e[?66$p"
+
+case focus_and_other_report_modes
+size 20 3
+input "\e[?1004h\e[?1004$p\e[?1004l\e[?1004$p\e[?2004h\e[?2004l\e[?1004;2004h\e[?1004;2004$p"
+
+case wide_char_edge_cases
+size 6 4
+input "12345你\r\n12345\e[?7l你\e[?7h\r\n\e[1;6H你\e[2;1H你好世\e[3;6H\e[K你\e[4;1H\u{1F600}\u{1F600}\u{1F600}"
+
+case combining_and_zwj_edge_cases
+size 10 5
+input "\u{301}a\u{301}\u{302}\r\n\u{1F468}\u{200D}\u{1F469}\r\n\u{200D}x\u{FE0F}\u{FE0E}\r\n\u{26A0}\u{FE0F}\u{FE0F}b\r\n\u{1F1FA}\u{1F1F8}\u{1F1FA}\u{1F1F8}\u{1F1FA}"
+
+case combining_at_line_end_and_wrap
+size 4 4
+input "abc\u{301}d\u{301}e\u{301}\u{301}fgh\u{301}i"
+
+case print_after_cursor_moves_join_state
+size 12 3
+input "e\e[1Cu\u{301}\e[1;1He\u{301}\e[1;1H\u{301}x\e[2;1H\u{1F44D}\e[2;3H\u{1F3FD}"
+
+case unicode_other_widths
+size 14 4
+input "ａｂｃ\r\n한글가나\r\n\u{3042}\u{3044}\u{3046}\u{3048}\r\n\u{AD}\u{200B}\u{2060}\u{FEFF}x"
+
+case utf8_invalid_and_c1_in_text
+size 20 3
+input "a" hex:80 "b" hex:c0 hex:80 "c" hex:ffff "d" hex:e2 "e" hex:f48fbfbf hex:f4908080 "f" hex:eda080 "g"
+
+case unknown_sequences_are_ignored
+size 20 3
+input "\e[1;2;3%\e[>1;2t\e[?1;2t\e[=1c\e[$q\e[?1$q\e[ r\e[#p\e[,p\e[<1u\e[>4;1m\e[?4m\e[!q\e[\"p\e(Z\e)Z\e%X\e#9\e Fa"
+
+case parser_param_limits
+size 20 3
+input "\e[" "1;"*40 "mA\e[" ":1"*40 "mB\e[0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1mC\e[99999999999999999999mD\e[1:2:3:4:5:6:7:8:9:10:11:12:13:14:15:16;1mE"

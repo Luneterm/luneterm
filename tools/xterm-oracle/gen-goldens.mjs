@@ -213,6 +213,202 @@ function randomCase(rng, index) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Seeded random screen cases (FORMAT.md "Random screen cases"). Grammar-biased: every token is a
+// whole registered sequence (or text), with parameters drawn from a pool that includes extremes;
+// one in twelve tokens is cut short so the next token interrupts it.
+
+const SCREEN_SIZES = [
+  [20, 8], [16, 6], [10, 4], [8, 3], [12, 5], [2, 1], [2, 2], [3, 1], [20, 1], [5, 1], [2, 6], [6, 2],
+];
+const RESIZE_SIZES = [[10, 4], [20, 8], [5, 3], [2, 1], [3, 2], [12, 1], [16, 8], [8, 6]];
+const SMALL_PARAMS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '12', '20', '22', '23', '25'];
+const EXTREME_PARAMS = ['0', '1', '2', '65535', '2147483647'];
+const CAPPED_PARAMS = ['0', '1', '2', '65535'];
+const ANSI_MODES = ['0', '2', '4', '12', '20', '99'];
+const DEC_MODES = [
+  '0', '1', '3', '5', '6', '7', '8', '9', '12', '25', '45', '47', '66', '69', '80', '95', '1000', '1001',
+  '1002', '1003', '1004', '1005', '1006', '1007', '1015', '1016', '1047', '1048', '1049', '2004', '2026',
+  '99999',
+];
+const SGR_SIMPLE = [
+  ...Array.from({ length: 10 }, (_, i) => String(i)), '21', '22', '23', '24', '25', '27', '28', '29',
+  '30', '31', '32', '33', '34', '35', '36', '37', '39', '40', '41', '42', '43', '44', '45', '46', '47',
+  '49', '53', '55', '59', '90', '91', '97', '100', '101', '107', '65535', '2147483647', '', '10', '56',
+];
+const TEXT_WORDS = ['a', 'bc', 'hello', 'xyz', 'Q', 'text', '0123456789', 'The quick brown fox', '~|{}`'];
+const WIDE_TEXT = [
+  '你', '好', '한', '글', '\u{1F600}', '\u{1F44D}', '\u{1F44D}\u{1F3FD}', '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}',
+  '\u{1F1EF}\u{1F1F5}', 'e\u{301}', 'a\u{301}\u{302}', '\u{301}', '\u{26A0}\u{FE0F}', '\u{26A0}\u{FE0E}',
+  '\u{200D}', '\u{FE0F}', '\u{3042}', 'ａ', '\u{AD}', '\u{200B}', 'é', '€', '\u{2019}',
+];
+const CHARSET_FLAGS = '0AB4C5RQKYE6ZH7='.split('');
+// [prefix, intermediates, final, parameter kind]; kinds: cnt count, cap capped count, pos two
+// positions, none, sgr, ansi, dec, erase3, erase2, style, winops, margins, prot, sel, dsr.
+const CSI_TABLE = [
+  ['', '', '@', 'cnt'], ['', ' ', '@', 'cnt'], ['', '', 'A', 'cnt'], ['', ' ', 'A', 'cnt'],
+  ['', '', 'B', 'cnt'], ['', '', 'C', 'cnt'], ['', '', 'D', 'cnt'], ['', '', 'E', 'cnt'],
+  ['', '', 'F', 'cnt'], ['', '', 'G', 'cnt'], ['', '', 'H', 'pos'], ['', '', 'I', 'cap'],
+  ['', '', 'J', 'erase3'], ['?', '', 'J', 'erase3'], ['', '', 'K', 'erase2'], ['?', '', 'K', 'erase2'],
+  ['', '', 'L', 'cap'], ['', '', 'M', 'cap'], ['', '', 'P', 'cnt'], ['', '', 'S', 'cap'],
+  ['', '', 'T', 'cap'], ['', '', 'X', 'cnt'], ['', '', 'Z', 'cap'], ['', '', '`', 'cnt'],
+  ['', '', 'a', 'cnt'], ['', '', 'b', 'cap'], ['', '', 'c', 'none'], ['>', '', 'c', 'none'],
+  ['', '', 'd', 'cnt'], ['', '', 'e', 'cnt'], ['', '', 'f', 'pos'], ['', '', 'g', 'tabclear'],
+  ['', '', 'h', 'ansi'], ['?', '', 'h', 'dec'], ['?', '', 'h', 'dec'], ['', '', 'l', 'ansi'], ['?', '', 'l', 'dec'],
+  ['', '', 'm', 'sgr'], ['', '', 'm', 'sgr'], ['', '', 'm', 'sgr'], ['', '', 'n', 'dsr'],
+  ['?', '', 'n', 'dsr'], ['', '!', 'p', 'none'], ['', ' ', 'q', 'style'], ['', '', 'r', 'pos'],
+  ['', '', 's', 'margins'], ['', '', 't', 'winops'], ['', '', 'u', 'none'], ['', "'", '}', 'cnt'],
+  ['', "'", '~', 'cnt'], ['', '"', 'q', 'prot'], ['', '$', 'p', 'modeq'], ['?', '$', 'p', 'modeq'],
+  ['', '', 'Z', 'cap'], ['', '', 'z', 'cnt'], ['?', '', 'c', 'none'], ['=', '', 'c', 'none'],
+];
+const ESC_SIMPLE = ['7', '8', 'D', 'E', 'H', 'M', '=', '>', 'n', 'o', '|', '}', '~', '%@', '%G', '#8', 'Z', 'x', '#3'];
+const OSC_COLOURS = ['rgb:00/ff/00', 'rgb:f/0/8', '#123456', '#abc', 'rgb:ffff/0000/8000', 'nonsense', '', '?'];
+
+function randomScreenCase(rng, index) {
+  const pick = arr => arr[Math.floor(rng() * arr.length)];
+  const chance = p => rng() < p;
+  const int = (lo, hi) => lo + Math.floor(rng() * (hi - lo + 1));
+  const b = text => Array.from(Buffer.from(text, 'utf8'));
+  // RIS and OSC 8 links never share a case: lune-vt frees a reset buffer's links (decision Q9),
+  // upstream leaks them, so the url ids after a reset differ by design.
+  const allowRis = chance(0.15);
+  const allowLinks = !allowRis;
+
+  const param = pool => {
+    const r = rng();
+    if (r < 0.12) return '';
+    if (r < 0.55) return pick(SMALL_PARAMS.slice(0, 9));
+    if (r < 0.85) return pick(pool);
+    return String(int(1, 40));
+  };
+  const joined = (n, pool) => {
+    let out = param(pool);
+    for (let i = 1; i < n; i++) out += (chance(0.12) ? ':' : ';') + param(pool);
+    return out;
+  };
+  const sgrParams = () => {
+    const parts = [];
+    const n = int(1, 4);
+    for (let i = 0; i < n; i++) {
+      const r = rng();
+      if (r < 0.45) parts.push(pick(SGR_SIMPLE));
+      else if (r < 0.7) {
+        const base = pick(['38', '48', '58']);
+        const sep = chance(0.3) ? ':' : ';';
+        if (chance(0.5)) parts.push([base, '5', pick(['0', '7', '8', '15', '16', '231', '255', '256', '300', ''])].join(sep));
+        else {
+          const lead = sep === ':' && chance(0.5) ? [base, '2', ''] : [base, '2'];
+          const rgb = [0, 1, 2].map(() => pick(['0', '1', '128', '255', '256', '65535', '']));
+          parts.push([...lead, ...rgb].join(sep));
+        }
+      } else if (r < 0.85) parts.push('4:' + pick(['0', '1', '2', '3', '4', '5', '6', '', '65535']));
+      else parts.push(pick(['1', '3', '4', '7', '9', '53', '0']));
+    }
+    return parts.join(';');
+  };
+  const csi = () => {
+    const [prefix, inter, final, kind] = pick(CSI_TABLE);
+    let params;
+    switch (kind) {
+      case 'cnt': params = chance(0.2) ? '' : joined(chance(0.1) ? 2 : 1, EXTREME_PARAMS); break;
+      case 'cap': params = chance(0.2) ? '' : joined(1, CAPPED_PARAMS); break;
+      case 'pos': params = chance(0.15) ? '' : joined(int(1, 2), chance(0.5) ? EXTREME_PARAMS : SMALL_PARAMS); break;
+      case 'none': params = chance(0.7) ? '' : pick(['0', '1', '2']); break;
+      case 'sgr': params = chance(0.1) ? '' : sgrParams(); break;
+      case 'ansi': params = joined(chance(0.15) ? 2 : 1, ANSI_MODES); break;
+      case 'dec': params = joined(chance(0.2) ? 2 : 1, DEC_MODES); break;
+      case 'modeq': params = chance(0.1) ? '' : pick(prefix === '?' ? DEC_MODES : ANSI_MODES); break;
+      case 'erase3': params = pick(['', '0', '2', '3', '4']); break; // not 1: see FORMAT.md (upstream throws)
+      case 'erase2': params = pick(['', '0', '1', '2', '3']); break;
+      case 'tabclear': params = pick(['', '0', '1', '2', '3', '4']); break;
+      case 'dsr': params = pick(['', '5', '6', '0', '15', '25', '26', '53', '1']); break;
+      case 'style': params = pick(['', '0', '1', '2', '3', '4', '5', '6', '7', '3;1']); break;
+      case 'margins': params = chance(0.4) ? '' : joined(2, SMALL_PARAMS); break;
+      case 'winops': params = pick(['', '14', '14;2', '16', '18', '19', '22', '22;0', '22;1', '22;2', '23', '23;0', '23;2', '8;5;5', '1', '99']); break;
+      case 'prot': params = pick(['', '0', '1', '2']); break;
+      default: params = '';
+    }
+    return b(`\x1b[${prefix}${params}${inter}${final}`);
+  };
+  const esc = () => {
+    const r = rng();
+    if (r < 0.3) return b(`\x1b${pick(['(', ')', '*', '+', '-', '.', '/'])}${pick(CHARSET_FLAGS)}`);
+    if (allowRis && r < 0.4) return b('\x1bc');
+    return b(`\x1b${pick(ESC_SIMPLE)}`);
+  };
+  const text = () => {
+    const r = rng();
+    if (r < 0.55) return b(pick(TEXT_WORDS));
+    if (r < 0.9) return b(pick(WIDE_TEXT) + (chance(0.3) ? pick(WIDE_TEXT) : '') + (chance(0.3) ? pick(TEXT_WORDS) : ''));
+    return pick([[0x80], [0xc0, 0x80], [0xe2], [0xf4, 0x90, 0x80, 0x80], [0xed, 0xa0, 0x80]]);
+  };
+  const control = () => {
+    const r = rng();
+    if (r < 0.5) return b(pick(['\r\n', '\r\n', '\n', '\r', '\t', '\b', '\x07', '\x0b', '\x0c', '\x00', '\x7f', '\x0e', '\x0f']));
+    if (r < 0.8) return b(pick(['\u{84}', '\u{85}', '\u{88}']));
+    return b(pick(['\x18', '\x1a', '\x05', '\x1f', '\x01']));
+  };
+  const oscText = () => {
+    const r = rng();
+    if (r < 0.1) return 't'.repeat(int(50, 200));
+    if (r < 0.2) return pick(WIDE_TEXT) + pick(TEXT_WORDS);
+    return pick(['title', 'a b', 'x;y', '', 'some longer title']);
+  };
+  const osc = () => {
+    const r = rng();
+    let body;
+    if (r < 0.2) body = `${pick(['0', '1', '2'])};${oscText()}`;
+    else if (r < 0.35) body = `4;${pick(['0', '1', '7', '15', '16', '255', '256', 'x', ''])};${pick(OSC_COLOURS)}` + (chance(0.3) ? `;${pick(['2', '9'])};${pick(OSC_COLOURS)}` : '');
+    else if (r < 0.6 && allowLinks) {
+      body = chance(0.4) ? '8;;' : `8;${pick(['id=a', 'id=b:x=y', 'x=y', 'id=', 'id=a:id=b', ''])};${pick(['http://a.example/', 'http://b.example/?q=1&r=2', 'file:///x', 'u'.repeat(int(1, 80))])}`;
+    } else if (r < 0.7) body = `${pick(['10', '11', '12'])};${pick(OSC_COLOURS)}`;
+    else if (r < 0.8) body = pick(['104', '104;1', '104;1;2;300', '110', '111', '112', '110;x']);
+    else if (r < 0.9) body = pick(['52;c;?', '52;c;aGVsbG8=', '9;note', '7;file:///tmp', '777;x', '133;A', '3;a=b', '99999999999;x']);
+    else body = pick(['', '0', ';', '8', '4', '10']);
+    const t = rng();
+    const end = t < 0.6 ? [0x07] : t < 0.9 ? [0x1b, 0x5c] : [0xc2, 0x9c];
+    return [...b(`\x1b]${body}`), ...end];
+  };
+  const dcs = () => {
+    const req = pick(['m', 'r', ' q', '"q', '"p', 's', 'z', '']);
+    const r = rng();
+    if (r < 0.8) return b(`\x1bP$q${req}\x1b\\`);
+    return b(`\x1bP${pick(['1;2|abc', '$qm', '+q4e', '>|x', ''])}\x1b\\`);
+  };
+  const token = () => {
+    const r = rng();
+    if (r < 0.27) return text();
+    if (r < 0.37) return control();
+    if (r < 0.40) return b(pick(['\x1b[?1049h', '\x1b[?47h', '\x1b[?1047h', '\x1b[?1049h\x1b[2J']));
+    if (r < 0.70) return csi();
+    if (r < 0.82) return esc();
+    if (r < 0.93) return osc();
+    return dcs();
+  };
+
+  const bytes = [];
+  const count = int(4, 30);
+  for (let i = 0; i < count; i++) {
+    const t = token();
+    if (chance(1 / 12) && t.length > 2) bytes.push(...t.slice(0, int(1, t.length - 1)));
+    else bytes.push(...t);
+  }
+  const cuts = new Set();
+  const nCuts = chance(0.5) ? 0 : int(1, 3);
+  // Cut points: random offsets, now and then right after "E2 80" (the split upstream mishandles).
+  const afterE280 = [];
+  for (let k = 0; k + 1 < bytes.length; k++) if (bytes[k] === 0xe2 && bytes[k + 1] === 0x80) afterE280.push(k + 2);
+  for (let k = 0; k < nCuts; k++) cuts.add(afterE280.length > 0 && chance(0.4) ? pick(afterE280) : int(0, bytes.length));
+  const chunks = [];
+  let prev = 0;
+  for (const c of [...cuts].sort((x, y) => x - y)) { chunks.push(bytes.slice(prev, c)); prev = c; }
+  chunks.push(bytes.slice(prev));
+  const size = pick(SCREEN_SIZES);
+  const resize = chance(0.4) ? pick(RESIZE_SIZES) : null;
+  const name = `srand_${String(index + 1).padStart(4, '0')}`;
+  return { name, source: `generated: mulberry32, ${chunks.length} chunk(s)`, size, resize, input: chunks, grid: [], divergent: null };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Parser-trace mode.
 
 const { EscapeSequenceParser, Utf8ToUtf32 } = parserInternals();
@@ -414,6 +610,27 @@ async function runScreen(c, chunks) {
   return { term, events };
 }
 
+/**
+ * True when the oracle shows the same screen for the input in one write and for one write per UTF-8
+ * character. Upstream's `print` depends on where `write` calls end for some inputs (a wide
+ * character and a joiner at the right margin with autowrap off), and lune-vt reproduces that, so
+ * the replays of the screen runner (one byte per write, random splits) could not equal any one
+ * dump. Such cases are not kept (FORMAT.md "Random screen cases").
+ */
+async function chunkInvariantInOracle(c) {
+  const flat = c.input.flat();
+  const groups = [];
+  for (const byte of flat) {
+    if (groups.length === 0 || (byte & 0xc0) !== 0x80) groups.push([byte]);
+    else groups[groups.length - 1].push(byte);
+  }
+  const dumpOf = async chunks => {
+    const { term, events } = await runScreen(c, chunks);
+    return dumpScreen(term, events);
+  };
+  return sameLines(await dumpOf([flat]), await dumpOf(groups));
+}
+
 async function screenGolden(c, name) {
   const dumpOf = async chunks => {
     const { term, events } = await runScreen(c, chunks);
@@ -535,12 +752,24 @@ async function main() {
   const screenGoldens = [];
   for (const c of screenCorpus.cases) screenGoldens.push(await screenGolden(c, c.name));
   writeGoldenFile('screen', 'cases.golden', screenGoldens);
+  const randomScreens = [];
+  let rejected = 0;
+  if (screenCorpus.random) {
+    const rng = mulberry32(screenCorpus.random.seed);
+    while (randomScreens.length < screenCorpus.random.count) {
+      if (rejected > 20 * screenCorpus.random.count) throw new Error('oracle: too many random screen cases rejected');
+      const c = randomScreenCase(rng, randomScreens.length);
+      if (!(await chunkInvariantInOracle(c))) { rejected++; continue; }
+      randomScreens.push(await screenGolden(c, c.name));
+    }
+  }
+  writeGoldenFile('screen', 'random.golden', randomScreens);
   const lunegitScreens = [];
   for (const c of lunegit) lunegitScreens.push(await screenGolden(c, `lunegit_${c.name}`));
   writeGoldenFile('screen', 'lunegit.golden', lunegitScreens);
   writeGoldenFile('lunegit', 'vectors.golden', lunegit.map(gridGolden));
 
-  console.log(`parser: ${parserCases.length} + ${randomCases.length} random (${[...handGoldens, ...randomGoldens].filter(g => g.divergent).length} chunk-divergent); screen: ${screenGoldens.length} + ${lunegitScreens.length} lunegit; grid: ${lunegit.length}`);
+  console.log(`parser: ${parserCases.length} + ${randomCases.length} random (${[...handGoldens, ...randomGoldens].filter(g => g.divergent).length} chunk-divergent); screen: ${screenGoldens.length} + ${randomScreens.length} random (${randomScreens.filter(g => g.divergent).length} chunk-divergent, ${rejected} rejected) + ${lunegitScreens.length} lunegit; grid: ${lunegit.length}`);
   const ok = await checkLunegit(lunegit, true);
   process.exit(ok ? 0 : 1);
 }

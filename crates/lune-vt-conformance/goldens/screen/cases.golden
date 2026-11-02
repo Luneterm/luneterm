@@ -1,7 +1,7 @@
 lune-vt-golden 1
 kind screen
 name sgr_attributes
-source screen.cases:5
+source screen.cases:10
 size 40 6
 chunk 1b5b316d626f6c641b5b306d201b5b326d64696d1b5b306d201b5b336d6974616c69631b5b306d201b5b346d756e6465721b5b306d201b5b356d626c696e6b1b5b306d201b5b376d696e76657273651b5b306d0d0a1b5b386d696e7669731b5b306d201b5b396d737472696b651b5b306d201b5b35336d6f7665726c696e651b5b306d201b5b313b333b343b396d616c6c1b5b306d20656e64
 expect
@@ -29,7 +29,7 @@ attr 1 22 3 b i u=1 s
 end
 kind screen
 name sgr_fg_bg_16
-source screen.cases:9
+source screen.cases:14
 size 40 6
 chunk 1b5b33306d411b5b33316d421b5b33326d431b5b33336d441b5b33346d451b5b33356d461b5b33366d471b5b33376d481b5b39306d491b5b39316d4a1b5b39376d4b1b5b33396d4c0d0a1b5b34306d411b5b34316d421b5b34326d431b5b34336d441b5b34346d451b5b34356d461b5b34366d471b5b34376d481b5b3130306d491b5b3130316d4a1b5b3130376d4b1b5b34396d4c
 expect
@@ -69,7 +69,7 @@ attr 1 10 1 bg=p16:15
 end
 kind screen
 name sgr_bold_with_palette
-source screen.cases:13
+source screen.cases:18
 size 30 4
 chunk 1b5b313b33306d411b5b313b33316d421b5b313b33376d431b5b313b39306d441b5b303b313b33383b353b316d451b5b306d
 expect
@@ -90,7 +90,7 @@ attr 0 4 1 fg=p256:1 b
 end
 kind screen
 name sgr_256
-source screen.cases:17
+source screen.cases:22
 size 40 4
 chunk 1b5b33383b353b306d411b5b33383b353b376d421b5b33383b353b386d431b5b33383b353b31356d441b5b33383b353b31366d451b5b33383b353b3233316d461b5b33383b353b3235356d470d0a1b5b34383b353b316d411b5b34383b353b3130306d421b5b34383b353b3235356d431b5b306d1b5b33383a353a396d441b5b34383a353a3230306d451b5b306d
 expect
@@ -118,7 +118,7 @@ attr 1 4 1 fg=p256:9 bg=p256:200
 end
 kind screen
 name sgr_rgb
-source screen.cases:21
+source screen.cases:26
 size 40 4
 chunk 1b5b33383b323b313b323b336d411b5b34383b323b3235303b3235313b3235326d421b5b33383b323b3235353b303b303b34383b323b303b303b3235356d431b5b306d1b5b33383a323a3a31303a32303a33306d441b5b34383a323a3a34303a35303a36306d451b5b33383a323a313a323a336d461b5b306d
 expect
@@ -140,7 +140,7 @@ attr 0 5 1 fg=rgb:020300 bg=rgb:28323c
 end
 kind screen
 name sgr_underline_styles
-source screen.cases:25
+source screen.cases:30
 size 40 8
 chunk 1b5b346d411b5b343a306d421b5b343a316d431b5b343a326d441b5b343a336d451b5b343a346d461b5b343a356d471b5b343a366d481b5b32316d491b5b32346d4a1b5b306d
 expect
@@ -168,7 +168,7 @@ attr 0 8 1 u=2
 end
 kind screen
 name sgr_underline_colors
-source screen.cases:29
+source screen.cases:34
 size 40 6
 chunk 1b5b343a333b35383b323b313b323b336d411b5b35383b353b396d421b5b35383a323a3a373a383a396d431b5b35383a353a3230306d441b5b35396d451b5b343b35383b323b3235353b303b3235356d461b5b32346d471b5b306d48
 expect
@@ -192,7 +192,7 @@ attr 0 5 1 u=1 uc=rgb:ff00ff
 end
 kind screen
 name sgr_resets
-source screen.cases:33
+source screen.cases:38
 size 40 4
 chunk 1b5b313b323b333b343b353b373b383b393b35333b33313b34326d581b5b32326d411b5b32336d421b5b32346d431b5b32356d441b5b32376d451b5b32386d461b5b32396d471b5b35356d481b5b33396d491b5b34396d4a
 expect
@@ -218,7 +218,7 @@ attr 0 9 1 bg=p16:2
 end
 kind screen
 name sgr_bad_params
-source screen.cases:37
+source screen.cases:42
 size 40 4
 chunk 1b5b33383b356d411b5b33383b323b316d421b5b33383b393b313b326d431b5b34386d441b5b35386d451b5b3939396d461b5b3b3b6d471b5b306d
 expect
@@ -236,7 +236,7 @@ attr 0 1 5 fg=rgb:010000
 end
 kind screen
 name erase_with_background
-source screen.cases:41
+source screen.cases:46
 size 20 4
 chunk 1b5b34346d414141411b5b324b1b5b313b31481b5b34326d1b5b304a1b5b333b35481b5b34356d1b5b314b1b5b306d656e64
 expect
@@ -257,7 +257,7 @@ attr 3 0 20 bg=p16:2
 end
 kind screen
 name osc8_links
-source screen.cases:45
+source screen.cases:50
 size 40 4
 chunk 1b5d383b3b687474703a2f2f612e6578616d706c652f076c696e6b2d611b5d383b3b0720706c61696e201b5d383b69643d783b687474703a2f2f622e6578616d706c652f3f713d3126723d32076c696e6b2d621b5d383b3b070d0a1b5d383b69643d783b687474703a2f2f622e6578616d706c652f3f713d3126723d3207616761696e1b5d383b3b07201b5d383b3b687474703a2f2f632e6578616d706c652f1b5c6c696e6b2d631b5d383b3b1b5c
 expect
@@ -280,7 +280,7 @@ link 3 "http://c.example/"
 end
 kind screen
 name osc8_link_with_underline
-source screen.cases:49
+source screen.cases:54
 size 40 4
 chunk 1b5b343a336d1b5d383b3b687474703a2f2f612e6578616d706c652f076375726c792d6c696e6b1b5d383b3b071b5b343a326d646f75626c651b5b306d201b5d383b3b687474703a2f2f612e6578616d706c652f071b5b343a356d6461736865642d6c696e6b1b5b306d1b5d383b3b07
 expect
@@ -301,7 +301,7 @@ link 2 "http://a.example/"
 end
 kind screen
 name decset_modes
-source screen.cases:53
+source screen.cases:58
 size 30 6
 chunk 1b5b3f31681b5b3f36681b5b3f376c1b5b3f3435681b5b3f3636681b5b3f32303034681b5b3f31303034681b5b3f32356c1b5b3f3132681b5b3468
 expect
@@ -319,7 +319,7 @@ line 5 0 ""
 end
 kind screen
 name decset_modes_reset
-source screen.cases:57
+source screen.cases:62
 size 30 6
 chunk 1b5b3f31681b5b3f36681b5b3f376c1b5b3f3435681b5b3f3636681b5b3f32303034681b5b3f31303034681b5b3f316c1b5b3f366c1b5b3f37681b5b3f34356c1b5b3f36366c1b5b3f323030346c1b5b3f313030346c1b5b346c
 expect
@@ -337,7 +337,7 @@ line 5 0 ""
 end
 kind screen
 name mouse_x10
-source screen.cases:61
+source screen.cases:66
 size 30 4
 chunk 1b5b3f3968
 expect
@@ -353,7 +353,7 @@ line 3 0 ""
 end
 kind screen
 name mouse_vt200
-source screen.cases:65
+source screen.cases:70
 size 30 4
 chunk 1b5b3f3130303068
 expect
@@ -369,7 +369,7 @@ line 3 0 ""
 end
 kind screen
 name mouse_drag
-source screen.cases:69
+source screen.cases:74
 size 30 4
 chunk 1b5b3f31303032681b5b3f3130303668
 expect
@@ -385,7 +385,7 @@ line 3 0 ""
 end
 kind screen
 name mouse_any_sgr
-source screen.cases:73
+source screen.cases:78
 size 30 4
 chunk 1b5b3f31303033681b5b3f3130303668
 expect
@@ -401,7 +401,7 @@ line 3 0 ""
 end
 kind screen
 name mouse_utf8_encoding
-source screen.cases:77
+source screen.cases:82
 size 30 4
 chunk 1b5b3f31303030681b5b3f3130303568
 expect
@@ -417,7 +417,7 @@ line 3 0 ""
 end
 kind screen
 name mouse_urxvt_encoding
-source screen.cases:81
+source screen.cases:86
 size 30 4
 chunk 1b5b3f31303030681b5b3f3130313568
 expect
@@ -433,7 +433,7 @@ line 3 0 ""
 end
 kind screen
 name mouse_sgr_pixels
-source screen.cases:85
+source screen.cases:90
 size 30 4
 chunk 1b5b3f31303030681b5b3f3130313668
 expect
@@ -449,7 +449,7 @@ line 3 0 ""
 end
 kind screen
 name mouse_enable_then_disable
-source screen.cases:89
+source screen.cases:94
 size 30 4
 chunk 1b5b3f31303033681b5b3f31303036681b5b3f313030336c1b5b3f313030366c
 expect
@@ -465,7 +465,7 @@ line 3 0 ""
 end
 kind screen
 name bracketed_paste_and_sync
-source screen.cases:93
+source screen.cases:98
 size 30 4
 chunk 1b5b3f32303034681b5b3f3230323668
 expect
@@ -481,7 +481,7 @@ line 3 0 ""
 end
 kind screen
 name sync_output_text
-source screen.cases:97
+source screen.cases:102
 size 30 4
 chunk 1b5b3f323032366862756666657265641b5b3f323032366c206166746572
 expect
@@ -497,7 +497,7 @@ line 3 0 ""
 end
 kind screen
 name alt_screen_1049
-source screen.cases:101
+source screen.cases:106
 size 20 5
 chunk 6d61696e0d0a1b5b3f31303439681b5b324a1b5b48414c541b5b333b33486d69641b5b3f313034396c206261636b
 expect
@@ -514,7 +514,7 @@ line 4 0 ""
 end
 kind screen
 name alt_screen_47_1047
-source screen.cases:105
+source screen.cases:110
 size 20 5
 chunk 6d61696e1b5b3f343768414c541b5b3f34376c0d0a1b5b3f3130343768414c54321b5b3f313034376c20656e64
 expect
@@ -531,7 +531,7 @@ line 4 0 ""
 end
 kind screen
 name scrollback_fill
-source screen.cases:109
+source screen.cases:114
 size 10 5
 chunk 4c30300d0a4c30310d0a4c30320d0a4c30330d0a4c30340d0a4c30350d0a4c30360d0a4c30370d0a4c30380d0a4c30390d0a4c31300d0a4c31310d0a4c31320d0a4c31330d0a4c3134
 expect
@@ -558,7 +558,7 @@ line 14 0 "L14"
 end
 kind screen
 name scrollback_attributes
-source screen.cases:113
+source screen.cases:118
 size 12 3
 chunk 1b5b33316d7265640d0a1b5b313b34326d626f6c642d677265656e0d0a1b5b306d706c61696e0d0a1b5b346d750d0a6c617374
 expect
@@ -579,7 +579,7 @@ attr 4 0 4 u=1
 end
 kind screen
 name wide_and_combining
-source screen.cases:117
+source screen.cases:122
 size 20 5
 chunk e4bda0e5a5bd2061620d0a65cc817820f09f91a8e2808df09f91a9e2808df09f91a720790d0af09f918df09f8fbd7a20e29aa0efb88f770d0af09f87aff09f87b520ed959ceab880
 expect
@@ -614,7 +614,7 @@ attr 3 6 1 w=0
 end
 kind screen
 name wide_at_margin
-source screen.cases:121
+source screen.cases:126
 size 6 4
 chunk 6162636465e4bda0666768696ae4bda0
 expect
@@ -634,7 +634,7 @@ attr 2 2 1 w=0
 end
 kind screen
 name da1_da2
-source screen.cases:125
+source screen.cases:130
 size 20 3
 chunk 1b5b631b5b30631b5b3e631b5b3e3063
 expect
@@ -653,7 +653,7 @@ line 2 0 ""
 end
 kind screen
 name dsr_5_6
-source screen.cases:129
+source screen.cases:134
 size 20 5
 chunk 1b5b356e1b5b333b37481b5b366e1b5b3f366e
 expect
@@ -673,7 +673,7 @@ line 4 0 ""
 end
 kind screen
 name dsr_6_origin_mode
-source screen.cases:133
+source screen.cases:138
 size 20 6
 chunk 1b5b323b35721b5b3f36681b5b323b33481b5b366e
 expect
@@ -692,7 +692,7 @@ line 5 0 ""
 end
 kind screen
 name decrqm_dec_modes
-source screen.cases:137
+source screen.cases:142
 size 20 3
 chunk 1b5b3f3124701b5b3f3624701b5b3f3724701b5b3f323524701b5b3f343724701b5b3f3130303024701b5b3f3130303624701b5b3f3130343924701b5b3f3230303424701b5b3f3230323624701b5b3f3939393924701b5b3f32303236681b5b3f3230323624701b5b3f376c1b5b3f372470
 expect
@@ -720,7 +720,7 @@ line 2 0 ""
 end
 kind screen
 name decrqm_ansi_modes
-source screen.cases:141
+source screen.cases:146
 size 20 3
 chunk 1b5b3424701b5b323024701b5b313224701b5b34681b5b3424701b5b39392470
 expect
@@ -740,7 +740,7 @@ line 2 0 ""
 end
 kind screen
 name decrqss_sgr_and_margins
-source screen.cases:145
+source screen.cases:150
 size 20 6
 chunk 1b5b313b333b33383b353b3139363b34383b323b313b323b336d1b5024716d1b5c1b5b306d1b5024716d1b5c1b5b323b35721b502471721b5c1b5b3420711b50247120711b5c1b5024717a1b5c
 expect
@@ -763,7 +763,7 @@ line 5 0 ""
 end
 kind screen
 name title_osc
-source screen.cases:149
+source screen.cases:154
 size 20 3
 chunk 1b5d303b7469746c65207a65726f071b5d323b7469746c652074776f071b5d313b69636f6e07
 expect
@@ -778,7 +778,7 @@ line 2 0 ""
 end
 kind screen
 name title_unicode_and_long
-source screen.cases:153
+source screen.cases:158
 size 20 3
 chunk 1b5d303be4bda0e5a5bd20f09f9a8020747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747474747407
 expect
@@ -793,7 +793,7 @@ line 2 0 ""
 end
 kind screen
 name title_st_terminators
-source screen.cases:157
+source screen.cases:162
 size 20 3
 chunk 1b5d323b611b5c1b5d303b62c29c
 expect
@@ -808,7 +808,7 @@ line 2 0 ""
 end
 kind screen
 name title_stack
-source screen.cases:161
+source screen.cases:166
 size 20 3
 chunk 1b5d303b6669727374071b5b32323b30741b5d303b7365636f6e64071b5b32333b3074
 expect
@@ -823,7 +823,7 @@ line 2 0 ""
 end
 kind screen
 name osc_color_queries
-source screen.cases:165
+source screen.cases:170
 size 20 3
 chunk 1b5d31303b3f071b5d31313b3f071b5d31323b3f071b5d343b313b3f071b5d31303b7267623a66662f30302f3030071b5d31303b3f07
 expect
@@ -838,7 +838,7 @@ line 2 0 ""
 end
 kind screen
 name cursor_style_decscusr
-source screen.cases:169
+source screen.cases:174
 size 20 3
 chunk 1b5b3120711b5b3220711b5b3320711b5b3420711b5b3520711b5b3620711b5b302071
 expect
@@ -853,7 +853,7 @@ line 2 0 ""
 end
 kind screen
 name charsets_dec_graphics
-source screen.cases:173
+source screen.cases:178
 size 20 4
 chunk 1b28306c71716b0a781b2842201b29300e6c716b0f0d0a1b28416c716b1b28426c716b
 expect
@@ -869,7 +869,7 @@ line 3 0 ""
 end
 kind screen
 name insert_mode_and_tabs
-source screen.cases:177
+source screen.cases:182
 size 20 4
 chunk 1b5b34686162631b5b313b314858591b5b346c0d0a094109421b5b30671b5b313b35481b480d0a090943
 expect
@@ -885,7 +885,7 @@ line 3 0 ""
 end
 kind screen
 name origin_mode_margins
-source screen.cases:181
+source screen.cases:186
 size 20 6
 chunk 1b5b323b35721b5b3f36681b5b313b3148411b5b343b3148441b5b353b3148450a1b5b3f366c1b5b313b31485a
 expect
@@ -903,7 +903,7 @@ line 5 0 ""
 end
 kind screen
 name left_right_margins
-source screen.cases:185
+source screen.cases:190
 size 20 4
 chunk 1b5b3f3639681b5b333b38731b5b313b31486162636465666768696a6b6c6d6e6f701b5b3f36396c
 expect
@@ -919,7 +919,7 @@ line 3 0 ""
 end
 kind screen
 name save_restore_cursor
-source screen.cases:189
+source screen.cases:194
 size 20 4
 chunk 1b5b333b34481b371b5b313b31481b5b33316d581b38591b5b731b5b313b3130481b5b7521
 expect
@@ -936,7 +936,7 @@ attr 0 0 1 fg=p16:1
 end
 kind screen
 name wrap_pending_and_reverse
-source screen.cases:193
+source screen.cases:198
 size 6 3
 chunk 6162636465661b5b3f34356808085a1b5b3f376c515253545556
 expect
@@ -951,7 +951,7 @@ line 2 0 ""
 end
 kind screen
 name rep_and_ech
-source screen.cases:197
+source screen.cases:202
 size 20 3
 chunk 61621b5b3362631b5b32581b5b313b31481b5b32407a1b5b313b31481b5b3350
 expect
@@ -966,7 +966,7 @@ line 2 0 ""
 end
 kind screen
 name decaln_and_ris
-source screen.cases:201
+source screen.cases:206
 size 10 3
 chunk 1b23381b5b313b3148781b632061667465722d7265736574
 expect
@@ -981,7 +981,7 @@ line 2 0 ""
 end
 kind screen
 name soft_reset
-source screen.cases:205
+source screen.cases:210
 size 20 3
 chunk 1b5b313b33316d1b5b3f31681b5b3f376c1b5b34681b5b217061
 expect
@@ -996,7 +996,7 @@ line 2 0 ""
 end
 kind screen
 name keypad_modes
-source screen.cases:209
+source screen.cases:214
 size 20 3
 chunk 1b3d1b3e1b3d1b5b3f363668
 expect
@@ -1011,7 +1011,7 @@ line 2 0 ""
 end
 kind screen
 name c1_as_utf8
-source screen.cases:213
+source screen.cases:218
 size 20 3
 chunk c29b33316d726564c29b306dc29d303b74c29c
 expect
@@ -1027,7 +1027,7 @@ attr 0 0 3 fg=p16:1
 end
 kind screen
 name scroll_region_with_scrollback
-source screen.cases:217
+source screen.cases:222
 size 10 5
 chunk 1b5b323b34721b5b343b3148310d0a320d0a330d0a340d0a351b5b721b5b353b3148656e64
 expect
@@ -1044,7 +1044,7 @@ line 4 0 "end"
 end
 kind screen
 name resize_shrink_cols
-source screen.cases:221
+source screen.cases:226
 size 12 4
 resize 8 4
 chunk 6162636465666768696a6b6c6d6e6f70717273740d0a1b5b33316d78797a
@@ -1062,7 +1062,7 @@ attr 3 0 3 fg=p16:1
 end
 kind screen
 name resize_grow_rows
-source screen.cases:226
+source screen.cases:231
 size 10 3
 resize 10 6
 chunk 310d0a320d0a330d0a340d0a35
@@ -1081,7 +1081,7 @@ line 5 0 ""
 end
 kind screen
 name resize_with_alt_buffer
-source screen.cases:231
+source screen.cases:236
 size 10 3
 resize 6 3
 chunk 61621b5b3f3130343968414c54434f4e54454e54
@@ -1097,7 +1097,7 @@ line 2 0 ""
 end
 kind screen
 name chunked_ascii_and_csi
-source screen.cases:236
+source screen.cases:241
 size 20 3
 chunk 6162
 chunk 1b
@@ -1120,7 +1120,7 @@ attr 0 2 2 fg=p16:1
 end
 kind screen
 name chunked_utf8_clean_boundaries
-source screen.cases:240
+source screen.cases:245
 size 20 3
 chunk e4bda0
 chunk e5a5bd
@@ -1144,7 +1144,7 @@ attr 0 5 1 w=0
 end
 kind screen
 name chunked_utf8_split
-source screen.cases:244
+source screen.cases:249
 size 20 3
 chunk f0
 chunk 9f
@@ -1183,4 +1183,4032 @@ modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.
 line 0 0 "a\u{2019}b"
 line 1 0 ""
 line 2 0 ""
+end
+kind screen
+name charset_designate_g0_paren
+source screen.cases:261
+size 20 18
+chunk 1b28302324405b5c5d5e5f607b7c7d7e617a0d0a1b28412324405b5c5d5e5f607b7c7d7e617a0d0a1b28422324405b5c5d5e5f607b7c7d7e617a0d0a1b28342324405b5c5d5e5f607b7c7d7e617a0d0a1b28432324405b5c5d5e5f607b7c7d7e617a0d0a1b28352324405b5c5d5e5f607b7c7d7e617a0d0a1b28522324405b5c5d5e5f607b7c7d7e617a0d0a1b28512324405b5c5d5e5f607b7c7d7e617a0d0a1b284b2324405b5c5d5e5f607b7c7d7e617a0d0a1b28592324405b5c5d5e5f607b7c7d7e617a0d0a1b28452324405b5c5d5e5f607b7c7d7e617a0d0a1b28362324405b5c5d5e5f607b7c7d7e617a0d0a1b285a2324405b5c5d5e5f607b7c7d7e617a0d0a1b28482324405b5c5d5e5f607b7c7d7e617a0d0a1b28372324405b5c5d5e5f607b7c7d7e617a0d0a1b283d2324405b5c5d5e5f607b7c7d7e617a
+expect
+cursor 15 15
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "#$@[\u{5C}]^_\u{25C6}\u{3C0}\u{2260}\u{A3}\u{B7}\u{2592}\u{2265}"
+line 1 0 "\u{A3}$@[\u{5C}]^_`{|}~az"
+line 2 0 "#$@[\u{5C}]^_`{|}~az"
+line 3 0 "\u{A3}$\u{BE}i\u{BD}|^_`\u{A8}f\u{BC}\u{B4}az"
+line 4 0 "#$@\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 5 0 "#$@\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 6 0 "\u{A3}$\u{E0}\u{B0}\u{E7}\u{A7}^_`\u{E9}\u{F9}\u{E8}\u{A8}az"
+line 7 0 "#$\u{E0}\u{E2}\u{E7}\u{EA}\u{EE}_\u{F4}\u{E9}\u{F9}\u{E8}\u{FB}az"
+line 8 0 "#$\u{A7}\u{C4}\u{D6}\u{DC}^_`\u{E4}\u{F6}\u{FC}\u{DF}az"
+line 9 0 "\u{A3}$\u{A7}\u{B0}\u{E7}\u{E9}^_\u{F9}\u{E0}\u{F2}\u{E8}\u{EC}az"
+line 10 0 "#$\u{C4}\u{C6}\u{D8}\u{C5}\u{DC}_\u{E4}\u{E6}\u{F8}\u{E5}\u{FC}az"
+line 11 0 "#$\u{C4}\u{C6}\u{D8}\u{C5}\u{DC}_\u{E4}\u{E6}\u{F8}\u{E5}\u{FC}az"
+line 12 0 "\u{A3}$\u{A7}\u{A1}\u{D1}\u{BF}^_`\u{B0}\u{F1}\u{E7}~az"
+line 13 0 "#$\u{C9}\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 14 0 "#$\u{C9}\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 15 0 "\u{F9}$\u{E0}\u{E9}\u{E7}\u{EA}\u{EE}\u{E8}\u{F4}\u{E4}\u{F6}\u{FC}\u{FB}az"
+line 16 0 ""
+line 17 0 ""
+end
+kind screen
+name charset_designate_g1_rparen
+source screen.cases:265
+size 20 18
+chunk 1b29300e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b29410e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b29420e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b29340e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b29430e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b29350e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b29520e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b29510e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b294b0e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b29590e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b29450e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b29360e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b295a0e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b29480e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b29370e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b293d0e2324405b5c5d5e5f607b7c7d7e617a0f
+expect
+cursor 15 15
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "#$@[\u{5C}]^_\u{25C6}\u{3C0}\u{2260}\u{A3}\u{B7}\u{2592}\u{2265}"
+line 1 0 "\u{A3}$@[\u{5C}]^_`{|}~az"
+line 2 0 "#$@[\u{5C}]^_`{|}~az"
+line 3 0 "\u{A3}$\u{BE}i\u{BD}|^_`\u{A8}f\u{BC}\u{B4}az"
+line 4 0 "#$@\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 5 0 "#$@\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 6 0 "\u{A3}$\u{E0}\u{B0}\u{E7}\u{A7}^_`\u{E9}\u{F9}\u{E8}\u{A8}az"
+line 7 0 "#$\u{E0}\u{E2}\u{E7}\u{EA}\u{EE}_\u{F4}\u{E9}\u{F9}\u{E8}\u{FB}az"
+line 8 0 "#$\u{A7}\u{C4}\u{D6}\u{DC}^_`\u{E4}\u{F6}\u{FC}\u{DF}az"
+line 9 0 "\u{A3}$\u{A7}\u{B0}\u{E7}\u{E9}^_\u{F9}\u{E0}\u{F2}\u{E8}\u{EC}az"
+line 10 0 "#$\u{C4}\u{C6}\u{D8}\u{C5}\u{DC}_\u{E4}\u{E6}\u{F8}\u{E5}\u{FC}az"
+line 11 0 "#$\u{C4}\u{C6}\u{D8}\u{C5}\u{DC}_\u{E4}\u{E6}\u{F8}\u{E5}\u{FC}az"
+line 12 0 "\u{A3}$\u{A7}\u{A1}\u{D1}\u{BF}^_`\u{B0}\u{F1}\u{E7}~az"
+line 13 0 "#$\u{C9}\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 14 0 "#$\u{C9}\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 15 0 "\u{F9}$\u{E0}\u{E9}\u{E7}\u{EA}\u{EE}\u{E8}\u{F4}\u{E4}\u{F6}\u{FC}\u{FB}az"
+line 16 0 ""
+line 17 0 ""
+end
+kind screen
+name charset_designate_g2_star
+source screen.cases:269
+size 20 18
+chunk 1b2a301b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a411b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a421b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a341b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a431b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a351b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a521b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a511b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a4b1b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a591b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a451b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a361b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a5a1b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a481b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a371b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2a3d1b6e2324405b5c5d5e5f607b7c7d7e617a0f
+expect
+cursor 15 15
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "#$@[\u{5C}]^_\u{25C6}\u{3C0}\u{2260}\u{A3}\u{B7}\u{2592}\u{2265}"
+line 1 0 "\u{A3}$@[\u{5C}]^_`{|}~az"
+line 2 0 "#$@[\u{5C}]^_`{|}~az"
+line 3 0 "\u{A3}$\u{BE}i\u{BD}|^_`\u{A8}f\u{BC}\u{B4}az"
+line 4 0 "#$@\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 5 0 "#$@\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 6 0 "\u{A3}$\u{E0}\u{B0}\u{E7}\u{A7}^_`\u{E9}\u{F9}\u{E8}\u{A8}az"
+line 7 0 "#$\u{E0}\u{E2}\u{E7}\u{EA}\u{EE}_\u{F4}\u{E9}\u{F9}\u{E8}\u{FB}az"
+line 8 0 "#$\u{A7}\u{C4}\u{D6}\u{DC}^_`\u{E4}\u{F6}\u{FC}\u{DF}az"
+line 9 0 "\u{A3}$\u{A7}\u{B0}\u{E7}\u{E9}^_\u{F9}\u{E0}\u{F2}\u{E8}\u{EC}az"
+line 10 0 "#$\u{C4}\u{C6}\u{D8}\u{C5}\u{DC}_\u{E4}\u{E6}\u{F8}\u{E5}\u{FC}az"
+line 11 0 "#$\u{C4}\u{C6}\u{D8}\u{C5}\u{DC}_\u{E4}\u{E6}\u{F8}\u{E5}\u{FC}az"
+line 12 0 "\u{A3}$\u{A7}\u{A1}\u{D1}\u{BF}^_`\u{B0}\u{F1}\u{E7}~az"
+line 13 0 "#$\u{C9}\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 14 0 "#$\u{C9}\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 15 0 "\u{F9}$\u{E0}\u{E9}\u{E7}\u{EA}\u{EE}\u{E8}\u{F4}\u{E4}\u{F6}\u{FC}\u{FB}az"
+line 16 0 ""
+line 17 0 ""
+end
+kind screen
+name charset_designate_g3_plus
+source screen.cases:273
+size 20 18
+chunk 1b2b301b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b411b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b421b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b341b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b431b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b351b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b521b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b511b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b4b1b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b591b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b451b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b361b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b5a1b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b481b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b371b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2b3d1b6f2324405b5c5d5e5f607b7c7d7e617a0f
+expect
+cursor 15 15
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "#$@[\u{5C}]^_\u{25C6}\u{3C0}\u{2260}\u{A3}\u{B7}\u{2592}\u{2265}"
+line 1 0 "\u{A3}$@[\u{5C}]^_`{|}~az"
+line 2 0 "#$@[\u{5C}]^_`{|}~az"
+line 3 0 "\u{A3}$\u{BE}i\u{BD}|^_`\u{A8}f\u{BC}\u{B4}az"
+line 4 0 "#$@\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 5 0 "#$@\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 6 0 "\u{A3}$\u{E0}\u{B0}\u{E7}\u{A7}^_`\u{E9}\u{F9}\u{E8}\u{A8}az"
+line 7 0 "#$\u{E0}\u{E2}\u{E7}\u{EA}\u{EE}_\u{F4}\u{E9}\u{F9}\u{E8}\u{FB}az"
+line 8 0 "#$\u{A7}\u{C4}\u{D6}\u{DC}^_`\u{E4}\u{F6}\u{FC}\u{DF}az"
+line 9 0 "\u{A3}$\u{A7}\u{B0}\u{E7}\u{E9}^_\u{F9}\u{E0}\u{F2}\u{E8}\u{EC}az"
+line 10 0 "#$\u{C4}\u{C6}\u{D8}\u{C5}\u{DC}_\u{E4}\u{E6}\u{F8}\u{E5}\u{FC}az"
+line 11 0 "#$\u{C4}\u{C6}\u{D8}\u{C5}\u{DC}_\u{E4}\u{E6}\u{F8}\u{E5}\u{FC}az"
+line 12 0 "\u{A3}$\u{A7}\u{A1}\u{D1}\u{BF}^_`\u{B0}\u{F1}\u{E7}~az"
+line 13 0 "#$\u{C9}\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 14 0 "#$\u{C9}\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 15 0 "\u{F9}$\u{E0}\u{E9}\u{E7}\u{EA}\u{EE}\u{E8}\u{F4}\u{E4}\u{F6}\u{FC}\u{FB}az"
+line 16 0 ""
+line 17 0 ""
+end
+kind screen
+name charset_designate_g1_minus
+source screen.cases:277
+size 20 18
+chunk 1b2d300e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d410e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d420e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d340e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d430e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d350e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d520e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d510e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d4b0e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d590e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d450e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d360e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d5a0e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d480e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d370e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2d3d0e2324405b5c5d5e5f607b7c7d7e617a0f
+expect
+cursor 15 15
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "#$@[\u{5C}]^_\u{25C6}\u{3C0}\u{2260}\u{A3}\u{B7}\u{2592}\u{2265}"
+line 1 0 "\u{A3}$@[\u{5C}]^_`{|}~az"
+line 2 0 "#$@[\u{5C}]^_`{|}~az"
+line 3 0 "\u{A3}$\u{BE}i\u{BD}|^_`\u{A8}f\u{BC}\u{B4}az"
+line 4 0 "#$@\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 5 0 "#$@\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 6 0 "\u{A3}$\u{E0}\u{B0}\u{E7}\u{A7}^_`\u{E9}\u{F9}\u{E8}\u{A8}az"
+line 7 0 "#$\u{E0}\u{E2}\u{E7}\u{EA}\u{EE}_\u{F4}\u{E9}\u{F9}\u{E8}\u{FB}az"
+line 8 0 "#$\u{A7}\u{C4}\u{D6}\u{DC}^_`\u{E4}\u{F6}\u{FC}\u{DF}az"
+line 9 0 "\u{A3}$\u{A7}\u{B0}\u{E7}\u{E9}^_\u{F9}\u{E0}\u{F2}\u{E8}\u{EC}az"
+line 10 0 "#$\u{C4}\u{C6}\u{D8}\u{C5}\u{DC}_\u{E4}\u{E6}\u{F8}\u{E5}\u{FC}az"
+line 11 0 "#$\u{C4}\u{C6}\u{D8}\u{C5}\u{DC}_\u{E4}\u{E6}\u{F8}\u{E5}\u{FC}az"
+line 12 0 "\u{A3}$\u{A7}\u{A1}\u{D1}\u{BF}^_`\u{B0}\u{F1}\u{E7}~az"
+line 13 0 "#$\u{C9}\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 14 0 "#$\u{C9}\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 15 0 "\u{F9}$\u{E0}\u{E9}\u{E7}\u{EA}\u{EE}\u{E8}\u{F4}\u{E4}\u{F6}\u{FC}\u{FB}az"
+line 16 0 ""
+line 17 0 ""
+end
+kind screen
+name charset_designate_g2_dot
+source screen.cases:281
+size 20 18
+chunk 1b2e301b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e411b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e421b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e341b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e431b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e351b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e521b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e511b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e4b1b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e591b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e451b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e361b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e5a1b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e481b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e371b6e2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2e3d1b6e2324405b5c5d5e5f607b7c7d7e617a0f
+expect
+cursor 15 15
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "#$@[\u{5C}]^_\u{25C6}\u{3C0}\u{2260}\u{A3}\u{B7}\u{2592}\u{2265}"
+line 1 0 "\u{A3}$@[\u{5C}]^_`{|}~az"
+line 2 0 "#$@[\u{5C}]^_`{|}~az"
+line 3 0 "\u{A3}$\u{BE}i\u{BD}|^_`\u{A8}f\u{BC}\u{B4}az"
+line 4 0 "#$@\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 5 0 "#$@\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 6 0 "\u{A3}$\u{E0}\u{B0}\u{E7}\u{A7}^_`\u{E9}\u{F9}\u{E8}\u{A8}az"
+line 7 0 "#$\u{E0}\u{E2}\u{E7}\u{EA}\u{EE}_\u{F4}\u{E9}\u{F9}\u{E8}\u{FB}az"
+line 8 0 "#$\u{A7}\u{C4}\u{D6}\u{DC}^_`\u{E4}\u{F6}\u{FC}\u{DF}az"
+line 9 0 "\u{A3}$\u{A7}\u{B0}\u{E7}\u{E9}^_\u{F9}\u{E0}\u{F2}\u{E8}\u{EC}az"
+line 10 0 "#$\u{C4}\u{C6}\u{D8}\u{C5}\u{DC}_\u{E4}\u{E6}\u{F8}\u{E5}\u{FC}az"
+line 11 0 "#$\u{C4}\u{C6}\u{D8}\u{C5}\u{DC}_\u{E4}\u{E6}\u{F8}\u{E5}\u{FC}az"
+line 12 0 "\u{A3}$\u{A7}\u{A1}\u{D1}\u{BF}^_`\u{B0}\u{F1}\u{E7}~az"
+line 13 0 "#$\u{C9}\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 14 0 "#$\u{C9}\u{C4}\u{D6}\u{C5}\u{DC}_\u{E9}\u{E4}\u{F6}\u{E5}\u{FC}az"
+line 15 0 "\u{F9}$\u{E0}\u{E9}\u{E7}\u{EA}\u{EE}\u{E8}\u{F4}\u{E4}\u{F6}\u{FC}\u{FB}az"
+line 16 0 ""
+line 17 0 ""
+end
+kind screen
+name charset_designate_g3_slash
+source screen.cases:285
+size 20 18
+chunk 1b2f301b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f411b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f421b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f341b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f431b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f351b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f521b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f511b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f4b1b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f591b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f451b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f361b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f5a1b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f481b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f371b6f2324405b5c5d5e5f607b7c7d7e617a0f0d0a1b2f3d1b6f2324405b5c5d5e5f607b7c7d7e617a0f
+expect
+cursor 15 15
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "#$@[\u{5C}]^_`{|}~az"
+line 1 0 "#$@[\u{5C}]^_`{|}~az"
+line 2 0 "#$@[\u{5C}]^_`{|}~az"
+line 3 0 "#$@[\u{5C}]^_`{|}~az"
+line 4 0 "#$@[\u{5C}]^_`{|}~az"
+line 5 0 "#$@[\u{5C}]^_`{|}~az"
+line 6 0 "#$@[\u{5C}]^_`{|}~az"
+line 7 0 "#$@[\u{5C}]^_`{|}~az"
+line 8 0 "#$@[\u{5C}]^_`{|}~az"
+line 9 0 "#$@[\u{5C}]^_`{|}~az"
+line 10 0 "#$@[\u{5C}]^_`{|}~az"
+line 11 0 "#$@[\u{5C}]^_`{|}~az"
+line 12 0 "#$@[\u{5C}]^_`{|}~az"
+line 13 0 "#$@[\u{5C}]^_`{|}~az"
+line 14 0 "#$@[\u{5C}]^_`{|}~az"
+line 15 0 "#$@[\u{5C}]^_`{|}~az"
+line 16 0 ""
+line 17 0 ""
+end
+kind screen
+name print_wrap_in_scroll_region
+source screen.cases:292
+size 6 5
+chunk 1b5b323b34721b5b343b31486162636465666768696a6b6c6d6e6f7071721b5b721b5b313b3148746f70
+expect
+cursor 3 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "top"
+line 1 0 "abcdef"
+line 2 1 "ghijkl"
+line 3 1 "mnopqr"
+line 4 0 ""
+end
+kind screen
+name print_wrap_scrolls_full_screen
+source screen.cases:296
+size 5 3
+chunk 6161616161626262626263636363636464646464656565651b5b3f376c6666666666666767
+expect
+cursor 5 2
+buffer normal
+base-y 2
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=0 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=0
+line 0 0 "aaaaa"
+line 1 1 "bbbbb"
+line 2 1 "ccccc"
+line 3 1 "ddddd"
+line 4 1 "eeeeg"
+end
+kind screen
+name print_wrapped_line_flag_after_erase
+source screen.cases:300
+size 5 3
+chunk 6162636465666768696a1b5b313b33481b5b4b1b5b323b31481b5b324b1b5b333b35487879
+expect
+cursor 1 2
+buffer normal
+base-y 1
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ab"
+line 1 0 ""
+line 2 0 "    x"
+line 3 1 "y"
+end
+kind screen
+name print_full_scrollback_trims
+source screen.cases:304
+size 10 3
+chunk 746f700d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a6d69640d0a0d0a0d0a0d0a0d0a0d0a656e64
+expect
+cursor 3 2
+buffer normal
+base-y 1000
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+line 6 0 ""
+line 7 0 ""
+line 8 0 ""
+line 9 0 ""
+line 10 0 ""
+line 11 0 ""
+line 12 0 ""
+line 13 0 ""
+line 14 0 ""
+line 15 0 ""
+line 16 0 ""
+line 17 0 ""
+line 18 0 ""
+line 19 0 ""
+line 20 0 ""
+line 21 0 ""
+line 22 0 ""
+line 23 0 ""
+line 24 0 ""
+line 25 0 ""
+line 26 0 ""
+line 27 0 ""
+line 28 0 ""
+line 29 0 ""
+line 30 0 ""
+line 31 0 ""
+line 32 0 ""
+line 33 0 ""
+line 34 0 ""
+line 35 0 ""
+line 36 0 ""
+line 37 0 ""
+line 38 0 ""
+line 39 0 ""
+line 40 0 ""
+line 41 0 ""
+line 42 0 ""
+line 43 0 ""
+line 44 0 ""
+line 45 0 ""
+line 46 0 ""
+line 47 0 ""
+line 48 0 ""
+line 49 0 ""
+line 50 0 ""
+line 51 0 ""
+line 52 0 ""
+line 53 0 ""
+line 54 0 ""
+line 55 0 ""
+line 56 0 ""
+line 57 0 ""
+line 58 0 ""
+line 59 0 ""
+line 60 0 ""
+line 61 0 ""
+line 62 0 ""
+line 63 0 ""
+line 64 0 ""
+line 65 0 ""
+line 66 0 ""
+line 67 0 ""
+line 68 0 ""
+line 69 0 ""
+line 70 0 ""
+line 71 0 ""
+line 72 0 ""
+line 73 0 ""
+line 74 0 ""
+line 75 0 ""
+line 76 0 ""
+line 77 0 ""
+line 78 0 ""
+line 79 0 ""
+line 80 0 ""
+line 81 0 ""
+line 82 0 ""
+line 83 0 ""
+line 84 0 ""
+line 85 0 ""
+line 86 0 ""
+line 87 0 ""
+line 88 0 ""
+line 89 0 ""
+line 90 0 ""
+line 91 0 ""
+line 92 0 ""
+line 93 0 ""
+line 94 0 ""
+line 95 0 ""
+line 96 0 ""
+line 97 0 ""
+line 98 0 ""
+line 99 0 ""
+line 100 0 ""
+line 101 0 ""
+line 102 0 ""
+line 103 0 ""
+line 104 0 ""
+line 105 0 ""
+line 106 0 ""
+line 107 0 ""
+line 108 0 ""
+line 109 0 ""
+line 110 0 ""
+line 111 0 ""
+line 112 0 ""
+line 113 0 ""
+line 114 0 ""
+line 115 0 ""
+line 116 0 ""
+line 117 0 ""
+line 118 0 ""
+line 119 0 ""
+line 120 0 ""
+line 121 0 ""
+line 122 0 ""
+line 123 0 ""
+line 124 0 ""
+line 125 0 ""
+line 126 0 ""
+line 127 0 ""
+line 128 0 ""
+line 129 0 ""
+line 130 0 ""
+line 131 0 ""
+line 132 0 ""
+line 133 0 ""
+line 134 0 ""
+line 135 0 ""
+line 136 0 ""
+line 137 0 ""
+line 138 0 ""
+line 139 0 ""
+line 140 0 ""
+line 141 0 ""
+line 142 0 ""
+line 143 0 ""
+line 144 0 ""
+line 145 0 ""
+line 146 0 ""
+line 147 0 ""
+line 148 0 ""
+line 149 0 ""
+line 150 0 ""
+line 151 0 ""
+line 152 0 ""
+line 153 0 ""
+line 154 0 ""
+line 155 0 ""
+line 156 0 ""
+line 157 0 ""
+line 158 0 ""
+line 159 0 ""
+line 160 0 ""
+line 161 0 ""
+line 162 0 ""
+line 163 0 ""
+line 164 0 ""
+line 165 0 ""
+line 166 0 ""
+line 167 0 ""
+line 168 0 ""
+line 169 0 ""
+line 170 0 ""
+line 171 0 ""
+line 172 0 ""
+line 173 0 ""
+line 174 0 ""
+line 175 0 ""
+line 176 0 ""
+line 177 0 ""
+line 178 0 ""
+line 179 0 ""
+line 180 0 ""
+line 181 0 ""
+line 182 0 ""
+line 183 0 ""
+line 184 0 ""
+line 185 0 ""
+line 186 0 ""
+line 187 0 ""
+line 188 0 ""
+line 189 0 ""
+line 190 0 ""
+line 191 0 ""
+line 192 0 ""
+line 193 0 ""
+line 194 0 ""
+line 195 0 ""
+line 196 0 ""
+line 197 0 ""
+line 198 0 ""
+line 199 0 ""
+line 200 0 ""
+line 201 0 ""
+line 202 0 ""
+line 203 0 ""
+line 204 0 ""
+line 205 0 ""
+line 206 0 ""
+line 207 0 ""
+line 208 0 ""
+line 209 0 ""
+line 210 0 ""
+line 211 0 ""
+line 212 0 ""
+line 213 0 ""
+line 214 0 ""
+line 215 0 ""
+line 216 0 ""
+line 217 0 ""
+line 218 0 ""
+line 219 0 ""
+line 220 0 ""
+line 221 0 ""
+line 222 0 ""
+line 223 0 ""
+line 224 0 ""
+line 225 0 ""
+line 226 0 ""
+line 227 0 ""
+line 228 0 ""
+line 229 0 ""
+line 230 0 ""
+line 231 0 ""
+line 232 0 ""
+line 233 0 ""
+line 234 0 ""
+line 235 0 ""
+line 236 0 ""
+line 237 0 ""
+line 238 0 ""
+line 239 0 ""
+line 240 0 ""
+line 241 0 ""
+line 242 0 ""
+line 243 0 ""
+line 244 0 ""
+line 245 0 ""
+line 246 0 ""
+line 247 0 ""
+line 248 0 ""
+line 249 0 ""
+line 250 0 ""
+line 251 0 ""
+line 252 0 ""
+line 253 0 ""
+line 254 0 ""
+line 255 0 ""
+line 256 0 ""
+line 257 0 ""
+line 258 0 ""
+line 259 0 ""
+line 260 0 ""
+line 261 0 ""
+line 262 0 ""
+line 263 0 ""
+line 264 0 ""
+line 265 0 ""
+line 266 0 ""
+line 267 0 ""
+line 268 0 ""
+line 269 0 ""
+line 270 0 ""
+line 271 0 ""
+line 272 0 ""
+line 273 0 ""
+line 274 0 ""
+line 275 0 ""
+line 276 0 ""
+line 277 0 ""
+line 278 0 ""
+line 279 0 ""
+line 280 0 ""
+line 281 0 ""
+line 282 0 ""
+line 283 0 ""
+line 284 0 ""
+line 285 0 ""
+line 286 0 ""
+line 287 0 ""
+line 288 0 ""
+line 289 0 ""
+line 290 0 ""
+line 291 0 ""
+line 292 0 ""
+line 293 0 ""
+line 294 0 ""
+line 295 0 ""
+line 296 0 ""
+line 297 0 ""
+line 298 0 ""
+line 299 0 ""
+line 300 0 ""
+line 301 0 ""
+line 302 0 ""
+line 303 0 ""
+line 304 0 ""
+line 305 0 ""
+line 306 0 ""
+line 307 0 ""
+line 308 0 ""
+line 309 0 ""
+line 310 0 ""
+line 311 0 ""
+line 312 0 ""
+line 313 0 ""
+line 314 0 ""
+line 315 0 ""
+line 316 0 ""
+line 317 0 ""
+line 318 0 ""
+line 319 0 ""
+line 320 0 ""
+line 321 0 ""
+line 322 0 ""
+line 323 0 ""
+line 324 0 ""
+line 325 0 ""
+line 326 0 ""
+line 327 0 ""
+line 328 0 ""
+line 329 0 ""
+line 330 0 ""
+line 331 0 ""
+line 332 0 ""
+line 333 0 ""
+line 334 0 ""
+line 335 0 ""
+line 336 0 ""
+line 337 0 ""
+line 338 0 ""
+line 339 0 ""
+line 340 0 ""
+line 341 0 ""
+line 342 0 ""
+line 343 0 ""
+line 344 0 ""
+line 345 0 ""
+line 346 0 ""
+line 347 0 ""
+line 348 0 ""
+line 349 0 ""
+line 350 0 ""
+line 351 0 ""
+line 352 0 ""
+line 353 0 ""
+line 354 0 ""
+line 355 0 ""
+line 356 0 ""
+line 357 0 ""
+line 358 0 ""
+line 359 0 ""
+line 360 0 ""
+line 361 0 ""
+line 362 0 ""
+line 363 0 ""
+line 364 0 ""
+line 365 0 ""
+line 366 0 ""
+line 367 0 ""
+line 368 0 ""
+line 369 0 ""
+line 370 0 ""
+line 371 0 ""
+line 372 0 ""
+line 373 0 ""
+line 374 0 ""
+line 375 0 ""
+line 376 0 ""
+line 377 0 ""
+line 378 0 ""
+line 379 0 ""
+line 380 0 ""
+line 381 0 ""
+line 382 0 ""
+line 383 0 ""
+line 384 0 ""
+line 385 0 ""
+line 386 0 ""
+line 387 0 ""
+line 388 0 ""
+line 389 0 ""
+line 390 0 ""
+line 391 0 ""
+line 392 0 ""
+line 393 0 ""
+line 394 0 ""
+line 395 0 ""
+line 396 0 ""
+line 397 0 ""
+line 398 0 ""
+line 399 0 ""
+line 400 0 ""
+line 401 0 ""
+line 402 0 ""
+line 403 0 ""
+line 404 0 ""
+line 405 0 ""
+line 406 0 ""
+line 407 0 ""
+line 408 0 ""
+line 409 0 ""
+line 410 0 ""
+line 411 0 ""
+line 412 0 ""
+line 413 0 ""
+line 414 0 ""
+line 415 0 ""
+line 416 0 ""
+line 417 0 ""
+line 418 0 ""
+line 419 0 ""
+line 420 0 ""
+line 421 0 ""
+line 422 0 ""
+line 423 0 ""
+line 424 0 ""
+line 425 0 ""
+line 426 0 ""
+line 427 0 ""
+line 428 0 ""
+line 429 0 ""
+line 430 0 ""
+line 431 0 ""
+line 432 0 ""
+line 433 0 ""
+line 434 0 ""
+line 435 0 ""
+line 436 0 ""
+line 437 0 ""
+line 438 0 ""
+line 439 0 ""
+line 440 0 ""
+line 441 0 ""
+line 442 0 ""
+line 443 0 ""
+line 444 0 ""
+line 445 0 ""
+line 446 0 ""
+line 447 0 ""
+line 448 0 ""
+line 449 0 ""
+line 450 0 ""
+line 451 0 ""
+line 452 0 ""
+line 453 0 ""
+line 454 0 ""
+line 455 0 ""
+line 456 0 ""
+line 457 0 ""
+line 458 0 ""
+line 459 0 ""
+line 460 0 ""
+line 461 0 ""
+line 462 0 ""
+line 463 0 ""
+line 464 0 ""
+line 465 0 ""
+line 466 0 ""
+line 467 0 ""
+line 468 0 ""
+line 469 0 ""
+line 470 0 ""
+line 471 0 ""
+line 472 0 ""
+line 473 0 ""
+line 474 0 ""
+line 475 0 ""
+line 476 0 ""
+line 477 0 ""
+line 478 0 ""
+line 479 0 ""
+line 480 0 ""
+line 481 0 ""
+line 482 0 ""
+line 483 0 ""
+line 484 0 ""
+line 485 0 ""
+line 486 0 ""
+line 487 0 ""
+line 488 0 ""
+line 489 0 ""
+line 490 0 ""
+line 491 0 ""
+line 492 0 ""
+line 493 0 ""
+line 494 0 ""
+line 495 0 ""
+line 496 0 ""
+line 497 0 ""
+line 498 0 ""
+line 499 0 ""
+line 500 0 ""
+line 501 0 ""
+line 502 0 ""
+line 503 0 ""
+line 504 0 ""
+line 505 0 ""
+line 506 0 ""
+line 507 0 ""
+line 508 0 ""
+line 509 0 ""
+line 510 0 ""
+line 511 0 ""
+line 512 0 ""
+line 513 0 ""
+line 514 0 ""
+line 515 0 ""
+line 516 0 ""
+line 517 0 ""
+line 518 0 ""
+line 519 0 ""
+line 520 0 ""
+line 521 0 ""
+line 522 0 ""
+line 523 0 ""
+line 524 0 ""
+line 525 0 ""
+line 526 0 ""
+line 527 0 ""
+line 528 0 ""
+line 529 0 ""
+line 530 0 ""
+line 531 0 ""
+line 532 0 ""
+line 533 0 ""
+line 534 0 ""
+line 535 0 ""
+line 536 0 ""
+line 537 0 ""
+line 538 0 ""
+line 539 0 ""
+line 540 0 ""
+line 541 0 ""
+line 542 0 ""
+line 543 0 ""
+line 544 0 ""
+line 545 0 ""
+line 546 0 ""
+line 547 0 ""
+line 548 0 ""
+line 549 0 ""
+line 550 0 ""
+line 551 0 ""
+line 552 0 ""
+line 553 0 ""
+line 554 0 ""
+line 555 0 ""
+line 556 0 ""
+line 557 0 ""
+line 558 0 ""
+line 559 0 ""
+line 560 0 ""
+line 561 0 ""
+line 562 0 ""
+line 563 0 ""
+line 564 0 ""
+line 565 0 ""
+line 566 0 ""
+line 567 0 ""
+line 568 0 ""
+line 569 0 ""
+line 570 0 ""
+line 571 0 ""
+line 572 0 ""
+line 573 0 ""
+line 574 0 ""
+line 575 0 ""
+line 576 0 ""
+line 577 0 ""
+line 578 0 ""
+line 579 0 ""
+line 580 0 ""
+line 581 0 ""
+line 582 0 ""
+line 583 0 ""
+line 584 0 ""
+line 585 0 ""
+line 586 0 ""
+line 587 0 ""
+line 588 0 ""
+line 589 0 ""
+line 590 0 ""
+line 591 0 ""
+line 592 0 ""
+line 593 0 ""
+line 594 0 ""
+line 595 0 ""
+line 596 0 ""
+line 597 0 ""
+line 598 0 ""
+line 599 0 ""
+line 600 0 ""
+line 601 0 ""
+line 602 0 ""
+line 603 0 ""
+line 604 0 ""
+line 605 0 ""
+line 606 0 ""
+line 607 0 ""
+line 608 0 ""
+line 609 0 ""
+line 610 0 ""
+line 611 0 ""
+line 612 0 ""
+line 613 0 ""
+line 614 0 ""
+line 615 0 ""
+line 616 0 ""
+line 617 0 ""
+line 618 0 ""
+line 619 0 ""
+line 620 0 ""
+line 621 0 ""
+line 622 0 ""
+line 623 0 ""
+line 624 0 ""
+line 625 0 ""
+line 626 0 ""
+line 627 0 ""
+line 628 0 ""
+line 629 0 ""
+line 630 0 ""
+line 631 0 ""
+line 632 0 ""
+line 633 0 ""
+line 634 0 ""
+line 635 0 ""
+line 636 0 ""
+line 637 0 ""
+line 638 0 ""
+line 639 0 ""
+line 640 0 ""
+line 641 0 ""
+line 642 0 ""
+line 643 0 ""
+line 644 0 ""
+line 645 0 ""
+line 646 0 ""
+line 647 0 ""
+line 648 0 ""
+line 649 0 ""
+line 650 0 ""
+line 651 0 ""
+line 652 0 ""
+line 653 0 ""
+line 654 0 ""
+line 655 0 ""
+line 656 0 ""
+line 657 0 ""
+line 658 0 ""
+line 659 0 ""
+line 660 0 ""
+line 661 0 ""
+line 662 0 ""
+line 663 0 ""
+line 664 0 ""
+line 665 0 ""
+line 666 0 ""
+line 667 0 ""
+line 668 0 ""
+line 669 0 ""
+line 670 0 ""
+line 671 0 ""
+line 672 0 ""
+line 673 0 ""
+line 674 0 ""
+line 675 0 ""
+line 676 0 ""
+line 677 0 ""
+line 678 0 ""
+line 679 0 ""
+line 680 0 ""
+line 681 0 ""
+line 682 0 ""
+line 683 0 ""
+line 684 0 ""
+line 685 0 ""
+line 686 0 ""
+line 687 0 ""
+line 688 0 ""
+line 689 0 ""
+line 690 0 ""
+line 691 0 ""
+line 692 0 ""
+line 693 0 ""
+line 694 0 ""
+line 695 0 ""
+line 696 0 ""
+line 697 0 ""
+line 698 0 ""
+line 699 0 ""
+line 700 0 ""
+line 701 0 ""
+line 702 0 ""
+line 703 0 ""
+line 704 0 ""
+line 705 0 ""
+line 706 0 ""
+line 707 0 ""
+line 708 0 ""
+line 709 0 ""
+line 710 0 ""
+line 711 0 ""
+line 712 0 ""
+line 713 0 ""
+line 714 0 ""
+line 715 0 ""
+line 716 0 ""
+line 717 0 ""
+line 718 0 ""
+line 719 0 ""
+line 720 0 ""
+line 721 0 ""
+line 722 0 ""
+line 723 0 ""
+line 724 0 ""
+line 725 0 ""
+line 726 0 ""
+line 727 0 ""
+line 728 0 ""
+line 729 0 ""
+line 730 0 ""
+line 731 0 ""
+line 732 0 ""
+line 733 0 ""
+line 734 0 ""
+line 735 0 ""
+line 736 0 ""
+line 737 0 ""
+line 738 0 ""
+line 739 0 ""
+line 740 0 ""
+line 741 0 ""
+line 742 0 ""
+line 743 0 ""
+line 744 0 ""
+line 745 0 ""
+line 746 0 ""
+line 747 0 ""
+line 748 0 ""
+line 749 0 ""
+line 750 0 ""
+line 751 0 ""
+line 752 0 ""
+line 753 0 ""
+line 754 0 ""
+line 755 0 ""
+line 756 0 ""
+line 757 0 ""
+line 758 0 ""
+line 759 0 ""
+line 760 0 ""
+line 761 0 ""
+line 762 0 ""
+line 763 0 ""
+line 764 0 ""
+line 765 0 ""
+line 766 0 ""
+line 767 0 ""
+line 768 0 ""
+line 769 0 ""
+line 770 0 ""
+line 771 0 ""
+line 772 0 ""
+line 773 0 ""
+line 774 0 ""
+line 775 0 ""
+line 776 0 ""
+line 777 0 ""
+line 778 0 ""
+line 779 0 ""
+line 780 0 ""
+line 781 0 ""
+line 782 0 ""
+line 783 0 ""
+line 784 0 ""
+line 785 0 ""
+line 786 0 ""
+line 787 0 ""
+line 788 0 ""
+line 789 0 ""
+line 790 0 ""
+line 791 0 ""
+line 792 0 ""
+line 793 0 ""
+line 794 0 ""
+line 795 0 ""
+line 796 0 ""
+line 797 0 ""
+line 798 0 ""
+line 799 0 ""
+line 800 0 ""
+line 801 0 ""
+line 802 0 ""
+line 803 0 ""
+line 804 0 ""
+line 805 0 ""
+line 806 0 ""
+line 807 0 ""
+line 808 0 ""
+line 809 0 ""
+line 810 0 ""
+line 811 0 ""
+line 812 0 ""
+line 813 0 ""
+line 814 0 ""
+line 815 0 ""
+line 816 0 ""
+line 817 0 ""
+line 818 0 ""
+line 819 0 ""
+line 820 0 ""
+line 821 0 ""
+line 822 0 ""
+line 823 0 ""
+line 824 0 ""
+line 825 0 ""
+line 826 0 ""
+line 827 0 ""
+line 828 0 ""
+line 829 0 ""
+line 830 0 ""
+line 831 0 ""
+line 832 0 ""
+line 833 0 ""
+line 834 0 ""
+line 835 0 ""
+line 836 0 ""
+line 837 0 ""
+line 838 0 ""
+line 839 0 ""
+line 840 0 ""
+line 841 0 ""
+line 842 0 ""
+line 843 0 ""
+line 844 0 ""
+line 845 0 ""
+line 846 0 ""
+line 847 0 ""
+line 848 0 ""
+line 849 0 ""
+line 850 0 ""
+line 851 0 ""
+line 852 0 ""
+line 853 0 ""
+line 854 0 ""
+line 855 0 ""
+line 856 0 ""
+line 857 0 ""
+line 858 0 ""
+line 859 0 ""
+line 860 0 ""
+line 861 0 ""
+line 862 0 ""
+line 863 0 ""
+line 864 0 ""
+line 865 0 ""
+line 866 0 ""
+line 867 0 ""
+line 868 0 ""
+line 869 0 ""
+line 870 0 ""
+line 871 0 ""
+line 872 0 ""
+line 873 0 ""
+line 874 0 ""
+line 875 0 ""
+line 876 0 ""
+line 877 0 ""
+line 878 0 ""
+line 879 0 ""
+line 880 0 ""
+line 881 0 ""
+line 882 0 ""
+line 883 0 ""
+line 884 0 ""
+line 885 0 ""
+line 886 0 ""
+line 887 0 ""
+line 888 0 ""
+line 889 0 ""
+line 890 0 ""
+line 891 0 ""
+line 892 0 ""
+line 893 0 ""
+line 894 0 ""
+line 895 0 ""
+line 896 0 ""
+line 897 0 ""
+line 898 0 ""
+line 899 0 ""
+line 900 0 ""
+line 901 0 ""
+line 902 0 ""
+line 903 0 ""
+line 904 0 ""
+line 905 0 ""
+line 906 0 ""
+line 907 0 ""
+line 908 0 ""
+line 909 0 ""
+line 910 0 ""
+line 911 0 ""
+line 912 0 ""
+line 913 0 ""
+line 914 0 ""
+line 915 0 ""
+line 916 0 ""
+line 917 0 ""
+line 918 0 ""
+line 919 0 ""
+line 920 0 ""
+line 921 0 ""
+line 922 0 ""
+line 923 0 ""
+line 924 0 ""
+line 925 0 ""
+line 926 0 ""
+line 927 0 ""
+line 928 0 ""
+line 929 0 ""
+line 930 0 ""
+line 931 0 ""
+line 932 0 ""
+line 933 0 ""
+line 934 0 ""
+line 935 0 ""
+line 936 0 ""
+line 937 0 ""
+line 938 0 ""
+line 939 0 ""
+line 940 0 ""
+line 941 0 ""
+line 942 0 ""
+line 943 0 ""
+line 944 0 ""
+line 945 0 ""
+line 946 0 ""
+line 947 0 ""
+line 948 0 ""
+line 949 0 ""
+line 950 0 ""
+line 951 0 ""
+line 952 0 ""
+line 953 0 ""
+line 954 0 ""
+line 955 0 ""
+line 956 0 ""
+line 957 0 ""
+line 958 0 ""
+line 959 0 ""
+line 960 0 ""
+line 961 0 ""
+line 962 0 ""
+line 963 0 ""
+line 964 0 ""
+line 965 0 ""
+line 966 0 ""
+line 967 0 ""
+line 968 0 ""
+line 969 0 ""
+line 970 0 ""
+line 971 0 ""
+line 972 0 ""
+line 973 0 ""
+line 974 0 ""
+line 975 0 ""
+line 976 0 ""
+line 977 0 ""
+line 978 0 ""
+line 979 0 ""
+line 980 0 ""
+line 981 0 ""
+line 982 0 ""
+line 983 0 ""
+line 984 0 ""
+line 985 0 ""
+line 986 0 ""
+line 987 0 ""
+line 988 0 ""
+line 989 0 ""
+line 990 0 ""
+line 991 0 ""
+line 992 0 ""
+line 993 0 ""
+line 994 0 ""
+line 995 0 ""
+line 996 0 "mid"
+line 997 0 ""
+line 998 0 ""
+line 999 0 ""
+line 1000 0 ""
+line 1001 0 ""
+line 1002 0 "end"
+end
+kind screen
+name link_reregistered_after_trim
+source screen.cases:308
+size 10 3
+chunk 1b5d383b69643d6b3b687474703a2f2f612e6578616d706c652f076c696e6b1b5d383b3b070d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a0d0a1b5d383b69643d6b3b687474703a2f2f612e6578616d706c652f07616761696e1b5d383b3b07
+expect
+cursor 5 2
+buffer normal
+base-y 1000
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+line 6 0 ""
+line 7 0 ""
+line 8 0 ""
+line 9 0 ""
+line 10 0 ""
+line 11 0 ""
+line 12 0 ""
+line 13 0 ""
+line 14 0 ""
+line 15 0 ""
+line 16 0 ""
+line 17 0 ""
+line 18 0 ""
+line 19 0 ""
+line 20 0 ""
+line 21 0 ""
+line 22 0 ""
+line 23 0 ""
+line 24 0 ""
+line 25 0 ""
+line 26 0 ""
+line 27 0 ""
+line 28 0 ""
+line 29 0 ""
+line 30 0 ""
+line 31 0 ""
+line 32 0 ""
+line 33 0 ""
+line 34 0 ""
+line 35 0 ""
+line 36 0 ""
+line 37 0 ""
+line 38 0 ""
+line 39 0 ""
+line 40 0 ""
+line 41 0 ""
+line 42 0 ""
+line 43 0 ""
+line 44 0 ""
+line 45 0 ""
+line 46 0 ""
+line 47 0 ""
+line 48 0 ""
+line 49 0 ""
+line 50 0 ""
+line 51 0 ""
+line 52 0 ""
+line 53 0 ""
+line 54 0 ""
+line 55 0 ""
+line 56 0 ""
+line 57 0 ""
+line 58 0 ""
+line 59 0 ""
+line 60 0 ""
+line 61 0 ""
+line 62 0 ""
+line 63 0 ""
+line 64 0 ""
+line 65 0 ""
+line 66 0 ""
+line 67 0 ""
+line 68 0 ""
+line 69 0 ""
+line 70 0 ""
+line 71 0 ""
+line 72 0 ""
+line 73 0 ""
+line 74 0 ""
+line 75 0 ""
+line 76 0 ""
+line 77 0 ""
+line 78 0 ""
+line 79 0 ""
+line 80 0 ""
+line 81 0 ""
+line 82 0 ""
+line 83 0 ""
+line 84 0 ""
+line 85 0 ""
+line 86 0 ""
+line 87 0 ""
+line 88 0 ""
+line 89 0 ""
+line 90 0 ""
+line 91 0 ""
+line 92 0 ""
+line 93 0 ""
+line 94 0 ""
+line 95 0 ""
+line 96 0 ""
+line 97 0 ""
+line 98 0 ""
+line 99 0 ""
+line 100 0 ""
+line 101 0 ""
+line 102 0 ""
+line 103 0 ""
+line 104 0 ""
+line 105 0 ""
+line 106 0 ""
+line 107 0 ""
+line 108 0 ""
+line 109 0 ""
+line 110 0 ""
+line 111 0 ""
+line 112 0 ""
+line 113 0 ""
+line 114 0 ""
+line 115 0 ""
+line 116 0 ""
+line 117 0 ""
+line 118 0 ""
+line 119 0 ""
+line 120 0 ""
+line 121 0 ""
+line 122 0 ""
+line 123 0 ""
+line 124 0 ""
+line 125 0 ""
+line 126 0 ""
+line 127 0 ""
+line 128 0 ""
+line 129 0 ""
+line 130 0 ""
+line 131 0 ""
+line 132 0 ""
+line 133 0 ""
+line 134 0 ""
+line 135 0 ""
+line 136 0 ""
+line 137 0 ""
+line 138 0 ""
+line 139 0 ""
+line 140 0 ""
+line 141 0 ""
+line 142 0 ""
+line 143 0 ""
+line 144 0 ""
+line 145 0 ""
+line 146 0 ""
+line 147 0 ""
+line 148 0 ""
+line 149 0 ""
+line 150 0 ""
+line 151 0 ""
+line 152 0 ""
+line 153 0 ""
+line 154 0 ""
+line 155 0 ""
+line 156 0 ""
+line 157 0 ""
+line 158 0 ""
+line 159 0 ""
+line 160 0 ""
+line 161 0 ""
+line 162 0 ""
+line 163 0 ""
+line 164 0 ""
+line 165 0 ""
+line 166 0 ""
+line 167 0 ""
+line 168 0 ""
+line 169 0 ""
+line 170 0 ""
+line 171 0 ""
+line 172 0 ""
+line 173 0 ""
+line 174 0 ""
+line 175 0 ""
+line 176 0 ""
+line 177 0 ""
+line 178 0 ""
+line 179 0 ""
+line 180 0 ""
+line 181 0 ""
+line 182 0 ""
+line 183 0 ""
+line 184 0 ""
+line 185 0 ""
+line 186 0 ""
+line 187 0 ""
+line 188 0 ""
+line 189 0 ""
+line 190 0 ""
+line 191 0 ""
+line 192 0 ""
+line 193 0 ""
+line 194 0 ""
+line 195 0 ""
+line 196 0 ""
+line 197 0 ""
+line 198 0 ""
+line 199 0 ""
+line 200 0 ""
+line 201 0 ""
+line 202 0 ""
+line 203 0 ""
+line 204 0 ""
+line 205 0 ""
+line 206 0 ""
+line 207 0 ""
+line 208 0 ""
+line 209 0 ""
+line 210 0 ""
+line 211 0 ""
+line 212 0 ""
+line 213 0 ""
+line 214 0 ""
+line 215 0 ""
+line 216 0 ""
+line 217 0 ""
+line 218 0 ""
+line 219 0 ""
+line 220 0 ""
+line 221 0 ""
+line 222 0 ""
+line 223 0 ""
+line 224 0 ""
+line 225 0 ""
+line 226 0 ""
+line 227 0 ""
+line 228 0 ""
+line 229 0 ""
+line 230 0 ""
+line 231 0 ""
+line 232 0 ""
+line 233 0 ""
+line 234 0 ""
+line 235 0 ""
+line 236 0 ""
+line 237 0 ""
+line 238 0 ""
+line 239 0 ""
+line 240 0 ""
+line 241 0 ""
+line 242 0 ""
+line 243 0 ""
+line 244 0 ""
+line 245 0 ""
+line 246 0 ""
+line 247 0 ""
+line 248 0 ""
+line 249 0 ""
+line 250 0 ""
+line 251 0 ""
+line 252 0 ""
+line 253 0 ""
+line 254 0 ""
+line 255 0 ""
+line 256 0 ""
+line 257 0 ""
+line 258 0 ""
+line 259 0 ""
+line 260 0 ""
+line 261 0 ""
+line 262 0 ""
+line 263 0 ""
+line 264 0 ""
+line 265 0 ""
+line 266 0 ""
+line 267 0 ""
+line 268 0 ""
+line 269 0 ""
+line 270 0 ""
+line 271 0 ""
+line 272 0 ""
+line 273 0 ""
+line 274 0 ""
+line 275 0 ""
+line 276 0 ""
+line 277 0 ""
+line 278 0 ""
+line 279 0 ""
+line 280 0 ""
+line 281 0 ""
+line 282 0 ""
+line 283 0 ""
+line 284 0 ""
+line 285 0 ""
+line 286 0 ""
+line 287 0 ""
+line 288 0 ""
+line 289 0 ""
+line 290 0 ""
+line 291 0 ""
+line 292 0 ""
+line 293 0 ""
+line 294 0 ""
+line 295 0 ""
+line 296 0 ""
+line 297 0 ""
+line 298 0 ""
+line 299 0 ""
+line 300 0 ""
+line 301 0 ""
+line 302 0 ""
+line 303 0 ""
+line 304 0 ""
+line 305 0 ""
+line 306 0 ""
+line 307 0 ""
+line 308 0 ""
+line 309 0 ""
+line 310 0 ""
+line 311 0 ""
+line 312 0 ""
+line 313 0 ""
+line 314 0 ""
+line 315 0 ""
+line 316 0 ""
+line 317 0 ""
+line 318 0 ""
+line 319 0 ""
+line 320 0 ""
+line 321 0 ""
+line 322 0 ""
+line 323 0 ""
+line 324 0 ""
+line 325 0 ""
+line 326 0 ""
+line 327 0 ""
+line 328 0 ""
+line 329 0 ""
+line 330 0 ""
+line 331 0 ""
+line 332 0 ""
+line 333 0 ""
+line 334 0 ""
+line 335 0 ""
+line 336 0 ""
+line 337 0 ""
+line 338 0 ""
+line 339 0 ""
+line 340 0 ""
+line 341 0 ""
+line 342 0 ""
+line 343 0 ""
+line 344 0 ""
+line 345 0 ""
+line 346 0 ""
+line 347 0 ""
+line 348 0 ""
+line 349 0 ""
+line 350 0 ""
+line 351 0 ""
+line 352 0 ""
+line 353 0 ""
+line 354 0 ""
+line 355 0 ""
+line 356 0 ""
+line 357 0 ""
+line 358 0 ""
+line 359 0 ""
+line 360 0 ""
+line 361 0 ""
+line 362 0 ""
+line 363 0 ""
+line 364 0 ""
+line 365 0 ""
+line 366 0 ""
+line 367 0 ""
+line 368 0 ""
+line 369 0 ""
+line 370 0 ""
+line 371 0 ""
+line 372 0 ""
+line 373 0 ""
+line 374 0 ""
+line 375 0 ""
+line 376 0 ""
+line 377 0 ""
+line 378 0 ""
+line 379 0 ""
+line 380 0 ""
+line 381 0 ""
+line 382 0 ""
+line 383 0 ""
+line 384 0 ""
+line 385 0 ""
+line 386 0 ""
+line 387 0 ""
+line 388 0 ""
+line 389 0 ""
+line 390 0 ""
+line 391 0 ""
+line 392 0 ""
+line 393 0 ""
+line 394 0 ""
+line 395 0 ""
+line 396 0 ""
+line 397 0 ""
+line 398 0 ""
+line 399 0 ""
+line 400 0 ""
+line 401 0 ""
+line 402 0 ""
+line 403 0 ""
+line 404 0 ""
+line 405 0 ""
+line 406 0 ""
+line 407 0 ""
+line 408 0 ""
+line 409 0 ""
+line 410 0 ""
+line 411 0 ""
+line 412 0 ""
+line 413 0 ""
+line 414 0 ""
+line 415 0 ""
+line 416 0 ""
+line 417 0 ""
+line 418 0 ""
+line 419 0 ""
+line 420 0 ""
+line 421 0 ""
+line 422 0 ""
+line 423 0 ""
+line 424 0 ""
+line 425 0 ""
+line 426 0 ""
+line 427 0 ""
+line 428 0 ""
+line 429 0 ""
+line 430 0 ""
+line 431 0 ""
+line 432 0 ""
+line 433 0 ""
+line 434 0 ""
+line 435 0 ""
+line 436 0 ""
+line 437 0 ""
+line 438 0 ""
+line 439 0 ""
+line 440 0 ""
+line 441 0 ""
+line 442 0 ""
+line 443 0 ""
+line 444 0 ""
+line 445 0 ""
+line 446 0 ""
+line 447 0 ""
+line 448 0 ""
+line 449 0 ""
+line 450 0 ""
+line 451 0 ""
+line 452 0 ""
+line 453 0 ""
+line 454 0 ""
+line 455 0 ""
+line 456 0 ""
+line 457 0 ""
+line 458 0 ""
+line 459 0 ""
+line 460 0 ""
+line 461 0 ""
+line 462 0 ""
+line 463 0 ""
+line 464 0 ""
+line 465 0 ""
+line 466 0 ""
+line 467 0 ""
+line 468 0 ""
+line 469 0 ""
+line 470 0 ""
+line 471 0 ""
+line 472 0 ""
+line 473 0 ""
+line 474 0 ""
+line 475 0 ""
+line 476 0 ""
+line 477 0 ""
+line 478 0 ""
+line 479 0 ""
+line 480 0 ""
+line 481 0 ""
+line 482 0 ""
+line 483 0 ""
+line 484 0 ""
+line 485 0 ""
+line 486 0 ""
+line 487 0 ""
+line 488 0 ""
+line 489 0 ""
+line 490 0 ""
+line 491 0 ""
+line 492 0 ""
+line 493 0 ""
+line 494 0 ""
+line 495 0 ""
+line 496 0 ""
+line 497 0 ""
+line 498 0 ""
+line 499 0 ""
+line 500 0 ""
+line 501 0 ""
+line 502 0 ""
+line 503 0 ""
+line 504 0 ""
+line 505 0 ""
+line 506 0 ""
+line 507 0 ""
+line 508 0 ""
+line 509 0 ""
+line 510 0 ""
+line 511 0 ""
+line 512 0 ""
+line 513 0 ""
+line 514 0 ""
+line 515 0 ""
+line 516 0 ""
+line 517 0 ""
+line 518 0 ""
+line 519 0 ""
+line 520 0 ""
+line 521 0 ""
+line 522 0 ""
+line 523 0 ""
+line 524 0 ""
+line 525 0 ""
+line 526 0 ""
+line 527 0 ""
+line 528 0 ""
+line 529 0 ""
+line 530 0 ""
+line 531 0 ""
+line 532 0 ""
+line 533 0 ""
+line 534 0 ""
+line 535 0 ""
+line 536 0 ""
+line 537 0 ""
+line 538 0 ""
+line 539 0 ""
+line 540 0 ""
+line 541 0 ""
+line 542 0 ""
+line 543 0 ""
+line 544 0 ""
+line 545 0 ""
+line 546 0 ""
+line 547 0 ""
+line 548 0 ""
+line 549 0 ""
+line 550 0 ""
+line 551 0 ""
+line 552 0 ""
+line 553 0 ""
+line 554 0 ""
+line 555 0 ""
+line 556 0 ""
+line 557 0 ""
+line 558 0 ""
+line 559 0 ""
+line 560 0 ""
+line 561 0 ""
+line 562 0 ""
+line 563 0 ""
+line 564 0 ""
+line 565 0 ""
+line 566 0 ""
+line 567 0 ""
+line 568 0 ""
+line 569 0 ""
+line 570 0 ""
+line 571 0 ""
+line 572 0 ""
+line 573 0 ""
+line 574 0 ""
+line 575 0 ""
+line 576 0 ""
+line 577 0 ""
+line 578 0 ""
+line 579 0 ""
+line 580 0 ""
+line 581 0 ""
+line 582 0 ""
+line 583 0 ""
+line 584 0 ""
+line 585 0 ""
+line 586 0 ""
+line 587 0 ""
+line 588 0 ""
+line 589 0 ""
+line 590 0 ""
+line 591 0 ""
+line 592 0 ""
+line 593 0 ""
+line 594 0 ""
+line 595 0 ""
+line 596 0 ""
+line 597 0 ""
+line 598 0 ""
+line 599 0 ""
+line 600 0 ""
+line 601 0 ""
+line 602 0 ""
+line 603 0 ""
+line 604 0 ""
+line 605 0 ""
+line 606 0 ""
+line 607 0 ""
+line 608 0 ""
+line 609 0 ""
+line 610 0 ""
+line 611 0 ""
+line 612 0 ""
+line 613 0 ""
+line 614 0 ""
+line 615 0 ""
+line 616 0 ""
+line 617 0 ""
+line 618 0 ""
+line 619 0 ""
+line 620 0 ""
+line 621 0 ""
+line 622 0 ""
+line 623 0 ""
+line 624 0 ""
+line 625 0 ""
+line 626 0 ""
+line 627 0 ""
+line 628 0 ""
+line 629 0 ""
+line 630 0 ""
+line 631 0 ""
+line 632 0 ""
+line 633 0 ""
+line 634 0 ""
+line 635 0 ""
+line 636 0 ""
+line 637 0 ""
+line 638 0 ""
+line 639 0 ""
+line 640 0 ""
+line 641 0 ""
+line 642 0 ""
+line 643 0 ""
+line 644 0 ""
+line 645 0 ""
+line 646 0 ""
+line 647 0 ""
+line 648 0 ""
+line 649 0 ""
+line 650 0 ""
+line 651 0 ""
+line 652 0 ""
+line 653 0 ""
+line 654 0 ""
+line 655 0 ""
+line 656 0 ""
+line 657 0 ""
+line 658 0 ""
+line 659 0 ""
+line 660 0 ""
+line 661 0 ""
+line 662 0 ""
+line 663 0 ""
+line 664 0 ""
+line 665 0 ""
+line 666 0 ""
+line 667 0 ""
+line 668 0 ""
+line 669 0 ""
+line 670 0 ""
+line 671 0 ""
+line 672 0 ""
+line 673 0 ""
+line 674 0 ""
+line 675 0 ""
+line 676 0 ""
+line 677 0 ""
+line 678 0 ""
+line 679 0 ""
+line 680 0 ""
+line 681 0 ""
+line 682 0 ""
+line 683 0 ""
+line 684 0 ""
+line 685 0 ""
+line 686 0 ""
+line 687 0 ""
+line 688 0 ""
+line 689 0 ""
+line 690 0 ""
+line 691 0 ""
+line 692 0 ""
+line 693 0 ""
+line 694 0 ""
+line 695 0 ""
+line 696 0 ""
+line 697 0 ""
+line 698 0 ""
+line 699 0 ""
+line 700 0 ""
+line 701 0 ""
+line 702 0 ""
+line 703 0 ""
+line 704 0 ""
+line 705 0 ""
+line 706 0 ""
+line 707 0 ""
+line 708 0 ""
+line 709 0 ""
+line 710 0 ""
+line 711 0 ""
+line 712 0 ""
+line 713 0 ""
+line 714 0 ""
+line 715 0 ""
+line 716 0 ""
+line 717 0 ""
+line 718 0 ""
+line 719 0 ""
+line 720 0 ""
+line 721 0 ""
+line 722 0 ""
+line 723 0 ""
+line 724 0 ""
+line 725 0 ""
+line 726 0 ""
+line 727 0 ""
+line 728 0 ""
+line 729 0 ""
+line 730 0 ""
+line 731 0 ""
+line 732 0 ""
+line 733 0 ""
+line 734 0 ""
+line 735 0 ""
+line 736 0 ""
+line 737 0 ""
+line 738 0 ""
+line 739 0 ""
+line 740 0 ""
+line 741 0 ""
+line 742 0 ""
+line 743 0 ""
+line 744 0 ""
+line 745 0 ""
+line 746 0 ""
+line 747 0 ""
+line 748 0 ""
+line 749 0 ""
+line 750 0 ""
+line 751 0 ""
+line 752 0 ""
+line 753 0 ""
+line 754 0 ""
+line 755 0 ""
+line 756 0 ""
+line 757 0 ""
+line 758 0 ""
+line 759 0 ""
+line 760 0 ""
+line 761 0 ""
+line 762 0 ""
+line 763 0 ""
+line 764 0 ""
+line 765 0 ""
+line 766 0 ""
+line 767 0 ""
+line 768 0 ""
+line 769 0 ""
+line 770 0 ""
+line 771 0 ""
+line 772 0 ""
+line 773 0 ""
+line 774 0 ""
+line 775 0 ""
+line 776 0 ""
+line 777 0 ""
+line 778 0 ""
+line 779 0 ""
+line 780 0 ""
+line 781 0 ""
+line 782 0 ""
+line 783 0 ""
+line 784 0 ""
+line 785 0 ""
+line 786 0 ""
+line 787 0 ""
+line 788 0 ""
+line 789 0 ""
+line 790 0 ""
+line 791 0 ""
+line 792 0 ""
+line 793 0 ""
+line 794 0 ""
+line 795 0 ""
+line 796 0 ""
+line 797 0 ""
+line 798 0 ""
+line 799 0 ""
+line 800 0 ""
+line 801 0 ""
+line 802 0 ""
+line 803 0 ""
+line 804 0 ""
+line 805 0 ""
+line 806 0 ""
+line 807 0 ""
+line 808 0 ""
+line 809 0 ""
+line 810 0 ""
+line 811 0 ""
+line 812 0 ""
+line 813 0 ""
+line 814 0 ""
+line 815 0 ""
+line 816 0 ""
+line 817 0 ""
+line 818 0 ""
+line 819 0 ""
+line 820 0 ""
+line 821 0 ""
+line 822 0 ""
+line 823 0 ""
+line 824 0 ""
+line 825 0 ""
+line 826 0 ""
+line 827 0 ""
+line 828 0 ""
+line 829 0 ""
+line 830 0 ""
+line 831 0 ""
+line 832 0 ""
+line 833 0 ""
+line 834 0 ""
+line 835 0 ""
+line 836 0 ""
+line 837 0 ""
+line 838 0 ""
+line 839 0 ""
+line 840 0 ""
+line 841 0 ""
+line 842 0 ""
+line 843 0 ""
+line 844 0 ""
+line 845 0 ""
+line 846 0 ""
+line 847 0 ""
+line 848 0 ""
+line 849 0 ""
+line 850 0 ""
+line 851 0 ""
+line 852 0 ""
+line 853 0 ""
+line 854 0 ""
+line 855 0 ""
+line 856 0 ""
+line 857 0 ""
+line 858 0 ""
+line 859 0 ""
+line 860 0 ""
+line 861 0 ""
+line 862 0 ""
+line 863 0 ""
+line 864 0 ""
+line 865 0 ""
+line 866 0 ""
+line 867 0 ""
+line 868 0 ""
+line 869 0 ""
+line 870 0 ""
+line 871 0 ""
+line 872 0 ""
+line 873 0 ""
+line 874 0 ""
+line 875 0 ""
+line 876 0 ""
+line 877 0 ""
+line 878 0 ""
+line 879 0 ""
+line 880 0 ""
+line 881 0 ""
+line 882 0 ""
+line 883 0 ""
+line 884 0 ""
+line 885 0 ""
+line 886 0 ""
+line 887 0 ""
+line 888 0 ""
+line 889 0 ""
+line 890 0 ""
+line 891 0 ""
+line 892 0 ""
+line 893 0 ""
+line 894 0 ""
+line 895 0 ""
+line 896 0 ""
+line 897 0 ""
+line 898 0 ""
+line 899 0 ""
+line 900 0 ""
+line 901 0 ""
+line 902 0 ""
+line 903 0 ""
+line 904 0 ""
+line 905 0 ""
+line 906 0 ""
+line 907 0 ""
+line 908 0 ""
+line 909 0 ""
+line 910 0 ""
+line 911 0 ""
+line 912 0 ""
+line 913 0 ""
+line 914 0 ""
+line 915 0 ""
+line 916 0 ""
+line 917 0 ""
+line 918 0 ""
+line 919 0 ""
+line 920 0 ""
+line 921 0 ""
+line 922 0 ""
+line 923 0 ""
+line 924 0 ""
+line 925 0 ""
+line 926 0 ""
+line 927 0 ""
+line 928 0 ""
+line 929 0 ""
+line 930 0 ""
+line 931 0 ""
+line 932 0 ""
+line 933 0 ""
+line 934 0 ""
+line 935 0 ""
+line 936 0 ""
+line 937 0 ""
+line 938 0 ""
+line 939 0 ""
+line 940 0 ""
+line 941 0 ""
+line 942 0 ""
+line 943 0 ""
+line 944 0 ""
+line 945 0 ""
+line 946 0 ""
+line 947 0 ""
+line 948 0 ""
+line 949 0 ""
+line 950 0 ""
+line 951 0 ""
+line 952 0 ""
+line 953 0 ""
+line 954 0 ""
+line 955 0 ""
+line 956 0 ""
+line 957 0 ""
+line 958 0 ""
+line 959 0 ""
+line 960 0 ""
+line 961 0 ""
+line 962 0 ""
+line 963 0 ""
+line 964 0 ""
+line 965 0 ""
+line 966 0 ""
+line 967 0 ""
+line 968 0 ""
+line 969 0 ""
+line 970 0 ""
+line 971 0 ""
+line 972 0 ""
+line 973 0 ""
+line 974 0 ""
+line 975 0 ""
+line 976 0 ""
+line 977 0 ""
+line 978 0 ""
+line 979 0 ""
+line 980 0 ""
+line 981 0 ""
+line 982 0 ""
+line 983 0 ""
+line 984 0 ""
+line 985 0 ""
+line 986 0 ""
+line 987 0 ""
+line 988 0 ""
+line 989 0 ""
+line 990 0 ""
+line 991 0 ""
+line 992 0 ""
+line 993 0 ""
+line 994 0 ""
+line 995 0 ""
+line 996 0 ""
+line 997 0 ""
+line 998 0 ""
+line 999 0 ""
+line 1000 0 ""
+line 1001 0 ""
+line 1002 0 "again"
+attr 1002 0 5 u=0 url=2
+link 2 "http://a.example/"
+end
+kind screen
+name link_spans_lines_and_wraps
+source screen.cases:312
+size 8 4
+chunk 1b5d383b3b687474703a2f2f782e6578616d706c652f6c6f6e67076162636465666768696a6b6c6d6e6f7071727374750d0a761b5d383b3b07771b5d383b3b687474703a2f2f792e6578616d706c652f077a1b5d383b3b07
+expect
+cursor 3 3
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abcdefgh"
+line 1 1 "ijklmnop"
+line 2 1 "qrstu"
+line 3 0 "vwz"
+attr 0 0 8 u=0 url=1
+attr 1 0 8 u=0 url=1
+attr 2 0 5 u=0 url=1
+attr 3 0 1 u=0 url=1
+attr 3 2 1 u=0 url=2
+link 1 "http://x.example/long"
+link 2 "http://y.example/"
+end
+kind screen
+name one_row_terminal
+source screen.cases:316
+size 8 1
+chunk 6162630d0a6465660d0a1b5b4c671b5b4d0a1b4d1b5b531b5b541b5b313b31721b5b323b3148711b5b3f3130343968414c541b5b3f313034396c6261636b
+expect
+cursor 5 0
+buffer normal
+base-y 3
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abc"
+line 1 0 "def"
+line 2 0 ""
+line 3 0 "qback"
+end
+kind screen
+name one_row_wrap_and_region
+source screen.cases:320
+size 4 1
+chunk 61626364656667681b5b313b31721b5b3f366878797a1b5b3f366c1b5b324b1b5b324a656e641b5b3f3437685a1b5b3f34376c
+expect
+cursor 4 0
+buffer normal
+base-y 1
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abcd"
+line 1 0 "end"
+end
+kind screen
+name two_by_one_terminal
+source screen.cases:324
+size 2 1
+chunk 6162e4bda063640d0a1b5b3f376c0d0a65661b5b346831321b5b346c1b5b337e
+expect
+cursor 2 0
+buffer normal
+base-y 4
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=0 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=0
+line 0 0 "ab"
+line 1 1 "\u{4F60}"
+line 2 1 "cd"
+line 3 0 ""
+line 4 0 "e2"
+attr 1 0 1 w=2
+attr 1 1 1 w=0
+end
+kind screen
+name two_by_two_terminal
+source screen.cases:328
+size 2 2
+chunk 6162636465661b5b323b31721b5b313b31481b4d1b4d1b441b441b5b324c1b5b334d1b5b35501b5b35401b5b3558
+expect
+cursor 0 1
+buffer normal
+base-y 2
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ab"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name csi_cursor_movement
+source screen.cases:332
+size 20 8
+chunk 1b5b353b3548781b5b3241791b5b33427a1b5b3443771b5b3244761b5b3245751b5b3146741b5b3947731b5b3364721b5b3265711b5b3760701b5b33616f1b5b323b39666e1b5b30416d1b5b30426c1b5b30436b1b5b30446a1b5b30451b5b3046681b5b30471b5b30641b5b30651b5b30601b5b30611b5b303b30481b5b3939393b393939482a
+expect
+cursor 20 7
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "         m"
+line 1 0 "h       n l j"
+line 2 0 "     y   r"
+line 3 0 ""
+line 4 0 "    x p   o"
+line 5 0 "      z   vw"
+line 6 0 "t       s"
+line 7 0 "u                  *"
+end
+kind screen
+name csi_cursor_movement_origin_region
+source screen.cases:336
+size 20 8
+chunk 1b5b333b36721b5b3f36681b5b313b3148611b5b393b3948621b5b3241631b5b3942641b5b353b3548781b5b3364791b5b313b31481b5b3939417a1b5b3f366c1b5b39393b39394821
+expect
+cursor 20 7
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 "a"
+line 3 0 ""
+line 4 0 "z    y"
+line 5 0 "    x   bcd"
+line 6 0 ""
+line 7 0 "                   !"
+end
+kind screen
+name tabs_forward_backward_clear
+source screen.cases:340
+size 40 5
+chunk 1b5b33493e1b5b325a3c1b5b313b31481b5b30671b5b35471b481b5b313b3230481b481b5b313b31480941094209431b5b33671b5b313b314809440d0a1b5b3f35571b5b32491b5b335a1b5b31671b5b3267
+expect
+cursor 0 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "    A   B       C       >              D"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+end
+kind screen
+name tabs_default_after_clear_and_reset
+source screen.cases:344
+size 30 3
+chunk 1b5b33671b5b313b37481b481b5b313b31480909411b5b21701b5b313b314809421b630943
+expect
+cursor 9 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "        C"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name erase_in_display_all_modes
+source screen.cases:348
+size 12 5
+chunk 1b5b34343b33316d7878787878787878787878780d0a7878787878787878787878780d0a7878787878787878787878780d0a7878787878787878787878780d0a7878787878787878787878781b5b333b36481b5b304a1b5b313b31481b5b314a1b5b323b35481b5b306d1b5b324a1b5b333b31486162631b5b334a
+expect
+cursor 3 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 "abc"
+line 3 0 ""
+line 4 0 ""
+end
+kind screen
+name erase_in_display_3_clears_scrollback
+source screen.cases:352
+size 8 3
+chunk 610d0a620d0a630d0a640d0a650d0a660d0a671b5b334a0d0a68
+expect
+cursor 1 2
+buffer normal
+base-y 1
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "e"
+line 1 0 "f"
+line 2 0 "g"
+line 3 0 "h"
+end
+kind screen
+name erase_in_line_all_modes
+source screen.cases:356
+size 12 4
+chunk 1b5b34326d7878787878787878787878780d0a7878787878787878787878780d0a7878787878787878787878781b5b313b36481b5b304b1b5b323b36481b5b314b1b5b333b36481b5b324b1b5b306d1b5b343b31486162636465666768696a6b6c1b5b343b36481b5b4b
+expect
+cursor 5 3
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "xxxxx"
+line 1 0 "      xxxxxx"
+line 2 0 ""
+line 3 0 "abcde"
+attr 0 0 12 bg=p16:2
+attr 1 0 12 bg=p16:2
+attr 2 0 12 bg=p16:2
+end
+kind screen
+name selective_erase_decsca_decsed_decsel
+source screen.cases:360
+size 12 4
+chunk 1b5b312271505050501b5b302271555555551b5b312271505050500d0a1b5b3022717575757575757575757575751b5b313b31481b5b3f304b1b5b323b31481b5b3f324b1b5b3122711b5b333b3148707070701b5b302271787878781b5b3f304a1b5b313b35481b5b3f314a1b5b3f324a1b5b3f334a
+expect
+cursor 4 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "PPPP    PPPP"
+line 1 0 ""
+line 2 0 "pppp"
+line 3 0 ""
+end
+kind screen
+name selective_erase_with_attributes
+source screen.cases:364
+size 12 3
+chunk 1b5b3122711b5b33316d52521b5b3022711b5b33326d47471b5b306d1b5b3122711b5b346d55551b5b3022711b5b313b31481b5b3f324b1b5b3222715a1b5b323b31481b5b3f304a
+expect
+cursor 0 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ZR  UU"
+line 1 0 ""
+line 2 0 ""
+attr 0 0 1 u=1
+attr 0 1 1 fg=p16:1
+attr 0 4 2 u=1
+end
+kind screen
+name insert_delete_chars
+source screen.cases:368
+size 12 3
+chunk 6162636465666768696a6b6c1b5b313b33481b5b33401b5b313b33481b5b32501b5b313b3132481b5b35501b5b323b31486d6e6f7071721b5b323b33481b5b313030401b5b333b3148737475761b5b333b33481b5b313030501b5b313b35481b5b30401b5b3050
+expect
+cursor 4 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ab cdefghi"
+line 1 0 "mn"
+line 2 0 "st"
+end
+kind screen
+name insert_delete_chars_wide
+source screen.cases:372
+size 10 2
+chunk e4bda0e5a5bde4b896e7958ce4bda01b5b313b32481b5b31401b5b313b34481b5b31501b5b323b3148e4bda0e5a5bd1b5b323b32481b5b3258
+expect
+cursor 1 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "    \u{4E16}\u{754C}"
+line 1 0 ""
+attr 0 2 1 w=0
+attr 0 4 1 w=2
+attr 0 5 1 w=0
+attr 0 6 1 w=2
+attr 0 7 1 w=0
+end
+kind screen
+name insert_delete_lines_in_region
+source screen.cases:376
+size 8 6
+chunk 310d0a320d0a330d0a340d0a350d0a361b5b323b35721b5b333b31481b5b324c1b5b313b31481b5b4c1b5b343b31481b5b4d1b5b323b31481b5b304c1b5b304d1b5b363b31481b5b334d1b5b721b5b333b31481b5b324d1b5b334c
+expect
+cursor 0 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "1"
+line 1 0 "2"
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+end
+kind screen
+name insert_delete_lines_outside_region
+source screen.cases:380
+size 8 5
+chunk 310d0a320d0a330d0a340d0a351b5b323b33721b5b313b31481b5b4c1b5b4d1b5b343b31481b5b4c1b5b4d1b5b72
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "1"
+line 1 0 "2"
+line 2 0 "3"
+line 3 0 "4"
+line 4 0 "5"
+end
+kind screen
+name insert_delete_columns
+source screen.cases:384
+size 10 4
+chunk 1b5b3f3639681b5b333b38731b5b313b3148303132333435363738390d0a6162636465666768696a0d0a4142434445464748494a0d0a6b6c6d6e6f70717273741b5b323b35481b5b277d1b5b34277d1b5b333b35481b5b277e1b5b33277e1b5b313b31481b5b32277d1b5b313030277e1b5b313030277d1b5b30277e1b5b3f36396c1b5b323b32481b5b32277d
+expect
+cursor 1 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name insert_delete_columns_with_wide
+source screen.cases:388
+size 10 2
+chunk 1b5b3f3639681b5b323b3973e4bda0e5a5bde4b896e7958c61621b5b313b34481b5b277d1b5b313b36481b5b277e1b5b323b3148e4bda0e4bda0e4bda01b5b323b32481b5b33277d
+expect
+cursor 1 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 "     \u{4F60}\u{4F60}"
+attr 0 4 1 w=0
+attr 0 7 1 w=0
+attr 1 4 1 w=0
+attr 1 5 1 w=2
+attr 1 6 1 w=0
+attr 1 7 1 w=2
+attr 1 8 1 w=0
+end
+kind screen
+name scroll_up_down_regions
+source screen.cases:392
+size 8 6
+chunk 310d0a320d0a330d0a340d0a350d0a361b5b32531b5b31541b5b323b35721b5b32531b5b541b5b33531b5b39541b5b30531b5b30541b5b721b5b31531b5b313030541b5b313b31481b5b31303053
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+end
+kind screen
+name scroll_left_right_with_margins
+source screen.cases:396
+size 10 4
+chunk 303132333435363738390d0a6162636465666768696a0d0a4142434445464748494a0d0a6b6c6d6e6f70717273741b5b3220401b5b3120411b5b3f3639681b5b333b38731b5b323b32721b5b3120401b5b3220411b5b3020401b5b3020411b5b721b5b31303020401b5b3130302041
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name scroll_horizontal_with_attributes
+source screen.cases:400
+size 10 3
+chunk 1b5b33316d30313233341b5b34346d35363738390d0a1b5b303b316d6162636465666768696a1b5b3320401b5b313b31481b5b376d1b5b3220411b5b306d
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "  3456789"
+line 1 0 "  defghij"
+line 2 0 ""
+attr 0 2 2 fg=p16:1
+attr 0 4 5 fg=p16:1 bg=p16:4
+attr 1 2 7 b
+end
+kind screen
+name ech_variants
+source screen.cases:404
+size 12 3
+chunk 1b5b34316d6162636465666768696a6b6c1b5b313b33481b5b33581b5b323b31481b5b30581b5b313b3132481b5b313030581b5b333b3148e4bda0e5a5bde4bda0e5a5bd1b5b333b32481b5b31581b5b333b34481b5b3258
+expect
+cursor 3 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ab   fghijk"
+line 1 0 ""
+line 2 0 "      \u{597D}"
+attr 0 0 12 bg=p16:1
+attr 1 0 1 bg=p16:1
+attr 2 0 6 bg=p16:1
+attr 2 6 1 bg=p16:1 w=2
+attr 2 7 1 bg=p16:1 w=0
+end
+kind screen
+name rep_variants
+source screen.cases:408
+size 12 4
+chunk 611b5b33621b5b30621b5b620d0ae4bda01b5b32620d0a1b5b33316d781b5b35621b5b306d0d0a1b371b5b34621b5b313b31481b5b3162
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "aaaa"
+line 1 0 "\u{4F60}\u{4F60}\u{4F60}"
+line 2 0 "xxxxxx"
+line 3 0 ""
+attr 1 0 1 w=2
+attr 1 1 1 w=0
+attr 1 2 1 w=2
+attr 1 3 1 w=0
+attr 1 4 1 w=2
+attr 1 5 1 w=0
+attr 2 0 6 fg=p16:1
+end
+kind screen
+name rep_after_combining_and_cursor_move
+source screen.cases:412
+size 12 3
+chunk 65cc811b5b32620d0a1b5b313b35481b5b32620d0af09f918d1b5b3162e2808d1b5b3162
+expect
+cursor 5 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "e\u{301}e\u{301}e\u{301}"
+line 1 0 "\u{1F44D}\u{1F44D}"
+line 2 0 ""
+attr 1 0 1 w=2
+attr 1 1 1 w=0
+attr 1 2 1 w=2
+attr 1 3 2 w=0
+end
+kind screen
+name sgr_reset_and_default_forms
+source screen.cases:416
+size 30 3
+chunk 1b5b313b33313b34323b343b376d411b6d1b5b6d421b5b3b6d431b5b303b3b316d441b5b303a316d451b5b306d
+expect
+cursor 5 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDE"
+line 1 0 ""
+line 2 0 ""
+attr 0 0 1 fg=p16:1 bg=p16:2 b u=1 inv
+attr 0 3 1 b
+end
+kind screen
+name sgr_colon_edge_forms
+source screen.cases:420
+size 40 4
+chunk 1b5b33383a323a313a323a333a343a356d411b5b33383a323a3a313a326d421b5b33383a356d431b5b33383a3a353a396d441b5b343a6d451b5b343a3a6d461b5b343a376d471b5b35383a326d481b5b306d1b5b33383a323a3a3a6d491b5b34383a353a3330306d4a1b5b33383b323b3330303b303b306d4b1b5b306d
+expect
+cursor 11 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDEFGHIJK"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+attr 0 0 1 fg=rgb:020304
+attr 0 1 1 fg=rgb:010200
+attr 0 2 2 fg=p256:0
+attr 0 4 3 fg=p256:0 u=1
+attr 0 7 1 fg=p256:0 u=1 uc=rgb:000000
+attr 0 8 1 fg=rgb:000000
+attr 0 9 1 fg=rgb:000000 bg=p256:44
+attr 0 10 1 fg=rgb:2c0000 bg=p256:44
+end
+kind screen
+name sgr_extreme_params
+source screen.cases:424
+size 30 3
+chunk 1b5b303b36353533356d411b5b323134373438333634376d421b5b33383b353b323134373438333634376d431b5b33383b323b36353533353b36353533353b36353533356d441b5b343a36353533356d451b5b35383b353b36353533356d461b5b3130373b36353533353b316d471b5b306d
+expect
+cursor 7 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDEFG"
+line 1 0 ""
+line 2 0 ""
+attr 0 2 1 fg=p256:255
+attr 0 3 1 fg=rgb:ffffff
+attr 0 4 1 fg=rgb:ffffff u=1
+attr 0 5 1 fg=rgb:ffffff u=1 uc=p256:255
+attr 0 6 1 fg=rgb:ffffff bg=p16:15 b u=1 uc=p256:255
+end
+kind screen
+name sgr_combined_resets_and_alias
+source screen.cases:428
+size 30 3
+chunk 1b5b313b326d411b5b32316d421b5b32326d431b5b313b323b32323b316d441b5b333b343b353b373b383b393b35336d451b5b32333b32343b32353b32373b32383b32393b35356d461b5b33383b353b313b34383b353b323b35383b353b336d471b5b33393b34393b35396d48
+expect
+cursor 8 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDEFGH"
+line 1 0 ""
+line 2 0 ""
+attr 0 0 1 b d
+attr 0 1 1 b d u=2
+attr 0 2 1 u=2
+attr 0 3 1 b u=2
+attr 0 4 1 b i u=1 bl inv invis s o
+attr 0 5 1 b
+attr 0 6 1 fg=p256:1 bg=p256:2 b
+attr 0 7 1 b
+end
+kind screen
+name modes_ansi_set_reset
+source screen.cases:432
+size 20 4
+chunk 1b5b32681b5b34681b5b3132681b5b3230681b5b326c1b5b346c1b5b31326c1b5b32306c1b5b33681b5b336c1b5b34681b5b30681b5b306c
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=1 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=1 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name modes_ansi_lnm
+source screen.cases:436
+size 12 4
+chunk 1b5b3230686162630a6465660d6768690b6a6b6c0c6d6e6f1b5b32306c7071720a73
+expect
+cursor 7 3
+buffer normal
+base-y 1
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abc"
+line 1 0 "ghi"
+line 2 0 "jkl"
+line 3 0 "mnopqr"
+line 4 0 "      s"
+end
+kind screen
+name modes_dec_private_wide
+source screen.cases:440
+size 30 6
+chunk 1b5b3f31681b5b3f33681b5b3f35681b5b3f36681b5b3f376c1b5b3f38681b5b3f39681b5b3f3132681b5b3f32356c1b5b3f3435681b5b3f3636681b5b3f3639681b5b3f3830681b5b3f3935681b5b3f31303030681b5b3f31303031681b5b3f31303032681b5b3f31303033681b5b3f31303034681b5b3f31303035681b5b3f31303036681b5b3f31303037681b5b3f31303135681b5b3f31303136681b5b3f32303034681b5b3f3230323668
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=1 dec.applicationKeypad=1 dec.bracketedPasteMode=1 dec.cursorBlink=- dec.cursorStyle=- dec.origin=1 dec.reverseWraparound=1 dec.sendFocus=1 dec.synchronizedOutput=1 dec.wraparound=0 mouse.encoding=SGR_PIXELS mouse.protocol=ANY public.applicationCursorKeysMode=1 public.applicationKeypadMode=1 public.bracketedPasteMode=1 public.insertMode=0 public.mouseTrackingMode=any public.originMode=1 public.reverseWraparoundMode=1 public.sendFocusMode=1 public.synchronizedOutputMode=1 public.wraparoundMode=0
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+end
+kind screen
+name modes_dec_private_reset_wide
+source screen.cases:444
+size 30 6
+chunk 1b5b3f31681b5b3f33681b5b3f35681b5b3f36681b5b3f376c1b5b3f38681b5b3f39681b5b3f3132681b5b3f32356c1b5b3f3435681b5b3f3636681b5b3f3639681b5b3f3830681b5b3f3935681b5b3f31303030681b5b3f31303032681b5b3f31303033681b5b3f31303034681b5b3f31303035681b5b3f31303036681b5b3f31303037681b5b3f31303135681b5b3f31303136681b5b3f32303034681b5b3f32303236681b5b3f316c1b5b3f336c1b5b3f356c1b5b3f366c1b5b3f37681b5b3f386c1b5b3f396c1b5b3f31326c1b5b3f3235681b5b3f34356c1b5b3f36366c1b5b3f36396c1b5b3f38306c1b5b3f39356c1b5b3f313030306c1b5b3f313030326c1b5b3f313030336c1b5b3f313030346c1b5b3f313030356c1b5b3f313030366c1b5b3f313030376c1b5b3f313031356c1b5b3f313031366c1b5b3f323030346c1b5b3f323032366c
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+end
+kind screen
+name modes_dec_private_multi_param
+source screen.cases:448
+size 30 4
+chunk 1b5b3f313b363b373b32303034681b5b3f373b363b316c1b5b3f313030303b31303036681b5b3f313030303b313030366c1b5b3f3b681b5b3f313b3b36681b5b3f39393939393b3168
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=1 dec.applicationKeypad=0 dec.bracketedPasteMode=1 dec.cursorBlink=- dec.cursorStyle=- dec.origin=1 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=0 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=1 public.applicationKeypadMode=0 public.bracketedPasteMode=1 public.insertMode=0 public.mouseTrackingMode=none public.originMode=1 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=0
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name decrqm_all_modes
+source screen.cases:452
+size 20 3
+chunk 1b5b3f3124701b5b3f3224701b5b3f3324701b5b3f3524701b5b3f3624701b5b3f3724701b5b3f3824701b5b3f3924701b5b3f313224701b5b3f323524701b5b3f343524701b5b3f343724701b5b3f363624701b5b3f363924701b5b3f383024701b5b3f393524701b5b3f3130303024701b5b3f3130303124701b5b3f3130303224701b5b3f3130303324701b5b3f3130303424701b5b3f3130303524701b5b3f3130303624701b5b3f3130303724701b5b3f3130313524701b5b3f3130313624701b5b3f3130343724701b5b3f3130343824701b5b3f3130343924701b5b3f3230303424701b5b3f3230323624701b5b3124701b5b3224701b5b3324701b5b3424701b5b313224701b5b323024701b5b3024701b5b24701b5b3f2470
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[?1;2$y"
+response "\u{1B}[?2;0$y"
+response "\u{1B}[?3;0$y"
+response "\u{1B}[?5;0$y"
+response "\u{1B}[?6;2$y"
+response "\u{1B}[?7;1$y"
+response "\u{1B}[?8;3$y"
+response "\u{1B}[?9;2$y"
+response "\u{1B}[?12;2$y"
+response "\u{1B}[?25;1$y"
+response "\u{1B}[?45;2$y"
+response "\u{1B}[?47;2$y"
+response "\u{1B}[?66;2$y"
+response "\u{1B}[?69;0$y"
+response "\u{1B}[?80;0$y"
+response "\u{1B}[?95;0$y"
+response "\u{1B}[?1000;2$y"
+response "\u{1B}[?1001;0$y"
+response "\u{1B}[?1002;2$y"
+response "\u{1B}[?1003;2$y"
+response "\u{1B}[?1004;2$y"
+response "\u{1B}[?1005;4$y"
+response "\u{1B}[?1006;2$y"
+response "\u{1B}[?1007;0$y"
+response "\u{1B}[?1015;4$y"
+response "\u{1B}[?1016;2$y"
+response "\u{1B}[?1047;2$y"
+response "\u{1B}[?1048;1$y"
+response "\u{1B}[?1049;2$y"
+response "\u{1B}[?2004;2$y"
+response "\u{1B}[?2026;2$y"
+response "\u{1B}[1;0$y"
+response "\u{1B}[2;4$y"
+response "\u{1B}[3;0$y"
+response "\u{1B}[4;2$y"
+response "\u{1B}[12;3$y"
+response "\u{1B}[20;2$y"
+response "\u{1B}[0;0$y"
+response "\u{1B}[0;0$y"
+response "\u{1B}[?0;0$y"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name decrqm_after_set
+source screen.cases:456
+size 20 3
+chunk 1b5b32681b5b3f31681b5b3f33681b5b3f36681b5b3f3435681b5b3f3636681b5b3f39681b5b3f31303034681b5b3f31303035681b5b3f31303037681b5b3f31303439681b5b3224701b5b3f3124701b5b3f3324701b5b3f3624701b5b3f343524701b5b3f363624701b5b3f3924701b5b3f3130303424701b5b3f3130303524701b5b3f3130303724701b5b3f313034392470
+expect
+cursor 0 0
+buffer alternate
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=1 dec.applicationKeypad=1 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=1 dec.reverseWraparound=1 dec.sendFocus=1 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=X10 public.applicationCursorKeysMode=1 public.applicationKeypadMode=1 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=x10 public.originMode=1 public.reverseWraparoundMode=1 public.sendFocusMode=1 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[2;4$y"
+response "\u{1B}[?1;1$y"
+response "\u{1B}[?3;0$y"
+response "\u{1B}[?6;1$y"
+response "\u{1B}[?45;1$y"
+response "\u{1B}[?66;1$y"
+response "\u{1B}[?9;1$y"
+response "\u{1B}[?1004;1$y"
+response "\u{1B}[?1005;4$y"
+response "\u{1B}[?1007;0$y"
+response "\u{1B}[?1049;1$y"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name da_variants
+source screen.cases:460
+size 20 3
+chunk 1b5b631b5b31631b5b30631b5b3e631b5b3e31631b5b3e30631b5b3f631b5b3d631b5b3f31631b5b3e303b31631b5b3d3063
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[?1;2c"
+response "\u{1B}[?1;2c"
+response "\u{1B}[>0;276;0c"
+response "\u{1B}[>0;276;0c"
+response "\u{1B}[>0;276;0c"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name dsr_variants
+source screen.cases:464
+size 20 5
+chunk 1b5b333b37481b5b356e1b5b366e1b5b306e1b5b316e1b5b376e1b5b3f366e1b5b3f31356e1b5b3f32356e1b5b3f32366e1b5b3f35336e1b5b3f35356e1b5b3f35366e1b5b3f36326e1b5b3f36336e1b5b3f37356e1b5b3f38356e1b5b6e1b5b3f6e
+expect
+cursor 6 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[0n"
+response "\u{1B}[3;7R"
+response "\u{1B}[?3;7R"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+end
+kind screen
+name dsr_6_in_region_and_origin
+source screen.cases:468
+size 20 6
+chunk 1b5b333b35721b5b323b38481b5b366e1b5b3f36681b5b366e1b5b313b31481b5b366e1b5b39393b3939481b5b366e1b5b3f366c1b5b366e
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[2;8R"
+response "\u{1B}[3;1R"
+response "\u{1B}[3;1R"
+response "\u{1B}[5;20R"
+response "\u{1B}[1;1R"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+end
+kind screen
+name soft_reset_decstr
+source screen.cases:472
+size 20 5
+chunk 1b5b313b33313b34326d411b5b3f32356c1b5b3f31681b5b3f36681b5b3f376c1b5b34681b5b323b34721b28300e1b371b5b2170421b5b3f3124701b5b3f3624701b5b3f3724701b5b3f323524701b5b3424701b5b366e1b28420f43
+expect
+cursor 2 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[?1;2$y"
+response "\u{1B}[?6;2$y"
+response "\u{1B}[?7;1$y"
+response "\u{1B}[?25;1$y"
+response "\u{1B}[4;2$y"
+response "\u{1B}[2;2R"
+line 0 0 "A"
+line 1 0 "BC"
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+attr 0 0 1 fg=p16:1 bg=p16:2 b
+end
+kind screen
+name soft_reset_resets_cursor_style
+source screen.cases:476
+size 20 3
+chunk 1b5b3320711b5b3f31326c1b5b21701b5b3f313224701b5b21705a
+expect
+cursor 1 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[?12;2$y"
+line 0 0 "Z"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name cursor_style_variants
+source screen.cases:480
+size 20 3
+chunk 1b5b20711b5b3020711b5b3120711b5b3220711b5b3320711b5b3420711b5b3520711b5b3620711b5b3720711b5b393920711b5b333b3420711b5b3f3132681b5b3120711b5b3f31326c1b5b3220711b5b323b312071
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=0 dec.cursorStyle=block dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name xtwinops_defaults
+source screen.cases:484
+size 20 4
+chunk 1b5b741b5b30741b5b31741b5b32741b5b33741b5b34741b5b35741b5b36741b5b37741b5b38741b5b39741b5b3130741b5b3131741b5b3133741b5b3134741b5b3135741b5b3136741b5b3138741b5b3139741b5b3230741b5b3231741b5b3232741b5b3233741b5b3234741b5b393974
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name xtwinops_reports_and_stack
+source screen.cases:488
+size 20 4
+chunk 1b5b31343b32741b5b31343b30741b5b3136741b5b3138741b5b3139741b5b32323b30741b5b32323b31741b5b32323b32741b5b32323b33741b5b32333b30741b5b32333b31741b5b32333b32741b5b32333b33741b5b383b31303b3430741b5b333b353b35741b5b313b3174
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name xtwinops_title_stack_deep
+source screen.cases:492
+size 20 3
+chunk 1b5d303b61071b5b3232741b5d303b62071b5b32323b32741b5d303b63071b5b32323b31741b5d303b64071b5b3233741b5b3233741b5b3233741b5b3233741b5b32333b3174
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title "d"
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name osc_52_query_and_write
+source screen.cases:496
+size 20 3
+chunk 1b5d35323b633b3f071b5d35323b633b614756736247383d071b5d35323b70633b53476b3d1b5c1b5d35323b3b071b5d3532076166746572
+expect
+cursor 5 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "after"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name osc_unregistered_set
+source screen.cases:500
+size 20 3
+chunk 1b5d333b70726f703d76616c7565071b5d353b31071b5d363b31071b5d373b66696c653a2f2f2f746d70071b5d393b6e6f7465071b5d31333b726564071b5d31373b626c7565071b5d31393b626c7565071b5d35303b666f6e74071b5d3133333b41071b5d3737373b78071b5d3939393b79071b5d3130353b31071b5d3130363b313b31071b5d3131333b071b5d3131393b076f6b
+expect
+cursor 2 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ok"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name osc_color_set_and_reset
+source screen.cases:504
+size 20 3
+chunk 1b5d343b313b7267623a30302f66662f30303b323b23313233343536071b5d343b313b3f3b323b3f3b3330303b3f071b5d31303b7267623a31322f33342f3536071b5d31313b23616263646566071b5d31323b7267623a66662f66662f3030071b5d31303b3f071b5d31313b3f071b5d31323b3f071b5d3130343b31071b5d3130343b313b323b33071b5d313034071b5d313130071b5d313131071b5d313132071b5d3131303b78071b5d343b313b3f07
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name osc_color_forms_and_invalid
+source screen.cases:508
+size 20 3
+chunk 1b5d343b313b7267623a302f302f30071b5d343b313b7267623a662f662f66071b5d343b313b7267623a666666662f303030302f30303030071b5d343b313b23666666071b5d343b313b23666666666666666666666666071b5d343b313b6e6f6e73656e7365071b5d343b783b7267623a30302f30302f3030071b5d343b3b071b5d34071b5d343b3235363b7267623a30302f30302f3030071b5d343b3235353b7267623a30302f30302f3030071b5d31303b3b071b5d31303b3f3b3f071b5d31303b7267623a30302f30302f30303b7267623a31312f31312f3131071b5d31313b7267623a30302f30302f30303b7267623a31312f31312f3131071b5d31323b613b6207
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name osc_title_variants
+source screen.cases:512
+size 20 3
+chunk 1b5d303b071b5d323b6f6e6c79207469746c65071b5d313b6f6e6c792069636f6e071b5d303b613b623b63071b5d323bc3a9c3a8071b5d30071b5d323b781b5c1b5d303b756e7465726d696e617465641b5b316d
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title "unterminated"
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name osc_numeric_edges
+source screen.cases:516
+size 20 3
+chunk 1b5d3b6e6f206964071b5d783b626164071b5d30303b7a65726f207a65726f071b5d30323b74776f071b5d39393939393939393939393939393b626967071b5d38071b5d383b071b5d383b3b071b5d383b613b623b633b6407
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title "two"
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name osc8_params_and_edges
+source screen.cases:520
+size 40 4
+chunk 1b5d383b69643d613a666f6f3d6261723b687474703a2f2f702e6578616d706c652f07411b5d383b3b071b5d383b666f6f3d6261723b687474703a2f2f712e6578616d706c652f07421b5d383b3b071b5d383b69643d3b687474703a2f2f722e6578616d706c652f07431b5d383b3b071b5d383b69643d613b07441b5d383b69643d613a69643d623b687474703a2f2f732e6578616d706c652f07451b5d383b3b070d0a1b5d383b3b687474703a2f2f742e6578616d706c652f3f613d313b623d3207461b5d383b3b071b5d383b3b0747
+expect
+cursor 2 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDE"
+line 1 0 "FG"
+line 2 0 ""
+line 3 0 ""
+attr 0 0 1 u=0 url=1
+attr 0 1 1 u=0 url=2
+attr 0 2 1 u=0 url=3
+attr 0 4 1 u=0 url=4
+attr 1 0 1 u=0 url=5
+link 1 "http://p.example/"
+link 2 "http://q.example/"
+link 3 "http://r.example/"
+link 4 "http://s.example/"
+link 5 "http://t.example/?a=1;b=2"
+end
+kind screen
+name osc8_link_over_erase_and_scroll
+source screen.cases:524
+size 16 3
+chunk 1b5d383b3b687474703a2f2f612e6578616d706c652f0768656c6c6f20776f726c641b5b313b33481b5b33581b5b324b1b5b4b0d0a6162630d0a6465660d0a6768691b5d383b3b071b5b313b31481b5b324c1b5b4d
+expect
+cursor 0 0
+buffer normal
+base-y 1
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 "abc"
+line 3 0 ""
+attr 2 0 3 u=0 url=1
+link 1 "http://a.example/"
+end
+kind screen
+name dcs_decrqss_variants
+source screen.cases:528
+size 20 8
+chunk 1b5024716d1b5c1b502471721b5c1b50247120711b5c1b50247122711b5c1b50247122701b5c1b502471731b5c1b5024717a1b5c1b5024711b5c1b503124716d1b5c1b5024716d18781b502471721b5b316d741b5b323b34721b502471721b5c1b5b3520711b50247120711b5c
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=1 dec.cursorStyle=bar dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}P1$r0m\u{1B}\u{5C}"
+response "\u{1B}P1$r1;8r\u{1B}\u{5C}"
+response "\u{1B}P1$r2 q\u{1B}\u{5C}"
+response "\u{1B}P1$r0\u{22}q\u{1B}\u{5C}"
+response "\u{1B}P1$r61;1\u{22}p\u{1B}\u{5C}"
+response "\u{1B}P0$r\u{1B}\u{5C}"
+response "\u{1B}P0$r\u{1B}\u{5C}"
+response "\u{1B}P0$r\u{1B}\u{5C}"
+response "\u{1B}P1$r0m\u{1B}\u{5C}"
+response "\u{1B}P1$r1;8r\u{1B}\u{5C}"
+response "\u{1B}P1$r2;4r\u{1B}\u{5C}"
+response "\u{1B}P1$r2 q\u{1B}\u{5C}"
+line 0 0 "xt"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+line 6 0 ""
+line 7 0 ""
+attr 0 1 1 b
+end
+kind screen
+name dcs_decrqss_after_sgr
+source screen.cases:532
+size 20 4
+chunk 1b5b313b323b333b343b353b373b383b393b35333b33383b353b31323b34383b323b313b323b333b35383b353b376d1b5024716d1b5c1b5b303b343a333b33383a323a3a393a383a376d1b5024716d1b5c1b5b306d1b5b32323b32346d1b5024716d1b5c1b5b39303b3130333b33383b353b3235306d1b5024716d1b5c
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}P1$r0m\u{1B}\u{5C}"
+response "\u{1B}P1$r0m\u{1B}\u{5C}"
+response "\u{1B}P1$r0m\u{1B}\u{5C}"
+response "\u{1B}P1$r0m\u{1B}\u{5C}"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name dcs_unknown_and_nesting
+source screen.cases:536
+size 20 3
+chunk 1b506162631b5c1b50313b322b7178781b5c1b5024716d1b5b316d781b5c1b50303b317c646174611b5c1b503e7c711b5c6f6b
+expect
+cursor 3 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}P1$r0m\u{1B}\u{5C}"
+line 0 0 "xok"
+line 1 0 ""
+line 2 0 ""
+attr 0 0 3 b
+end
+kind screen
+name ris_mid_chunk
+source screen.cases:540
+size 20 4
+chunk 746578741b5b313b33316d1b631b5b316d421b5d303b7407207a0d0a6e657874
+expect
+cursor 4 1
+buffer normal
+base-y 0
+title "t"
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "B z"
+line 1 0 "next"
+line 2 0 ""
+line 3 0 ""
+attr 0 0 3 b
+attr 1 0 4 b
+end
+kind screen
+name ris_at_chunk_end
+source screen.cases:544
+size 20 4
+chunk 6162631b5b376d1b63
+chunk 5b316d51
+chunk 1b
+chunk 635b316d
+chunk 5a
+expect
+cursor 4 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "[1mZ"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name ris_resets_modes_and_buffers
+source screen.cases:548
+size 12 4
+chunk 1b5b3f31303439681b5b3f31681b5b3f36681b5b34681b28300e1b5b323b33721b5d303b74746c071b5b3320711b5b3f32356c781b631b5b3f3124701b5b3f3624701b5b3f323524701b5b3424701b5b366e68656c6c6f
+expect
+cursor 5 0
+buffer normal
+base-y 0
+title "ttl"
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[?1;2$y"
+response "\u{1B}[?6;2$y"
+response "\u{1B}[?25;2$y"
+response "\u{1B}[4;2$y"
+response "\u{1B}[1;1R"
+line 0 0 "hello"
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name ris_with_scrollback
+source screen.cases:552
+size 8 3
+chunk 610d0a620d0a630d0a640d0a651b6366
+expect
+cursor 1 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "f"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name esc_variants_all
+source screen.cases:556
+size 20 5
+chunk 1b371b5b333b3348781b38791b441b451b4d1b481b3d1b3e1b631b371b5b323b3248711b381b6e1b6f1b7c1b7d1b7e1b25471b25401b23381b23331b23351b23361b5a1b781b5c1b5b313b3148646f6e65
+expect
+cursor 4 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "doneEEEEEEEEEEEEEEEE"
+line 1 0 "EEEEEEEEEEEEEEEEEEEE"
+line 2 0 "EEEEEEEEEEEEEEEEEEEE"
+line 3 0 "EEEEEEEEEEEEEEEEEEEE"
+line 4 0 "EEEEEEEEEEEEEEEEEEEE"
+end
+kind screen
+name esc_index_reverse_index_regions
+source screen.cases:560
+size 8 5
+chunk 310d0a320d0a330d0a340d0a351b5b323b34721b5b343b31481b441b441b5b323b31481b4d1b4d1b5b313b31481b4d1b5b353b31481b441b5b721b5b313b31481b4d1b451b45
+expect
+cursor 0 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 "1"
+line 2 0 ""
+line 3 0 ""
+line 4 0 "4"
+end
+kind screen
+name esc_index_with_margins
+source screen.cases:564
+size 10 4
+chunk 303132333435363738390d0a6162636465666768696a0d0a4142434445464748494a0d0a6b6c6d6e6f70717273741b5b3f3639681b5b333b38731b5b323b33721b5b333b35481b441b5b323b35481b4d1b4d1b5b3f36396c
+expect
+cursor 4 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "0123456789"
+line 1 0 ""
+line 2 0 ""
+line 3 0 "klmnopqrst"
+end
+kind screen
+name c1_8bit_controls
+source screen.cases:568
+size 20 4
+chunk 6162c28463c28564c288c28dc280651b5b313b3548c2881b5b313b3148090966
+expect
+cursor 5 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ab  f"
+line 1 0 "  c"
+line 2 0 "de"
+line 3 0 ""
+end
+kind screen
+name c0_controls_all
+source screen.cases:572
+size 20 4
+chunk 61076208086309640a650b660c670d680ec3800f69006a7f6b0102030405061011121314151617191c1d1e1f
+expect
+cursor 5 3
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "cb      d"
+line 1 0 "         e"
+line 2 0 "          f"
+line 3 0 "h\u{C0}ijk      g"
+end
+kind screen
+name c0_interrupting_sequences
+source screen.cases:576
+size 20 3
+chunk 1b5b31186d20781b5b321a6d20791b5b331b63207a1b5d303b7418771b5d303b741a771b507818761b5b313b08090a33316d71
+expect
+cursor 9 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 " zwwv"
+line 1 0 "        q"
+line 2 0 ""
+attr 1 8 1 fg=p16:1 b
+end
+kind screen
+name backspace_reverse_wrap
+source screen.cases:580
+size 6 4
+chunk 61626364656608085a0d0a1b5b3f3435681b5b323b31480808591b5b3f376c08581b5b3f37681b5b343b31481b5b3f34356878787878787878080808080808080808
+expect
+cursor 0 2
+buffer normal
+base-y 1
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=1 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=1 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abcZef"
+line 1 0 "X"
+line 2 0 ""
+line 3 0 "xxxxxx"
+line 4 0 "x"
+end
+kind screen
+name reverse_wrap_in_region_and_extended
+source screen.cases:584
+size 6 5
+chunk 1b5b3f3435681b5b3f31303435681b5b323b34721b5b323b3148080861621b5b343b31480808081b5b721b5b313b3148085a
+expect
+cursor 1 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=1 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=1 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "Z"
+line 1 0 "ab"
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+end
+kind screen
+name decsc_decrc_attributes_and_modes
+source screen.cases:588
+size 20 4
+chunk 1b5b313b33313b34326d1b28300e1b5b3f36681b5b323b33721b5b3f376c1b371b5b306d1b28420f1b5b3f366c1b5b721b5b3f37681b5b313b31486c711b386c711b5b3f3624701b5b3f3724701b5b366e
+expect
+cursor 2 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[?6;2$y"
+response "\u{1B}[?7;1$y"
+response "\u{1B}[2;3R"
+line 0 0 "lq"
+line 1 0 "lq"
+line 2 0 ""
+line 3 0 ""
+attr 1 0 2 fg=p16:1 bg=p16:2 b
+end
+kind screen
+name decsc_decrc_wrap_pending
+source screen.cases:592
+size 6 3
+chunk 6162636465661b371b5b313b3148581b38591b5b313b31481b5b73731b5b313b3348751b5b755a
+expect
+cursor 1 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ZbudeY"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name decrc_without_save
+source screen.cases:596
+size 10 3
+chunk 1b5b323b344861621b38631b5b751b5b313b314864
+expect
+cursor 1 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "d"
+line 1 0 "   ab"
+line 2 0 ""
+end
+kind screen
+name decstbm_variants
+source screen.cases:600
+size 8 6
+chunk 1b5b323b34721b5b366e1b5b721b5b366e1b5b303b30721b5b333b33721b5b333b32721b5b313b3939721b5b343b721b5b3b33721b5b303b33721b5b393b39721b5b366e1b5b323b33721b5b366e
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[1;1R"
+response "\u{1B}[1;1R"
+response "\u{1B}[1;1R"
+response "\u{1B}[1;1R"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+end
+kind screen
+name decslrm_vs_scosc
+source screen.cases:604
+size 12 3
+chunk 1b5b731b5b313b3548781b5b751b5b3f3639681b5b333b38731b5b313b31486162636465666768696a6b6c1b5b731b5b3f36396c1b5b313b31481b5b731b5b75
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abcdefghijkl"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name left_right_margins_print_and_erase
+source screen.cases:608
+size 12 4
+chunk 1b5b3f3639681b5b333b38731b5b313b31481b5b324a1b5b313b33486162636465666768696a6b6c1b5b323b34481b5b324b1b5b333b34481b5b314a1b5b4b1b5b323b35481b5b34681b5b334058595a1b5b346c1b5b313030501b5b3f36396c
+expect
+cursor 7 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 "    XYZ"
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name left_right_margins_newline_and_cr
+source screen.cases:612
+size 12 4
+chunk 1b5b3f3639681b5b333b38731b5b313b35486162630d0a78797a08080808080809540d0a0d0a1b441b441b441b4d1b5b3f36396c0d0a656e64
+expect
+cursor 3 3
+buffer normal
+base-y 3
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "    abc"
+line 1 0 "xyz     T"
+line 2 0 ""
+line 3 0 ""
+line 4 0 ""
+line 5 0 ""
+line 6 0 "end"
+end
+kind screen
+name left_right_margins_invalid
+source screen.cases:616
+size 12 4
+chunk 1b5b3f3639681b5b353b33731b5b303b30731b5b313b31731b5b333b3939731b5b31323b3132731b5b323b3132731b5b3b35731b5b3f36396c1b5b333b38731b5b3f3639681b5b333b34731b5b313b31481b5b366e
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[1;1R"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name insert_mode_with_wide_and_margins
+source screen.cases:620
+size 8 3
+chunk 1b5b346831323334353637381b5b313b3348e4bda01b5b313b3848e4bda01b5b323b31481b5b3f376c3132333435363738e4bda01b5b346c
+expect
+cursor 7 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=0 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=0
+line 0 0 "12\u{4F60}345"
+line 1 1 "12345678"
+line 2 0 ""
+attr 0 2 1 w=2
+attr 0 3 1 w=0
+end
+kind screen
+name alt_screen_buffer_semantics
+source screen.cases:624
+size 16 4
+chunk 6d61696e1b5b323b3348781b5b3f31303439681b5b3320711b5b313b33316d414c541b5b3f313034396c6d6f72651b5b3f31303439681b5b3f313034396c616761696e1b5b3f3437681b5b3f3437681b5b3f34376c1b5b3f31303437681b5b3f313034376c1b5b3f31303438681b5b313b31481b5b3f313034386c
+expect
+cursor 12 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=1 dec.cursorStyle=underline dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "main"
+line 1 0 "  xmoreagain"
+line 2 0 ""
+line 3 0 ""
+end
+kind screen
+name alt_screen_with_scrollback_and_resize
+source screen.cases:628
+size 8 3
+chunk 610d0a620d0a630d0a640d0a651b5b3f3130343968414c540d0a320d0a330d0a341b5b3f313034396c
+expect
+cursor 1 2
+buffer normal
+base-y 2
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "a"
+line 1 0 "b"
+line 2 0 "c"
+line 3 0 "d"
+line 4 0 "e"
+end
+kind screen
+name alt_screen_cursor_save_restore
+source screen.cases:632
+size 12 3
+chunk 1b5b323b33481b371b5b3f31303439681b5b313b3148581b38591b5b3f313034396c1b5b313b31485a1b5b3f31303438681b5b333b35481b5b3f31303439681b5b3f313034396c
+expect
+cursor 4 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "Z"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name mouse_modes_priority
+source screen.cases:636
+size 20 3
+chunk 1b5b3f39681b5b3f31303030681b5b3f31303032681b5b3f31303033681b5b3f313030336c1b5b3f313030326c1b5b3f313030306c1b5b3f396c1b5b3f31303033681b5b3f31303030681b5b3f313030306c1b5b3f31303036681b5b3f31303135681b5b3f31303035681b5b3f31303136681b5b3f313030366c1b5b3f313031366c1b5b3f313030356c1b5b3f313031356c
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name keypad_mode_variants
+source screen.cases:640
+size 20 3
+chunk 1b3d1b5b3f363624701b3e1b5b3f363624701b5b3f3636681b5b3f363624701b5b3f36366c1b5b3f36362470
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[?66;1$y"
+response "\u{1B}[?66;2$y"
+response "\u{1B}[?66;1$y"
+response "\u{1B}[?66;2$y"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name keypad_with_ris_and_softreset
+source screen.cases:644
+size 20 3
+chunk 1b3d1b5b21701b5b3f363624701b3d1b631b5b3f36362470
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[?66;2$y"
+response "\u{1B}[?66;2$y"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name focus_and_other_report_modes
+source screen.cases:648
+size 20 3
+chunk 1b5b3f31303034681b5b3f3130303424701b5b3f313030346c1b5b3f3130303424701b5b3f32303034681b5b3f323030346c1b5b3f313030343b32303034681b5b3f313030343b323030342470
+expect
+cursor 0 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=1 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=1 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=1 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=1 public.synchronizedOutputMode=0 public.wraparoundMode=1
+response "\u{1B}[?1004;1$y"
+response "\u{1B}[?1004;2$y"
+response "\u{1B}[?1004;1$y"
+line 0 0 ""
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name wide_char_edge_cases
+source screen.cases:652
+size 6 4
+chunk 3132333435e4bda00d0a31323334351b5b3f376ce4bda01b5b3f37680d0a1b5b313b3648e4bda01b5b323b3148e4bda0e5a5bde4b8961b5b333b36481b5b4be4bda01b5b343b3148f09f9880f09f9880f09f9880
+expect
+cursor 6 3
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "12345"
+line 1 1 "\u{4F60}\u{597D}\u{4E16}"
+line 2 0 "12345"
+line 3 1 "\u{1F600}\u{1F600}\u{1F600}"
+attr 1 0 1 w=2
+attr 1 1 1 w=0
+attr 1 2 1 w=2
+attr 1 3 1 w=0
+attr 1 4 1 w=2
+attr 1 5 1 w=0
+attr 3 0 1 w=2
+attr 3 1 1 w=0
+attr 3 2 1 w=2
+attr 3 3 1 w=0
+attr 3 4 1 w=2
+attr 3 5 1 w=0
+end
+kind screen
+name combining_and_zwj_edge_cases
+source screen.cases:656
+size 10 5
+chunk cc8161cc81cc820d0af09f91a8e2808df09f91a90d0ae2808d78efb88fefb88e0d0ae29aa0efb88fefb88f620d0af09f87baf09f87b8f09f87baf09f87b8f09f87ba
+expect
+cursor 5 4
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "\u{301}a\u{301}\u{302}"
+line 1 0 "\u{1F468}\u{200D}\u{1F469}"
+line 2 0 "\u{200D}x\u{FE0F}\u{FE0E}"
+line 3 0 "\u{26A0}\u{FE0F}\u{FE0F}b"
+line 4 0 "\u{1F1FA}\u{1F1F8}\u{1F1FA}\u{1F1F8}\u{1F1FA}"
+attr 0 0 1 w=0
+attr 1 0 1 w=2
+attr 1 1 1 w=0
+attr 1 2 1 w=2
+attr 1 3 1 w=0
+attr 2 0 1 w=0
+end
+kind screen
+name combining_at_line_end_and_wrap
+source screen.cases:660
+size 4 4
+chunk 616263cc8164cc8165cc81cc81666768cc8169
+expect
+cursor 1 2
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abc\u{301}d\u{301}"
+line 1 1 "e\u{301}\u{301}fgh\u{301}"
+line 2 1 "i"
+line 3 0 ""
+end
+kind screen
+name print_after_cursor_moves_join_state
+source screen.cases:664
+size 12 3
+chunk 651b5b314375cc811b5b313b314865cc811b5b313b3148cc81781b5b323b3148f09f918d1b5b323b3348f09f8fbd
+expect
+cursor 4 1
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "\u{301}xu\u{301}"
+line 1 0 "\u{1F44D}\u{1F3FD}"
+line 2 0 ""
+attr 0 0 1 w=0
+attr 1 0 1 w=2
+attr 1 1 1 w=0
+attr 1 2 1 w=2
+attr 1 3 1 w=0
+end
+kind screen
+name unicode_other_widths
+source screen.cases:668
+size 14 4
+chunk efbd81efbd82efbd830d0aed959ceab880eab080eb82980d0ae38182e38184e38186e381880d0ac2ade2808be281a0efbbbf78
+expect
+cursor 2 3
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "\u{FF41}\u{FF42}\u{FF43}"
+line 1 0 "\u{D55C}\u{AE00}\u{AC00}\u{B098}"
+line 2 0 "\u{3042}\u{3044}\u{3046}\u{3048}"
+line 3 0 "\u{AD}\u{200B}\u{2060}x"
+attr 0 0 1 w=2
+attr 0 1 1 w=0
+attr 0 2 1 w=2
+attr 0 3 1 w=0
+attr 0 4 1 w=2
+attr 0 5 1 w=0
+attr 1 0 1 w=2
+attr 1 1 1 w=0
+attr 1 2 1 w=2
+attr 1 3 1 w=0
+attr 1 4 1 w=2
+attr 1 5 1 w=0
+attr 1 6 1 w=2
+attr 1 7 1 w=0
+attr 2 0 1 w=2
+attr 2 1 1 w=0
+attr 2 2 1 w=2
+attr 2 3 1 w=0
+attr 2 4 1 w=2
+attr 2 5 1 w=0
+attr 2 6 1 w=2
+attr 2 7 1 w=0
+end
+kind screen
+name utf8_invalid_and_c1_in_text
+source screen.cases:672
+size 20 3
+chunk 618062c08063ffff64e265f48fbfbff490808066eda08067
+expect
+cursor 8 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "abcde\u{10FFFF}fg"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name unknown_sequences_are_ignored
+source screen.cases:676
+size 20 3
+chunk 1b5b313b323b33251b5b3e313b32741b5b3f313b32741b5b3d31631b5b24711b5b3f3124711b5b20721b5b23701b5b2c701b5b3c31751b5b3e343b316d1b5b3f346d1b5b21711b5b22701b285a1b295a1b25581b23391b204661
+expect
+cursor 1 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "a"
+line 1 0 ""
+line 2 0 ""
+end
+kind screen
+name parser_param_limits
+source screen.cases:680
+size 20 3
+chunk 1b5b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b6d411b5b3a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a313a316d421b5b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b303b316d431b5b39393939393939393939393939393939393939396d441b5b313a323a333a343a353a363a373a383a393a31303a31313a31323a31333a31343a31353a31363b316d45
+expect
+cursor 5 0
+buffer normal
+base-y 0
+title ""
+modes core.insertMode=0 dec.applicationCursorKeys=0 dec.applicationKeypad=0 dec.bracketedPasteMode=0 dec.cursorBlink=- dec.cursorStyle=- dec.origin=0 dec.reverseWraparound=0 dec.sendFocus=0 dec.synchronizedOutput=0 dec.wraparound=1 mouse.encoding=DEFAULT mouse.protocol=NONE public.applicationCursorKeysMode=0 public.applicationKeypadMode=0 public.bracketedPasteMode=0 public.insertMode=0 public.mouseTrackingMode=none public.originMode=0 public.reverseWraparoundMode=0 public.sendFocusMode=0 public.synchronizedOutputMode=0 public.wraparoundMode=1
+line 0 0 "ABCDE"
+line 1 0 ""
+line 2 0 ""
+attr 0 0 1 b
+attr 0 4 1 b
 end

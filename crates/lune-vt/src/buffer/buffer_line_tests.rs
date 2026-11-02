@@ -1124,4 +1124,288 @@ mod edge_semantics {
         assert_eq!(DEFAULT_ATTR_DATA, AttributeData::default());
         assert_eq!(CELL_SIZE, 3);
     }
+
+    /// LUNETERM: (review S4) a cell holds at most `MAX_COMBINED_CODE_POINTS` code points; the
+    /// rest are dropped, but a width they ask for still applies.
+    #[test]
+    fn combining_code_points_past_the_cap_are_dropped_and_their_width_still_applies() {
+        let mut line = null_line(3);
+        line.set_cell_from_codepoint(0, u32::from('a'), 1, &DEFAULT_ATTR_DATA);
+        for _ in 0..1000 {
+            line.add_codepoint_to_cell(0, 0x301, 0);
+        }
+        let s = line.get_string(0);
+        assert_eq!(s.chars().count(), MAX_COMBINED_CODE_POINTS);
+        assert!(s.starts_with("a\u{301}"));
+        assert_eq!(line.get_width(0), 1);
+        line.add_codepoint_to_cell(0, 0xFE0F, 2);
+        assert_eq!(line.get_string(0).chars().count(), MAX_COMBINED_CODE_POINTS);
+        assert_eq!(line.get_width(0), 2);
+    }
+
+    /// LUNETERM: (review S7) `insert_cells_repeatedly` leaves exactly what the loop of
+    /// `insert_cells` calls leaves: cells and both side tables, stale entries included, over
+    /// random lines (narrow, wide, combined and extended cells, stale entries at unflagged
+    /// cells), fills (plain, extended, combined, wide) and positions, including calls outside
+    /// the fast path's conditions.
+    #[test]
+    fn inserting_repeatedly_equals_the_loop_of_inserts() {
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let ext = |v: usize| ExtendedAttrs::new(v as u32 + 1, v as u32);
+        let (mut fast, mut fast_with_edge, mut fast_fired) = (0, 0, 0);
+        for _ in 0..50_000 {
+            let len = 1 + next(12);
+            let mut line = null_line(len);
+            let mut c = 0;
+            while c < len {
+                let mut cell = CellData::new();
+                let kind = next(5);
+                let width = if kind == 1 && c + 1 < len { 2 } else { 1 };
+                cell.content = match kind {
+                    0 => NULL_CELL_CODE | (NULL_CELL_WIDTH << Content::WIDTH_SHIFT),
+                    2 => {
+                        cell.combined_data =
+                            format!("e{}", char::from_u32(0x300 + c as u32).unwrap());
+                        Content::IS_COMBINED_MASK | (width << Content::WIDTH_SHIFT)
+                    }
+                    _ => (u32::from('a') + c as u32) | (width << Content::WIDTH_SHIFT),
+                };
+                if next(3) == 0 {
+                    cell.bg |= BgFlags::HAS_EXTENDED;
+                    cell.extended = ext(next(4));
+                }
+                line.set_cell(c, &cell);
+                if next(4) == 0 {
+                    // a stale entry at a cell without the flag
+                    line.combined.insert(c, format!("stale{c}"));
+                    line.extended_attrs.insert(c, ext(9));
+                }
+                if width == 2 {
+                    line.set_cell_from_codepoint(c + 1, 0, 0, &DEFAULT_ATTR_DATA);
+                }
+                c += width as usize;
+            }
+            let mut fill = null_cell();
+            match next(6) {
+                0 | 1 => {
+                    fill.bg |= BgFlags::HAS_EXTENDED;
+                    fill.extended = ext(7);
+                }
+                2 => {
+                    fill.content = Content::IS_COMBINED_MASK | (1 << Content::WIDTH_SHIFT);
+                    fill.combined_data = "fill".into();
+                }
+                3 => fill.content = u32::from('w') | (2 << Content::WIDTH_SHIFT),
+                _ => {}
+            }
+            let pos = next(len + 1);
+            let n = next(4);
+            // mostly within the line (the fast path), sometimes one step past it
+            let times = next((len - pos) / n.max(1) + 2);
+            // the edge fix-up's column (`print`'s `cols - 1`): mostly at or right of the last
+            // written cell and left of the last cell, as REP passes it on a line longer than
+            // `cols`; sometimes anywhere, at the last cell or past it
+            let reach = (pos + n * times).saturating_sub(1);
+            let edge = match next(4) {
+                0 => next(len + 3),
+                1 => len - 1,
+                _ => reach + next(len.saturating_sub(reach + 1).max(1)),
+            };
+            let mut edge_attrs = AttributeData {
+                fg: 0x0300_0011,
+                ..AttributeData::default()
+            };
+            if next(2) == 0 {
+                edge_attrs.bg |= BgFlags::HAS_EXTENDED;
+                edge_attrs.extended = ext(5);
+            }
+            let fast_path = fill.get_width() != 2
+                && n != 0
+                && times != 0
+                && pos + n * times <= len
+                && (edge + 1 >= len || edge >= reach);
+            if fast_path {
+                fast += 1;
+                if edge + 1 < len {
+                    fast_with_edge += 1;
+                }
+            }
+            let mut looped = line.clone();
+            let mut fired = false;
+            for j in 0..times {
+                looped.insert_cells(pos + j * n, n, &fill);
+                if looped.get_width(edge) == 2 {
+                    looped.set_cell_from_codepoint(
+                        edge,
+                        NULL_CELL_CODE,
+                        NULL_CELL_WIDTH,
+                        &edge_attrs,
+                    );
+                    fired = true;
+                }
+            }
+            if fast_path && fired {
+                fast_fired += 1;
+            }
+            let mut once = line.clone();
+            once.insert_cells_repeatedly(pos, n, times, &fill, edge, &edge_attrs);
+            assert_eq!(
+                once, looped,
+                "{line:?} pos {pos} n {n} times {times} fill {fill:?} edge {edge} {edge_attrs:?}"
+            );
+        }
+        assert!(fast > 8000, "{fast}");
+        assert!(fast_with_edge > 3000, "{fast_with_edge}");
+        assert!(fast_fired > 600, "{fast_fired}");
+    }
+
+    /// LUNETERM: (review S7 round 4) `set_cells_repeatedly` leaves exactly what its loop of
+    /// `set_cell` calls leaves, over random lines with entries, heads and stubs with and
+    /// without combined strings and extended attributes, widths 0 to 3 and runs past the end
+    /// (whose map entries are still stored); the runs are long enough to take the batched
+    /// insert.
+    #[test]
+    fn setting_cells_repeatedly_equals_the_loop_of_set_cell() {
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let ext = |v: usize| ExtendedAttrs::new(v as u32 + 1, v as u32);
+        let cell_of_kind = |kind: usize, tag: usize| {
+            let mut cell = CellData::new();
+            cell.content = (u32::from('a') + tag as u32) | (1 << Content::WIDTH_SHIFT);
+            cell.fg = tag as u32;
+            if kind & 1 != 0 {
+                cell.content = Content::IS_COMBINED_MASK | (1 << Content::WIDTH_SHIFT);
+                cell.combined_data = format!("c{tag}\u{301}");
+            }
+            if kind & 2 != 0 {
+                cell.bg |= BgFlags::HAS_EXTENDED;
+                cell.extended = ext(tag);
+            }
+            cell
+        };
+        let mut batched = 0;
+        for round in 0..20_000 {
+            let len = 1 + next(80);
+            let mut line = null_line(len);
+            for c in 0..len {
+                if next(3) == 0 {
+                    line.set_cell(c, &cell_of_kind(next(4), c));
+                }
+                if next(5) == 0 {
+                    line.combined.insert(c, format!("stale{c}"));
+                }
+                if next(5) == 0 {
+                    line.extended_attrs.insert(c, ext(9));
+                }
+            }
+            let head = cell_of_kind(next(4), 100 + round % 7);
+            let stub = cell_of_kind(next(4), 200 + round % 5);
+            let w = next(4);
+            let pos = next(len + 4);
+            let times = next(len + 8);
+            if w > 0 && times * w >= 16 {
+                batched += 1;
+            }
+            let mut looped = line.clone();
+            for r in 0..times {
+                looped.set_cell(pos + r * w, &head);
+                for i in 1..w {
+                    looped.set_cell(pos + r * w + i, &stub);
+                }
+            }
+            let mut once = line.clone();
+            once.set_cells_repeatedly(pos, w, times, &head, &stub);
+            assert_eq!(
+                once, looped,
+                "{line:?} pos {pos} w {w} times {times} head {head:?} stub {stub:?}"
+            );
+        }
+        assert!(batched > 8000, "{batched}");
+    }
+}
+
+/// LUNETERM: (review S7 round 4) `RunMap` answers as the per-key `BTreeMap` it replaces, and
+/// keeps one form per set of entries (so the derived equality of `BufferLine` compares
+/// entries): random inserts, removals, range assignments, truncations and clears, near 0 and
+/// near `usize::MAX`, against a `BTreeMap` model.
+#[test]
+fn run_map_holds_the_entries_of_a_per_key_map() {
+    use std::collections::BTreeMap;
+    let mut seed: u64 = 0x1234_5678_9abc_def1;
+    let mut next = |bound: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % bound as u64) as usize
+    };
+    for round in 0..3_000 {
+        let base = if round % 3 == 0 { usize::MAX - 40 } else { 0 };
+        let mut map = RunMap::<u8>::default();
+        let mut model = BTreeMap::<usize, u8>::new();
+        for _ in 0..60 {
+            let key = base + next(41);
+            let value = next(3) as u8;
+            match next(10) {
+                0..=4 => {
+                    map.insert(key, value);
+                    model.insert(key, value);
+                }
+                5 | 6 => {
+                    map.remove(&key);
+                    model.remove(&key);
+                }
+                7 | 8 => {
+                    let last = key.saturating_add(next(12)).min(base + 40);
+                    let value = (next(4) != 0).then_some(value);
+                    map.assign(key, last, value);
+                    for k in key..=last {
+                        match value {
+                            Some(value) => model.insert(k, value),
+                            None => model.remove(&k),
+                        };
+                    }
+                }
+                _ if next(4) == 0 => {
+                    map.clear();
+                    model.clear();
+                }
+                _ => {
+                    map.truncate(key);
+                    model.retain(|&k, _| k < key);
+                }
+            }
+            for k in base..=base + 40 {
+                assert_eq!(map.get(&k), model.get(&k), "key {k}: {map:?} vs {model:?}");
+                assert_eq!(map.contains_key(&k), model.contains_key(&k));
+            }
+            assert_eq!(map.len(), model.len());
+            // one form: the map built key by key from the model is equal, and no two runs
+            // that touch hold the same value
+            let mut rebuilt = RunMap::default();
+            for (&k, &v) in &model {
+                rebuilt.insert(k, v);
+            }
+            assert_eq!(map, rebuilt);
+            let runs: Vec<_> = map.runs.iter().map(|(&f, &(l, v))| (f, l, v)).collect();
+            for pair in runs.windows(2) {
+                let ((_, last, value), (first, _, next_value)) = (pair[0], pair[1]);
+                assert!(last < first, "{runs:?}");
+                assert!(
+                    last.checked_add(1) != Some(first) || value != next_value,
+                    "{runs:?}"
+                );
+            }
+        }
+    }
 }
