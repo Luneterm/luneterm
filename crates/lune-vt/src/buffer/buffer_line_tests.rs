@@ -818,7 +818,10 @@ mod edge_semantics {
         let before = line.data.clone();
         line.set_cell(9, &combined_cell("e\u{301}"));
         assert_eq!(line.data, before);
-        assert_eq!(line.combined.get(&9).map(String::as_str), Some("e\u{301}"));
+        assert_eq!(
+            line.combined.get(&9).map(|chars| &**chars),
+            Some("e\u{301}")
+        );
         // Nothing reads it: it is not part of any translation within the line.
         assert_eq!(text(&line), "    ");
         // ... and resize drops it again only if it is cut off.
@@ -906,13 +909,22 @@ mod edge_semantics {
         let mut dest = null_line(6);
         // copy a single cell (index 1); the combined string at index 4 comes along anyway.
         dest.copy_cells_from(&src, 1, 0, 1, false);
-        assert_eq!(dest.combined.get(&0).map(String::as_str), Some("e\u{301}"));
-        assert_eq!(dest.combined.get(&3).map(String::as_str), Some("o\u{308}"));
+        assert_eq!(
+            dest.combined.get(&0).map(|chars| &**chars),
+            Some("e\u{301}")
+        );
+        assert_eq!(
+            dest.combined.get(&3).map(|chars| &**chars),
+            Some("o\u{308}")
+        );
         // keys below src_col are not copied
         let mut dest = null_line(6);
         dest.copy_cells_from(&src, 2, 0, 1, false);
         assert_eq!(dest.combined.len(), 1);
-        assert_eq!(dest.combined.get(&2).map(String::as_str), Some("o\u{308}"));
+        assert_eq!(
+            dest.combined.get(&2).map(|chars| &**chars),
+            Some("o\u{308}")
+        );
     }
 
     #[test]
@@ -929,11 +941,8 @@ mod edge_semantics {
         line.set_cell(2, &combined_cell(b));
         line.set_cell(5, &combined_cell(x));
         line.copy_cells_within(1, 2, 2, false);
-        let combined: Vec<(usize, &str)> = line
-            .combined
-            .iter()
-            .map(|(&k, v)| (k, v.as_str()))
-            .collect();
+        let entries = line.combined.entries();
+        let combined: Vec<(usize, &str)> = entries.iter().map(|(k, v)| (*k, &**v)).collect();
         assert_eq!(combined, vec![(1, a), (2, a), (3, a), (5, x), (6, x)]);
         assert_eq!(line.get_string(1), a);
         assert_eq!(line.get_string(2), a);
@@ -1183,7 +1192,7 @@ mod edge_semantics {
                 line.set_cell(c, &cell);
                 if next(4) == 0 {
                     // a stale entry at a cell without the flag
-                    line.combined.insert(c, format!("stale{c}"));
+                    line.combined.insert(c, format!("stale{c}").into());
                     line.extended_attrs.insert(c, ext(9));
                 }
                 if width == 2 {
@@ -1303,7 +1312,7 @@ mod edge_semantics {
                     line.set_cell(c, &cell_of_kind(next(4), c));
                 }
                 if next(5) == 0 {
-                    line.combined.insert(c, format!("stale{c}"));
+                    line.combined.insert(c, format!("stale{c}").into());
                 }
                 if next(5) == 0 {
                     line.extended_attrs.insert(c, ext(9));
@@ -1337,10 +1346,17 @@ mod edge_semantics {
 
 /// LUNETERM: (review S7 round 4) `RunMap` answers as the per-key `BTreeMap` it replaces, and
 /// keeps one form per set of entries (so the derived equality of `BufferLine` compares
-/// entries): random inserts, removals, range assignments, truncations and clears, near 0 and
-/// near `usize::MAX`, against a `BTreeMap` model.
+/// entries): random inserts, removals, range assignments, truncations, clears and shifted
+/// copies from another map, near 0 and near `usize::MAX`, against a `BTreeMap` model. Plan M7
+/// step 12: with `u8` values and with `Arc<str>` values made fresh for every write (equal
+/// strings in distinct allocations, which must merge as equal values do).
 #[test]
 fn run_map_holds_the_entries_of_a_per_key_map() {
+    check_run_map(|v| v as u8);
+    check_run_map(|v| -> Arc<str> { Arc::from(format!("c{v}\u{301}")) });
+}
+
+fn check_run_map<V: Clone + PartialEq + std::fmt::Debug>(value_of: impl Fn(usize) -> V) {
     use std::collections::BTreeMap;
     let mut seed: u64 = 0x1234_5678_9abc_def1;
     let mut next = |bound: usize| {
@@ -1351,14 +1367,16 @@ fn run_map_holds_the_entries_of_a_per_key_map() {
     };
     for round in 0..3_000 {
         let base = if round % 3 == 0 { usize::MAX - 40 } else { 0 };
-        let mut map = RunMap::<u8>::default();
-        let mut model = BTreeMap::<usize, u8>::new();
+        let mut map = RunMap::<V>::default();
+        let mut model = BTreeMap::<usize, V>::new();
+        let mut other = RunMap::<V>::default();
+        let mut other_model = BTreeMap::<usize, V>::new();
         for _ in 0..60 {
             let key = base + next(41);
-            let value = next(3) as u8;
-            match next(10) {
+            let value = value_of(next(3));
+            match next(12) {
                 0..=4 => {
-                    map.insert(key, value);
+                    map.insert(key, value.clone());
                     model.insert(key, value);
                 }
                 5 | 6 => {
@@ -1368,13 +1386,51 @@ fn run_map_holds_the_entries_of_a_per_key_map() {
                 7 | 8 => {
                     let last = key.saturating_add(next(12)).min(base + 40);
                     let value = (next(4) != 0).then_some(value);
-                    map.assign(key, last, value);
+                    map.assign(key, last, value.clone());
                     for k in key..=last {
-                        match value {
-                            Some(value) => model.insert(k, value),
+                        match &value {
+                            Some(value) => model.insert(k, value.clone()),
                             None => model.remove(&k),
                         };
                     }
+                }
+                9 => {
+                    // the other map, the source of the shifted copies
+                    let last = key.saturating_add(next(6)).min(base + 40);
+                    other.assign(key, last, Some(value.clone()));
+                    for k in key..=last {
+                        other_model.insert(k, value.clone());
+                    }
+                }
+                10 => {
+                    // `copy_cells_from`'s loop: every source key from `src_col` on, ascending,
+                    // to its saturating shift
+                    let src_col = base + next(41);
+                    let dest_col = match next(3) {
+                        0 => usize::MAX - next(8),
+                        _ => base + next(41),
+                    };
+                    map.copy_shifted_from(&other, src_col, dest_col);
+                    for (&k, v) in other_model.range(src_col..) {
+                        model.insert((k - src_col).saturating_add(dest_col), v.clone());
+                    }
+                }
+                11 if next(2) == 0 => {
+                    // ascending distinct keys, sometimes long enough for the bulk merge, in
+                    // and away from the existing runs
+                    let mut k = base + next(41);
+                    let mut updates = Vec::new();
+                    while k <= base + 40 && updates.len() < 40 {
+                        updates.push((k, value_of(next(2))));
+                        match k.checked_add(1 + next(2)) {
+                            Some(after) => k = after,
+                            None => break,
+                        }
+                    }
+                    for (k, v) in &updates {
+                        model.insert(*k, v.clone());
+                    }
+                    map.insert_ascending(updates);
                 }
                 _ if next(4) == 0 => {
                     map.clear();
@@ -1385,24 +1441,35 @@ fn run_map_holds_the_entries_of_a_per_key_map() {
                     model.retain(|&k, _| k < key);
                 }
             }
-            for k in base..=base + 40 {
+            let keys = model.keys().copied();
+            let probes: Vec<usize> = (base..=base + 40)
+                .chain(keys)
+                .chain([usize::MAX - 1, usize::MAX])
+                .collect();
+            for k in probes {
                 assert_eq!(map.get(&k), model.get(&k), "key {k}: {map:?} vs {model:?}");
                 assert_eq!(map.contains_key(&k), model.contains_key(&k));
             }
             assert_eq!(map.len(), model.len());
+            let model_entries: Vec<(usize, V)> =
+                model.iter().map(|(&k, v)| (k, v.clone())).collect();
+            assert_eq!(map.entries(), model_entries);
+            let from = base + next(41);
+            let model_keys: Vec<usize> = model.range(from..).map(|(&k, _)| k).collect();
+            assert_eq!(map.keys_from(from), model_keys);
             // one form: the map built key by key from the model is equal, and no two runs
             // that touch hold the same value
             let mut rebuilt = RunMap::default();
-            for (&k, &v) in &model {
-                rebuilt.insert(k, v);
+            for (&k, v) in &model {
+                rebuilt.insert(k, v.clone());
             }
             assert_eq!(map, rebuilt);
-            let runs: Vec<_> = map.runs.iter().map(|(&f, &(l, v))| (f, l, v)).collect();
+            let runs: Vec<_> = map.runs.iter().map(|(&f, (l, v))| (f, *l, v)).collect();
             for pair in runs.windows(2) {
-                let ((_, last, value), (first, _, next_value)) = (pair[0], pair[1]);
+                let ((_, last, value), (first, _, next_value)) = (&pair[0], &pair[1]);
                 assert!(last < first, "{runs:?}");
                 assert!(
-                    last.checked_add(1) != Some(first) || value != next_value,
+                    last.checked_add(1) != Some(*first) || value != next_value,
                     "{runs:?}"
                 );
             }
@@ -2588,8 +2655,9 @@ mod reference {
     /// Every key the line's combined map holds, in order, with its string.
     fn combined_entries(line: &BufferLine) -> Vec<(usize, String)> {
         line.combined
-            .iter()
-            .map(|(&k, v)| (k, v.to_string()))
+            .entries()
+            .into_iter()
+            .map(|(k, v)| (k, v.to_string()))
             .collect()
     }
 
