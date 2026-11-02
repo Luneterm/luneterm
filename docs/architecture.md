@@ -439,8 +439,17 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     ratio is the same at scrollback 1,000, 7.9x: a fixed cost per scrolled line, about 0.6 us by
     inference from the table, not profiled, and no longer growing with scrollback). The user
     accepted this (Q23). At 300x100 the target is met (2.9x).
-  - Wide-cluster REP is unchanged in kind: 8.5x plain at 80x24 sb10k and 7.1x at 300x100 sb10k
-    (recorded, not a target).
+  - Wide-cluster REP was 8.5x plain at 80x24 sb10k and 7.1x at 300x100 sb10k; M7 fix round 1
+    shares a fresh line's combined map copy-on-write (`SharedRunMap`), and a joiner that widens a
+    narrow base (VS16 under `11-vs16`, review S1, which skipped both the cut and the line fill)
+    now takes the cut, the line fill (insert mode: `BufferLine::insert_cell_strided`) and the
+    batched stuck inserts. Same script at the fix-round tip, load average 7.26 (the "after"
+    reading printed the same value): wide cluster 0.98x / 1.09x plain at 80x24 / 300x100 sb10k,
+    VS16 1.04x / 1.16x, keycap 0.85x / 0.73x; inside an open link wide cluster 0.68x / 0.81x and
+    VS16 0.72x / 0.85x the narrow link REP; no-wrap insert VS16 at L = 2000 -> 80x24 16.0 us
+    (0.61x `e U+0301`, linear in L). Insert mode with wraparound: VS16 0.75x to 0.79x insert `a`;
+    with an underline colour 2.1x to 3.6x insert `a` (300x100 sb1k the worst: the per-key pass
+    of the strided insert with extended entries).
   - One REP is still one unit of work of up to 2^20 code points (or `cols x (rows + scrollback + 3)`
     cells): it cannot be sliced, but its cost is now linear in the lines it prints, not quadratic.
   - The pre-M7 `a CR LF` inside a long link (0.55 us per byte at scrollback 1,000 and 5.4 us at

@@ -3066,8 +3066,30 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
         CUT_AT,
         &mut Vec::new(),
     ));
-    // only the five-byte units at the largest count
-    assert_eq!(skipped.len(), if full { 5 } else { 0 }, "{skipped:?}");
+    // only the runs whose uncapped text would not fit one `print` call: none by default; with
+    // the full matrix the units of four bytes or more at the largest counts (M7 fix round 1
+    // added the VS16, keycap and emoji units), counted from the units themselves
+    let too_long = |cases: &[RepCutCase], sizes: &[RepCutSize]| {
+        cases
+            .iter()
+            .flat_map(|case| {
+                sizes
+                    .iter()
+                    .flat_map(move |size| size.3.iter().map(move |&count| case.2.len() * count))
+            })
+            .filter(|&bytes| bytes >= MAX_PARSEBUFFER_LENGTH)
+            .count()
+    };
+    let expected = if full {
+        too_long(&cases, &sizes) + too_long(&large_cases, &[(300, 100, 5, large)])
+    } else {
+        0
+    };
+    assert_eq!(skipped.len(), expected, "{skipped:?}");
+    assert!(
+        !full || expected < 80,
+        "most of the full matrix runs compare"
+    );
 }
 
 /// Where the REP cut tests check whether the cut applies: 7x3+4, REP 9007.
