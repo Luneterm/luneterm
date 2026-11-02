@@ -8,7 +8,9 @@
 //!    `buffer.byteLength` (the underlying `ArrayBuffer`), so `resize` and `cleanup_memory` keep
 //!    upstream's reuse/shrink behaviour and return values.
 //!  - `_combined` and `_extendedAttrs` are ordered maps (`BTreeMap`: ascending integer keys, as
-//!    `Object.keys` on integer-like keys). Writes to them are as unchecked as JS object writes:
+//!    `Object.keys` on integer-like keys; `// LUNETERM:` (review S7 round 4) `_extendedAttrs` is a
+//!    [`RunMap`], the same entries stored as runs of keys with one value, so a line in one
+//!    underline colour or link is one run). Writes to them are as unchecked as JS object writes:
 //!    a `set_cell` of a combined cell at an index `>= len()` stores the string even though the
 //!    data write is ignored. An `undefined` map value is represented by an absent key (every
 //!    reader treats the two alike).
@@ -23,6 +25,19 @@
 //!    `undefined` (and throws on `.charCodeAt`); here that string is empty and its code is 0.
 //!  - `insert_cells` and `delete_cells` return early on a zero-length line (upstream computes
 //!    `pos %= 0` = `NaN` and ends up writing at most a `"NaN"` map key, which nothing reads).
+//!  - `// LUNETERM:` (review S4) [`add_codepoint_to_cell`](BufferLine::add_codepoint_to_cell) stores
+//!    at most [`MAX_COMBINED_CODE_POINTS`] code points per cell. Upstream appends every combining
+//!    character, so `a` followed by any number of U+0301 grows one cell without bound, beyond
+//!    what the scrollback limit bounds, and every read of the cell copies it. A code point past
+//!    the cap is dropped; the width it asks for is still applied, so layout and the cursor are
+//!    as upstream and only the cell's text is shorter. `get_string` (and so REP and the
+//!    renderer) sees the capped text.
+//!  - `// LUNETERM:` (review S7) [`insert_cells_repeatedly`](BufferLine::insert_cells_repeatedly)
+//!    is a run of `insert_cells` calls at advancing positions (each followed by the input
+//!    handler's fix-up of a wide cell at `cols - 1`) done in one pass, with the same cells and
+//!    side-table entries (stale ones included); REP uses it in insert mode.
+//!    [`set_cells_repeatedly`](BufferLine::set_cells_repeatedly) is a run of `set_cell` calls
+//!    in one pass; REP's line fill and `insert_cells`' fill use it.
 //!  - A width above 2 (never stored by the input handler) is kept as is; `content >> 22` is an
 //!    unsigned shift here where JS sign-extends a value with bit 31 set.
 
@@ -59,6 +74,197 @@ fn last_code_unit(s: &str) -> u32 {
     s.encode_utf16().last().map_or(0, u32::from)
 }
 
+/// LUNETERM: most code points one cell's combined string holds (module notes, review S4).
+/// The longest real grapheme clusters (emoji ZWJ sequences, stacked diacritics) use about a
+/// dozen; Unicode's stream-safe format allows a base plus 30 non-starters.
+pub const MAX_COMBINED_CODE_POINTS: usize = 64;
+
+/// LUNETERM: (review S7) `map.insert(k, v)` for every `(k, v)` of `updates`, whose keys are
+/// ascending and distinct. A batch that is large next to the map rebuilds it in one ordered
+/// merge (`collect` of a sorted sequence builds the tree in bulk, O(entries)) instead of one
+/// tree insert per entry; the map ends with the same entries either way, and nothing reads a
+/// map's node layout.
+fn insert_sorted<V>(map: &mut BTreeMap<usize, V>, updates: Vec<(usize, V)>) {
+    debug_assert!(updates.windows(2).all(|pair| match pair {
+        [(a, _), (b, _)] => a < b,
+        _ => true,
+    }));
+    if updates.len() < 16 || updates.len().saturating_mul(4) < map.len() {
+        for (key, value) in updates {
+            map.insert(key, value);
+        }
+        return;
+    }
+    let old = std::mem::take(map);
+    let mut merged = Vec::with_capacity(old.len() + updates.len());
+    let mut old = old.into_iter().peekable();
+    for (key, value) in updates {
+        while let Some(entry) = old.next_if(|(old_key, _)| *old_key < key) {
+            merged.push(entry);
+        }
+        // an entry at the same key is replaced
+        old.next_if(|(old_key, _)| *old_key == key);
+        merged.push((key, value));
+    }
+    merged.extend(old);
+    *map = merged.into_iter().collect();
+}
+
+/// LUNETERM: (review S7 round 4) upstream's `_extendedAttrs` (cell index -> extended
+/// attributes) stored as runs of consecutive keys holding one value. A line's cells mostly
+/// share their attributes, so a line printed in one underline colour (or inside one link,
+/// whose id lives here too) is one run instead of a tree entry per cell: filling, cloning and
+/// dropping it no longer cost an allocation per handful of cells. It answers every read as
+/// the per-key map does, keys past the line's end included (a write there is stored, as a JS
+/// object write is).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RunMap<V> {
+    /// first key -> (last key, value). Runs are disjoint and non-empty, and two runs that
+    /// touch (`last + 1 == next first`) hold different values: a set of entries has exactly
+    /// one form, so two maps are equal exactly when they hold the same entries.
+    runs: BTreeMap<usize, (usize, V)>,
+}
+
+impl<V> Default for RunMap<V> {
+    fn default() -> Self {
+        RunMap {
+            runs: BTreeMap::new(),
+        }
+    }
+}
+
+impl<V: Copy + PartialEq> RunMap<V> {
+    /// The value at `key`.
+    fn get(&self, key: &usize) -> Option<&V> {
+        self.runs
+            .range(..=*key)
+            .next_back()
+            .filter(|(_, (last, _))| *key <= *last)
+            .map(|(_, (_, value))| value)
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, key: &usize) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// The number of keys held.
+    fn len(&self) -> usize {
+        self.runs
+            .iter()
+            .fold(0, |sum: usize, (&first, &(last, _))| {
+                sum.saturating_add((last - first).saturating_add(1))
+            })
+    }
+
+    fn clear(&mut self) {
+        self.runs.clear();
+    }
+
+    fn insert(&mut self, key: usize, value: V) {
+        // the common cases first: the key already holds the value, or it extends the run
+        // that ends just before it (and does not reach the next run)
+        let before = self
+            .runs
+            .range(..=key)
+            .next_back()
+            .map(|(&first, &(last, held))| (first, last, held));
+        if let Some((first, last, _)) = before.filter(|&(_, _, held)| held == value) {
+            if key <= last {
+                return;
+            }
+            if last.checked_add(1) == Some(key) {
+                let joins_next = key
+                    .checked_add(1)
+                    .and_then(|next| self.runs.get(&next))
+                    .is_some_and(|&(_, next_value)| next_value == value);
+                if !joins_next {
+                    if let Some(run) = self.runs.get_mut(&first) {
+                        run.0 = key;
+                    }
+                    return;
+                }
+            }
+        }
+        self.assign(key, key, Some(value));
+    }
+
+    fn remove(&mut self, key: &usize) {
+        self.assign(*key, *key, None);
+    }
+
+    /// Keeps the keys below `end` only.
+    fn truncate(&mut self, end: usize) {
+        match end {
+            0 => self.runs.clear(),
+            _ => self.assign(end, usize::MAX, None),
+        }
+    }
+
+    /// Every key in `first..=last` holds `value` afterwards (`None`: no entry).
+    fn assign(&mut self, first: usize, last: usize, value: Option<V>) {
+        if first > last {
+            return;
+        }
+        let covering = self
+            .runs
+            .range(..=first)
+            .next_back()
+            .is_some_and(|(_, &(end, held))| end >= last && Some(held) == value);
+        if covering {
+            // (a run already holds the value at every key)
+            return;
+        }
+        // a run that starts before `first` and reaches it keeps its keys before `first` and
+        // after `last`
+        let before = self
+            .runs
+            .range(..first)
+            .next_back()
+            .map(|(&start, &(end, held))| (start, end, held));
+        if let Some((start, end, held)) = before.filter(|&(_, end, _)| end >= first) {
+            // (start < first <= end, so neither bound overflows)
+            self.runs.insert(start, (first - 1, held));
+            if end > last {
+                self.runs.insert(last + 1, (end, held));
+            }
+        }
+        // a run that starts inside goes, but keeps its keys after `last`
+        while let Some((&start, _)) = self.runs.range(first..=last).next() {
+            if let Some((end, held)) = self.runs.remove(&start) {
+                if end > last {
+                    self.runs.insert(last + 1, (end, held));
+                }
+            }
+        }
+        // the new run, merged with a run it touches that holds the same value (after a
+        // removal the gap separates the neighbours, so nothing merges)
+        let Some(value) = value else {
+            return;
+        };
+        let (mut first, mut last) = (first, last);
+        let before = self
+            .runs
+            .range(..first)
+            .next_back()
+            .map(|(&start, &(end, held))| (start, end, held));
+        if let Some((start, _, _)) =
+            before.filter(|&(_, end, held)| end.checked_add(1) == Some(first) && held == value)
+        {
+            self.runs.remove(&start);
+            first = start;
+        }
+        let after = last
+            .checked_add(1)
+            .and_then(|next| self.runs.get(&next).map(|&(end, held)| (next, end, held)));
+        if let Some((next, end, _)) = after.filter(|&(_, _, held)| held == value) {
+            self.runs.remove(&next);
+            last = end;
+        }
+        self.runs.insert(first, (last, value));
+    }
+}
+
 /// Typed array based bufferline implementation.
 ///
 /// There are 2 ways to insert data into the cell buffer:
@@ -84,7 +290,7 @@ fn last_code_unit(s: &str) -> u32 {
 pub struct BufferLine {
     data: Vec<u32>,
     combined: BTreeMap<usize, String>,
-    extended_attrs: BTreeMap<usize, ExtendedAttrs>,
+    extended_attrs: RunMap<ExtendedAttrs>,
     length: usize,
     pub is_wrapped: bool,
 }
@@ -98,7 +304,7 @@ impl BufferLine {
         let mut line = BufferLine {
             data: vec![0; cols.saturating_mul(CELL_SIZE)],
             combined: BTreeMap::new(),
-            extended_attrs: BTreeMap::new(),
+            extended_attrs: RunMap::default(),
             length: cols,
             is_wrapped,
         };
@@ -338,10 +544,11 @@ impl BufferLine {
         let mut content = self.read(index, CELL_CONTENT);
         if content & Content::IS_COMBINED_MASK != 0 {
             // we already have a combined string, simply add
-            self.combined
-                .entry(index)
-                .or_default()
-                .push_str(&string_from_code_point(code_point));
+            let combined = self.combined.entry(index).or_default();
+            // LUNETERM: capped (module notes); the width below still applies
+            if combined.chars().count() < MAX_COMBINED_CODE_POINTS {
+                combined.push_str(&string_from_code_point(code_point));
+            }
         } else if content & Content::CODEPOINT_MASK != 0 {
             // normal case for combining chars:
             //  - move current leading char + new one into combined string
@@ -380,18 +587,393 @@ impl BufferLine {
                 self.load_cell(pos + i, &mut cell);
                 self.set_cell(pos + n + i, &cell);
             }
-            for i in 0..n {
-                self.set_cell(pos + i, fill_cell_data);
-            }
+            // LUNETERM: (review S7) `for i in 0..n { self.set_cell(pos + i, fill) }`, batched
+            self.set_cells_repeatedly(pos, 1, n, fill_cell_data, fill_cell_data);
         } else {
-            for i in pos..self.length {
-                self.set_cell(i, fill_cell_data);
-            }
+            // LUNETERM: (review S7) `for i in pos..self.length { self.set_cell(i, fill) }`
+            self.set_cells_repeatedly(pos, 1, self.length - pos, fill_cell_data, fill_cell_data);
         }
 
         // handle fullwidth at line end: reset last cell if it is first cell of a wide char
         if self.get_width(self.length - 1) == 2 {
             self.set_cell_from_codepoint(self.length - 1, 0, 1, fill_cell_data);
+        }
+    }
+
+    /// LUNETERM: (review S7) `times` repetitions of a `w`-cell unit from `pos`: for each
+    /// `p = pos + r × w`, `set_cell(p, head)` and then `set_cell(p + i, stub)` for `i` in
+    /// `1..w`. The same cells and entries (data writes past the end are ignored, map entries
+    /// are stored at any key, as `set_cell` does), with the cell data written in one pass, the
+    /// combined strings inserted as one sorted batch and extended attributes the cells share
+    /// as one run, instead of a map insert per cell (review S7 round 4: an underline colour
+    /// made every printed cell a `BTreeMap` insert). REP's line fill and `insert_cells`' fill
+    /// use it.
+    pub fn set_cells_repeatedly(
+        &mut self,
+        pos: usize,
+        w: usize,
+        times: usize,
+        head: &CellData,
+        stub: &CellData,
+    ) {
+        let end = w
+            .checked_mul(times)
+            .and_then(|cells| pos.checked_add(cells));
+        let Some(end) = end.filter(|_| w != 0) else {
+            for r in 0..times {
+                let p = pos.saturating_add(r.saturating_mul(w));
+                self.set_cell(p, head);
+                for i in 1..w {
+                    self.set_cell(p.saturating_add(i), stub);
+                }
+            }
+            return;
+        };
+        let head_slots = [head.content, head.fg, head.bg];
+        let stub_slots = [stub.content, stub.fg, stub.bg];
+        let (lo, hi) = (pos.min(self.length), end.min(self.length));
+        if let Some(slots) = self.data.get_mut(lo * CELL_SIZE..hi * CELL_SIZE) {
+            if w == 1 {
+                for cell in slots.chunks_exact_mut(CELL_SIZE) {
+                    cell.copy_from_slice(&head_slots);
+                }
+            } else {
+                for (i, cell) in slots.chunks_exact_mut(CELL_SIZE).enumerate() {
+                    cell.copy_from_slice(if i % w == 0 { &head_slots } else { &stub_slots });
+                }
+            }
+        }
+        // the entries, in key order: per cell, the head's or the stub's where flagged
+        let is_head = |p: usize| (p - pos) % w == 0;
+        let head_combined = head.content & Content::IS_COMBINED_MASK != 0;
+        let stub_combined = stub.content & Content::IS_COMBINED_MASK != 0 && w > 1;
+        if head_combined || stub_combined {
+            let updates = (pos..end)
+                .filter_map(|p| match (is_head(p), head_combined, stub_combined) {
+                    (true, true, _) => Some((p, head.combined_data.clone())),
+                    (false, _, true) => Some((p, stub.combined_data.clone())),
+                    _ => None,
+                })
+                .collect();
+            insert_sorted(&mut self.combined, updates);
+        }
+        let head_extended = head.bg & BgFlags::HAS_EXTENDED != 0;
+        let stub_extended = stub.bg & BgFlags::HAS_EXTENDED != 0 && w > 1;
+        if head_extended && (w == 1 || stub_extended && stub.extended == head.extended) {
+            // every cell takes the same attributes: one run
+            if let Some(last) = end.checked_sub(1).filter(|&last| last >= pos) {
+                self.extended_attrs.assign(pos, last, Some(head.extended));
+            }
+        } else if head_extended || stub_extended {
+            for p in pos..end {
+                match (is_head(p), head_extended, stub_extended) {
+                    (true, true, _) => self.extended_attrs.insert(p, head.extended),
+                    (false, _, true) => self.extended_attrs.insert(p, stub.extended),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// LUNETERM: (review S7) the insert-mode shifts of printing `times` characters of `n`
+    /// cells from `pos` (`InputHandler::print`'s insert path, `edge` = its `cols - 1`), in one
+    /// pass:
+    ///
+    /// ```text
+    /// for j in 0..times {
+    ///     self.insert_cells(pos + j * n, n, fill);
+    ///     if self.get_width(edge) == 2 {
+    ///         self.set_cell_from_codepoint(edge, NULL_CELL_CODE, NULL_CELL_WIDTH, edge_attrs);
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// It leaves the same cells and the same `combined` and `extended_attrs` entries,
+    /// including the stale ones each step's shift leaves behind (`copy_cells_from` can carry a
+    /// stale combined string back into view, so they are state). Costs O(len) plus the entries
+    /// written, where the loop costs O(times × len).
+    ///
+    /// Why it is the loop: with `pos + times × n <= len`, step `j` inserts at
+    /// `pos_j = pos + j × n`. At its start the cells from `pos_j` on are the old cells from
+    /// `pos` on, shifted by `j × n` (a step's line-end fix-up rewrites the last cell, which the
+    /// next step shifts out), so the cells end as one insert of `times × n` (one call below
+    /// does that, with the same fix-ups at `pos - 1` and at the end). Each step's shift copies
+    /// old cell `c`'s entries to `c + (j + 1) × n`, so key `k` was last written by the
+    /// largest step, the smallest `c` on `k`'s residue class in the window the steps reach
+    /// (`k - J × n ..= k - n`, `J` = the steps whose shift reaches `k`), that carries the
+    /// entry's flag; the fill of a later step at `k` comes after (`k < pos + times × n`), and
+    /// the last cell also takes the line-end fix-up's entry at every step that shifts a wide
+    /// cell onto it. The fill cell must not be wide: a wide fill would fire the `pos - 1`
+    /// fix-up of every later step.
+    ///
+    /// The `edge` fix-up never fires at the last cell or past it (the insert's own fix-up
+    /// leaves no wide last cell; past the end the width reads 0). Left of the last cell (a
+    /// line longer than `cols`, left by a column shrink without reflow) with
+    /// `edge + 1 >= pos + times × n`, the cell at `edge` after step `j`'s shift is old cell
+    /// `s = edge - (j + 1) × n` or a fill (never wide, and only at the last step), and no
+    /// other step touches a cell after it has moved past `edge`. So the fix-up rewrites each
+    /// wide old cell on `edge`'s residue class in `edge - times × n ..= edge - n` once, as it
+    /// passes `edge`, and that cell moves on as a narrow cell with no combined string and the
+    /// edge attributes' extended entry. Hence: key `edge` takes the fix-up's entry after its
+    /// shift, as the last cell takes the line-end fix-up's; every key right of `edge` sees the
+    /// sources as rewritten (a source that reaches it on `edge`'s class has passed `edge`, and
+    /// the rewritten ones are only on that class), keys left of it see the old ones; and a
+    /// rewritten cell ends as the fix-up's cell. Outside these conditions this runs the loop
+    /// itself.
+    pub fn insert_cells_repeatedly(
+        &mut self,
+        pos: usize,
+        n: usize,
+        times: usize,
+        fill_cell_data: &CellData,
+        edge: usize,
+        edge_attrs: &AttributeData,
+    ) {
+        let len = self.length;
+        // whether the edge fix-up can fire: only left of the last cell
+        let edge_fix = edge.checked_add(1).is_some_and(|next| next < len);
+        let total = n.checked_mul(times);
+        let end = total.and_then(|total| pos.checked_add(total));
+        let Some((total, end)) = total.zip(end).filter(|&(total, end)| {
+            total != 0
+                && end <= len
+                && fill_cell_data.get_width() != 2
+                && (!edge_fix || edge + 1 >= end)
+        }) else {
+            for j in 0..times {
+                self.insert_cells(pos.saturating_add(j.saturating_mul(n)), n, fill_cell_data);
+                if self.get_width(edge) == 2 {
+                    self.set_cell_from_codepoint(edge, NULL_CELL_CODE, NULL_CELL_WIDTH, edge_attrs);
+                }
+            }
+            return;
+        };
+        // the old cells a step can shift: `pos..sources_end` (n <= total <= len - pos)
+        let sources_end = len - n;
+        let fill_extended = fill_cell_data.bg & BgFlags::HAS_EXTENDED != 0;
+        let (mut any_combined, mut any_extended, mut any_wide) = (false, false, false);
+        for c in pos..sources_end {
+            let content = self.read(c, CELL_CONTENT);
+            any_combined |= content & Content::IS_COMBINED_MASK != 0;
+            any_extended |= self.read(c, CELL_BG) & BgFlags::HAS_EXTENDED != 0;
+            any_wide |= content >> Content::WIDTH_SHIFT == 2;
+        }
+        // Whether a step's shift or fix-up leaves an entry the one insert does not: a combined
+        // string (no fill removes one); an extended entry or a wide cell's fix-ups when keys
+        // past the fills keep shifted cells (`end < len`; the edge fix-up needs that too); an
+        // extended entry under fills that write none. With `end == len` every shifted key is
+        // filled later, and a fill with extended attributes overwrites the entry.
+        let leaves_entries = any_combined
+            || (end < len && (any_extended || any_wide))
+            || (any_extended && !fill_extended);
+        if !leaves_entries {
+            // only the fills write entries, at the keys the one insert fills; its cells are
+            // the loop's (the fix-ups' cells are shifted out or filled)
+            self.insert_cells(pos, total, fill_cell_data);
+            return;
+        }
+        // the sources the edge fix-up rewrites as they pass `edge`, as indexes: the wide ones
+        // on its residue class in `edge - times × n ..= edge - n`
+        let edge_extended =
+            (edge_attrs.bg & BgFlags::HAS_EXTENDED != 0).then_some(edge_attrs.extended);
+        let mut rewritten = Vec::new();
+        if edge_fix {
+            let mut source = edge.checked_sub(n);
+            for _ in 0..times {
+                let Some(s) = source.filter(|&s| s >= pos) else {
+                    break;
+                };
+                if self.read(s, CELL_CONTENT) >> Content::WIDTH_SHIFT == 2 {
+                    rewritten.push(s - pos);
+                }
+                source = s.checked_sub(n);
+            }
+        }
+        let fill_combined = fill_cell_data.content & Content::IS_COMBINED_MASK != 0;
+        if !any_combined
+            && !any_extended
+            && !fill_combined
+            && !fill_extended
+            && edge_extended.is_none()
+        {
+            // no shift copies an entry and no fill or fix-up writes one: the entries stay, and
+            // the cells are the one insert's with each rewritten source ending as the
+            // fix-up's cell
+            self.insert_cells(pos, total, fill_cell_data);
+            self.write_edge_fix_ups(pos + total, &rewritten, edge_attrs);
+            return;
+        }
+        // per source `pos + i`, as `load_cell` reads them: its combined string and extended
+        // attributes where flagged, and whether it is wide
+        let mut combined = Vec::with_capacity(sources_end - pos);
+        let mut extended = Vec::with_capacity(sources_end - pos);
+        let mut wide = Vec::with_capacity(sources_end - pos);
+        for c in pos..sources_end {
+            let content = self.read(c, CELL_CONTENT);
+            let bg = self.read(c, CELL_BG);
+            combined.push(
+                (content & Content::IS_COMBINED_MASK != 0)
+                    .then(|| self.combined.get(&c).cloned().unwrap_or_default()),
+            );
+            extended.push(
+                (bg & BgFlags::HAS_EXTENDED != 0)
+                    .then(|| self.extended_attrs.get(&c).copied().unwrap_or_default()),
+            );
+            wide.push(content >> Content::WIDTH_SHIFT == 2);
+        }
+
+        // the sources as the keys right of `edge` see them
+        let rewritten_sources = (!rewritten.is_empty()).then(|| {
+            let (mut c, mut e, mut w) = (combined.clone(), extended.clone(), wide.clone());
+            for &i in &rewritten {
+                if let Some(slot) = c.get_mut(i) {
+                    *slot = None;
+                }
+                if let Some(slot) = e.get_mut(i) {
+                    *slot = edge_extended;
+                }
+                if let Some(slot) = w.get_mut(i) {
+                    *slot = false;
+                }
+            }
+            (c, e, w)
+        });
+
+        // The one insert copies a rewritten source's old entries to its final key, and the
+        // line-end fix-up's entry when that key is the last cell; the loop writes neither
+        // there (a final key right of `edge`; at `edge` itself the loop's last shift copies
+        // the old entries too). Those keys get their entries back before the pass below.
+        let restore: Vec<(usize, Option<String>, Option<ExtendedAttrs>)> = rewritten
+            .iter()
+            .map(|&i| pos + i + total)
+            .filter(|&k| k > edge && k < len)
+            .map(|k| {
+                (
+                    k,
+                    self.combined.get(&k).cloned(),
+                    self.extended_attrs.get(&k).copied(),
+                )
+            })
+            .collect();
+
+        self.insert_cells(pos, total, fill_cell_data);
+
+        for (k, chars, attrs) in restore {
+            match chars {
+                Some(chars) => self.combined.insert(k, chars),
+                None => self.combined.remove(&k),
+            };
+            match attrs {
+                Some(attrs) => self.extended_attrs.insert(k, attrs),
+                None => self.extended_attrs.remove(&k),
+            };
+        }
+        self.write_edge_fix_ups(pos + total, &rewritten, edge_attrs);
+
+        // per source `pos + i`: the first source at or after it on its residue class (mod n)
+        // that holds an entry, as an index
+        let next_held = |held: &dyn Fn(usize) -> bool| {
+            let mut next = vec![usize::MAX; sources_end - pos];
+            for i in (0..next.len()).rev() {
+                let found = if held(i) {
+                    i
+                } else {
+                    next.get(i + n).copied().unwrap_or(usize::MAX)
+                };
+                if let Some(slot) = next.get_mut(i) {
+                    *slot = found;
+                }
+            }
+            next
+        };
+        // (empty where no source holds such an entry: every lookup then finds none)
+        let held_combined = |c: &[Option<String>]| match any_combined {
+            true => next_held(&|i| c.get(i).is_some_and(Option::is_some)),
+            false => Vec::new(),
+        };
+        let held_extended = |e: &[Option<ExtendedAttrs>], any: bool| match any {
+            true => next_held(&|i| e.get(i).is_some_and(Option::is_some)),
+            false => Vec::new(),
+        };
+        let next_combined = held_combined(&combined);
+        let next_extended = held_extended(&extended, any_extended);
+        let rewritten_next = rewritten_sources.as_ref().map(|(c, e, _)| {
+            (
+                held_combined(c),
+                held_extended(e, any_extended || edge_extended.is_some()),
+            )
+        });
+        // A filled key (`k < end`, left of every rewritten source's key) takes no entry from
+        // the shifts when the fill writes its own or no source holds one; only the edge
+        // fix-up may still write there.
+        let skip_filled = (fill_combined || !any_combined) && (fill_extended || !any_extended);
+        let mut combined_updates = Vec::new();
+        for k in pos + n..len {
+            if k < end && skip_filled && !(edge_fix && k == edge) {
+                continue;
+            }
+            // the steps whose shift reaches key k, and the window of their sources: indexes
+            // `low..=high` on k's residue class
+            let steps = times.min((k - pos) / n);
+            let (low, high) = (k - steps * n - pos, k - n - pos);
+            let in_fill = k < end;
+            let (combined, extended, wide, next_combined, next_extended) =
+                match (&rewritten_sources, &rewritten_next) {
+                    (Some((c, e, w)), Some((nc, ne))) if k > edge => (c, e, w, nc, ne),
+                    _ => (&combined, &extended, &wide, &next_combined, &next_extended),
+                };
+            let last = |next: &[usize]| next.get(low).copied().filter(|&i| i <= high);
+            if !(in_fill && fill_combined) {
+                if let Some(Some(chars)) = last(next_combined).and_then(|i| combined.get(i)) {
+                    // (an equal entry is left in place: the same state without a copy)
+                    if self.combined.get(&k) != Some(chars) {
+                        combined_updates.push((k, chars.clone()));
+                    }
+                }
+            }
+            if in_fill && fill_extended {
+                continue;
+            }
+            // the window's last entry where a fix-up after each shift writes `fix` over a
+            // wide cell (with no fix-up entry, the shifts' last entry)
+            let fixed_up = |fix: Option<ExtendedAttrs>| match fix {
+                Some(fix) => (low..=high).step_by(n).find_map(|i| {
+                    if wide.get(i) == Some(&true) {
+                        Some(fix)
+                    } else {
+                        extended.get(i).copied().flatten()
+                    }
+                }),
+                None => last(next_extended).and_then(|i| extended.get(i).copied().flatten()),
+            };
+            let value = if k == len - 1 && !in_fill {
+                // the line-end fix-up also writes here, after the shift, when it is wide
+                fixed_up(fill_extended.then_some(fill_cell_data.extended))
+            } else if edge_fix && k == edge {
+                // and the edge fix-up here
+                fixed_up(edge_extended)
+            } else {
+                last(next_extended).and_then(|i| extended.get(i).copied().flatten())
+            };
+            if let Some(value) = value {
+                self.extended_attrs.insert(k, value);
+            }
+        }
+        insert_sorted(&mut self.combined, combined_updates);
+    }
+
+    /// The cells of `insert_cells_repeatedly`'s rewritten sources (indexes from `pos`, moved
+    /// to `end + i`, at `edge` or right of it): the edge fix-up's cell.
+    fn write_edge_fix_ups(&mut self, end: usize, rewritten: &[usize], edge_attrs: &AttributeData) {
+        for &i in rewritten {
+            let k = end.saturating_add(i);
+            self.write(
+                k,
+                CELL_CONTENT,
+                NULL_CELL_CODE | (NULL_CELL_WIDTH << Content::WIDTH_SHIFT),
+            );
+            self.write(k, CELL_FG, edge_attrs.fg);
+            self.write(k, CELL_BG, edge_attrs.bg);
         }
     }
 
@@ -508,7 +1090,7 @@ impl BufferLine {
             // Remove any cut off combined data
             self.combined.retain(|&key, _| key < cols);
             // remove any cut off extended attributes
-            self.extended_attrs.retain(|&key, _| key < cols);
+            self.extended_attrs.truncate(cols);
         }
         self.length = cols;
         self.excess_buffer(uint32_cells)

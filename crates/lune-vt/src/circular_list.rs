@@ -73,6 +73,23 @@ pub trait ListObserver {
     fn on_insert(&mut self, e: InsertEvent);
     /// `e.amount` items were deleted starting at `e.index`.
     fn on_delete(&mut self, e: DeleteEvent);
+
+    /// LUNETERM: (review S6) the events of [`CircularList::splice_rotate`]: `n` times a delete
+    /// of one item at `delete_at`, then an insert of one item at `insert_at`. The default makes
+    /// those `2 * n` calls; an observer whose per-event work is large overrides it with the
+    /// composed effect, which must leave the state the calls would.
+    fn on_rotate(&mut self, delete_at: usize, insert_at: usize, n: usize) {
+        for _ in 0..n {
+            self.on_delete(DeleteEvent {
+                index: delete_at,
+                amount: 1,
+            });
+            self.on_insert(InsertEvent {
+                index: insert_at,
+                amount: 1,
+            });
+        }
+    }
 }
 
 impl ListObserver for () {
@@ -244,6 +261,40 @@ impl<T, O: ListObserver> CircularList<T, O> {
     /// `start..` but the length only grows by `items.len()`, so only the part of the gap that
     /// falls inside the new length is visible (as empty slots, then the leading items).
     pub fn splice(&mut self, start: usize, delete_count: usize, items: Vec<T>) {
+        self.splice_inner(start, delete_count, items, true);
+    }
+
+    /// LUNETERM: (review S6) `n` times `splice(delete_at, 1, [])` then
+    /// `splice(insert_at, 0, [item()])`, the per-line loop of IL, DL, SU and SD, with the
+    /// observer told once ([`ListObserver::on_rotate`]) instead of `2 * n` times. The items end
+    /// up as the loop leaves them. The loop never trims when `max_length >= 1`: a delete of one
+    /// item shrinks a non-empty list by one, which the insert restores, and on an empty list the
+    /// insert makes one item. With `max_length == 0` it runs the plain loop.
+    pub fn splice_rotate(
+        &mut self,
+        delete_at: usize,
+        insert_at: usize,
+        n: usize,
+        mut item: impl FnMut() -> T,
+    ) {
+        if self.max_length == 0 {
+            for _ in 0..n {
+                self.splice(delete_at, 1, Vec::new());
+                self.splice(insert_at, 0, vec![item()]);
+            }
+            return;
+        }
+        for _ in 0..n {
+            self.splice_inner(delete_at, 1, Vec::new(), false);
+            self.splice_inner(insert_at, 0, vec![item()], false);
+        }
+        if n != 0 {
+            self.observer.on_rotate(delete_at, insert_at, n);
+        }
+    }
+
+    /// `splice`, telling the observer only when `notify` is set.
+    fn splice_inner(&mut self, start: usize, delete_count: usize, items: Vec<T>, notify: bool) {
         if delete_count != 0 {
             let len = self.slots.len();
             match start.checked_add(delete_count) {
@@ -253,10 +304,12 @@ impl<T, O: ListObserver> CircularList<T, O> {
                 // Upstream's copy loop does not run, so only the length shrinks.
                 _ => self.slots.truncate(len.saturating_sub(delete_count)),
             }
-            self.observer.on_delete(DeleteEvent {
-                index: start,
-                amount: delete_count,
-            });
+            if notify {
+                self.observer.on_delete(DeleteEvent {
+                    index: start,
+                    amount: delete_count,
+                });
+            }
         }
 
         let amount = items.len();
@@ -279,7 +332,7 @@ impl<T, O: ListObserver> CircularList<T, O> {
             self.slots
                 .extend(items.into_iter().take(amount - empty).map(Some));
         }
-        if amount != 0 {
+        if amount != 0 && notify {
             self.observer.on_insert(InsertEvent {
                 index: start,
                 amount,
@@ -289,7 +342,9 @@ impl<T, O: ListObserver> CircularList<T, O> {
         if self.slots.len() > self.max_length {
             let count_to_trim = self.slots.len() - self.max_length;
             self.slots.drain(..count_to_trim);
-            self.observer.on_trim(count_to_trim);
+            if notify {
+                self.observer.on_trim(count_to_trim);
+            }
         }
     }
 

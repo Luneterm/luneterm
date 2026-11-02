@@ -11,7 +11,8 @@
 //!    `reset` take the sizes, and the methods that read options take `opts: &TerminalOptions`.
 //!    `activate_normal_buffer` takes `opts` too, because clearing the alt buffer rebuilds its tab
 //!    stops.
-//!  - The two option listeners of the constructor are the host's job (M6): a change of
+//!  - The two option listeners of the constructor are the host's job (done by
+//!    `CoreTerminal::set_option`): a change of
 //!    `scrollback` must call [`BufferSet::resize`] with the current `cols`/`rows`, and a change of
 //!    `tab_stop_width` must call [`BufferSet::setup_tab_stops`] with `None`
 //!    (`OptionsService::set` reports the changed key).

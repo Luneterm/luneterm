@@ -20,6 +20,7 @@
 //!    markers of the normal and alternate buffers never collide.
 //!  - Marker lines are `i64`: a trimmed marker goes below 0 before it is disposed.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::circular_list::{DeleteEvent, InsertEvent, ListObserver};
@@ -51,6 +52,9 @@ pub struct MarkerSet {
     /// Creation order; ids strictly increase.
     entries: Vec<Entry>,
     disposed: Vec<MarkerId>,
+    /// Entries visited or moved by walks and removals (tests pin bulk operations to one walk).
+    #[cfg(test)]
+    pub(crate) visits: u64,
 }
 
 impl MarkerSet {
@@ -91,8 +95,21 @@ impl MarkerSet {
     /// Upstream `Marker.dispose`: idempotent; the marker leaves the set and is logged.
     pub fn dispose(&mut self, id: MarkerId) {
         if let Some(i) = self.index_of(id) {
+            #[cfg(test)]
+            {
+                self.visits += (self.entries.len() - i) as u64;
+            }
             self.entries.remove(i);
             self.disposed.push(id);
+        }
+    }
+
+    /// LUNETERM: (review F6) disposes every marker in `ids` (unknown ones are ignored) in one
+    /// walk, logged in creation order; `dispose` per id costs a removal each, quadratic for a
+    /// link that marks every line of a long buffer.
+    pub fn dispose_all(&mut self, ids: &HashSet<MarkerId>) {
+        if !ids.is_empty() {
+            self.dispose_where(|m| ids.contains(&m.id));
         }
     }
 
@@ -125,6 +142,10 @@ impl MarkerSet {
 
     /// Disposes every marker matching `pred` in creation order, as one walk.
     fn dispose_where(&mut self, mut pred: impl FnMut(&Marker) -> bool) {
+        #[cfg(test)]
+        {
+            self.visits += self.entries.len() as u64;
+        }
         let disposed = &mut self.disposed;
         self.entries.retain(|e| {
             if pred(&e.marker) {
@@ -139,6 +160,10 @@ impl MarkerSet {
     /// Runs one listener over every attached marker in creation order; the markers it returns
     /// `true` for are disposed (removed and logged, in that order).
     fn apply(&mut self, mut listener: impl FnMut(&mut Marker) -> bool) {
+        #[cfg(test)]
+        {
+            self.visits += self.entries.len() as u64;
+        }
         let disposed = &mut self.disposed;
         self.entries.retain_mut(|e| {
             if e.attached && listener(&mut e.marker) {
@@ -188,6 +213,45 @@ impl ListObserver for MarkerSet {
             }
             false
         });
+    }
+
+    /// LUNETERM: (review S6) `n` times `on_delete(delete_at, 1)` then `on_insert(insert_at, 1)`
+    /// in one walk (IL, DL, SU and SD make one such pair per line, and each event walks every
+    /// marker). Per pair, a marker outside the lines between `delete_at` and `insert_at` (both
+    /// included) does not move: below both it is untouched, above both the delete moves it up
+    /// and the insert down again. Inside, it moves one line towards `delete_at` per pair
+    /// (down when `insert_at` is above, up when below) and is disposed by the pair that finds
+    /// it on `delete_at`: pair `k = |delete_at - line|` (0-based). So it is disposed by pair
+    /// `k` when `k < n`, else it moves `n` lines. Disposals are logged in pair order, creation
+    /// order within a pair, as the per-event calls log them; detached markers are skipped.
+    fn on_rotate(&mut self, delete_at: usize, insert_at: usize, n: usize) {
+        #[cfg(test)]
+        {
+            self.visits += self.entries.len() as u64;
+        }
+        let (d, i, n) = (to_i64(delete_at), to_i64(insert_at), to_i64(n));
+        let (low, high) = (d.min(i), d.max(i));
+        let mut gone: Vec<(i64, MarkerId)> = Vec::new();
+        self.entries.retain_mut(|e| {
+            let m = e.marker.line;
+            if !e.attached || m < low || m > high {
+                return true;
+            }
+            let k = (d - m).abs();
+            if k < n {
+                gone.push((k, e.marker.id));
+                return false;
+            }
+            e.marker.line = if d >= i {
+                m.saturating_add(n)
+            } else {
+                m.saturating_sub(n)
+            };
+            true
+        });
+        // stable: creation order within a pair
+        gone.sort_by_key(|&(k, _)| k);
+        self.disposed.extend(gone.into_iter().map(|(_, id)| id));
     }
 }
 

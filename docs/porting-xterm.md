@@ -105,7 +105,8 @@ and the runners: `crates/lune-vt-conformance/FORMAT.md`.
   Renderer and browser options are not ported.
 - **JS value semantics in `BufferLine` (D7).** Out-of-range `_data` reads give 0 and writes are
   no-ops (a `Uint32Array`); `_combined` and `_extendedAttrs` are ordered maps whose writes are as
-  unchecked as JS object writes; `translate_to_string`'s `out_columns` index UTF-16 code units.
+  unchecked as JS object writes (`_extendedAttrs` is stored as runs of keys with one value,
+  `RunMap`, the same entries; review S7 round 4); `translate_to_string`'s `out_columns` index UTF-16 code units.
   Upstream quirks (`copyCellsFrom` copies every combined key `>= srcCol`) are kept.
 - **Preconditions, not guards (D8).** `cols >= 2` and `rows >= 1` are the caller's job
   (`CoreTerminal.ts:175-176`); upstream locks up at one column and so would a guard-less port.
@@ -121,30 +122,48 @@ and the runners: `crates/lune-vt-conformance/FORMAT.md`.
   replays one. Longer run: `LUNE_VT_BUFFER_FUZZ_SEEDS=5000 cargo test -p lune-vt --release
   --test buffer_ops`.
 
+## Conventions the engine port established
+
+- **Host layout (M6 D1).** The parser is generic over a `'static` host (`EscapeSequenceParser<C: ParserHost + 'static>`), so `InputHandler` is the host: it owns `CoreServices` (options, buffer, log, core, mouse, unicode, charset, osc_link) and upstream's private fields (attributes, titles and their stacks, `DirtyRowTracker`, `preceding_join_state`, the parse buffer, the event queue, the damage). `CoreTerminal { parser, input_handler }` holds the parser beside it, so borrows are disjoint; `InputHandler::parse(&mut self, parser, data)` takes the parse buffer out with `mem::take` for the call. Handlers are closures registered by `InputHandler::register_handlers`. No `Rc<RefCell<_>>` anywhere.
+- **Events (M6 D2).** Every upstream `fire` becomes an explicit call at the same point, a `HostEvent` pushed in fire order (`Response`, `Bell`, `TitleChanged`, `Color`, `FocusReportRequested`, `WindowReport`, `A11yText`, `A11yTab`), or a field of the coalesced `Damage` (refresh rows, cursor move, scroll, full redraw). `Terminal::drain_events` and `take_damage` hand them to the host; the engine has no callbacks. `onLineFeed`, `onWriteParsed`, `onRequestSyncScrollBar` and `onUserInput` have no consumer and are dropped (reasons in the file headers). Two events are coalesced because upstream hands listeners shared strings while a queue would copy them (user decisions Q10 and Q11): `TitleChanged` carries no payload and at most one is queued per drain (the host reads `Viewport::title`), and `A11yText` merges consecutive characters up to `A11Y_TEXT_LIMIT` (2048 bytes) per drain. Titles and their stacks are `Arc<str>`. The bound this buys is tested on every fuzz seed: `drain_events` carries at most 16 units per byte written plus 4 KiB (a payload byte weighs 1, a payload-free event 1; `engine_fuzz.rs` `event_cost`).
+- **`WriteBuffer` is replaced (M6 D3).** `Terminal::write` calls `InputHandler::parse` directly, which still splits input into 131072-byte chunks (upstream `InputHandler.ts:471-473` splits a `Uint8Array` at 131072 bytes and a string at 131072 UTF-16 units). Time slicing, the discard watermark and callbacks are the host's: M9 feeds bounded chunks from the reader thread.
+- **Logging (M6 D4).** `LogService` writes to an optional `Logger`; with none, messages are discarded without being formatted. A library never prints; upstream defaults to `console`. `Terminal::set_logger` sets the sink and `log_level` follows the option.
+- **RIS skips `parser.reset()` (M6 D7).** The parser is borrowed by `parse` while the ESC handler runs, and upstream's call changes nothing: the state is GROUND right after the ESC dispatch, collect and params are cleared on the next sequence, the OSC and DCS parsers are idle, and the join state is cleared before the dispatch. A `// LUNETERM:` block in `input_handler.rs` says so; the `oracle_state_ris_*` tests (RIS followed in the same chunk by CSI, OSC and text, RIS at a chunk end, RIS inside a pending OSC) equal `@xterm/headless` 6.0.0.
+- **Reset frees links (user decision Q9).** `core_reset` disposes both buffers' markers before replacing them, where upstream leaks them (links alive at a reset stay in `OscLinkService` forever). The only observable difference: an OSC 8 with the same `id=` and URI registered after RIS gets a new `url=` id instead of the old one. Deleting the two `clear_all_markers` lines restores upstream's behaviour.
+- **Windows heuristics registered once (M6 D6).** `CoreTerminal::new` registers the CSI `H` handler (it returns `false`) after `InputHandler`'s, gated by a flag that `set_option` and `reset` recompute as `_handleWindowsPtyOptionChange` does. Deviation: a CSI `H` handler an extension registers before the heuristics turn on runs after the heuristic handler, not before; no extension registers CSI `H`.
+- **JS throws and `undefined` (M6 D8).** One helper per access kind: `line_mut` for `lines.get(..)!` (on `None` the handler stops with its upstream return value; upstream throws and abandons the rest of the chunk, Rust carries on with the next sequence; reachable only through the M5 scrollback-0 soft invariant), `Params::get` for `params.params[i]` (stale values past `length()` are kept, `None` is `undefined`), `i64` for cursor and param arithmetic. `input_handler.rs`, `core_terminal.rs`, `headless/` and the new services carry the no-panic lint gate.
+- **Bounded loops where upstream's are not.** IL, DL, SU and SD stop after as many iterations as the region has rows (further ones change nothing), CHT and CBT stop once the cursor no longer moves, and REP caps the repeated data at `MAX_REP_CODE_POINTS` (1 << 20 code points; upstream allocates up to 2^31 - 1 times the text). Of the capped repetitions REP prints only as many as can still change the state, at most a line's worth of units times `rows + max lines + 3` (review S3; `rep_equivalent_repeats` names the conditions, and where they do not hold, e.g. a joining character that moves the cursor, it prints them all); `rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print` compares the cut REP with the full print over 25 setups and 5 sizes (300x100 included) with up to 6 counts. Without wraparound a unit with joiners is cut at `cols + MAX_COMBINED_CODE_POINTS + 3` units (a stuck wide unit stacks its joiners onto one cell until its string is full; review S7). In insert mode on a line longer than `cols` every insert also shifts the hidden tail `[cols, len)`, so the floor grows by the excess: `len - cols` more units without wraparound, and `ceil(excess / (per_line * w)) + 1` more lines when the cursor is below the scroll region, where every wrap rewrites the last row (code review F9; proof in the doc comment); `rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print` covers lines of `cols + 1`, `3 cols` and more cells than the floor before F9 shifts out. By default the two REP equivalence tests run 300x100 for a handful of cases and skip the largest small-size count; `LUNE_VT_REP_MATRIX=full` runs the whole matrix (code review F10). A unit that prints alike every time (a base of width 1 or 2 that never joins, joiners that keep its width, the same properties in every repetition, wraparound on; `rep_fill`) is written line by line by `print_repeated`: the same cells, side-table entries, wraps, dirty rows, join state, insert-mode shifts (one `BufferLine::insert_cells_repeatedly` per line, equal to the per-character inserts including stale side-table entries and, on a line longer than `cols`, `print`'s fix-up of a wide cell at `cols - 1`; review S7 round 4), cell writes (`BufferLine::set_cells_repeatedly`: one pass and one run of extended attributes per line), link lines (one add per line and wrap) and screen reader text as `print`; the tests assert which path each case takes (`rep_fill_leaves_the_state_of_print_over_existing_content` covers content already on screen, non-ASCII charsets, lines longer than `cols` and extended attributes; `inserting_repeatedly_equals_the_loop_of_inserts`; `setting_cells_repeatedly_equals_the_loop_of_set_cell`; `run_map_holds_the_entries_of_a_per_key_map`; `rep_inside_an_open_link_looks_up_markers_once_per_line`; reviews S3 residual and S7, user decisions Q16, Q17). IL, DL, SU and SD tell the markers about their per-line splices as one composed event (`CircularList::splice_rotate`, `ListObserver::on_rotate`, review S6): one walk of the marker list per sequence, same marker lines and disposal order (`on_rotate_equals_the_per_event_calls`, `splice_rotate_equals_the_splice_loop`). Each has a `// LUNETERM:` block; the first two are not visible in any output, REP is visible only for counts past about a million.
+- **Caps on retained state (review S2, S4; user decisions 2026-11-01).** `OscLinkService` keeps at most `MAX_LINKS` (4096) links and `MAX_LINK_MARKERS` (8192) markers held by links; past either it evicts the least recently extended link (registered, or given a new line) and disposes its markers. The link being registered or extended is never evicted, so one link across the whole buffer keeps every line. Cells that carry an evicted id keep their attributes and render without a link (`get_link_data` is `None`). Upstream frees a link only when all its lines are trimmed, so 7-byte `ESC ] 8 ; ; a BEL` repeated on one line grew the table without bound. `BufferLine::add_codepoint_to_cell` stores at most `MAX_COMBINED_CODE_POINTS` (64) code points per cell and drops the rest; the width a dropped character asks for still applies, so layout matches upstream and only the text is shorter (also what REP and the renderer read). `add_line_to_link` checks the link's last marker first and otherwise scans the marker lists once (review F1/S1); the answer is upstream's, the cost per printed character no longer grows with the link's line count. An evicted link's markers are disposed in one walk per buffer, and `on_markers_disposed` filters each affected link's list once per batch (review F6; upstream's per-marker removal is quadratic for ED 3 or RIS after a buffer-long link). After 2^32 - 1 registrations the id counter wraps and skips ids still in use (review F5; upstream would overwrite the live entry), and the eviction loop removes an age key every iteration. Tests: `osc_link_service_tests.rs` (caps), `osc_8_links_repeated_on_one_line_stay_capped`, `osc_8_print_inside_a_long_open_link_looks_up_markers_once_per_line`, `print_caps_the_combining_marks_of_one_cell`, `a_wrapped_id_counter_skips_ids_still_in_use`, `enforce_caps_ends_even_when_an_age_key_outlived_its_entry`, `evicting_a_long_link_walks_the_marker_list_once`, `forwarding_the_disposal_of_a_long_link_filters_its_list_once`; the engine fuzz checks both link caps on every operation.
+- **Logging without payloads (user decisions 2026-11-01 and 2026-11-02).** No log line carries pty output or user input. The OSC and DCS fallbacks log the identifier and the payload length, never the payload (upstream logs the data; an unhandled OSC 52 carries clipboard contents); `InputHandler::parse` logs `parsing data (N bytes)` and `CoreService::trigger_data_event`/`trigger_binary_event` log `sending data|binary (N bytes)` at debug, where upstream logs the data at debug and its code points at trace (those trace lines are dropped). `fallbacks_log_unknown_sequences`, `trace_logging_never_carries_output_or_input_payloads` (`headless/terminal_tests.rs`, a sink at `Trace` over an OSC 52 write and `input("hunter2-password\r")`) and `events_log_the_length_never_the_data` check it.
+- **Differential harness (M6 D11, D12).** `lune-vt-conformance/src/screen.rs` renders a `lune_vt::Terminal` run in the oracle's screen-dump format (through `Terminal::core()` read accessors) and Lunegit's grid. `tests/screen_goldens.rs` replays every screen golden recorded, unsplit, one byte per write and with three seeded random splits; `tests/lunegit_vectors.rs` checks the 27 tmux vectors; `tests/handler_coverage.rs` checks that every registration upstream makes (50 CSI, 12 execute codes, 17 plain ESC and 112 charset designators, 12 OSC, DCS `$q`) appears in a screen golden and reaches a real handler (a capturing logger at `Debug` sees no `Unknown ... code`). During steps 4 to 7 a `PENDING` list named the goldens expected to fail and the test asserted the failing set equalled it exactly; it was empty and removed at step 8, so every golden must pass. The corpus is 166 hand cases and 200 random cases (`random 200 seed 0x5c4ee7` in `crates/lune-vt-conformance/goldens/screen/random.golden`, 9 of them marked `divergent` for the known `Utf8ToUtf32` split bug) plus the 27 Lunegit screens; the goldens stay under 1 MiB (595,886 bytes at step 9).
+- **Handler tests.** `input_handler_tests.rs` ports the 169 `it` cases of `InputHandler.test.ts` (133 ported, 33 adapted, 3 replaced as async-handler cases, M4 D3; the table is in the file's header and the milestone notes), and adds oracle tables whose expected values come from running `@xterm/headless` 6.0.0 (`oracle_*`, `sgr_matches_the_oracle`, `osc_and_decrqss_equal_the_oracle`).
+- **Engine fuzz.** `crates/lune-vt/tests/engine_fuzz.rs`: per seed a random terminal and 36 random operations over the public API, each under `catch_unwind`, with bounds checked after every operation (line counts, title stacks <= 10, link table against live markers, event bytes, viewport shape) and chunk invariance (1-byte and random chunkings give the same screen dump and `Viewport`). Knobs: `LUNE_VT_ENGINE_FUZZ_SEEDS=<n>` (default 60), `LUNE_VT_ENGINE_FUZZ_SEED=<s>` replays one. Known upstream behaviours it tolerates or reproduces: the alt buffer is bounded by the peak row count seen, not the current one (shrinking never trims the alt list, upstream too); with autowrap off a wide character that does not fit at the right margin gives a chunk-dependent screen (upstream too; seeds whose writes contain `CSI ? ... 7 ... l` and differ only there are counted, not failed); `ED 1` with the cursor in the last column of the last row, no scrollback, throws upstream (`lines.get(j + 1)!` lacks `ybase`, `InputHandler.ts:1218`) and here stops that handler at the same point.
+- **Throughput.** `scripts/bench-vt.sh` runs `Terminal::write` against `@xterm/headless` on the same generated 16 MiB stream and prints both; the numbers are in `STATE.md`.
+
 ## Port status
 
 One row per file of `git ls-files 'src/common/*'` at f447274, excluding `*.test.ts`: **54**
 entries. "Ported" names the Rust file (under `crates/lune-vt/src/`); "replaced" says why no Rust
-file exists; "pending" names the milestone that decides (roadmap M6 InputHandler and the engine
-API, M7 Lunegit additions). Update a row when its milestone lands.
+file exists; "pending" names the milestone that decides (only M7, the Lunegit additions, is
+left). Update a row when its milestone lands.
 
 | Upstream (`src/common/`) | Status |
 |---|---|
 | `CircularList.ts` | `circular_list.rs` (`CircularList<T, O: ListObserver>`: events become observer calls, storage grows lazily, D1/D2) |
-| `Clone.ts` | pending M6 (imported by `CoreService`) |
+| `Clone.ts` | replaced: a deep-copy helper; Rust `Clone` copies `Modes`, `DecPrivateModes` and the options (M6 D5) |
 | `Color.ts` | `color.rs` (`css::to_color` has no canvas path; unsupported formats are `Err`) |
-| `CoreTerminal.ts` | pending M6 |
-| `InputHandler.ts` | pending M6 |
+| `CoreTerminal.ts` | `core_terminal.rs` (the parser beside the `InputHandler`; each upstream listener is an explicit call; `WriteBuffer` replaced; Windows heuristics registered once, a `// LUNETERM:` note on handler order; reset disposes both buffers' markers, user decision Q9; M6 D1, D2, D3, D6) |
+| `InputHandler.ts` | `input_handler.rs` (the `ParserHost`; owns the services; every handler upstream registers; events are a queue plus coalesced damage; bounded loops for IL/DL/SU/SD/REP, no `parser.reset()` in RIS, a missing line stops the handler instead of throwing; M6 D1, D2, D7, D8) |
 | `MultiKeyMap.ts` | replaced: imported only by `src/browser/` (`ColorContrastCache`), not by `src/common` |
 | `Platform.ts` | replaced: user-agent sniffing that only fed a browser option's default (`rightClickSelectsWord`) and `TaskQueue`; the option is not ported (D3, D5) |
-| `SortedList.ts` | pending M6 (imported only by `DecorationService`) |
+| `SortedList.ts` | replaced: imported only by `DecorationService` (M6 D5) |
 | `TaskQueue.ts` | replaced: `Buffer::resize` sets a pending flag and the host drives `Buffer::batched_memory_cleanup` when idle (D5) |
 | `TypedArrayUtils.ts` | replaced: imported only by its own test; Rust has slices and `Vec` |
-| `Types.ts` | pending M6 (interfaces; Rust types replace most of them) |
-| `WindowsMode.ts` | pending M6 (imported by `CoreTerminal`) |
+| `Types.ts` | replaced: interfaces; the Rust structs are the types, `Modes` and `DecPrivateModes` live in `services/core_service.rs`, the host-facing types in `engine.rs` (M6 D5) |
+| `WindowsMode.ts` | `windows_mode.rs` (`update_windows_mode_wrapped_state`; a missing line leaves the state untouched) |
 | `buffer/AttributeData.ts` | `buffer/attribute_data.rs` (`AttributeData`, `ExtendedAttrs` as a `Copy` value) |
 | `buffer/Buffer.ts` | `buffer/buffer.rs` (including the column reflow; deviations listed in its header) |
-| `buffer/BufferLine.ts` | `buffer/buffer_line.rs` (`Vec<u32>` storage with typed-array edge semantics, D7) |
+| `buffer/BufferLine.ts` | `buffer/buffer_line.rs` (`Vec<u32>` storage with typed-array edge semantics, D7; at most 64 code points per combined cell, review S4) |
 | `buffer/BufferRange.ts` | `buffer/buffer_range.rs` |
 | `buffer/BufferReflow.ts` | `buffer/buffer_reflow.rs` |
 | `buffer/BufferSet.ts` | `buffer/buffer_set.rs` (`onBufferActivate` is a return value, D1) |
@@ -157,7 +176,7 @@ API, M7 Lunegit additions). Update a row when its milestone lands.
 | `input/Keyboard.ts` | pending M7 (ported or recorded as superseded) |
 | `input/TextDecoder.ts` | `input/text_decoder.rs` (`Utf8ToUtf32` with the D4 fix; `StringToUtf32` replaced, D5; `stringFromCodePoint` and `utf32ToString` ported) |
 | `input/UnicodeV6.ts` | `input/unicode_v6.rs` |
-| `input/WriteBuffer.ts` | pending M6 (or a recorded replacement) |
+| `input/WriteBuffer.ts` | replaced: `Terminal::write` is synchronous; time slicing, the discard watermark and callbacks are the host's job (M6 D3). Its test cases that are not about scheduling are `Terminal::write` tests in `headless/terminal_tests.rs` |
 | `input/XParseColor.ts` | `input/x_parse_color.rs` |
 | `parser/Constants.ts` | `parser/constants.rs` |
 | `parser/DcsParser.ts` | `parser/dcs_parser.rs` (no async handlers, D3) |
@@ -165,21 +184,21 @@ API, M7 Lunegit additions). Update a row when its milestone lands.
 | `parser/OscParser.ts` | `parser/osc_parser.rs` (no async handlers, D3) |
 | `parser/Params.ts` | `parser/params.rs` |
 | `parser/Types.ts` | `parser/types.rs` (`IParams`, `ISubParser`, `IOscParser`, `IDcsParser`, `IEscapeSequenceParser` are the concrete types; stack-state types not ported, D3) |
-| `public/AddonManager.ts` | pending M6 (headless API) |
-| `public/BufferApiView.ts` | pending M6 (headless API) |
-| `public/BufferLineApiView.ts` | pending M6 (headless API) |
-| `public/BufferNamespaceApi.ts` | pending M6 (headless API) |
-| `public/ParserApi.ts` | pending M6 (headless API); `lune_vt::Extension` is the parser's extension point meanwhile |
-| `public/UnicodeApi.ts` | pending M6 (headless API) |
+| `public/AddonManager.ts` | replaced: no JS addons; `lune_vt::Extension` through `Terminal::add_extension` (M6 D5) |
+| `public/BufferApiView.ts` | replaced: the viewport read API, `Terminal::viewport` and `Terminal::read_row` (M6 D5) |
+| `public/BufferLineApiView.ts` | replaced: `Terminal::read_row`, one `ViewportCell` per column (M6 D5) |
+| `public/BufferNamespaceApi.ts` | replaced: `Terminal::buffers()` returns the `BufferSet` (M6 D5) |
+| `public/ParserApi.ts` | replaced: `Terminal::register_{csi,esc,osc,dcs}_handler` and `dispose_handler`, with the `t` window-option guard; `lune_vt::Extension` is the extension point (M6 D5) |
+| `public/UnicodeApi.ts` | replaced: `Terminal::unicode_mut()` returns the `UnicodeService` (M6 D5) |
 | `services/BufferService.ts` | `services/buffer_service.rs` (`onResize` and `onScroll` are return values, D1) |
 | `services/CharsetService.ts` | `services/charset_service.rs` |
-| `services/CoreMouseService.ts` | pending M6 |
-| `services/CoreService.ts` | pending M6 |
-| `services/DecorationService.ts` | pending M6 (headless API) |
+| `services/CoreMouseService.ts` | `services/core_mouse_service.rs` (`consume_wheel_event` also takes `rows`; `trigger_mouse_event` returns a `MouseReport` with a `Suppressed` case; the protocol-change event is a return value) |
+| `services/CoreService.ts` | `services/core_service.rs` (`trigger_data_event` and `trigger_binary_event` return the payload, `None` when `disable_stdin`) |
+| `services/DecorationService.ts` | replaced: renderer-side, unused by the core and the headless terminal; `lune-termview` and the app own decorations (M6 D5) |
 | `services/InstantiationService.ts` | replaced: DI container; Rust services are plain structs (rule 3) |
-| `services/LogService.ts` | pending M6 |
+| `services/LogService.ts` | `services/log_service.rs` (level gate; an optional `Logger` sink, default discard; arguments are formatted only when the level allows; `setTraceLogger`/`traceCall` not ported; M6 D4) |
 | `services/OptionsService.ts` | `services/options_service.rs` (typed `TerminalOptions` with the 21 options the core reads, D3) |
-| `services/OscLinkService.ts` | `services/osc_link_service.rs` (marker disposal arrives through `on_markers_disposed`, D1) |
+| `services/OscLinkService.ts` | `services/osc_link_service.rs` (marker disposal arrives through `on_markers_disposed`, D1; link and marker caps with eviction, a cached last marker in `add_line_to_link`, review S2 and F1/S1) |
 | `services/ServiceRegistry.ts` | replaced: DI registry; Rust services are plain structs (rule 3) |
 | `services/Services.ts` | replaced: DI service interfaces; the Rust structs are the interfaces (rule 3) |
 | `services/UnicodeService.ts` | `services/unicode_service.rs` (`onChange` is the return value of `set_active_version`) |
@@ -189,13 +208,14 @@ API, M7 Lunegit additions). Update a row when its milestone lands.
 
 Files from other parts of the xterm.js tree follow the same rules (marker line, tables and
 comments in upstream order, deviations only in `// LUNETERM:` blocks), but live in the crate that
-uses them and stay flat. In `lune-vt` that means `src/addons/` only.
+uses them and stay flat. In `lune-vt` that means `src/addons/` and `src/headless/` only.
 
 | Upstream file @ f447274 | Rust file | Deviations |
 |---|---|---|
 | `addons/addon-webgl/src/CustomGlyphs.ts` (box drawing, blocks, shades, legacy computing, powerline) | `crates/lune-termview/src/custom_glyphs.rs`, drawn through the original `glyph_canvas.rs` | Stroke snap generalised for even line widths; pattern fill on a colourless mask; `has_custom_char`; NaN coordinates skip their instruction. Upstream has no test file, so the tests are original. |
 | `addons/addon-unicode11/src/UnicodeV11.ts` (wcwidth tables and `UnicodeV11` provider, addon 0.9.0) | `crates/lune-vt/src/addons/unicode_v11.rs` | None. Tables generated from the TS file; the Playwright test is not portable, so `wcwidth_v11_emoji_test` (10 x U+1F923 = 20 cells, against 10 for V6: `v6_is_ten_before_activation`) and `version_is_11_and_registered_after_6` in `addons/unicode_v11_tests.rs` cover it. |
 | `addons/addon-unicode11/src/Unicode11Addon.ts` | replaced | Activation is `UnicodeService::register(Box::new(UnicodeV11::new()))` followed by `set_active_version("11")` (M5 D6). |
+| `headless/Terminal.ts` and `headless/public/Terminal.ts` (tests: `headless/public/Terminal.test.ts`; `WriteBuffer.test.ts` per M6 D3) | `crates/lune-vt/src/headless/terminal.rs` (`lune_vt::Terminal`) | One Rust type: the core/public split upstream only hides JS internals. Emitters are `drain_events` and `take_damage`; `write` is synchronous; `allowProposedApi` gates nothing; `dispose` is `Drop`; `onLineFeed` and `onWriteParsed` have no consumer. Unicode 11 is registered at construction, version 6 stays active (D10). Each replaced and adapted upstream test is listed in the header of `headless/terminal_tests.rs`. |
 
 On a version bump (rule 6), diff each file in this table against its new tag too, not only
 `src/common`: `git diff <old>..<new> -- addons/addon-webgl/src/CustomGlyphs.ts` in

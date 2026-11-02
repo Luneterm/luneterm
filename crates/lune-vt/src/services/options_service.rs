@@ -395,6 +395,12 @@ pub enum OptionError {
         /// The rejected value.
         value: f64,
     },
+    /// `Option "<key>" can only be set in the constructor` (`cols`, `rows`; the public
+    /// `Terminal`'s `_checkReadonlyOptions`, `headless/public/Terminal.ts:60-67`).
+    ConstructorOnly {
+        /// The rejected option.
+        key: OptionKey,
+    },
 }
 
 impl fmt::Display for OptionError {
@@ -409,6 +415,13 @@ impl fmt::Display for OptionError {
                     "{} cannot be less than or equal to 0, value: {}",
                     key.name(),
                     value
+                )
+            }
+            OptionError::ConstructorOnly { key } => {
+                write!(
+                    f,
+                    "Option \"{}\" can only be set in the constructor",
+                    key.name()
                 )
             }
         }
