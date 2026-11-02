@@ -34,6 +34,7 @@ fn installed(name: Option<&str>) -> Terminal {
     let mut t = terminal();
     t.install_standard_extensions(&StandardExtensions {
         xtversion: name.map(str::to_owned),
+        ..StandardExtensions::default()
     })
     .unwrap();
     t
@@ -62,6 +63,7 @@ fn install_twice_is_refused_and_registers_nothing_twice() {
     let mut t = installed(Some(NAME));
     let second = t.install_standard_extensions(&StandardExtensions {
         xtversion: Some("Other".to_owned()),
+        ..StandardExtensions::default()
     });
     assert_eq!(second, Err(ExtensionError::AlreadyInstalled));
     // the first registration answers once, with the first name
@@ -105,6 +107,7 @@ fn invalid_names_are_refused_and_nothing_is_registered() {
         let mut t = terminal();
         let result = t.install_standard_extensions(&StandardExtensions {
             xtversion: Some(name.to_owned()),
+            ..StandardExtensions::default()
         });
         assert_eq!(result, Err(ExtensionError::InvalidXtversion), "{name:?}");
         // nothing was registered, and the terminal is not marked installed: a valid install works
@@ -112,6 +115,7 @@ fn invalid_names_are_refused_and_nothing_is_registered() {
         assert_eq!(t.drain_events(), [], "{name:?}");
         t.install_standard_extensions(&StandardExtensions {
             xtversion: Some(NAME.to_owned()),
+            ..StandardExtensions::default()
         })
         .unwrap();
     }
