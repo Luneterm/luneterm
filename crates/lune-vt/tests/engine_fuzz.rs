@@ -1453,7 +1453,7 @@ fn check_bounds(sim: &Sim) {
         osc_link.marker_count()
     );
     for id in osc_link.link_ids() {
-        let markers = osc_link.link_markers(id).unwrap();
+        let markers: Vec<_> = osc_link.link_markers(id).unwrap().collect();
         assert!(!markers.is_empty(), "link {id} has no marker");
         for marker in markers {
             let set = if marker.alt {

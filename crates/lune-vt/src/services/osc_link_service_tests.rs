@@ -112,7 +112,7 @@ fn registering_marks_the_cursor_line_and_the_same_link_on_another_line_adds_a_ma
     let id = osc.register_link(&mut buffers, link("foo", "bar"));
     buffers.buffer_mut().y = 2;
     assert_eq!(osc.register_link(&mut buffers, link("foo", "bar")), id);
-    let markers = osc.link_markers(id).unwrap();
+    let markers: Vec<_> = osc.link_markers(id).unwrap().collect();
     let lines: Vec<i64> = markers
         .iter()
         .map(|m| buffers.buffer().marker(m.id).unwrap().line)
@@ -141,10 +141,10 @@ fn a_registration_remembers_which_buffer_holds_its_marker() {
     let normal = osc.register_link(&mut buffers, no_id("n"));
     buffers.buffers.activate_alt_buffer(None);
     let alt = osc.register_link(&mut buffers, no_id("a"));
-    assert!(!osc.link_markers(normal).unwrap()[0].alt);
-    assert!(osc.link_markers(alt).unwrap()[0].alt);
+    assert!(!osc.link_markers(normal).unwrap().next().unwrap().alt);
+    assert!(osc.link_markers(alt).unwrap().next().unwrap().alt);
     // The alt link's id is in the alt buffer's set, not the normal one's.
-    let alt_marker = osc.link_markers(alt).unwrap()[0].id;
+    let alt_marker = osc.link_markers(alt).unwrap().next().unwrap().id;
     assert!(buffers.buffers.alt().marker(alt_marker).is_some());
     assert!(buffers.buffers.normal().marker(alt_marker).is_none());
 }
@@ -208,7 +208,7 @@ fn a_scroll_that_trims_nothing_keeps_the_marker_line_and_the_link() {
     buffers.scroll(&AttributeData::default(), false);
     // The scrollback limit is not reached: the marker keeps its line and the link its data.
     forward(&mut buffers, &mut osc);
-    let marker = osc.link_markers(id).unwrap()[0].id;
+    let marker = osc.link_markers(id).unwrap().next().unwrap().id;
     assert_eq!(buffers.buffer().marker(marker).unwrap().line, 0);
     assert!(osc.get_link_data(id).is_some());
 }
@@ -295,7 +295,7 @@ fn markers_past_the_cap_evict_other_links_but_never_the_link_being_extended() {
         "evicted for the long link"
     );
     assert_eq!(
-        osc.link_markers(long).map(<[_]>::len),
+        osc.link_markers(long).map(|m| m.len()),
         Some(MAX_LINK_MARKERS + 20 + 1)
     );
     assert_eq!(osc.len(), 1);
@@ -379,7 +379,7 @@ fn long_link(lines: usize) -> (BufferService, OscLinkService, u32) {
 #[test]
 fn evicting_a_long_link_walks_the_marker_list_once() {
     let (mut buffers, mut osc, long) = long_link(2000);
-    let k = osc.link_markers(long).map_or(0, <[_]>::len);
+    let k = osc.link_markers(long).map_or(0, |m| m.len());
     assert_eq!(k, 2001, "every scrollback line and the cursor line");
     for i in 0..MAX_LINKS - 1 {
         osc.register_link(&mut buffers, no_id(&format!("u{i}")));
@@ -408,7 +408,7 @@ fn evicting_a_long_link_walks_the_marker_list_once() {
 fn forwarding_the_disposal_of_a_long_link_filters_its_list_once() {
     let (mut buffers, mut osc, long) = long_link(2000);
     let other = osc.register_link(&mut buffers, no_id("other"));
-    let k = osc.link_markers(long).map_or(0, <[_]>::len);
+    let k = osc.link_markers(long).map_or(0, |m| m.len());
     buffers.buffers.normal_mut().clear_all_markers();
     osc.line_visits = 0;
     forward(&mut buffers, &mut osc);
@@ -424,19 +424,95 @@ fn forwarding_the_disposal_of_a_long_link_filters_its_list_once() {
     );
     // a partial batch keeps the link with the rest of its markers
     let (mut buffers, mut osc, long) = long_link(100);
-    let lines: Vec<_> = osc.link_markers(long).unwrap().to_vec();
+    let lines: Vec<_> = osc.link_markers(long).unwrap().collect();
     // the merge relies on this: a link's markers are in ascending id order
     assert!(lines.windows(2).all(|w| w[0].id < w[1].id));
     // one marker (the single-id path), then every other one
     osc.on_markers_disposed(&[lines[1].id]);
     let mut left: Vec<_> = lines.clone();
     left.remove(1);
-    assert_eq!(osc.link_markers(long), Some(left.as_slice()));
+    assert_eq!(
+        osc.link_markers(long).map(Iterator::collect::<Vec<_>>),
+        Some(left.clone())
+    );
     let lines = left;
     let half: Vec<_> = lines.iter().step_by(2).map(|m| m.id).collect();
     osc.on_markers_disposed(&half);
     let left: Vec<_> = lines.iter().skip(1).step_by(2).copied().collect();
-    assert_eq!(osc.link_markers(long), Some(left.as_slice()));
+    assert_eq!(
+        osc.link_markers(long).map(Iterator::collect::<Vec<_>>),
+        Some(left.clone())
+    );
     assert_eq!(osc.marker_count(), left.len());
     let _ = &mut buffers;
+}
+
+// ---- cost bounds, `// LUNETERM:` (review S7 residual 1); visits are counts, not time ----
+
+#[test]
+fn a_cache_miss_checks_the_fewer_of_the_link_markers_and_the_markers_on_the_line() {
+    // a long link (2001 markers) asked about a line with no marker: the cache and nothing else
+    let (mut buffers, mut osc, long) = long_link(2000);
+    buffers.scroll(&AttributeData::default(), false);
+    forward(&mut buffers, &mut osc);
+    let last = buffers.buffer().lines.len() - 1;
+    osc.marker_visits = 0;
+    osc.add_line_to_link(&mut buffers, long, last);
+    assert_eq!(osc.marker_visits, 1, "min(2001, 0) + 1");
+    assert_eq!(osc.link_markers(long).map(|m| m.len()), Some(2001));
+    // a line the link already holds, not the cached one: the one marker on it
+    osc.marker_visits = 0;
+    osc.add_line_to_link(&mut buffers, long, 5);
+    assert_eq!(osc.marker_visits, 2, "min(2001, 1) + 1");
+    assert_eq!(osc.link_markers(long).map(|m| m.len()), Some(2001), "found");
+    assert_eq!(osc.marker_visits, 2);
+
+    // a short link asked about a line holding many markers of other links: its own markers
+    let (mut buffers, mut osc) = setup();
+    for i in 0..500 {
+        osc.register_link(&mut buffers, no_id(&format!("u{i}")));
+    }
+    buffers.buffer_mut().y = 1;
+    let short = osc.register_link(&mut buffers, link("s", "short"));
+    osc.marker_visits = 0;
+    osc.add_line_to_link(&mut buffers, short, 0);
+    assert_eq!(osc.marker_visits, 2, "min(1, 500) + 1");
+    assert_eq!(osc.link_markers(short).map(|m| m.len()), Some(2));
+    // asked again after the cache moved: found among its 2 markers (500 + 1 on the line)
+    osc.add_line_to_link(&mut buffers, short, 1);
+    osc.marker_visits = 0;
+    osc.add_line_to_link(&mut buffers, short, 0);
+    assert_eq!(osc.marker_visits, 3, "min(2, 501) + 1");
+    assert_eq!(osc.link_markers(short).map(|m| m.len()), Some(2), "found");
+}
+
+#[test]
+fn forwarding_one_trimmed_oldest_marker_is_constant_time() {
+    // a link opened on the top line and extended down every line, as output makes it: its
+    // oldest marker is on the line a scroll trims
+    let options = OptionsService::new([
+        OptionValue::Rows(3),
+        OptionValue::Cols(10),
+        OptionValue::Scrollback(2000),
+    ]);
+    let mut buffers = BufferService::new(options.options());
+    let mut osc = OscLinkService::new();
+    for _ in 0..2000 {
+        buffers.scroll(&AttributeData::default(), false);
+    }
+    let ybase = buffers.buffer().ybase;
+    buffers.buffer_mut().ybase = 0;
+    let long = osc.register_link(&mut buffers, link("l", "long"));
+    buffers.buffer_mut().ybase = ybase;
+    for y in 1..buffers.buffer().lines.len() {
+        osc.add_line_to_link(&mut buffers, long, y);
+    }
+    assert_eq!(osc.link_markers(long).map(|m| m.len()), Some(2003));
+    for round in 0..3 {
+        buffers.scroll(&AttributeData::default(), false);
+        osc.line_visits = 0;
+        forward(&mut buffers, &mut osc);
+        assert_eq!(osc.line_visits, 1, "round {round}: the front of the list");
+        assert_eq!(osc.link_markers(long).map(|m| m.len()), Some(2002 - round));
+    }
 }
