@@ -21,10 +21,16 @@
 //!    round 1) of VS16 and the keycap under `11-vs16`.
 //!  - **REP below a scroll region** (M7 fix round 2, review S2): a region of rows 1..=10, the
 //!    cursor on the last row, insert mode, scrollback 10,000, at 80x24 and 300x100, for plain
-//!    `a`, `e U+0301`, a wide cluster, VS16 and the keycap (plain `a` is the ≤ 3× reference).
+//!    `a`, `e U+0301`, a wide cluster, VS16 and the keycap (plain `a` is the ≤ 3× reference),
+//!    and (M7 fix round 3) `a` inside an open link and with an underline colour.
 //!  - **REP below a region on a long row, Windows mode** (M7 fix round 2, review S2): the
 //!    non-reflowing normal buffer shrunk from L columns to 80, below a region, insert mode, for
-//!    L in 300 and 2,000 — linear in L.
+//!    L in 300, 1,000 (M7 fix round 3) and 2,000 — linear in L; M7 fix round 3 adds `a` inside
+//!    an open link and with an underline colour (the review's other rows).
+//!  - **REP below a region at odd widths** (M7 fix round 3, review S2): plain `a`, VS16 and the
+//!    keycap at 79x24 and 299x100, and on a row of 2,000 cells narrowed to 79 columns in
+//!    Windows mode; a widened unit's joiner wraps its base there, and that wrap copies the old
+//!    row's strings (upstream), so the long row's passes settle only with its tail.
 //!  - **REP of a joining-base unit** (M7 fix round 2, review S3): a lone combining mark the
 //!    cursor sits on (wraparound off, a wide char skipped at the last column); every repetition
 //!    appends to the one capped cell, so the cost tracks plain REP.
@@ -383,7 +389,7 @@ fn below_region() {
     println!("{:<22} {:>14} {:>14}", "variant", "80x24", "300x100");
     const BELOW: &[u8] = b"\x1b[1;10r\x1b[999;1H\x1b[4h";
     type Variant = (&'static str, String, Make, fn(&Terminal));
-    let variants: Vec<Variant> = vec![
+    let mut variants: Vec<Variant> = vec![
         ("plain a", "a".to_string(), new_terminal, |t| {
             assert!(some_cell_has(t, "a"), "below-region REP printed no a");
         }),
@@ -419,14 +425,28 @@ fn below_region() {
             },
         ),
     ];
+    // (M7 fix round 3) `a` inside an open link and with an underline colour: the setup
+    // writes the sequence before the stream
+    variants.push(("link a", "a".to_string(), new_terminal, |t| {
+        assert!(some_cell_has(t, "a"), "below-region link REP printed no a");
+    }));
+    variants.push(("ul colour a", "a".to_string(), new_terminal, |t| {
+        assert!(some_cell_has(t, "a"), "below-region ul REP printed no a");
+    }));
     for (name, unit, make, check) in &variants {
         let data = stream(unit);
+        let pre: &[u8] = match *name {
+            "link a" => LINK.as_bytes(),
+            "ul colour a" => b"\x1b[58:5:3;4m",
+            _ => b"",
+        };
         let mut row = format!("{name:<22}");
         for &(cols, rows) in &SIZES {
             let ns = measure(
                 || {
                     let mut term = make(cols, rows, 10_000);
                     term.write(BELOW);
+                    term.write(pre);
                     term
                 },
                 &data,
@@ -449,14 +469,18 @@ fn below_region_no_reflow() {
          scrollback 10,000, median of {RUNS})"
     );
     println!("{:<22} {:>8} {:>14}", "variant", "L", "80x24");
-    let units: [(&str, &str, Make); 3] = [
-        ("a", "a", new_winmode_terminal),
-        ("e+U+0301", NARROW_CLUSTER, new_winmode_terminal),
-        ("VS16 (11-vs16)", VS16, new_winmode_vs16_terminal),
+    // (M7 fix round 3) and inside an open link and with an underline colour, the review's
+    // other rows
+    let units: [(&str, &str, &str, Make); 5] = [
+        ("a", "", "a", new_winmode_terminal),
+        ("e+U+0301", "", NARROW_CLUSTER, new_winmode_terminal),
+        ("VS16 (11-vs16)", "", VS16, new_winmode_vs16_terminal),
+        ("link a", LINK, "a", new_winmode_terminal),
+        ("ul colour a", "\x1b[58:5:3;4m", "a", new_winmode_terminal),
     ];
-    for (name, unit, new_term) in units {
+    for (name, pre, unit, new_term) in units {
         let data = stream(unit);
-        for &l in &[300usize, 2_000] {
+        for &l in &[300usize, 1_000, 2_000] {
             let make = || {
                 let mut term = new_term(l, 24, 10_000);
                 for _ in 0..24 {
@@ -464,6 +488,7 @@ fn below_region_no_reflow() {
                 }
                 term.resize(80, 24);
                 term.write(b"\x1b[1;10r\x1b[999;1H\x1b[4h");
+                term.write(pre.as_bytes());
                 term
             };
             // the long row survived the shrink (no reflow in Windows mode)
@@ -482,6 +507,81 @@ fn below_region_no_reflow() {
             });
             println!("{name:<22} {l:>8} {:>14}", format_ns(ns));
         }
+    }
+}
+
+/// REP below a scroll region at odd widths (M7 fix round 3, review S2): a widened unit (VS16,
+/// the keycap) whose base lands on the last column is wrapped by its joiner, and that wrap
+/// copies the old row's strings from the last column on (upstream's copy), so a long row's
+/// passes settle only once its tail has. Short rows (79x24, 299x100), and a row of L = 2000
+/// cells narrowed to 79 columns in Windows mode, against plain `a` in the same setup.
+fn below_region_odd() {
+    println!();
+    println!(
+        "REP below a scroll region at odd widths (insert mode, scrollback 10,000; ns per input \
+         byte, median of {RUNS})"
+    );
+    println!(
+        "{:<22} {:>14} {:>14} {:>16}",
+        "variant", "79x24", "299x100", "L=2000 -> 79x24"
+    );
+    const BELOW: &[u8] = b"\x1b[1;10r\x1b[999;1H\x1b[4h";
+    let units: [(&str, &str, Make, Make); 3] = [
+        ("plain a", "a", new_terminal, new_winmode_terminal),
+        (
+            "VS16 (11-vs16)",
+            VS16,
+            new_vs16_terminal,
+            new_winmode_vs16_terminal,
+        ),
+        (
+            "keycap (11-vs16)",
+            KEYCAP,
+            new_vs16_terminal,
+            new_winmode_vs16_terminal,
+        ),
+    ];
+    for (name, unit, make, make_long) in units {
+        let data = stream(unit);
+        let mut row = format!("{name:<22}");
+        for (cols, rows) in [(79, 24), (299, 100)] {
+            let ns = measure(
+                || {
+                    let mut term = make(cols, rows, 10_000);
+                    term.write(BELOW);
+                    term
+                },
+                &data,
+                |t| assert!(some_cell_has(t, unit), "odd-width REP printed nothing"),
+            );
+            row.push_str(&format!(" {:>14}", format_ns(ns)));
+        }
+        let long = || {
+            let mut term = make_long(2_000, 24, 10_000);
+            for _ in 0..24 {
+                term.write(&vec![b'x'; 2_000]);
+            }
+            term.resize(79, 24);
+            term.write(BELOW);
+            term
+        };
+        {
+            let term = long();
+            let buffer = term.core().input_handler().services().buffer.buffer();
+            let len = buffer
+                .lines
+                .get(buffer.ybase + 23)
+                .map_or(0, |line| line.len());
+            assert_eq!(len, 2_000, "the long row did not survive the shrink");
+        }
+        let ns = measure(long, &data, |t| {
+            assert!(
+                some_cell_has(t, unit),
+                "odd-width long-row REP printed nothing"
+            );
+        });
+        row.push_str(&format!(" {:>16}", format_ns(ns)));
+        println!("{row}");
     }
 }
 
@@ -556,6 +656,7 @@ fn main() {
     no_wrap_insert();
     below_region();
     below_region_no_reflow();
+    below_region_odd();
     joining_base();
     println!();
     println!("load average after: {}", load_average());
