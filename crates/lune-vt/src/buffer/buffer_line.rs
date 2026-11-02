@@ -115,6 +115,64 @@ fn count_insert_pass() {
     INSERT_PASSES.with(|count| count.set(count.get() + 1));
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Insert-mode line fills this thread's lines took as one shift and the writes (M7 fix
+    /// round 3: `insert_cells_repeatedly_then_set`, `insert_cell_strided_then_set`).
+    static ONE_SHIFT_FILLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The number of insert-mode line fills taken as one shift and the writes so far.
+#[cfg(test)]
+pub(crate) fn one_shift_fills() -> u64 {
+    ONE_SHIFT_FILLS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn count_one_shift_fill() {
+    ONE_SHIFT_FILLS.with(|count| count.set(count.get() + 1));
+}
+
+/// LUNETERM: (M7 fix round 3) equality of side-table values with a cheap first check: the same
+/// allocation for a shared string (`Arc<str>`'s `==` compares the bytes every time).
+trait SameValue {
+    fn same_value(&self, other: &Self) -> bool;
+}
+
+impl SameValue for Arc<str> {
+    fn same_value(&self, other: &Self) -> bool {
+        Arc::ptr_eq(self, other) || same_text(self, other)
+    }
+}
+
+/// `a == b`, short strings (a cell's text is a few bytes) compared in place rather than through
+/// a `memcmp` call.
+fn same_text(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && match a.len() {
+            0..=16 => a.bytes().zip(b.bytes()).all(|(x, y)| x == y),
+            _ => a == b,
+        }
+}
+
+impl SameValue for ExtendedAttrs {
+    fn same_value(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+#[cfg(test)]
+impl SameValue for u8 {
+    fn same_value(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+/// Whether `held` is `chars`: the same allocation, or an equal string.
+fn same_str(held: Option<&Arc<str>>, chars: &Arc<str>) -> bool {
+    held.is_some_and(|held| held.same_value(chars))
+}
+
 /// A combined string as the shared value the line stores (plan M7 step 12): every allocation
 /// of one goes through here.
 fn shared_str(chars: &str) -> Arc<str> {
@@ -148,7 +206,7 @@ impl<V> Default for RunMap<V> {
     }
 }
 
-impl<V: Clone + PartialEq> RunMap<V> {
+impl<V: Clone + PartialEq + SameValue> RunMap<V> {
     /// The value at `key`.
     fn get(&self, key: &usize) -> Option<&V> {
         self.runs
@@ -367,6 +425,107 @@ impl<V: Clone + PartialEq> RunMap<V> {
         }
     }
 
+    /// (M7 fix round 3) `insert(k, v)` for every `(k, v)` of `updates` (ascending, distinct
+    /// keys in `lo..=hi`, `hi < usize::MAX`), with the runs over `lo..=hi` rebuilt once from
+    /// the old values and the updates instead of a tree update per key: the runs there are
+    /// cut out of the tree (a run that reaches in from before `lo` is cut at `lo`, and the part
+    /// past `hi` of the run that holds `hi` is kept), the range's runs built in key order with
+    /// touching equal values merged, and those that touch the runs left on either side merged
+    /// with them. The same entries, and the one form a set of entries has.
+    fn replace_range(&mut self, lo: usize, hi: usize, updates: Vec<(usize, V)>) {
+        // per key of `lo..=hi`: its value after the updates, an index into `values`
+        let (mut values, mut index) = self.dense_indexed(lo, hi + 1);
+        for (key, value) in updates {
+            if let Some(slot) = key.checked_sub(lo).and_then(|offset| index.get_mut(offset)) {
+                *slot = Some(values.len());
+                values.push(value);
+            }
+        }
+        let mut built: Vec<(usize, usize, usize)> = Vec::new();
+        for (offset, id) in index.iter().enumerate() {
+            let (key, Some(id)) = (lo + offset, *id) else {
+                continue;
+            };
+            match built.last_mut() {
+                Some((_, last, held))
+                    if last.checked_add(1) == Some(key) && values.get(*held) == values.get(id) =>
+                {
+                    *last = key;
+                }
+                _ => built.push((key, key, id)),
+            }
+        }
+        let mut runs: Vec<(usize, (usize, V))> = Vec::with_capacity(built.len() + 1);
+        for (first, last, id) in built {
+            if let Some(value) = values.get(id) {
+                runs.push((first, (last, value.clone())));
+            }
+        }
+        self.splice_runs(lo, hi, runs);
+    }
+
+    /// (M7 fix round 3) every key of `lo..=hi` (`hi < usize::MAX`) takes its value from `runs`
+    /// (ascending, disjoint runs inside the range, touching ones of equal value merged; a key
+    /// they do not cover holds no entry), the others keep theirs: the runs there are cut out of
+    /// the tree (a run that reaches in from before `lo` is cut at `lo`, and the part past `hi`
+    /// of the run that holds `hi` is kept), `runs` put in, and those that touch the runs left
+    /// on either side with the same value merged with them, so the map keeps its one form.
+    fn splice_runs(&mut self, lo: usize, hi: usize, mut runs: Vec<(usize, (usize, V))>) {
+        // cut the range out
+        let mut inside = self.runs.split_off(&lo);
+        let mut after = inside.split_off(&(hi + 1));
+        let mut tail = None;
+        if let Some(mut entry) = self.runs.last_entry() {
+            let (end, held) = entry.get_mut();
+            if *end >= lo {
+                if *end > hi {
+                    tail = Some((hi + 1, *end, held.clone()));
+                }
+                *end = lo - 1;
+            }
+        }
+        if let Some((_, (end, held))) = inside.last_key_value() {
+            if *end > hi {
+                tail = Some((hi + 1, *end, held.clone()));
+            }
+        }
+        drop(inside);
+        // the run left before `lo`, taken in if the first new run touches it with its value
+        if let Some((first, (_, value))) = runs.first_mut() {
+            let touching = self.runs.last_key_value().is_some_and(|(_, (end, held))| {
+                end.checked_add(1) == Some(*first) && held == value
+            });
+            if touching {
+                if let Some((start, _)) = self.runs.pop_last() {
+                    *first = start;
+                }
+            }
+        }
+        // the part past `hi` kept, or the next run, if the last new run touches it
+        let from_after = tail.is_none();
+        let next = match tail {
+            Some(tail) => Some(tail),
+            None => after
+                .first_key_value()
+                .filter(|&(&first, _)| first == hi + 1)
+                .map(|(&first, (end, value))| (first, *end, value.clone())),
+        };
+        if let Some((first, end, value)) = next {
+            match runs.last_mut() {
+                Some((_, (last, held))) if last.checked_add(1) == Some(first) && *held == value => {
+                    *last = end;
+                    if from_after {
+                        after.remove(&first);
+                    }
+                }
+                _ if !from_after => runs.push((first, (end, value))),
+                _ => {}
+            }
+        }
+        self.runs.extend(runs);
+        self.runs.append(&mut after);
+    }
+
     /// `insert(k, v)` for every `(k, v)` of `updates`, whose keys are ascending and distinct.
     /// When no run holds or touches a key in `first - 1 ..= last + 1` (the updates' span, as
     /// on a line the batch writes afresh), the updates' own runs (touching equal values
@@ -388,8 +547,12 @@ impl<V: Clone + PartialEq> RunMap<V> {
             .next_back()
             .is_some_and(|(_, (end, _))| *end >= low);
         if reaches_low || self.runs.range(low..=high).next().is_some() {
-            for (key, value) in updates {
-                self.insert(key, value);
+            if updates.len() < 16 || last == usize::MAX {
+                for (key, value) in updates {
+                    self.insert(key, value);
+                }
+            } else {
+                self.replace_range(first, last, updates);
             }
             return;
         }
@@ -411,6 +574,120 @@ impl<V: Clone + PartialEq> RunMap<V> {
         let mut batch: BTreeMap<usize, (usize, V)> = new_runs.into_iter().collect();
         self.runs.append(&mut batch);
         self.runs.append(&mut tail);
+    }
+}
+
+impl<V: Clone + PartialEq + SameValue> RunMap<V> {
+    /// (M7 fix round 3) [`dense`](Self::dense) as indexes into one list of the values: one
+    /// copy per run there (one for consecutive runs of equal values), where `dense` copies the
+    /// value per key (a string is an `Arc`, whose copies cost an atomic count each).
+    fn dense_indexed(&self, lo: usize, hi: usize) -> (Vec<V>, Vec<Option<usize>>) {
+        let mut values = Vec::new();
+        let mut index = vec![None; hi.saturating_sub(lo)];
+        if index.is_empty() {
+            return (values, index);
+        }
+        let reaching = self
+            .runs
+            .range(..lo)
+            .next_back()
+            .filter(|(_, (last, _))| *last >= lo);
+        for (&first, (last, value)) in reaching.into_iter().chain(self.runs.range(lo..hi)) {
+            let (from, to) = (first.max(lo), last.saturating_add(1).min(hi));
+            // (runs apart that hold one value share its copy: a wide cluster's line holds a
+            // run per cell)
+            if !values.last().is_some_and(|held: &V| held.same_value(value)) {
+                values.push(value.clone());
+            }
+            let id = values.len() - 1;
+            for slot in index.iter_mut().take(to - lo).skip(from - lo) {
+                *slot = Some(id);
+            }
+        }
+        (values, index)
+    }
+
+    /// (M7 fix round 3) the values at ascending keys from `lo` on, each found in amortized
+    /// O(1) by walking the runs once (`get` searches the tree per key).
+    fn cursor(&self, lo: usize) -> RunCursor<'_, V> {
+        let runs: Box<dyn Iterator<Item = (usize, usize, &V)> + '_> =
+            Box::new(self.runs_cut(lo, None));
+        RunCursor {
+            runs: runs.peekable(),
+        }
+    }
+
+    /// The runs over the keys `lo..hi` (`None`: every key from `lo` on), cut to them:
+    /// `(first, last, value)` in key order.
+    fn runs_cut(
+        &self,
+        lo: usize,
+        hi: Option<usize>,
+    ) -> impl Iterator<Item = (usize, usize, &V)> + '_ {
+        let empty = hi.is_some_and(|hi| lo >= hi);
+        let reaching = self
+            .runs
+            .range(..lo)
+            .next_back()
+            .filter(|(_, (last, _))| !empty && *last >= lo);
+        let inside = match (empty, hi) {
+            (true, _) => self.runs.range(0..0),
+            (false, Some(hi)) => self.runs.range(lo..hi),
+            (false, None) => self.runs.range(lo..),
+        };
+        reaching
+            .into_iter()
+            .chain(inside)
+            .map(move |(&first, (last, value))| {
+                let last = hi.map_or(*last, |hi| (*last).min(hi - 1));
+                (first.max(lo), last, value)
+            })
+    }
+
+    /// The runs over the keys `lo..hi` (`None`: every key from `lo` on), cut to them:
+    /// `(first, last, value index)` in key order, with the values (one copy for consecutive
+    /// runs of equal values).
+    fn runs_in(&self, lo: usize, hi: Option<usize>) -> RangeRuns<V> {
+        let mut runs = Vec::new();
+        let mut values: Vec<V> = Vec::new();
+        for (first, last, value) in self.runs_cut(lo, hi) {
+            if !values.last().is_some_and(|held: &V| held.same_value(value)) {
+                values.push(value.clone());
+            }
+            runs.push((first, last, values.len() - 1));
+        }
+        (runs, values)
+    }
+
+    /// Whether `self` and `other` hold the same entries at the keys `lo..hi` (`None`: every key
+    /// from `lo` on): the same runs there, as both maps have the one form of their entries.
+    fn same_in(&self, other: &Self, lo: usize, hi: Option<usize>) -> bool {
+        let mut mine = self.runs_cut(lo, hi);
+        let mut theirs = other.runs_cut(lo, hi);
+        loop {
+            match (mine.next(), theirs.next()) {
+                (None, None) => return true,
+                (Some((a_first, a_last, a)), Some((b_first, b_last, b)))
+                    if a_first == b_first && a_last == b_last && a.same_value(b) => {}
+                _ => return false,
+            }
+        }
+    }
+}
+
+/// (M7 fix round 3) [`RunMap::cursor`]: the value at each of a run of ascending keys.
+struct RunCursor<'a, V> {
+    runs: std::iter::Peekable<Box<dyn Iterator<Item = (usize, usize, &'a V)> + 'a>>,
+}
+
+impl<'a, V> RunCursor<'a, V> {
+    /// The value at `key`; `key` must not be below a key asked before.
+    fn at(&mut self, key: usize) -> Option<&'a V> {
+        while self.runs.next_if(|&(_, last, _)| last < key).is_some() {}
+        self.runs
+            .peek()
+            .filter(|&&(first, _, _)| first <= key)
+            .map(|&(_, _, value)| value)
     }
 }
 
@@ -444,7 +721,7 @@ impl<V: PartialEq> PartialEq for SharedRunMap<V> {
 
 impl<V: Eq> Eq for SharedRunMap<V> {}
 
-impl<V: Clone + PartialEq> SharedRunMap<V> {
+impl<V: Clone + PartialEq + SameValue> SharedRunMap<V> {
     /// The map to change: this line's own (a shared one is copied first).
     fn make_mut(&mut self) -> &mut RunMap<V> {
         Arc::make_mut(self.0.get_or_insert_with(Default::default))
@@ -470,6 +747,69 @@ impl<V: Clone + PartialEq> SharedRunMap<V> {
         match self.0.as_deref() {
             Some(map) => map.dense(lo, hi),
             None => vec![None; hi.saturating_sub(lo)],
+        }
+    }
+
+    fn dense_indexed(&self, lo: usize, hi: usize) -> (Vec<V>, Vec<Option<usize>>) {
+        match self.0.as_deref() {
+            Some(map) => map.dense_indexed(lo, hi),
+            None => (Vec::new(), vec![None; hi.saturating_sub(lo)]),
+        }
+    }
+
+    fn runs_in(&self, lo: usize, hi: Option<usize>) -> RangeRuns<V> {
+        self.0
+            .as_deref()
+            .map(|map| map.runs_in(lo, hi))
+            .unwrap_or_default()
+    }
+
+    /// [`RunMap::splice_runs`]. A map shared with another line is not copied whole for it: the
+    /// new map takes only the old runs outside the range (with the one reaching past `hi`).
+    fn splice_runs(&mut self, lo: usize, hi: usize, runs: Vec<(usize, (usize, V))>) {
+        let fresh = match &self.0 {
+            Some(map) if Arc::strong_count(map) > 1 => {
+                let reaching_past = map
+                    .runs
+                    .range(lo..=hi)
+                    .next_back()
+                    .filter(|(_, (end, _))| *end > hi);
+                let kept = map
+                    .runs
+                    .range(..lo)
+                    .chain(reaching_past)
+                    .chain(map.runs.range(hi.saturating_add(1)..))
+                    .map(|(&first, (end, value))| (first, (*end, value.clone())))
+                    .collect();
+                Some(RunMap { runs: kept })
+            }
+            _ => None,
+        };
+        if let Some(fresh) = fresh {
+            self.0 = Some(Arc::new(fresh));
+        }
+        if !runs.is_empty() || !self.is_empty() {
+            self.make_mut().splice_runs(lo, hi, runs);
+        }
+    }
+
+    /// [`RunMap::cursor`] (an empty one where no map is held).
+    fn with_cursor<R>(&self, lo: usize, f: impl FnOnce(&mut RunCursor<'_, V>) -> R) -> R {
+        let empty = RunMap::default();
+        let map = self.0.as_deref().unwrap_or(&empty);
+        f(&mut map.cursor(lo))
+    }
+
+    /// [`RunMap::same_in`]; one shared map is the same everywhere.
+    fn same_in(&self, other: &Self, lo: usize, hi: Option<usize>) -> bool {
+        match (&self.0, &other.0) {
+            (Some(a), Some(b)) if Arc::ptr_eq(a, b) => true,
+            _ => {
+                let empty = RunMap::default();
+                let a = self.0.as_deref().unwrap_or(&empty);
+                let b = other.0.as_deref().unwrap_or(&empty);
+                a.same_in(b, lo, hi)
+            }
         }
     }
 
@@ -502,7 +842,17 @@ impl<V: Clone + PartialEq> SharedRunMap<V> {
     }
 
     fn assign(&mut self, first: usize, last: usize, value: Option<V>) {
-        if value.is_some() || !self.is_empty() {
+        // (M7 fix round 3) a run that holds the value at every key already: nothing to change,
+        // and a map shared with another line is not copied for it
+        let covered = self.0.as_deref().is_some_and(|map| {
+            first <= last
+                && map
+                    .runs
+                    .range(..=first)
+                    .next_back()
+                    .is_some_and(|(_, (end, held))| *end >= last && value.as_ref() == Some(held))
+        });
+        if !covered && (value.is_some() || !self.is_empty()) {
             self.make_mut().assign(first, last, value);
         }
     }
@@ -544,6 +894,34 @@ pub(crate) struct CellState {
     combined: Option<Arc<str>>,
     extended: Option<ExtendedAttrs>,
 }
+
+/// LUNETERM: (M7 fix round 3) everything a line holds for the cells `lo..hi`: their slots and
+/// both side tables' entries at those keys, flagged or stale ([`BufferLine::range_state`]).
+/// Two are equal exactly when the line holds the same cells and entries there.
+/// The side tables are kept whole (the combined map shared, so a line that changes none of its
+/// strings is compared in O(1)) and compared at those keys only.
+#[derive(Clone, Debug)]
+pub(crate) struct RangeState {
+    lo: usize,
+    keys_end: Option<usize>,
+    slots: Vec<u32>,
+    combined: SharedRunMap<Arc<str>>,
+    extended: RunMap<ExtendedAttrs>,
+}
+
+impl PartialEq for RangeState {
+    fn eq(&self, other: &Self) -> bool {
+        let (lo, keys_end) = (self.lo, self.keys_end);
+        (lo, keys_end) == (other.lo, other.keys_end)
+            && self.slots == other.slots
+            && self.combined.same_in(&other.combined, lo, keys_end)
+            && self.extended.same_in(&other.extended, lo, keys_end)
+    }
+}
+
+/// A side table's runs over a range of keys: `(first, last, index into the values)`, and the
+/// values ([`RunMap::runs_in`]).
+type RangeRuns<V> = (Vec<(usize, usize, usize)>, Vec<V>);
 
 /// LUNETERM: (M7 fix round 1) the combined strings a [`BufferLine::set_cells_repeatedly_shared`]
 /// call left on a line that held none, with the call's arguments: another line that holds none
@@ -827,6 +1205,41 @@ impl BufferLine {
         }
     }
 
+    /// LUNETERM: (M7 fix round 3) everything the line holds for the cells `lo..hi`: their slots
+    /// and the entries at their keys in both side tables, flagged or stale. One copy of the
+    /// slots and of the runs there, where `cell_state` per cell searches both maps each time.
+    pub(crate) fn range_state(&self, lo: usize, hi: usize) -> RangeState {
+        self.state_with(lo, hi, Some(hi.max(lo)))
+    }
+
+    /// The slots of the cells `lo..hi` and the entries at the keys `lo..keys_end` (`None`:
+    /// every key from `lo` on).
+    fn state_with(&self, lo: usize, hi: usize, keys_end: Option<usize>) -> RangeState {
+        let hi = hi.max(lo);
+        let (from, to) = (lo.saturating_mul(CELL_SIZE), hi.saturating_mul(CELL_SIZE));
+        // (a slot past the data reads 0, as `read` does)
+        let mut slots = self
+            .data
+            .get(from.min(self.data.len())..to.min(self.data.len()))
+            .unwrap_or_default()
+            .to_vec();
+        slots.resize(to - from, 0);
+        RangeState {
+            lo,
+            keys_end,
+            slots,
+            combined: self.combined.clone(),
+            extended: self.extended_attrs.clone(),
+        }
+    }
+
+    /// LUNETERM: (M7 fix round 3) everything the line holds: its cells' slots and every entry of
+    /// both side tables, those at keys past its end included ([`BufferLine::range_state`] of the
+    /// whole line and beyond).
+    pub(crate) fn line_state(&self) -> RangeState {
+        self.state_with(0, self.length, None)
+    }
+
     /// LUNETERM: (M7 fix round 1) cell `index` as `state` holds it ([`BufferLine::cell_state`]).
     pub(crate) fn set_cell_state(&mut self, index: usize, state: &CellState) {
         self.write(index, CELL_CONTENT, state.slots[0]);
@@ -932,11 +1345,9 @@ impl BufferLine {
         }
 
         if n < self.length - pos {
-            let mut cell = CellData::new();
-            for i in (0..self.length - pos - n).rev() {
-                self.load_cell(pos + i, &mut cell);
-                self.set_cell(pos + n + i, &cell);
-            }
+            // LUNETERM: (M7 fix round 3) `for i in (0..self.length - pos - n).rev() {
+            // self.set_cell(pos + n + i, self.load_cell(pos + i)) }`, batched
+            self.shift_cells_right(pos, n);
             // LUNETERM: (review S7) `for i in 0..n { self.set_cell(pos + i, fill) }`, batched
             self.set_cells_repeatedly(pos, 1, n, fill_cell_data, fill_cell_data);
         } else {
@@ -948,6 +1359,103 @@ impl BufferLine {
         if self.get_width(self.length - 1) == 2 {
             self.set_cell_from_codepoint(self.length - 1, 0, 1, fill_cell_data);
         }
+    }
+
+    /// LUNETERM: (M7 fix round 3) `insert_cells`' shift, `for i in (0..len - pos - n).rev() {
+    /// set_cell(pos + n + i, load_cell(pos + i)) }`, in one pass: the slots moved at once and
+    /// each side table's entries written in one sorted batch, those a key already holds left
+    /// out (`set_cell` stores an equal string again; the entries are the same), where the loop
+    /// copies a string and searches both maps per cell. The loop reads every source before it
+    /// writes it (key `pos + n + i` is the source of the earlier iteration `i + n`), so every
+    /// key `k` in `pos + n..len` takes the old cell at `k - n`: its slots, and its entries where
+    /// it is flagged, as `load_cell` reads them (the empty string, default attributes, for a
+    /// flagged cell without one); other keys and entries stay. With `n = 0` every cell is
+    /// copied onto itself, which gives a flagged cell without an entry the empty one.
+    /// Needs `pos + n < len`.
+    fn shift_cells_right(&mut self, pos: usize, n: usize) {
+        let len = self.length;
+        let Some(m) = len.checked_sub(pos).and_then(|room| room.checked_sub(n)) else {
+            return;
+        };
+        if m == 0 {
+            return;
+        }
+        if self.data.len() < len.saturating_mul(CELL_SIZE) {
+            let mut cell = CellData::new();
+            for i in (0..m).rev() {
+                self.load_cell(pos + i, &mut cell);
+                self.set_cell(pos + n + i, &cell);
+            }
+            return;
+        }
+        let (mut any_combined, mut any_extended) = (false, false);
+        for c in pos..pos + m {
+            any_combined |= self.read(c, CELL_CONTENT) & Content::IS_COMBINED_MASK != 0;
+            any_extended |= self.read(c, CELL_BG) & BgFlags::HAS_EXTENDED != 0;
+        }
+        // (when every flagged source's key already holds its string at its target, as on a
+        // line filled with one unit, nothing to write: two walks over the runs, no copies)
+        let unchanged = any_combined
+            && self.combined.with_cursor(pos, |sources| {
+                self.combined.with_cursor(pos + n, |targets| {
+                    (0..m).all(|i| {
+                        self.read(pos + i, CELL_CONTENT) & Content::IS_COMBINED_MASK == 0
+                            || sources.at(pos + i).is_some_and(|chars| {
+                                targets
+                                    .at(pos + n + i)
+                                    .is_some_and(|held| held.same_value(chars))
+                            })
+                    })
+                })
+            });
+        if any_combined && !unchanged {
+            // (sources `pos + i` and keys `pos + n + i` read in one walk)
+            let (strings, held) = self.combined.dense_indexed(pos, len);
+            let string = |offset: usize| {
+                held.get(offset)
+                    .copied()
+                    .flatten()
+                    .and_then(|id| strings.get(id))
+            };
+            let mut empty: Option<Arc<str>> = None;
+            let mut updates = Vec::new();
+            for i in 0..m {
+                if self.read(pos + i, CELL_CONTENT) & Content::IS_COMBINED_MASK == 0 {
+                    continue;
+                }
+                let (source, now) = (string(i), string(n + i));
+                // (the same allocation: nothing to compare)
+                if source.is_some() && source.map(Arc::as_ptr) == now.map(Arc::as_ptr) {
+                    continue;
+                }
+                let chars = match source {
+                    Some(chars) => chars,
+                    None => empty.get_or_insert_with(|| shared_str("")),
+                };
+                if !same_str(now, chars) {
+                    updates.push((pos + n + i, chars.clone()));
+                }
+            }
+            self.combined.insert_ascending(updates);
+        }
+        if any_extended {
+            let held = self.extended_attrs.dense(pos, len);
+            let mut updates = Vec::new();
+            for i in 0..m {
+                if self.read(pos + i, CELL_BG) & BgFlags::HAS_EXTENDED == 0 {
+                    continue;
+                }
+                let attrs = held.get(i).copied().flatten().unwrap_or_default();
+                if held.get(n + i).copied().flatten() != Some(attrs) {
+                    updates.push((pos + n + i, attrs));
+                }
+            }
+            self.extended_attrs.insert_ascending(updates);
+        }
+        self.data.copy_within(
+            pos * CELL_SIZE..(pos + m) * CELL_SIZE,
+            (pos + n) * CELL_SIZE,
+        );
     }
 
     /// LUNETERM: (review S7) `times` repetitions of a `w`-cell unit from `pos`: for each
@@ -1063,7 +1571,13 @@ impl BufferLine {
         let head_combined = write_combined && head.content & Content::IS_COMBINED_MASK != 0;
         let stub_combined =
             write_combined && stub.content & Content::IS_COMBINED_MASK != 0 && w > 1;
-        let head_chars = head_combined.then(|| shared_str(&head.combined_data));
+        // (M7 fix round 3) the string the line holds at `pos` when equal (an allocation less,
+        // and later comparisons find the same one)
+        let string = |line: &BufferLine, chars: &str| match line.combined.get(&pos) {
+            Some(held) if **held == *chars => held.clone(),
+            _ => shared_str(chars),
+        };
+        let head_chars = head_combined.then(|| string(self, &head.combined_data));
         if let Some(chars) = head_chars
             .as_ref()
             .filter(|_| w == 1 || stub_combined && stub.combined_data == head.combined_data)
@@ -1073,14 +1587,37 @@ impl BufferLine {
                 self.combined.assign(pos, last, Some(chars.clone()));
             }
         } else if head_combined || stub_combined {
-            let stub_chars = stub_combined.then(|| shared_str(&stub.combined_data));
-            let updates = (pos..end)
-                .filter_map(|p| {
+            let stub_chars = stub_combined.then(|| string(self, &stub.combined_data));
+            // (M7 fix round 3) when every key already holds its string (as a line the same fill
+            // wrote does), nothing to write: one walk over the runs, no copy of the strings
+            let held_all = self.combined.with_cursor(pos, |cursor| {
+                (pos..end).all(|p| {
                     let chars = if is_head(p) { &head_chars } else { &stub_chars };
-                    chars.as_ref().map(|chars| (p, chars.clone()))
+                    chars
+                        .as_ref()
+                        .is_none_or(|chars| cursor.at(p).is_some_and(|held| held.same_value(chars)))
                 })
-                .collect();
-            self.combined.insert_ascending(updates);
+            });
+            if !held_all {
+                // (M7 fix round 3) a key that already holds the string is left as it is: the
+                // same entries, without a search of the map per key
+                let (held_strings, held) = self.combined.dense_indexed(pos, end);
+                let updates = (pos..end)
+                    .filter_map(|p| {
+                        let chars = if is_head(p) { &head_chars } else { &stub_chars };
+                        let now = held
+                            .get(p - pos)
+                            .copied()
+                            .flatten()
+                            .and_then(|id| held_strings.get(id));
+                        chars
+                            .as_ref()
+                            .filter(|chars| !same_str(now, chars))
+                            .map(|chars| (p, chars.clone()))
+                    })
+                    .collect();
+                self.combined.insert_ascending(updates);
+            }
         }
         let head_extended = head.bg & BgFlags::HAS_EXTENDED != 0;
         let stub_extended = stub.bg & BgFlags::HAS_EXTENDED != 0 && w > 1;
@@ -1230,22 +1767,39 @@ impl BufferLine {
         }
         // per source `pos + i`, as `load_cell` reads them: its combined string and extended
         // attributes where flagged, and whether it is wide
+        // (M7 fix round 3: each table read in one walk, not searched per key)
+        let (mut strings, source_combined) = match any_combined {
+            true => self.combined.dense_indexed(pos, sources_end),
+            false => (Vec::new(), Vec::new()),
+        };
+        // (a flagged source without an entry reads as the empty string)
+        let mut empty = None;
+        let source_extended = match any_extended {
+            true => self.extended_attrs.dense(pos, sources_end),
+            false => Vec::new(),
+        };
         let mut combined = Vec::with_capacity(sources_end - pos);
         let mut extended = Vec::with_capacity(sources_end - pos);
         let mut wide = Vec::with_capacity(sources_end - pos);
-        for c in pos..sources_end {
+        for (i, c) in (pos..sources_end).enumerate() {
             let content = self.read(c, CELL_CONTENT);
             let bg = self.read(c, CELL_BG);
-            combined.push((content & Content::IS_COMBINED_MASK != 0).then(|| {
-                self.combined
-                    .get(&c)
-                    .cloned()
-                    .unwrap_or_else(|| shared_str(""))
+            let flagged = content & Content::IS_COMBINED_MASK != 0;
+            combined.push(match source_combined.get(i).copied().flatten() {
+                Some(id) if flagged => Some(id),
+                _ if flagged => Some(*empty.get_or_insert_with(|| {
+                    strings.push(shared_str(""));
+                    strings.len() - 1
+                })),
+                _ => None,
+            });
+            extended.push((bg & BgFlags::HAS_EXTENDED != 0).then(|| {
+                source_extended
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .unwrap_or_default()
             }));
-            extended.push(
-                (bg & BgFlags::HAS_EXTENDED != 0)
-                    .then(|| self.extended_attrs.get(&c).copied().unwrap_or_default()),
-            );
             wide.push(content >> Content::WIDTH_SHIFT == 2);
         }
 
@@ -1314,7 +1868,7 @@ impl BufferLine {
             next
         };
         // (empty where no source holds such an entry: every lookup then finds none)
-        let held_combined = |c: &[Option<Arc<str>>]| match any_combined {
+        let held_combined = |c: &[Option<usize>]| match any_combined {
             true => next_held(&|i| c.get(i).is_some_and(Option::is_some)),
             false => Vec::new(),
         };
@@ -1335,6 +1889,11 @@ impl BufferLine {
         // fix-up may still write there.
         let skip_filled = (fill_combined || !any_combined) && (fill_extended || !any_extended);
         let mut combined_updates = Vec::new();
+        // (M7 fix round 3) the strings the keys hold now, read in one walk
+        let (now_strings, now_combined) = match any_combined {
+            true => self.combined.dense_indexed(pos + n, len),
+            false => (Vec::new(), Vec::new()),
+        };
         for k in pos + n..len {
             if k < end && skip_filled && !(edge_fix && k == edge) {
                 continue;
@@ -1351,9 +1910,15 @@ impl BufferLine {
                 };
             let last = |next: &[usize]| next.get(low).copied().filter(|&i| i <= high);
             if !(in_fill && fill_combined) {
-                if let Some(Some(chars)) = last(next_combined).and_then(|i| combined.get(i)) {
+                let id = last(next_combined).and_then(|i| combined.get(i).copied().flatten());
+                if let Some(chars) = id.and_then(|id| strings.get(id)) {
                     // (an equal entry is left in place: the same state without a copy)
-                    if self.combined.get(&k) != Some(chars) {
+                    let held = now_combined
+                        .get(k - pos - n)
+                        .copied()
+                        .flatten()
+                        .and_then(|id| now_strings.get(id));
+                    if !same_str(held, chars) {
                         combined_updates.push((k, chars.clone()));
                     }
                 }
@@ -1387,6 +1952,157 @@ impl BufferLine {
             }
         }
         self.combined.insert_ascending(combined_updates);
+    }
+
+    /// LUNETERM: (M7 fix round 3, review S2) [`insert_cells_repeatedly`](Self::insert_cells_repeatedly)`(pos,
+    /// n, times, fill, edge, edge_attrs)` and then
+    /// [`set_cells_repeatedly_shared`](Self::set_cells_repeatedly_shared)`(pos, n, times, head,
+    /// stub, template)`, REP's insert-mode line fill of a unit `n` cells wide. The same cells
+    /// and entries as the two calls. Where the inserts' entries under the writes do not
+    /// survive them and right of the writes are those of one shift by all the inserted cells,
+    /// it is step 0's fix-up at `pos - 1`, that one shift ([`shift_cells_right`]), the
+    /// line-end fix-up and the writes: O(len + entries written), with no pass that works out
+    /// each key's last writer. Otherwise the two calls.
+    ///
+    /// Let `end = pos + n × times` (at most `len`) and `c` a class of offsets from `pos` (mod
+    /// `n`; `c = 0` is the head's, the others the stub's). It is the two calls when `edge >=
+    /// len - 1` (the edge fix-up can only hit the last cell, which the line-end fix-up has
+    /// made narrow), the fill is not wide, and per side table:
+    ///  - under the writes, per class: the written cell carries the table's flag (its entry is
+    ///    written last at every key of the class), or no old cell the inserts can shift
+    ///    (`pos..len - n`) on the class carries it and the fill does not (if the fill does,
+    ///    every class must be of the first kind: it is written at every key);
+    ///  - right of the writes, per class: the shifted old cells on it carry the flag all or
+    ///    none; and for the extended table, the fill carries none or no shifted cell on the
+    ///    last key's class is wide.
+    ///
+    /// Why:
+    ///  - Cells: everything the inserts write under the writes (fills, shifts, fix-ups at
+    ///    `pos + j × n - 1` for `j >= 1`) is overwritten, except step 0's fix-up at `pos - 1`,
+    ///    which reads that cell before anything else writes it. Right of the writes, key `k`
+    ///    ends with the old cell at `k - n × times` (each step moves it `n`, and it stays right
+    ///    of every later insert), the last key as the line-end fix-up leaves its final cell (a
+    ///    cell it rewrote before is shifted out by the next step).
+    ///  - Entries: a shift moves a cell `n` keys right, so a key takes entries only from old
+    ///    cells and fills on its own class, and the fix-ups write only the fill's extended
+    ///    entry (the edge fix-up never fires, see above). Under the writes, a class of the
+    ///    second kind takes no entry from the inserts and none from the writes (unflagged
+    ///    there); on one of the first kind the writes' are last. Right of the writes, key `k`'s
+    ///    last write is its final cell's: with every cell on its class flagged, that cell's
+    ///    entry, which the one shift copies; with none flagged, none, which the one shift
+    ///    leaves too. On the last key the line-end fix-up writes the fill's extended entry only
+    ///    after a wide cell, which the condition rules out unless the fill has none.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn insert_cells_repeatedly_then_set(
+        &mut self,
+        pos: usize,
+        n: usize,
+        times: usize,
+        fill_cell_data: &CellData,
+        edge: usize,
+        edge_attrs: &AttributeData,
+        cells: (&CellData, &CellData),
+        template: &mut Option<CombinedTemplate>,
+    ) {
+        let (head, stub) = cells;
+        let len = self.length;
+        let end = n
+            .checked_mul(times)
+            .and_then(|cells| pos.checked_add(cells))
+            .filter(|&end| n != 0 && times != 0 && end <= len);
+        let quiet = end.is_some_and(|end| {
+            edge.saturating_add(1) >= len
+                && fill_cell_data.get_width() != 2
+                && self.data.len() >= len.saturating_mul(CELL_SIZE)
+                && self.writes_hide_inserts(pos, n, end, fill_cell_data, (head, stub))
+        });
+        let Some(end) = end.filter(|_| quiet) else {
+            self.insert_cells_repeatedly(pos, n, times, fill_cell_data, edge, edge_attrs);
+            self.set_cells_repeatedly_shared(pos, n, times, head, stub, template);
+            return;
+        };
+        #[cfg(test)]
+        {
+            count_insert_pass();
+            count_one_shift_fill();
+        }
+        if pos != 0 && self.get_width(pos - 1) == 2 {
+            self.set_cell_from_codepoint(pos - 1, 0, 1, fill_cell_data);
+        }
+        if end < len {
+            self.shift_cells_right(pos, end - pos);
+            if self.get_width(len - 1) == 2 {
+                self.set_cell_from_codepoint(len - 1, 0, 1, fill_cell_data);
+            }
+        }
+        self.set_cells_repeatedly_shared(pos, n, times, head, stub, template);
+    }
+
+    /// The side-table conditions of
+    /// [`insert_cells_repeatedly_then_set`](Self::insert_cells_repeatedly_then_set)'s one
+    /// pass, for inserts of `n` cells from `pos` that end at `end <= len` and the cells
+    /// written after them (a unit of one or two cells; wider ones take the two calls).
+    fn writes_hide_inserts(
+        &self,
+        pos: usize,
+        n: usize,
+        end: usize,
+        fill_cell_data: &CellData,
+        cells: (&CellData, &CellData),
+    ) -> bool {
+        // (a unit is one or two cells wide: the head's class and the stub's)
+        if n == 0 || n > 2 {
+            return false;
+        }
+        let len = self.length;
+        let classes = [cells.0, cells.1];
+        let hides_combined = classes.map(|cell| cell.is_combined() != 0);
+        let hides_extended = classes.map(|cell| cell.bg & BgFlags::HAS_EXTENDED != 0);
+        let fill_combined = fill_cell_data.content & Content::IS_COMBINED_MASK != 0;
+        let fill_extended = fill_cell_data.bg & BgFlags::HAS_EXTENDED != 0;
+        let all = |hides: [bool; 2]| hides[0] && (n == 1 || hides[1]);
+        if (fill_combined && !all(hides_combined)) || (fill_extended && !all(hides_extended)) {
+            return false;
+        }
+        // per class: whether some / every shifted old cell carries each flag, and whether one
+        // is wide
+        let mut some = [(false, false, false); 2];
+        let mut every = [(true, true); 2];
+        for c in pos..len.saturating_sub(n) {
+            let class = usize::from(n == 2 && (c - pos) % 2 == 1);
+            let content = self.read(c, CELL_CONTENT);
+            let combined = content & Content::IS_COMBINED_MASK != 0;
+            let extended = self.read(c, CELL_BG) & BgFlags::HAS_EXTENDED != 0;
+            if let (Some(some), Some(every)) = (some.get_mut(class), every.get_mut(class)) {
+                some.0 |= combined;
+                some.1 |= extended;
+                some.2 |= content >> Content::WIDTH_SHIFT == 2;
+                every.0 &= combined;
+                every.1 &= extended;
+            }
+        }
+        let per_class =
+            (0..n).all(|class| {
+                let (
+                    Some(&(some_combined, some_extended, _)),
+                    Some(&(every_combined, every_extended)),
+                ) = (some.get(class), every.get(class))
+                else {
+                    return false;
+                };
+                let hides = (
+                    hides_combined.get(class) == Some(&true),
+                    hides_extended.get(class) == Some(&true),
+                );
+                let under = (hides.0 || !some_combined) && (hides.1 || !some_extended);
+                let right = end == len
+                    || ((every_combined || !some_combined) && (every_extended || !some_extended));
+                under && right
+            });
+        let last_wide = some
+            .get((len - 1 - pos) % n)
+            .is_some_and(|&(_, _, wide)| wide);
+        per_class && (end == len || !fill_extended || !last_wide)
     }
 
     /// LUNETERM: (M7 fix round 1) `InputHandler::print`'s insert-mode shifts for `times`
@@ -1445,6 +2161,24 @@ impl BufferLine {
     /// head, stub, template)` over the cells the inserts made room for, in one pass where the
     /// line holds flagged cells (the written range's entries computed once, not written by the
     /// shifts and then overwritten). The same cells and entries as the two calls.
+    ///
+    /// (M7 fix round 3, review S2) Where the inserts change neither side table, it is step 0's
+    /// fix-up at `pos - 1`, one shift by all the inserted cells ([`shift_cells_right`]), the
+    /// line-end fix-up and the writes: O(len + entries written). That holds for `stride >= 2`,
+    /// `end = pos + stride × times <= len`, `edge >= len - 1` (the edge fix-up can only hit
+    /// the last cell, which the line-end fix-up has made narrow), a fill that is not wide, and
+    /// per side table either no old cell at `pos..len - 1` carries its flag and neither does
+    /// the fill, or every key of `pos..len` holds one entry `S` and the fill carries none or
+    /// `S`:
+    ///  - Entries: the inserts write a table only where a shifted cell or the fill carries its
+    ///    flag (the fix-ups write the fill's extended entry): in the first case nowhere; in the
+    ///    second only `S` (a flagged old cell carries its key's entry), onto keys that hold `S`.
+    ///  - Cells: what the inserts write under the writes is overwritten, but step 0's fix-up at
+    ///    `pos - 1`, which reads that cell before anything else writes it; a fix-up at `s_j -
+    ///    1` (`j >= 1`) stays there, under the writes, as later inserts start right of it. Key
+    ///    `k >= end` ends with the old cell at `k - times`: it is right of every insert when it
+    ///    comes (`k - times + j >= pos + j × stride` for every step `j < times`), so every step
+    ///    moves it one; the last key as the line-end fix-up leaves its final cell.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn insert_cell_strided_then_set(
         &mut self,
@@ -1457,6 +2191,79 @@ impl BufferLine {
         cells: (&CellData, &CellData),
         template: &mut Option<CombinedTemplate>,
     ) {
+        let len = self.length;
+        let end = stride
+            .checked_mul(times)
+            .and_then(|cells| pos.checked_add(cells))
+            .filter(|&end| stride >= 2 && times != 0 && end <= len);
+        let tables = end
+            .filter(|_| {
+                edge.saturating_add(1) >= len
+                    && fill_cell_data.get_width() != 2
+                    && self.data.len() >= len.saturating_mul(CELL_SIZE)
+            })
+            .and_then(|end| Some((end, self.strided_tables(pos, fill_cell_data)?)));
+        if let Some((end, written)) = tables {
+            #[cfg(test)]
+            {
+                count_insert_pass();
+                count_one_shift_fill();
+            }
+            // (with one string `s`: the keys a flagged cell passes, or the fill writes, take it)
+            let updates = written.map(|chars| {
+                let fill_combined = fill_cell_data.content & Content::IS_COMBINED_MASK != 0;
+                let (_, held) = self.combined.dense_indexed(pos, len);
+                // flagged cells at `pos..pos + i`, for the windows of shifted sources
+                let mut flagged = Vec::with_capacity(len - pos + 1);
+                flagged.push(0usize);
+                for c in pos..len {
+                    let here =
+                        c + 1 < len && self.read(c, CELL_CONTENT) & Content::IS_COMBINED_MASK != 0;
+                    let before = flagged.last().copied().unwrap_or(0);
+                    flagged.push(before + usize::from(here));
+                }
+                // the keys that hold `s` after the inserts, as runs (the others hold none)
+                let mut runs: Vec<(usize, (usize, Arc<str>))> = Vec::new();
+                for k in pos..len {
+                    let offset = k - pos;
+                    let filled = fill_combined && offset % stride == 0 && offset / stride < times;
+                    let passed = offset > 0 && {
+                        let steps = times.min((offset - 1) / stride + 1);
+                        let (low, high) = (offset - steps, offset);
+                        flagged.get(high).copied().unwrap_or(0)
+                            > flagged.get(low).copied().unwrap_or(0)
+                    };
+                    if filled || passed || held.get(offset).copied().flatten().is_some() {
+                        match runs.last_mut() {
+                            Some((_, (last, _))) if *last + 1 == k => *last = k,
+                            _ => runs.push((k, (k, chars.clone()))),
+                        }
+                    }
+                }
+                runs
+            });
+            if pos != 0 && self.get_width(pos - 1) == 2 {
+                self.set_cell_from_codepoint(pos - 1, 0, 1, fill_cell_data);
+            }
+            if end < len {
+                match updates {
+                    // (the entries are the updates: the slots only)
+                    Some(_) => self.data.copy_within(
+                        pos * CELL_SIZE..(len - times) * CELL_SIZE,
+                        (pos + times) * CELL_SIZE,
+                    ),
+                    None => self.shift_cells_right(pos, times),
+                }
+                if self.get_width(len - 1) == 2 {
+                    self.set_cell_from_codepoint(len - 1, 0, 1, fill_cell_data);
+                }
+            }
+            if let Some(runs) = updates {
+                self.combined.splice_runs(pos, len - 1, runs);
+            }
+            self.set_cells_repeatedly_shared(pos, stride, times, cells.0, cells.1, template);
+            return;
+        }
         let overlay = Overlay {
             head: cells.0,
             stub: cells.1,
@@ -1471,6 +2278,60 @@ impl BufferLine {
             edge_attrs,
             Some(overlay),
         );
+    }
+
+    /// The side-table condition of [`insert_cell_strided_then_set`](Self::insert_cell_strided_then_set)'s
+    /// one pass, and what its inserts write: `None` where it does not hold; `Some(None)` where
+    /// the inserts change neither table (per table, no cell at `pos..len - 1` and not the fill
+    /// carries its flag, or every key of `pos..len` holds one entry and the fill carries none
+    /// or that one); `Some(Some(s))` where the extended table is so and every combined string
+    /// at `pos..len` is `s`, every flagged cell at `pos..len - 1` holds one, and the fill
+    /// carries none or `s`, so the inserts write `s` only, at the keys a flagged cell passes.
+    fn strided_tables(&self, pos: usize, fill_cell_data: &CellData) -> Option<Option<Arc<str>>> {
+        let len = self.length;
+        let (mut any_combined, mut any_extended) = (false, false);
+        for c in pos..len.saturating_sub(1) {
+            any_combined |= self.read(c, CELL_CONTENT) & Content::IS_COMBINED_MASK != 0;
+            any_extended |= self.read(c, CELL_BG) & BgFlags::HAS_EXTENDED != 0;
+        }
+        let fill_combined = fill_cell_data.content & Content::IS_COMBINED_MASK != 0;
+        let fill_extended = fill_cell_data.bg & BgFlags::HAS_EXTENDED != 0;
+        let last = len.saturating_sub(1);
+        let extended_ok = (!any_extended && !fill_extended)
+            || match self.extended_attrs.runs_in(pos, Some(len)) {
+                (runs, held) if runs.as_slice() == [(pos, last, 0)] => held
+                    .first()
+                    .is_some_and(|held| !fill_extended || *held == fill_cell_data.extended),
+                _ => false,
+            };
+        if !extended_ok {
+            return None;
+        }
+        if !any_combined && !fill_combined {
+            return Some(None);
+        }
+        let (runs, held) = self.combined.runs_in(pos, Some(len));
+        let [held] = held.as_slice() else {
+            return None;
+        };
+        if fill_combined && **held != *fill_cell_data.combined_data {
+            return None;
+        }
+        if runs.as_slice() == [(pos, last, 0)] {
+            return Some(None);
+        }
+        // every flagged cell that can shift holds the string (the runs are in key order)
+        let mut run = runs.iter().peekable();
+        for c in pos..len.saturating_sub(1) {
+            if self.read(c, CELL_CONTENT) & Content::IS_COMBINED_MASK == 0 {
+                continue;
+            }
+            while run.next_if(|&&(_, end, _)| end < c).is_some() {}
+            if run.peek().is_none_or(|&&(first, _, _)| first > c) {
+                return None;
+            }
+        }
+        Some(Some(held.clone()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1641,7 +2502,8 @@ impl BufferLine {
         #[derive(Clone)]
         struct Source {
             slot: [u32; CELL_SIZE],
-            combined: Option<Arc<str>>,
+            // (M7 fix round 3: an index into `strings`, so that no source copies a string)
+            combined: Option<usize>,
             extended: Option<ExtendedAttrs>,
             wide: bool,
         }
@@ -1658,15 +2520,32 @@ impl BufferLine {
             wide: false,
         };
         // (every key's entries read in one walk, for the sources and to skip equal writes)
-        let old_combined = match self.combined.is_empty() {
-            true => Vec::new(),
-            false => self.combined.dense(pos, len),
+        let (mut strings, old_combined) = match self.combined.is_empty() {
+            true => (Vec::new(), Vec::new()),
+            false => self.combined.dense_indexed(pos, len),
+        };
+        // (a flagged source without an entry reads as the empty string)
+        let empty = (pos..len - 1).any(|c| {
+            self.read(c, CELL_CONTENT) & Content::IS_COMBINED_MASK != 0
+                && old_combined.get(c - pos).copied().flatten().is_none()
+        });
+        let empty = empty.then(|| {
+            strings.push(shared_str(""));
+            strings.len() - 1
+        });
+        let strings = strings;
+        let old_string = |offset: usize| {
+            old_combined
+                .get(offset)
+                .copied()
+                .flatten()
+                .and_then(|id| strings.get(id))
         };
         let old_extended = self.extended_attrs.dense(pos, len);
         let sources: Vec<Source> = (pos..len - 1)
             .zip(&old_extended)
             .map(|(c, attrs)| {
-                let chars = old_combined.get(c - pos).cloned().flatten();
+                let chars = old_combined.get(c - pos).copied().flatten();
                 let slot = [
                     self.read(c, CELL_CONTENT),
                     self.read(c, CELL_FG),
@@ -1674,7 +2553,8 @@ impl BufferLine {
                 ];
                 Source {
                     combined: (slot[0] & Content::IS_COMBINED_MASK != 0)
-                        .then(|| chars.unwrap_or_else(|| shared_str(""))),
+                        .then(|| chars.or(empty))
+                        .flatten(),
                     extended: (slot[2] & BgFlags::HAS_EXTENDED != 0)
                         .then(|| attrs.unwrap_or_default()),
                     wide: slot[0] >> Content::WIDTH_SHIFT == 2,
@@ -1736,6 +2616,20 @@ impl BufferLine {
             (fill_cell_data.bg & BgFlags::HAS_EXTENDED != 0).then_some(fill_cell_data.extended);
         let is_wide = |slot: &[u32; CELL_SIZE]| slot[0] >> Content::WIDTH_SHIFT == 2;
 
+        // (M7 fix round 3) the strings of the cells written after, one each per call: a string
+        // the line already holds at `pos` when equal, else a new one
+        let written_strings = {
+            let string = |cell: &CellData| {
+                (cell.is_combined() != 0).then(|| match old_string(0) {
+                    Some(held) if **held == *cell.combined_data => held.clone(),
+                    _ => shared_str(&cell.combined_data),
+                })
+            };
+            match &overlay {
+                Some(overlay) if reuse.is_none() => (string(overlay.head), string(overlay.stub)),
+                _ => (None, None),
+            }
+        };
         let mut new_slots: Vec<[u32; CELL_SIZE]> = Vec::with_capacity(len - pos);
         let mut combined_updates = Vec::new();
         let mut extended_updates = Vec::new();
@@ -1798,18 +2692,27 @@ impl BufferLine {
             });
             // combined
             let written_combined = written.filter(|cell| cell.is_combined() != 0);
-            if let Some(cell) = written_combined {
+            let held_here = old_string(offset);
+            if written_combined.is_some() {
                 if reuse.is_none() {
-                    let chars = shared_str(&cell.combined_data);
-                    if old_combined.get(offset).and_then(Option::as_ref) != Some(&chars) {
-                        combined_updates.push((k, chars));
+                    // (M7 fix round 3) the head's or the stub's one string
+                    let chars = match offset % stride {
+                        0 => &written_strings.0,
+                        _ => &written_strings.1,
+                    };
+                    if let Some(chars) = chars.as_ref().filter(|chars| !same_str(held_here, chars))
+                    {
+                        combined_updates.push((k, chars.clone()));
                     }
                 }
             } else if let Some(chars) = fill_combined.as_ref().filter(|_| is_fill) {
                 combined_updates.push((k, chars.clone()));
-            } else if let Some(chars) = last_held(next_combined).and_then(|s| s.combined.clone()) {
-                if old_combined.get(offset).and_then(Option::as_ref) != Some(&chars) {
-                    combined_updates.push((k, chars));
+            } else if let Some(chars) = last_held(next_combined)
+                .and_then(|s| s.combined)
+                .and_then(|id| strings.get(id))
+            {
+                if !same_str(held_here, chars) {
+                    combined_updates.push((k, chars.clone()));
                 }
             }
             // extended
@@ -2066,6 +2969,268 @@ impl BufferLine {
             self.write(len - 1, CELL_CONTENT, 1 << Content::WIDTH_SHIFT);
             self.write(len - 1, CELL_FG, fill_cell_data.fg);
             self.write(len - 1, CELL_BG, fill_cell_data.bg);
+        }
+        self.combined.insert_ascending(combined_updates);
+        self.extended_attrs.insert_ascending(extended_updates);
+    }
+
+    /// LUNETERM: (M7 fix round 3, review S2) what `InputHandler::print`'s inserts do right of
+    /// `start` (= its `cols`) over `periods` passes of REP's line fill in insert mode, each
+    /// pass pushing the same `block` cells over `start` `step` cells at a time, in one pass:
+    ///
+    /// ```text
+    /// let pushed: Vec<CellData> = (start..start + block).map(|c| load_cell(c)).collect();
+    /// for _ in 0..periods {
+    ///     for j in 0..block / step {
+    ///         for c in (start..len - step).rev() {
+    ///             self.set_cell(c + step, &load_cell(c));
+    ///         }
+    ///         for i in 0..step {
+    ///             self.set_cell(start + i, &pushed[block - (j + 1) * step + i]);
+    ///         }
+    ///         if self.get_width(len - 1) == 2 {
+    ///             self.set_cell_from_codepoint(len - 1, NULL_CELL_CODE, NULL_CELL_WIDTH, fill);
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Each step is what `insert_cells(p, step, fill)` at a `p < start` does at `start` and
+    /// right of it: the cells shift right by `step`, the cells left of `start` that cross it
+    /// arrive at `start..start + step` (here the next ones of the block, last first), and the
+    /// line-end fix-up rewrites a wide last cell. The block is the cells a pass left at
+    /// `start..start + block` (the caller's precondition: the passes push it again, see
+    /// `InputHandler::print_repeated`). The same cells and `combined` and `extended_attrs`
+    /// entries, stale ones included, at O(len + block) where the loop costs
+    /// O(periods × block × len).
+    ///
+    /// Why it is the loop, for `step >= 1` dividing `block` and `start + block < len`
+    /// (otherwise this runs the loop). Let `m = len - start`, `T = periods × block` the cells
+    /// pushed in all, and `o_u` the old cell at `start + u` as `load_cell` reads it (the block
+    /// is `o_0 ..= o_{block-1}`).
+    ///  - Cells: the cell pushed at step `s` (counting from 0 over all passes) at offset `i`
+    ///    moves `step` per later step, so it ends at `(S - 1 - s) × step + i` (`S = T / step`
+    ///    steps), which is `≡ block - (j + 1) × step + i (mod block)` for `s`'s step `j` in
+    ///    its pass: the final cell at offset `t` is `V(t) = o_{t mod block}` for `t < T`; an
+    ///    old cell moves `T`, so `V(t) = o_{t-T}` for `t >= T`. Only `len - 1` differs: the
+    ///    line-end fix-up rewrites `V(m - 1)` when it is wide. A rewritten last cell is never
+    ///    read again (no shift reads `len - 1`).
+    ///  - Entries: a flagged cell writes its entries wherever it lands and carries them as
+    ///    first loaded (`set_cell` of what `load_cell` read); an unflagged one writes none.
+    ///    Key `start + t` is written by every step, by the cell that ends at `t + q × step`
+    ///    at the step `S - 1 - q`, for `q = 0..S`, the latest first: it ends with the entry of
+    ///    the first flagged `V(t + q × step)`, else unchanged. Key `len - 1` also takes the
+    ///    line-end fix-up's extended entry (`fill`'s, if flagged) after each step that leaves a
+    ///    wide cell there: there the first `q` whose cell is wide (with a flagged `fill`) or
+    ///    flagged decides.
+    ///  - Search: the progression `t, t + step, ...` meets `V(t') = o_{t' mod block}` while
+    ///    `t' < T`, a cycle through one residue class of the block (`step` divides `block`
+    ///    and `T`), so its first flagged cell is within one cycle when the class holds one;
+    ///    then, from `t' = T` on, `o_{t'-T}` for `t' - T` from `t mod step` (or `t - T`) up to
+    ///    `t`. One table per class of the block and one per class of the old cells answer
+    ///    each key in O(1).
+    ///  - Periods past `m / block + 2` change nothing: then `T >= m + block`, every final cell
+    ///    is `o_{t mod block}` and every key's progression holds a whole cycle before the old
+    ///    cells, so the result does not depend on `T`. They are capped there.
+    pub(crate) fn insert_block_repeatedly(
+        &mut self,
+        start: usize,
+        block: usize,
+        step: usize,
+        periods: usize,
+        fill_cell_data: &CellData,
+    ) {
+        let len = self.length;
+        if periods == 0 || step == 0 || block == 0 || block % step != 0 {
+            debug_assert!(
+                periods == 0,
+                "insert_block_repeatedly: bad block {block} / {step}"
+            );
+            return;
+        }
+        let fast = start.checked_add(block).is_some_and(|end| end < len)
+            && self.data.len() >= len.saturating_mul(CELL_SIZE);
+        if !fast {
+            let mut pushed = Vec::with_capacity(block);
+            for c in start..start.saturating_add(block) {
+                let mut cell = CellData::new();
+                self.load_cell(c, &mut cell);
+                pushed.push(cell);
+            }
+            for _ in 0..periods.min(len / block + 2) {
+                for j in 0..block / step {
+                    let mut cell = CellData::new();
+                    for c in (start..len.saturating_sub(step)).rev() {
+                        self.load_cell(c, &mut cell);
+                        self.set_cell(c + step, &cell);
+                    }
+                    for i in 0..step {
+                        if let Some(cell) = pushed.get(block - (j + 1) * step + i) {
+                            self.set_cell(start + i, cell);
+                        }
+                    }
+                    if len > 0 && self.get_width(len - 1) == 2 {
+                        self.set_cell_from_codepoint(
+                            len - 1,
+                            NULL_CELL_CODE,
+                            NULL_CELL_WIDTH,
+                            fill_cell_data,
+                        );
+                    }
+                }
+            }
+            return;
+        }
+        #[cfg(test)]
+        count_insert_pass();
+        let m = len - start;
+        let periods = periods.min(m / block + 2);
+        // (at most m + 2 × block, below 3 × len)
+        let total = periods * block;
+
+        // the old cells `o_u`, as `load_cell` reads them
+        let old_combined = self.combined.dense(start, len);
+        let old_extended = self.extended_attrs.dense(start, len);
+        let mut slots = Vec::with_capacity(m);
+        let mut combined = Vec::with_capacity(m);
+        let mut extended = Vec::with_capacity(m);
+        let mut wide = Vec::with_capacity(m);
+        for (c, (chars, attrs)) in (start..len).zip(old_combined.iter().zip(&old_extended)) {
+            let slot = [
+                self.read(c, CELL_CONTENT),
+                self.read(c, CELL_FG),
+                self.read(c, CELL_BG),
+            ];
+            combined.push(
+                (slot[0] & Content::IS_COMBINED_MASK != 0)
+                    .then(|| chars.clone().unwrap_or_else(|| shared_str(""))),
+            );
+            extended
+                .push((slot[2] & BgFlags::HAS_EXTENDED != 0).then(|| attrs.unwrap_or_default()));
+            wide.push(slot[0] >> Content::WIDTH_SHIFT == 2);
+            slots.push(slot);
+        }
+        // the old cell each final offset holds: `V(t)`
+        let source = |t: usize| if t < total { t % block } else { t - total };
+
+        // per residue `r` of the block: the distance (a multiple of `step`, below `block`) to
+        // the first flagged block cell on the cycle `r, r + step, ...` (mod block)
+        let first_in_block = |flagged: &dyn Fn(usize) -> bool| -> Vec<Option<usize>> {
+            let mut first = vec![None; block];
+            let cycle = block / step;
+            for class in 0..step {
+                let mut next = None;
+                for idx in (0..2 * cycle).rev() {
+                    let r = class + (idx % cycle) * step;
+                    if flagged(r) {
+                        next = Some(idx);
+                    }
+                    if idx < cycle {
+                        if let Some(slot) = first.get_mut(r) {
+                            *slot = next.map(|found| (found - idx) * step);
+                        }
+                    }
+                }
+            }
+            first
+        };
+        // per old offset `u`: the first flagged old cell at or after it on its class (mod
+        // step), `usize::MAX` for none
+        let next_old = |flagged: &dyn Fn(usize) -> bool| -> Vec<usize> {
+            let mut next = vec![usize::MAX; m];
+            for u in (0..m).rev() {
+                let found = if flagged(u) {
+                    u
+                } else {
+                    next.get(u + step).copied().unwrap_or(usize::MAX)
+                };
+                if let Some(slot) = next.get_mut(u) {
+                    *slot = found;
+                }
+            }
+            next
+        };
+        // the old cell whose entry key `start + t` ends with: the first flagged `V(t')` on
+        // `t' = t, t + step, ... < t + T`
+        let latest = |t: usize, in_block: &[Option<usize>], old: &[usize]| -> Option<usize> {
+            let from_old = if t < total {
+                let delta = in_block.get(t % block).copied().flatten();
+                if let Some(delta) = delta.filter(|&delta| delta < total - t) {
+                    return Some((t + delta) % block);
+                }
+                t % step
+            } else {
+                t - total
+            };
+            old.get(from_old).copied().filter(|&u| u < t)
+        };
+        let has_combined = |u: usize| combined.get(u).is_some_and(Option::is_some);
+        let has_extended = |u: usize| extended.get(u).is_some_and(Option::is_some);
+        let (combined_in_block, combined_old) =
+            (first_in_block(&has_combined), next_old(&has_combined));
+        let (extended_in_block, extended_old) =
+            (first_in_block(&has_extended), next_old(&has_extended));
+        let fill_extended =
+            (fill_cell_data.bg & BgFlags::HAS_EXTENDED != 0).then_some(fill_cell_data.extended);
+
+        let mut combined_updates = Vec::new();
+        let mut extended_updates = Vec::new();
+        for t in 0..m {
+            let key = start + t;
+            let chars = latest(t, &combined_in_block, &combined_old)
+                .and_then(|u| combined.get(u).cloned().flatten());
+            if let Some(chars) = chars {
+                if old_combined.get(t).and_then(Option::as_ref) != Some(&chars) {
+                    combined_updates.push((key, chars));
+                }
+            }
+            let attrs = if t == m - 1 {
+                // the line-end fix-up writes after each wide cell's shift: a direct walk of
+                // the progression, one cycle of the block then the old cells
+                let pick = |u: usize| match fill_extended {
+                    Some(fix) if wide.get(u) == Some(&true) => Some(fix),
+                    _ => extended.get(u).copied().flatten(),
+                };
+                let mut found = None;
+                let mut t2 = t;
+                while found.is_none() && t2 < total.min(t.saturating_add(block)) {
+                    found = pick(t2 % block);
+                    t2 += step;
+                }
+                let mut u = if t < total { t % step } else { t - total };
+                while found.is_none() && u < t {
+                    found = pick(u);
+                    u += step;
+                }
+                found
+            } else {
+                latest(t, &extended_in_block, &extended_old)
+                    .and_then(|u| extended.get(u).copied().flatten())
+            };
+            if let Some(attrs) = attrs {
+                if old_extended.get(t).copied().flatten() != Some(attrs) {
+                    extended_updates.push((key, attrs));
+                }
+            }
+        }
+
+        // the cells: `V(t)`, the last one as the line-end fix-up leaves it
+        let mut new_slots: Vec<[u32; CELL_SIZE]> = (0..m)
+            .map(|t| slots.get(source(t)).copied().unwrap_or_default())
+            .collect();
+        if wide.get(source(m - 1)) == Some(&true) {
+            if let Some(last) = new_slots.last_mut() {
+                *last = [
+                    NULL_CELL_CODE | (NULL_CELL_WIDTH << Content::WIDTH_SHIFT),
+                    fill_cell_data.fg,
+                    fill_cell_data.bg,
+                ];
+            }
+        }
+        for (c, slot) in (start..).zip(new_slots) {
+            self.write(c, CELL_CONTENT, slot[0]);
+            self.write(c, CELL_FG, slot[1]);
+            self.write(c, CELL_BG, slot[2]);
         }
         self.combined.insert_ascending(combined_updates);
         self.extended_attrs.insert_ascending(extended_updates);

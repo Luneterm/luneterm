@@ -3162,18 +3162,25 @@ fn check_rep_cut(
 /// shift of the hidden tail shows, with a cluster, a wide character and an underline-coloured
 /// cell past the screen's columns where they fit; then `modes`.
 fn longer_lines(t: &mut TestTerm, kind: usize, modes: &str) {
+    let cols = t.handler.services.buffer.cols;
+    let rows = t.handler.services.buffer.rows;
+    let len = match kind {
+        0 => cols + 1,
+        1 => 3 * cols,
+        _ => cols * (t.buffer().lines.max_length() + rows + 8) + 1,
+    };
+    lines_of(t, len, modes);
+}
+
+/// [`longer_lines`] with every line `len` cells long (M7 fix round 3: the lengths a Windows 10
+/// window's narrowing leaves, from its old width).
+fn lines_of(t: &mut TestTerm, len: usize, modes: &str) {
     use crate::buffer::constants::BgFlags;
     let mut coloured = AttributeData::default();
     coloured.bg |= BgFlags::HAS_EXTENDED;
     coloured.extended = ExtendedAttrs::new(0x0040_0000, 0);
     let cols = t.handler.services.buffer.cols;
-    let rows = t.handler.services.buffer.rows;
     let buffer = t.handler.services.buffer.buffer_mut();
-    let len = match kind {
-        0 => cols + 1,
-        1 => 3 * cols,
-        _ => cols * (buffer.lines.max_length() + rows + 8) + 1,
-    };
     for y in 0..buffer.lines.len() {
         let mut line = BufferLine::new(len, None, false);
         for c in 0..len {
@@ -3973,7 +3980,7 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
             (1..=n).collect()
         }
     };
-    let (mut filled, mut batched, mut compared) = (0, 0, 0);
+    let (mut filled, mut batched, mut cycled, mut compared) = (0, 0, 0, 0);
     // (review F5) seeds whose uncapped print would not fit one `print` call: counted, not a
     // failure. A unit of several code points stacked into one cell at a large count makes the
     // repeated text longer than one parse buffer; REP and print still agree, but this harness
@@ -3995,9 +4002,16 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         let scrollback = if next(32) == 0 { 10_000 } else { next(7) };
         let screen_reader = next(6) == 0;
         let long = next(4);
+        // (M7 fix round 3) rows a Windows 10 window's narrowing leaves, of up to 8 x cols
+        let long_len = cols * (2 + next(7)) + next(3);
         let mut setup = String::new();
         for _ in 0..next(14) {
             setup.push_str(CONTENT[next(CONTENT.len())]);
+        }
+        // (M7 fix round 3, review S2) and often below a scroll region in insert mode, where
+        // whole passes over the last row are batched once they settle
+        if next(4) == 0 {
+            setup.push_str("\x1b[1;2r\x1b[999;1H\x1b[4h");
         }
         let unit = UNITS[next(UNITS.len())];
         let count = match next(4) {
@@ -4010,21 +4024,24 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
             if screen_reader {
                 t.set_option(OptionValue::ScreenReaderMode(true));
             }
-            if long < 2 {
-                longer_lines(&mut t, long, "");
+            match long {
+                0 | 1 => longer_lines(&mut t, long, ""),
+                2 => lines_of(&mut t, long_len, ""),
+                _ => {}
             }
             t.parse_str(&setup);
             t.parse_str(unit);
             t
         };
         let label = format!(
-            "seed {seed}: {cols}x{rows}+{scrollback}, long {long}, screen reader \
+            "seed {seed}: {cols}x{rows}+{scrollback}, long {long} ({long_len}), screen reader \
              {screen_reader}, {setup:?} then {unit:?}, REP {count}"
         );
         let mut capped = make();
         capped.parse_str(&format!("\x1b[{count}b"));
         filled += capped.handler.rep_fills;
         batched += capped.handler.rep_stuck_batches;
+        cycled += capped.handler.rep_cycle_batches;
         // the uncapped print: what REP repeats (nothing after no print, or where the cell
         // would start left of the line), `count` times in one `print` call
         let mut uncapped = make();
@@ -4050,13 +4067,15 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         // the line fill and the batched stuck inserts both ran
         assert!(filled > compared as u64 / 4, "{filled} of {compared}");
         assert!(batched > 0, "{batched} of {compared}");
+        assert!(cycled > compared as u64 / 200, "{cycled} of {compared}");
         // the skipped seeds stay rare (review F5): fewer than 1 in 10,000
         assert!(
             skipped < 1 + compared as u64 / 10_000,
             "{skipped} skipped of {compared}"
         );
         eprintln!(
-            "rep diff: {compared} compared, {filled} filled, {batched} batched, {skipped} skipped"
+            "rep diff: {compared} compared, {filled} filled, {batched} batched, {cycled} passes \
+             batched, {skipped} skipped"
         );
     }
 }
@@ -7870,6 +7889,131 @@ fn rep_below_region_large_scrollback_leaves_the_state_of_the_uncapped_print() {
             assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
             uncapped.parse_str(&format!("{text}\x1b[}}"));
             assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+        }
+    }
+}
+
+/// M7 fix round 3 (review S2): below a scroll region in insert mode every wrap lands on the
+/// last row, so once a whole pass leaves what it reads as it found it, the line fill takes the
+/// rest of the whole passes at once (the row's tail as one `insert_block_repeatedly` when it
+/// is longer than the cells a pass pushes into it). For plain, combined, wide, widened and
+/// extended units, inside a link and with screen reader mode, on rows of `cols` cells and
+/// longer (a Windows 10 window narrowed from L columns leaves rows of L cells; `lines_of`
+/// builds them), at a 10,000-line scrollback: REP leaves the state of the uncapped print; the
+/// passes are batched once; and the row is shifted a bounded number of times whatever its
+/// length (before, once per line of the cut floor, `rows + 3` plus one per `cols` of tail).
+#[test]
+fn rep_below_region_batches_settled_passes_and_leaves_the_state_of_the_uncapped_print() {
+    use crate::buffer::buffer_line::insert_passes;
+    type Setup = fn(&mut TestTerm);
+    const BELOW: &str = "\x1b[1;2r\x1b[999;1H\x1b[4h";
+    let plain: Setup = |_| {};
+    let vs16: Setup = with_11_vs16;
+    let cases: [(&str, Setup, &str, &str); 10] = [
+        ("plain", plain, "", "a"),
+        ("cluster", plain, "", "e\u{301}"),
+        ("wide", plain, "", "\u{4e2d}"),
+        ("wide cluster", plain, "", "\u{4e2d}\u{301}"),
+        ("emoji ZWJ", vs16, "", EMOJI_ZWJ),
+        ("VS16", vs16, "", VS16),
+        ("keycap", vs16, "", KEYCAP),
+        ("underline colour", plain, "\x1b[4:3;58:5:9m", "a"),
+        ("open link, VS16", vs16, "\x1b]8;;u\x07", VS16),
+        ("open link, cluster", plain, "\x1b]8;;u\x07", "e\u{301}"),
+    ];
+    let mut checked = 0;
+    for &(cols, rows) in &[(8usize, 4usize), (9, 3), (16, 6), (80, 24)] {
+        for &(name, provider, modes, unit) in &cases {
+            for tail in [0, 1, 3 * cols, 24 * cols + 5] {
+                for screen_reader in [false, true] {
+                    if screen_reader && (cols, tail) != (16, 3 * 16) {
+                        continue;
+                    }
+                    let count = 5_000;
+                    let make = || {
+                        let mut t = test_handler(cols, rows, [OptionValue::Scrollback(10_000)]);
+                        provider(&mut t);
+                        if screen_reader {
+                            t.set_option(OptionValue::ScreenReaderMode(true));
+                        }
+                        if tail > 0 {
+                            lines_of(&mut t, cols + tail, "");
+                        }
+                        t.parse_str(modes);
+                        t.parse_str(BELOW);
+                        t.parse_str(unit);
+                        t
+                    };
+                    let label = format!(
+                        "{name} at {cols}x{rows} sb10000, rows of cols + {tail}, screen reader \
+                         {screen_reader}, REP {count}"
+                    );
+                    let mut capped = make();
+                    let repeated = {
+                        let buffer = capped.buffer();
+                        let join = capped.handler.preceding_join_state;
+                        let width = UnicodeService::extract_width(join) as usize;
+                        let x = buffer.x.saturating_sub(width);
+                        buffer.lines.get(abs_y(buffer)).unwrap().get_string(x)
+                    };
+                    let passes = insert_passes();
+                    capped.parse_str(&format!("\x1b[{count}b"));
+                    let passes = insert_passes() - passes;
+                    assert_eq!(capped.handler.rep_fills, 1, "{label}: line fill");
+                    assert_eq!(capped.handler.rep_cycle_batches, 1, "{label}: batched");
+                    // a few passes before the state settles, the batch, the last partial pass;
+                    // but where a widened unit's joiner wraps it (an odd number of columns),
+                    // the wrap copies the tail's strings into the row (upstream's copy), so the
+                    // row settles only once the tail has (named in the doc comment)
+                    let widened = matches!(name, "VS16" | "keycap" | "open link, VS16");
+                    if !(widened && cols % 2 == 1 && tail > 0) {
+                        assert!(passes <= 12, "{label}: {passes} insert passes");
+                    }
+                    let mut uncapped = make();
+                    let text = repeated.repeat(count);
+                    assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
+                    uncapped.parse_str(&format!("{text}\x1b[}}"));
+                    assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 4 * 10 * 4 + 10, "cases checked");
+
+    // a widened unit on an odd number of columns, over rows whose every cell holds its own
+    // string: the joiner's wrap copies the old row's strings from `cols - 1` on (upstream's
+    // copy), the hidden tail's included, into the row and the tail, so the passes settle only
+    // with the whole line; the batch must not treat the tail as merely pushed
+    for &(cols, rows) in &[(9usize, 3usize), (7, 4), (11, 2)] {
+        for unit in [VS16, KEYCAP] {
+            for tail in [2 * cols, 5 * cols + 3] {
+                let count = 3_001;
+                let make = || {
+                    let mut t = test_handler(cols, rows, [OptionValue::Scrollback(10_000)]);
+                    with_11_vs16(&mut t);
+                    let buffer = t.handler.services.buffer.buffer_mut();
+                    for y in 0..buffer.lines.len() {
+                        let mut line = BufferLine::new(cols + tail, None, false);
+                        for c in 0..cols + tail {
+                            line.set_cell_from_codepoint(c, u32::from('a'), 1, &DEFAULT_ATTR_DATA);
+                            line.add_codepoint_to_cell(c, 0x300 + (c % 60) as u32, 1);
+                        }
+                        buffer.lines.set(y, Some(line));
+                    }
+                    t.parse_str(BELOW);
+                    t.parse_str(unit);
+                    t
+                };
+                let label = format!("{unit:?} over strings at {cols}x{rows}, tail {tail}");
+                let mut capped = make();
+                capped.parse_str(&format!("\x1b[{count}b"));
+                let mut uncapped = make();
+                uncapped.parse_str(&format!("{}\x1b[}}", unit.repeat(count)));
+                assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+                // (the cut leaves too few passes for the whole line to settle here)
+                assert!(capped.handler.rep_cycle_batches <= 1, "{label}: batched");
+            }
         }
     }
 }

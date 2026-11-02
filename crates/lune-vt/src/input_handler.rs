@@ -119,7 +119,9 @@ use std::sync::Arc;
 
 use crate::buffer::attribute_data::AttributeData;
 use crate::buffer::buffer::Buffer;
-use crate::buffer::buffer_line::{BufferLine, DEFAULT_ATTR_DATA, MAX_COMBINED_CODE_POINTS};
+use crate::buffer::buffer_line::{
+    BufferLine, DEFAULT_ATTR_DATA, MAX_COMBINED_CODE_POINTS, RangeState,
+};
 use crate::buffer::buffer_set::BufferActivate;
 use crate::buffer::cell_data::CellData;
 use crate::buffer::constants::{
@@ -408,6 +410,10 @@ pub struct InputHandler {
     /// REPs whose stuck inserts were batched (`print_stuck_inserts`; tests check the path).
     #[cfg(test)]
     pub(crate) rep_stuck_batches: u64,
+    /// Line-fill passes skipped as repeats of a pass that changed nothing it reads (M7 fix
+    /// round 3, `print_repeated`; tests check the path).
+    #[cfg(test)]
+    pub(crate) rep_cycle_batches: u64,
 }
 
 impl ParserHost for InputHandler {
@@ -679,6 +685,8 @@ impl InputHandler {
             rep_fills: 0,
             #[cfg(test)]
             rep_stuck_batches: 0,
+            #[cfg(test)]
+            rep_cycle_batches: 0,
         }
     }
 
@@ -2290,7 +2298,10 @@ impl InputHandler {
     ///
     /// The extra units print as before. Without wraparound they go through `print`, one
     /// `O(len)` insert each, so such a REP costs up to `O(len * (len - cols))` (the longest
-    /// line a resize left behind); with wraparound they take the line fill, `O(len)` per pass.
+    /// line a resize left behind; plan M7 step 13 batches the stuck inserts); with wraparound
+    /// they take the line fill, `O(len)` per pass, and below the region the line fill takes the
+    /// passes that repeat a settled one at once (M7 fix round 3, see
+    /// [`InputHandler::print_repeated`]), so the floor's size no longer sets the cost there.
     ///
     /// A joiner that widens a narrow base to two cells (M7 fix round 1, review S1: VS16 under
     /// the `11-vs16` provider) makes the unit 2 cells wide (`w = 2`) and moves the cursor.
@@ -2594,6 +2605,31 @@ impl InputHandler {
     ///    the narrow stub in `print`, may rewrite that cell here, which the stub then
     ///    overwrites, with the fill's extended entry, which is the stub's (the fill is the null
     ///    cell carrying the current attributes); combined strings it does not touch.
+    ///  - (M7 fix round 3, review S2) Insert mode on the last row below the scroll region: every
+    ///    wrap lands on that row again, so from the cursor at `span = per_line × w` (where a
+    ///    pass ends) each pass of `per_line` units (a wrap and a line's worth; for a widened unit
+    ///    on an odd number of columns, the unit its joiner wraps and the rest of the line) is the
+    ///    same function of the row. When a pass leaves what it reads as it found it, every later
+    ///    pass starts from the same state and does the same, so the rest of the whole passes are
+    ///    taken at once and the last part pass prints as usual. What a pass reads: with the row
+    ///    no longer than `cols` plus the `pushed = per_line × inserted` cells a pass pushes over
+    ///    `cols` (or where the joiner's wrap copies the old row's strings from `cols - 1` on,
+    ///    upstream's copy, which reads the hidden tail and keys past the line), the whole line
+    ///    and every entry past it: then the skipped passes change nothing. Otherwise only the
+    ///    row's first `cols` cells: the shifts move cells right, the fix-ups act at `x - 1`,
+    ///    `cols - 1` and `len - 1 >= cols + pushed`, and the wraps clear and the writes cover
+    ///    cells left of `cols`, so a pass's effect there and the cells it pushes over `cols`
+    ///    depend on those `cols` cells only; the cells `[cols, cols + pushed)` are the ones the
+    ///    last pass pushed (the line-end fix-up does not reach them), every later pass pushes
+    ///    them again `inserted` at a time, and the skipped passes are that one
+    ///    [`BufferLine::insert_block_repeatedly`] on the tail. Their link adds find the marker
+    ///    the last pass cached (as above), their wraps only mark the row wrapped again, and their
+    ///    screen reader text is queued up front. Comparing a pass's state costs `O(cols)` (the
+    ///    whole line when it is short), the batch `O(len)`: a REP below the region makes a few
+    ///    passes over the row, where it made one per line of the cut floor (`rows + 3` and one
+    ///    per `pushed` cells of tail: `O(len^2 / cols)` on a long row). Not for a widened unit on
+    ///    an odd number of columns on a row longer than `cols`: its passes settle only once the
+    ///    tail has, which still takes one `O(len)` pass per `pushed` cells of it.
     fn print_repeated(&mut self, fill: &RepFill, count: usize) {
         #[cfg(test)]
         {
@@ -2657,9 +2693,69 @@ impl InputHandler {
 
         // (M7 fix round 1) the combined strings of a line filled afresh, shared by the next
         let mut template = None;
+        // (M7 fix round 3, review S2) whole passes over the last row below the scroll region:
+        // from the cursor at `span` (where a pass ends), `per_line` units (a wrap and a line's
+        // worth; or, for a widened unit on an odd number of columns, the unit its joiner wraps
+        // and the rest of the line) pushing `pushed` cells over `cols`
+        let per_line = cols / w;
+        let span = per_line * w;
+        let pushed = per_line * inserted;
+        // (a pass whose wrap copies the old row's strings from `cols - 1` on, upstream's copy,
+        // reads the hidden tail's: only the whole line and the entries past it settle it)
+        let wrap_copies = fill.widens_at.is_some() && span + inserted <= cols;
+        // where the last pass started: the units left and what it read
+        let mut last_pass: Option<(usize, RangeState)> = None;
         let mut left = count;
         while left > 0 {
             let x = self.services.buffer.buffer().x;
+            if insert_mode && per_line > 0 && x == span {
+                // once a pass leaves what it reads as it found it, every later pass does the
+                // same, so the rest of the whole passes are taken at once
+                let rows = self.services.buffer.rows;
+                let buffer = self.services.buffer.buffer_mut();
+                let below_last = buffer.y + 1 == rows && buffer.y > buffer.scroll_bottom;
+                let row = abs_y(buffer);
+                let line = line_mut(buffer, row)
+                    .filter(|line| below_last && left >= per_line && line.len() >= cols);
+                match line {
+                    Some(line) => {
+                        let tail = line.len() - cols;
+                        // (the row's first `cols` cells, or the whole line when the passes
+                        // reach all of it)
+                        let whole = wrap_copies || tail <= pushed;
+                        let state = match whole {
+                            true => line.line_state(),
+                            false => line.range_state(0, cols),
+                        };
+                        let repeated = last_pass.as_ref().is_some_and(|(units, last)| {
+                            units.checked_sub(left) == Some(per_line) && *last == state
+                        });
+                        if repeated {
+                            let periods = left / per_line;
+                            if !whole {
+                                line.insert_block_repeatedly(
+                                    cols, pushed, inserted, periods, &null_cell,
+                                );
+                            }
+                            left -= periods * per_line;
+                            last_pass = None;
+                            #[cfg(test)]
+                            {
+                                self.rep_cycle_batches += 1;
+                            }
+                            continue;
+                        }
+                        last_pass = Some((left, state));
+                    }
+                    None => last_pass = None,
+                }
+            } else if last_pass
+                .as_ref()
+                .is_some_and(|(units, _)| units.saturating_sub(left) >= per_line)
+            {
+                // (not within a pass from `span`)
+                last_pass = None;
+            }
             if fill.widens_at.is_some() && x + inserted <= cols && x + w > cols {
                 // (M7 fix round 1) the base fits the line and its widening joiner wraps it to
                 // the next one: `print`'s own steps for this repetition
@@ -2729,15 +2825,21 @@ impl InputHandler {
                 continue;
             }
             if insert_mode && inserted == w {
-                // `print`'s insert-mode shifts and fix-ups of the line's repetitions
-                buffer_row.insert_cells_repeatedly(
+                // `print`'s insert-mode shifts and fix-ups of the line's repetitions, and the
+                // writes (M7 fix round 3: in one call, which skips what the writes hide)
+                buffer_row.insert_cells_repeatedly_then_set(
                     *x,
                     w,
                     fit,
                     &null_cell,
                     cols.saturating_sub(1),
                     &cur_attr,
+                    (&head, &stub),
+                    &mut template,
                 );
+                *x += fit * w;
+                left -= fit;
+                continue;
             } else if insert_mode {
                 // (M7 fix round 1) one cell per repetition, `w` apart, and the writes
                 buffer_row.insert_cell_strided_then_set(
