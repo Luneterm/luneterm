@@ -455,6 +455,13 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     of the strided insert with extended entries).
   - One REP is still one unit of work of up to 2^20 code points (or `cols x (rows + scrollback + 3)`
     cells): it cannot be sliced, but its cost is now linear in the lines it prints, not quadratic.
+    **M7 fix round 2** tightened two cases of the cut floor (review S2, S3): below a scroll
+    region a wrap neither scrolls nor trims, so the floor no longer counts the scrollback
+    (`cols x (rows + 3)`, plus the long-row passes in insert mode) — before, a full scrollback
+    made every one of `max_lines` units a pass over the last row (2.5-50 ms per byte); and a REP
+    whose unit's first code point joins without moving the cursor (a lone combining mark the
+    cursor sits on) is cut to `MAX_COMBINED_CODE_POINTS + 2`, the point its one growing cell is
+    full, instead of running 2^20 code points through `print` (was ~0.9 ms per byte).
   - The pre-M7 `a CR LF` inside a long link (0.55 us per byte at scrollback 1,000 and 5.4 us at
     10,000 against 30 ns with no link; one IL with 8192 markers outside the region about 7 us at
     80x24 and 39 us at 300x100) was not re-measured after step 11: the probe covers REP only.
@@ -464,6 +471,17 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
   - In insert mode on lines longer than `cols` (after a column shrink without reflow), a REP
     without wraparound still prints up to `len - cols` more repetitions to reach the same state
     (code review F9, state identity); each is no longer an O(len) insert.
+  - **M7 fix round 2** (review S2, S3; figures `bench-rep.sh`, load 11.9, ratios within a table):
+    after the scrollback was dropped from the below-region floor, plain below-region REP is
+    540 ns / 5.9 us (80x24 / 300x100 sb10k), VS16 short-line 6.5 us (was 2.50 ms, ~385x), the
+    no-reflow long-row `e U+0301` L=2000 is 363.8 us (was 48.4 ms, ~133x), and the joining-base
+    REP is ~400 ns at every size (was ~0.9 ms, ~2000x). Two sub-targets are not met and are left
+    for user acceptance (the findings' fallback, like Q23): below a region the combined units are
+    ~10-14x plain — the inherent per-combined-cell cost, not the scrollback (the ratio is the same
+    before and after the fix); and the below-region wraparound-on insert on a long row is
+    O(L^2 / cols) (each of `L/cols` passes shifts the whole row), so `e U+0301`/VS16 at L=2000 are
+    364 / 189 us. A follow-up could share the combined write in that insert fill and batch the
+    wrapping below-region insert as step 13 batched the no-wrap one.
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as
