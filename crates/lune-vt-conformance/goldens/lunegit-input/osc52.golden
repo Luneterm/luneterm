@@ -1,0 +1,189 @@
+lune-lunegit-golden 1
+header tool lunegit-oracle 1
+header lunegit-commit 33a1dd4
+header core-dll-sha256 6ebfd8a318aef407bb0e4c4690cf71a5fb5129cdf76524589a45c063761eea68
+header infrastructure-dll-sha256 a2d484c305d7e17d3b5106d57193ccdcead18a569ddba7255d02779f76a2cb5f
+kind osc52
+section parse
+inputs name payload text
+outputs outcome length text-bytes text-hex text-sha256
+null	null	null	Malformed	0	-	-	-
+empty	-	""	Malformed	0	-	-	-
+no_separator	63	"c"	Malformed	0	-	-	-
+no_separator_b64	614756736247383d	"aGVsbG8="	Malformed	0	-	-	-
+sep_only	3b	";"	Empty	0	-	-	-
+sel_sep	633b	"c;"	Empty	0	-	-	-
+query	633b3f	"c;?"	Query	0	-	-	-
+query_empty_sel	3b3f	";?"	Query	0	-	-	-
+query_other_sel	703b3f	"p;?"	Query	0	-	-	-
+query_digit_sel	303b3f	"0;?"	Query	0	-	-	-
+query_x	633b3f78	"c;?x"	Malformed	0	-	-	-
+query_double	633b3f3f	"c;??"	Malformed	0	-	-	-
+query_space	633b203f	"c; ?"	Malformed	0	-	-	-
+query_trailing_space	633b3f20	"c;? "	Malformed	0	-	-	-
+sel_c_hello	633b614756736247383d	"c;aGVsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+sel_p_hello	703b614756736247383d	"p;aGVsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+sel_s_hello	733b614756736247383d	"s;aGVsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+sel_digit_hello	303b614756736247383d	"0;aGVsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+sel_multi_hello	63703b614756736247383d	"cp;aGVsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+sel_empty_hello	3b614756736247383d	";aGVsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+sel_garbage_hello	7a7a7a3b614756736247383d	"zzz;aGVsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+sel_with_semi	633b3b614756736247383d	"c;;aGVsbG8="	Malformed	0	-	-	-
+second_semi_in_body	633b614756736247383d3b78	"c;aGVsbG8=;x"	Malformed	0	-	-	-
+utf8_text	633b614d4f706247787649486644746e4a735a43446967717767354c697435706148495043666d49413d	"c;aMOpbGxvIHfDtnJsZCDigqwg5Lit5paHIPCfmIA="	Copy	29	29	68c3a96c6c6f2077c3b6726c6420e282ac20e4b8ade6968720f09f9880	f28b65ae450e30444524d42a609104183ac73122e410adebe2f1ef4cd4ad0394
+ascii_controls	633b59516c69436d4d4e436d51625a51426d	"c;YQliCmMNCmQbZQBm"	Copy	12	12	6109620a630d0a641b650066	e4f665ad0e736dd0dec19f6374b4d1900436c01a40acf1e1d50914b96ba0d106
+lone_nul	633b41413d3d	"c;AA=="	Copy	1	1	00	6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d
+invalid_utf8_ff	633b2f2f3542	"c;//5B"	Copy	3	7	efbfbdefbfbd41	e95a7363204eb40353cb0c8e7dde3aa6a23aafa95f59a9d0c7e490271e236d05
+invalid_utf8_truncated	633b51634d3d	"c;QcM="	Copy	2	4	41efbfbd	d6f2163ef6b7400f2e7c67c952d32ca8f3e96cad49340bc2236a09c533cfce28
+invalid_utf8_overlong	633b774b383d	"c;wK8="	Copy	2	6	efbfbdefbfbd	52793f8dc1d85e409f8c88be99d8b31d58f676246340150f406289e04a11151e
+invalid_utf8_surrogate	633b37614341	"c;7aCA"	Copy	3	9	efbfbdefbfbdefbfbd	a73f4cb996ceb6ee097888d897ae1004c9b1faab6c97629214139b9639aaf1af
+utf8_bom	633b3737752f51513d3d	"c;77u/QQ=="	Copy	4	4	efbbbf41	4d91bc408f19af2e9483a216ae71673e0ee456ece7a12998dd207e504f4f19a6
+len1	633b59513d3d	"c;YQ=="	Copy	1	1	61	ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb
+len2	633b5957493d	"c;YWI="	Copy	2	2	6162	fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603
+len3	633b59574a6a	"c;YWJj"	Copy	3	3	616263	ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+len4	633b59574a6a5a413d3d	"c;YWJjZA=="	Copy	4	4	61626364	88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589
+no_pad_len2	633b5951	"c;YQ"	Malformed	0	-	-	-
+no_pad_len3	633b595749	"c;YWI"	Malformed	0	-	-	-
+one_char	633b59	"c;Y"	Malformed	0	-	-	-
+five_chars	633b59574a6a5a	"c;YWJjZ"	Malformed	0	-	-	-
+six_chars	633b59574a6a5a41	"c;YWJjZA"	Malformed	0	-	-	-
+seven_chars	633b59574a6a5a4755	"c;YWJjZGU"	Malformed	0	-	-	-
+ws_mid_space	633b61475673206247383d	"c;aGVs bG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_lead_space	633b20614756736247383d	"c; aGVsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_trail_space	633b614756736247383d20	"c;aGVsbG8= "	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_in_quad_space	633b61472056736247383d	"c;aG VsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_before_pad_space	633b61475673624720383d	"c;aGVsbG 8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_in_pad_space	633b59513d203d	"c;YQ= ="	Copy	1	1	61	ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb
+ws_only_space	633b202020	"c;   "	Empty	0	-	-	-
+ws_mid_tab	633b61475673096247383d	"c;aGVs\u{9}bG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_lead_tab	633b09614756736247383d	"c;\u{9}aGVsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_trail_tab	633b614756736247383d09	"c;aGVsbG8=\u{9}"	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_in_quad_tab	633b61470956736247383d	"c;aG\u{9}VsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_before_pad_tab	633b61475673624709383d	"c;aGVsbG\u{9}8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_in_pad_tab	633b59513d093d	"c;YQ=\u{9}="	Copy	1	1	61	ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb
+ws_only_tab	633b090909	"c;\u{9}\u{9}\u{9}"	Empty	0	-	-	-
+ws_mid_cr	633b614756730d6247383d	"c;aGVs\u{D}bG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_lead_cr	633b0d614756736247383d	"c;\u{D}aGVsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_trail_cr	633b614756736247383d0d	"c;aGVsbG8=\u{D}"	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_in_quad_cr	633b61470d56736247383d	"c;aG\u{D}VsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_before_pad_cr	633b6147567362470d383d	"c;aGVsbG\u{D}8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_in_pad_cr	633b59513d0d3d	"c;YQ=\u{D}="	Copy	1	1	61	ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb
+ws_only_cr	633b0d0d0d	"c;\u{D}\u{D}\u{D}"	Empty	0	-	-	-
+ws_mid_lf	633b614756730a6247383d	"c;aGVs\u{A}bG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_lead_lf	633b0a614756736247383d	"c;\u{A}aGVsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_trail_lf	633b614756736247383d0a	"c;aGVsbG8=\u{A}"	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_in_quad_lf	633b61470a56736247383d	"c;aG\u{A}VsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_before_pad_lf	633b6147567362470a383d	"c;aGVsbG\u{A}8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_in_pad_lf	633b59513d0a3d	"c;YQ=\u{A}="	Copy	1	1	61	ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb
+ws_only_lf	633b0a0a0a	"c;\u{A}\u{A}\u{A}"	Empty	0	-	-	-
+ws_mid_vt	633b614756730b6247383d	"c;aGVs\u{B}bG8="	Malformed	0	-	-	-
+ws_lead_vt	633b0b614756736247383d	"c;\u{B}aGVsbG8="	Malformed	0	-	-	-
+ws_trail_vt	633b614756736247383d0b	"c;aGVsbG8=\u{B}"	Malformed	0	-	-	-
+ws_in_quad_vt	633b61470b56736247383d	"c;aG\u{B}VsbG8="	Malformed	0	-	-	-
+ws_before_pad_vt	633b6147567362470b383d	"c;aGVsbG\u{B}8="	Malformed	0	-	-	-
+ws_in_pad_vt	633b59513d0b3d	"c;YQ=\u{B}="	Malformed	0	-	-	-
+ws_only_vt	633b0b0b0b	"c;\u{B}\u{B}\u{B}"	Malformed	0	-	-	-
+ws_mid_ff	633b614756730c6247383d	"c;aGVs\u{C}bG8="	Malformed	0	-	-	-
+ws_lead_ff	633b0c614756736247383d	"c;\u{C}aGVsbG8="	Malformed	0	-	-	-
+ws_trail_ff	633b614756736247383d0c	"c;aGVsbG8=\u{C}"	Malformed	0	-	-	-
+ws_in_quad_ff	633b61470c56736247383d	"c;aG\u{C}VsbG8="	Malformed	0	-	-	-
+ws_before_pad_ff	633b6147567362470c383d	"c;aGVsbG\u{C}8="	Malformed	0	-	-	-
+ws_in_pad_ff	633b59513d0c3d	"c;YQ=\u{C}="	Malformed	0	-	-	-
+ws_only_ff	633b0c0c0c	"c;\u{C}\u{C}\u{C}"	Malformed	0	-	-	-
+ws_mid_crlf	633b614756730d0a6247383d	"c;aGVs\u{D}\u{A}bG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_lead_crlf	633b0d0a614756736247383d	"c;\u{D}\u{A}aGVsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_trail_crlf	633b614756736247383d0d0a	"c;aGVsbG8=\u{D}\u{A}"	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_in_quad_crlf	633b61470d0a56736247383d	"c;aG\u{D}\u{A}VsbG8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_before_pad_crlf	633b6147567362470d0a383d	"c;aGVsbG\u{D}\u{A}8="	Copy	5	5	68656c6c6f	2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ws_in_pad_crlf	633b59513d0d0a3d	"c;YQ=\u{D}\u{A}="	Copy	1	1	61	ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb
+ws_only_crlf	633b0d0a0d0a0d0a	"c;\u{D}\u{A}\u{D}\u{A}\u{D}\u{A}"	Empty	0	-	-	-
+ws_mid_nbsp	633b61475673c2a06247383d	"c;aGVs\u{A0}bG8="	Malformed	0	-	-	-
+ws_lead_nbsp	633bc2a0614756736247383d	"c;\u{A0}aGVsbG8="	Malformed	0	-	-	-
+ws_trail_nbsp	633b614756736247383dc2a0	"c;aGVsbG8=\u{A0}"	Malformed	0	-	-	-
+ws_in_quad_nbsp	633b6147c2a056736247383d	"c;aG\u{A0}VsbG8="	Malformed	0	-	-	-
+ws_before_pad_nbsp	633b614756736247c2a0383d	"c;aGVsbG\u{A0}8="	Malformed	0	-	-	-
+ws_in_pad_nbsp	633b59513dc2a03d	"c;YQ=\u{A0}="	Malformed	0	-	-	-
+ws_only_nbsp	633bc2a0c2a0c2a0	"c;\u{A0}\u{A0}\u{A0}"	Malformed	0	-	-	-
+ws_mid_nel	633b61475673c2856247383d	"c;aGVs\u{85}bG8="	Malformed	0	-	-	-
+ws_lead_nel	633bc285614756736247383d	"c;\u{85}aGVsbG8="	Malformed	0	-	-	-
+ws_trail_nel	633b614756736247383dc285	"c;aGVsbG8=\u{85}"	Malformed	0	-	-	-
+ws_in_quad_nel	633b6147c28556736247383d	"c;aG\u{85}VsbG8="	Malformed	0	-	-	-
+ws_before_pad_nel	633b614756736247c285383d	"c;aGVsbG\u{85}8="	Malformed	0	-	-	-
+ws_in_pad_nel	633b59513dc2853d	"c;YQ=\u{85}="	Malformed	0	-	-	-
+ws_only_nel	633bc285c285c285	"c;\u{85}\u{85}\u{85}"	Malformed	0	-	-	-
+ws_mid_ls	633b61475673e280a86247383d	"c;aGVs\u{2028}bG8="	Malformed	0	-	-	-
+ws_lead_ls	633be280a8614756736247383d	"c;\u{2028}aGVsbG8="	Malformed	0	-	-	-
+ws_trail_ls	633b614756736247383de280a8	"c;aGVsbG8=\u{2028}"	Malformed	0	-	-	-
+ws_in_quad_ls	633b6147e280a856736247383d	"c;aG\u{2028}VsbG8="	Malformed	0	-	-	-
+ws_before_pad_ls	633b614756736247e280a8383d	"c;aGVsbG\u{2028}8="	Malformed	0	-	-	-
+ws_in_pad_ls	633b59513de280a83d	"c;YQ=\u{2028}="	Malformed	0	-	-	-
+ws_only_ls	633be280a8e280a8e280a8	"c;\u{2028}\u{2028}\u{2028}"	Malformed	0	-	-	-
+ws_mid_nul	633b61475673006247383d	"c;aGVs\u{0}bG8="	Malformed	0	-	-	-
+ws_lead_nul	633b00614756736247383d	"c;\u{0}aGVsbG8="	Malformed	0	-	-	-
+ws_trail_nul	633b614756736247383d00	"c;aGVsbG8=\u{0}"	Malformed	0	-	-	-
+ws_in_quad_nul	633b61470056736247383d	"c;aG\u{0}VsbG8="	Malformed	0	-	-	-
+ws_before_pad_nul	633b61475673624700383d	"c;aGVsbG\u{0}8="	Malformed	0	-	-	-
+ws_in_pad_nul	633b59513d003d	"c;YQ=\u{0}="	Malformed	0	-	-	-
+ws_only_nul	633b000000	"c;\u{0}\u{0}\u{0}"	Malformed	0	-	-	-
+ws_mid_zwsp	633b61475673e2808b6247383d	"c;aGVs\u{200B}bG8="	Malformed	0	-	-	-
+ws_lead_zwsp	633be2808b614756736247383d	"c;\u{200B}aGVsbG8="	Malformed	0	-	-	-
+ws_trail_zwsp	633b614756736247383de2808b	"c;aGVsbG8=\u{200B}"	Malformed	0	-	-	-
+ws_in_quad_zwsp	633b6147e2808b56736247383d	"c;aG\u{200B}VsbG8="	Malformed	0	-	-	-
+ws_before_pad_zwsp	633b614756736247e2808b383d	"c;aGVsbG\u{200B}8="	Malformed	0	-	-	-
+ws_in_pad_zwsp	633b59513de2808b3d	"c;YQ=\u{200B}="	Malformed	0	-	-	-
+ws_only_zwsp	633be2808be2808be2808b	"c;\u{200B}\u{200B}\u{200B}"	Malformed	0	-	-	-
+ws_mid_fs	633b614756731c6247383d	"c;aGVs\u{1C}bG8="	Malformed	0	-	-	-
+ws_lead_fs	633b1c614756736247383d	"c;\u{1C}aGVsbG8="	Malformed	0	-	-	-
+ws_trail_fs	633b614756736247383d1c	"c;aGVsbG8=\u{1C}"	Malformed	0	-	-	-
+ws_in_quad_fs	633b61471c56736247383d	"c;aG\u{1C}VsbG8="	Malformed	0	-	-	-
+ws_before_pad_fs	633b6147567362471c383d	"c;aGVsbG\u{1C}8="	Malformed	0	-	-	-
+ws_in_pad_fs	633b59513d1c3d	"c;YQ=\u{1C}="	Malformed	0	-	-	-
+ws_only_fs	633b1c1c1c	"c;\u{1C}\u{1C}\u{1C}"	Malformed	0	-	-	-
+ws_wrapped_lines	633b6147567362473867643239790d0a6247513d0d0a	"c;aGVsbG8gd29y\u{D}\u{A}bGQ=\u{D}\u{A}"	Copy	11	11	68656c6c6f20776f726c64	b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
+pad_only4	633b3d3d3d3d	"c;===="	Malformed	0	-	-	-
+pad_only1	633b3d	"c;="	Malformed	0	-	-	-
+pad_only2	633b3d3d	"c;=="	Malformed	0	-	-	-
+pad_only3	633b3d3d3d	"c;==="	Malformed	0	-	-	-
+pad_1_of_4	633b59574a6a3d	"c;YWJj="	Malformed	0	-	-	-
+pad_ok_1	633b5957493d	"c;YWI="	Copy	2	2	6162	fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603
+pad_ok_2	633b59513d3d	"c;YQ=="	Copy	1	1	61	ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb
+pad_three	633b59513d3d3d	"c;YQ==="	Malformed	0	-	-	-
+pad_short	633b59513d	"c;YQ="	Malformed	0	-	-	-
+pad_then_data	633b59513d3d59513d3d	"c;YQ==YQ=="	Malformed	0	-	-	-
+pad_mid_quad	633b593d513d	"c;Y=Q="	Malformed	0	-	-	-
+pad_lead_quad	633b3d59513d	"c;=YQ="	Malformed	0	-	-	-
+pad_after_one	633b593d3d3d	"c;Y==="	Malformed	0	-	-	-
+pad_four_then_data	633b3d3d3d3d59574a6a	"c;====YWJj"	Malformed	0	-	-	-
+data_then_four_pad	633b59574a6a3d3d3d3d	"c;YWJj===="	Malformed	0	-	-	-
+nonzero_pad_bits_1	633b59523d3d	"c;YR=="	Copy	1	1	61	ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb
+nonzero_pad_bits_2	633b59574a3d	"c;YWJ="	Copy	2	2	6162	fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603
+nonzero_pad_bits_3	633b5a683d3d	"c;Zh=="	Copy	1	1	66	252f10c83610ebca1a059c0bae8255eba2f95be4d1d7bcfa89d7248a82d9f111
+zero_pad_bits	633b5a673d3d	"c;Zg=="	Copy	1	1	66	252f10c83610ebca1a059c0bae8255eba2f95be4d1d7bcfa89d7248a82d9f111
+bad_char_bang	633b614756732147383d	"c;aGVs!G8="	Malformed	0	-	-	-
+bad_char_dot	633b614756732e47383d	"c;aGVs.G8="	Malformed	0	-	-	-
+bad_char_urlsafe	633b614756732d5f383d	"c;aGVs-_8="	Malformed	0	-	-	-
+bad_char_e_acute	633b61475673c3a947383d	"c;aGVs\u{E9}G8="	Malformed	0	-	-	-
+bad_char_fullwidth	633befbca14756736247383d	"c;\u{FF21}GVsbG8="	Malformed	0	-	-	-
+bad_char_nul	633b61475673006247383d	"c;aGVs\u{0}bG8="	Malformed	0	-	-	-
+bad_char_comma	633b614756732c6247383d	"c;aGVs,bG8="	Malformed	0	-	-	-
+bad_char_quote	633b61475673226247383d	"c;aGVs\u{22}bG8="	Malformed	0	-	-	-
+bad_plus_slash_ok	633b2b2f2b2f	"c;+/+/"	Copy	3	9	efbfbdefbfbdefbfbd	a73f4cb996ceb6ee097888d897ae1004c9b1faab6c97629214139b9639aaf1af
+bad_hash	633b23	"c;#"	Malformed	0	-	-	-
+empty_after_ws	633b090d0a20	"c;\u{9}\u{D}\u{A} "	Empty	0	-	-	-
+big_exact_max_chars_a	633b+41x1398104	-	Oversize	1048578	-	-	-
+big_max_chars_plus1	633b+41x1398105	-	Oversize	1398105	-	-	-
+big_max_chars_minus1	633b+41x1398103	-	Malformed	0	-	-	-
+big_decoded_exactly_1mib	633b+41x1398100+41413d3d	-	Copy	1048576	1048576	-	30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af909fcb58
+big_decoded_1mib_plus1	633b+41x1398100+4141413d	-	Oversize	1048577	-	-	-
+big_decoded_1mib_plus2	633b+41x1398104	-	Oversize	1048578	-	-	-
+big_decoded_1mib_minus1	633b+41x1398100	-	Copy	1048575	1048575	-	ca7ed0c4a8e67cbdc461c4cb0d286d2fabbd9f0c41a7f42b665f72ebaa8aec56
+long_valid_repeat	633b+59574a6a5a47566dx1000	-	Copy	6000	6000	-	07dab2f3384bc1d0fbe479a398e2841ee355d183bff6c7aefbd580b363db6435
+big_100k_chars	633b+41x100000	-	Copy	75000	75000	-	567a8fc816a15df511309717143610bc8378ab264c520794f5c524a7fe025994
+big_2x_cap	633b+41x2796208	-	Oversize	2796208	-	-	-
+big_bad_char_at_end	633b+41x1398103+21	-	Malformed	0	-	-	-
+big_ws_padded	633b+20x5000+59513d3d	-	Copy	1	1	61	ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb
+big_ws_only	633b+0ax5000	-	Empty	0	-	-	-
+big_ws_pushes_past_cap	633b+41x1398104+0ax10	-	Oversize	1398114	-	-	-
+big_selection_long	63x5000+3b59513d3d	-	Copy	1	1	61	ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb
+big_query_after_long_selection	63x5000+3b3f	-	Query	0	-	-	-
+end

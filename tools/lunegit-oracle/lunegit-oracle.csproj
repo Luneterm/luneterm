@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Reads Lunegit's prebuilt Lunegit.Core.dll / Lunegit.Infrastructure.dll by reflection. No
+       reference to any Lunegit project and no NuGet package, so building it needs nothing but the
+       .NET SDK and writes only under this directory's bin/ and obj/ (gitignored). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>lunegit-oracle</AssemblyName>
+    <RootNamespace>LunegitOracle</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+</Project>
