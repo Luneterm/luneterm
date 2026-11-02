@@ -31,6 +31,7 @@ pub mod color;
 pub mod core_terminal;
 pub mod data;
 pub mod engine;
+pub mod ext;
 pub mod extension;
 pub mod headless;
 pub mod input;
@@ -40,10 +41,11 @@ pub mod services;
 pub mod windows_mode;
 
 pub use engine::{
-    CellColor, ColorIndex, ColorRequest, CursorStyle, Damage, HostEvent, Modes, MouseEncoding,
-    MouseTracking, UnderlineStyle, Viewport, ViewportCell, ViewportCursor, VtEngine,
-    WindowReportKind,
+    CellColor, ColorIndex, ColorRequest, CommandMark, CommandMarkKind, CursorStyle, Damage,
+    HostEvent, Modes, MouseEncoding, MouseTracking, Progress, ProgressState, UnderlineStyle,
+    Viewport, ViewportCell, ViewportCursor, VtEngine, WindowReportKind,
 };
+pub use ext::{ExtensionError, StandardExtensions};
 pub use extension::Extension;
 pub use headless::terminal::Terminal;
 

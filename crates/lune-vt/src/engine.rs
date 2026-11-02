@@ -19,9 +19,12 @@ pub use crate::services::options_service::CursorStyle;
 ///
 /// Lunegit fires these as synchronous events inside `Write`; here the engine queues them and the
 /// host drains them after each write, which keeps the engine free of callbacks into the host.
-/// Events are queued in the order upstream fires them; two responses are never merged. The two
+/// Events are queued in the order upstream fires them; two responses are never merged. The
 /// exceptions keep one write's events proportional to its bytes: [`HostEvent::TitleChanged`] (one
-/// per drain, no payload) and [`HostEvent::A11yText`] (merged, capped per drain).
+/// per drain, no payload), [`HostEvent::A11yText`] (merged, capped per drain),
+/// [`HostEvent::ClipboardWrite`], [`HostEvent::CwdChanged`] and [`HostEvent::Progress`] (last
+/// wins: a later one replaces the queued one in place) and [`HostEvent::UnknownOsc`] (at most
+/// [`crate::input_handler::UNKNOWN_OSC_LIMIT`] per drain).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostEvent {
     /// Bytes to send back to the application: the UTF-8 of an upstream `onData` string, or one
@@ -52,10 +55,62 @@ pub enum HostEvent {
     /// `onA11yTab`).
     A11yTab(usize),
     /// An OSC the engine and its extensions did not handle (ident and payload length only).
+    /// Produced by the standard extensions only
+    /// ([`crate::Terminal::install_standard_extensions`]).
     UnknownOsc { ident: i32, len: usize },
-    /// OSC 52 clipboard write. Queries are deliberately never answered. The core never produces
-    /// it (ledger row 13); the gated write is an extension.
-    ClipboardWrite { selection: String, data: String },
+    /// OSC 52 clipboard write: the decoded text. Queries are deliberately never answered, and the
+    /// selection target is ignored. The core never produces it (ledger row 13); the gated write
+    /// is an extension. Last wins within one drain.
+    ClipboardWrite(String),
+    /// The shell's working directory changed (OSC 7, OSC 9;9). Last wins within one drain.
+    CwdChanged(String),
+    /// A progress report (OSC 9;4). Last wins within one drain.
+    Progress(Progress),
+    /// A shell-integration mark (OSC 133). Exact: never merged or dropped.
+    CommandMark(CommandMark),
+    /// Synchronized output (`CSI ? 2026 h`) was turned on while a command was running (between
+    /// OSC 133 C and the next A, C or D): once per command.
+    SyncUpdateInCommand,
+}
+
+/// The state an OSC 9;4 progress report carries (`Osc94ProgressScanner`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressState {
+    /// No progress (0, and any value outside 0..=4).
+    None,
+    Normal,
+    Error,
+    Indeterminate,
+    Warning,
+}
+
+/// An OSC 9;4 progress report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    pub state: ProgressState,
+    /// 0..=100.
+    pub percent: u8,
+}
+
+/// Which OSC 133 mark arrived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandMarkKind {
+    /// `A`: the prompt starts.
+    PromptStart,
+    /// `B`: the prompt ended, the user types the command.
+    PromptEnd,
+    /// `C`: the command runs; its output follows.
+    OutputStart,
+    /// `D`: the command finished.
+    CommandFinished,
+}
+
+/// An OSC 133 shell-integration mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandMark {
+    pub kind: CommandMarkKind,
+    /// `D;<digits>` only: the exit status when it fits an `i32`.
+    pub exit_code: Option<i32>,
 }
 
 /// A palette or special colour index (upstream `AllColorIndex`).
@@ -164,6 +219,12 @@ pub struct Modes {
     pub cursor_hidden: bool,
     pub mouse_tracking: MouseTracking,
     pub mouse_encoding: MouseEncoding,
+    /// The kitty keyboard flags in force on the active screen (top of its stack, 0 when empty;
+    /// only bits 1 and 4 are ever set). 0 unless the standard extensions are installed.
+    pub kitty_keyboard_flags: u8,
+    /// The xterm modifyOtherKeys level, 0..=2 (global, not per screen). 0 unless the standard
+    /// extensions are installed.
+    pub modify_other_keys: u8,
 }
 
 /// A cell colour.

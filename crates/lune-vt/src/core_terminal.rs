@@ -44,6 +44,7 @@
 
 use crate::buffer::buffer_set::BufferSet;
 use crate::engine::HostEvent;
+use crate::ext::{self, ExtensionError, StandardExtensions};
 use crate::extension::Extension;
 use crate::input_handler::{CoreServices, InputHandler};
 use crate::parser::escape_sequence_parser::EscapeSequenceParser;
@@ -265,6 +266,14 @@ impl CoreTerminal {
         extension: &dyn Extension<InputHandler>,
     ) -> Result<(), IdentifierError> {
         extension.register(&mut self.parser)
+    }
+
+    /// Register the standard extensions (plan M7 D2): once per terminal.
+    pub fn install_standard_extensions(
+        &mut self,
+        config: &StandardExtensions,
+    ) -> Result<(), ExtensionError> {
+        ext::install(&mut self.parser, &mut self.input_handler, config)
     }
 
     /// Upstream `_setup`: everything a full terminal creation sets up that `reset` reruns.

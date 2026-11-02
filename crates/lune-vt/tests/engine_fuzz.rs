@@ -657,11 +657,13 @@ fn event_cost(event: &HostEvent) -> u64 {
         HostEvent::A11yText(text) => n(text.len()),
         HostEvent::Color(requests) => 8 * requests.len() as u64 + 1,
         HostEvent::A11yTab(_) | HostEvent::UnknownOsc { .. } => 16,
-        HostEvent::ClipboardWrite { selection, data } => n(selection.len() + data.len()),
+        HostEvent::ClipboardWrite(text) | HostEvent::CwdChanged(text) => n(text.len()),
+        HostEvent::Progress(_) | HostEvent::CommandMark(_) => 8,
         HostEvent::Bell
         | HostEvent::TitleChanged
         | HostEvent::FocusReportRequested
-        | HostEvent::WindowReport(_) => 1,
+        | HostEvent::WindowReport(_)
+        | HostEvent::SyncUpdateInCommand => 1,
     }
 }
 
@@ -674,7 +676,12 @@ fn event_slot(event: &HostEvent) -> usize {
         HostEvent::FocusReportRequested | HostEvent::WindowReport(_) => 4,
         HostEvent::A11yText(_) => 5,
         HostEvent::A11yTab(_) => 6,
-        HostEvent::UnknownOsc { .. } | HostEvent::ClipboardWrite { .. } => 7,
+        HostEvent::UnknownOsc { .. }
+        | HostEvent::ClipboardWrite(_)
+        | HostEvent::CwdChanged(_)
+        | HostEvent::Progress(_)
+        | HostEvent::CommandMark(_)
+        | HostEvent::SyncUpdateInCommand => 7,
     }
 }
 
