@@ -1111,7 +1111,7 @@ impl InputHandler {
         self.print_inner(data, true, true);
     }
 
-    /// `print` (upstream's body). LUNETERM: (M7 fix round 1) REP's line fill prints a
+    /// LUNETERM: (M7 fix round 1) `print`'s body (upstream's). REP's line fill prints a
     /// repetition in the middle of its stream through here ([`InputHandler::print_repeated`]):
     /// without the end fix-up (`fix_up_end`), which `print` makes once after its last code point,
     /// and without the screen reader text (`voice`), which the fill queues up front. Returns
