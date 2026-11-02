@@ -8149,6 +8149,113 @@ fn rep_widened_unit_at_odd_widths_over_rows_of_strings_leaves_the_state_of_the_u
     }
 }
 
+/// M7 fix round 5 (code review F6 residual): `print_widened_wrap` (REP's direct path for the
+/// repetition whose widening joiner wraps its base) leaves the state of `print_inner` of the
+/// unit, the call it replaces: one call and then a second from the same column (the second
+/// takes the shared head the first made), over rows the wrap scrolls in (scroll bottom, with
+/// and without a region top), the same row below the region, and an existing row reached by
+/// descent; at odd and even widths (an even width takes the joiner wrap from an odd column);
+/// over rows of strings, stale entries or plain cells, of `cols` cells and longer; insert mode
+/// on and off; with an open link and an underline colour now and then; VS16, a keycap, `a
+/// U+FE0F` and a unit with a joiner after the widening one; and a unit whose widening joiner
+/// is not the first (which takes `print_inner` itself). Whole states compare (`rep_state`).
+#[test]
+fn rep_widened_wrap_equals_print_inner() {
+    use crate::buffer::buffer_line::joined_heads;
+    let mut state: u64 = 0x7e57_a11e_5eed_0001;
+    let mut next = |bound: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % bound as u64) as usize
+    };
+    const UNITS: [&str; 5] = [
+        VS16,
+        KEYCAP,
+        "a\u{fe0f}",
+        "\u{2764}\u{fe0f}\u{301}",
+        "\u{2764}\u{301}\u{fe0f}",
+    ];
+    let (mut shared, mut unshared, mut compared) = (0, 0, 0);
+    for round in 0..1_500 {
+        let cols = [3usize, 5, 7, 9, 21, 4, 8][next(7)];
+        let rows = 3 + next(3);
+        let scrollback = [0, 10][next(2)];
+        let unit = UNITS[next(UNITS.len())];
+        let len = cols + [0, 1, 3 * cols][next(3)];
+        let content = next(4);
+        let place = match next(4) {
+            0 => format!("\x1b[{rows};1H"),
+            1 => format!("\x1b[2;{rows}r\x1b[{rows};1H"),
+            2 => format!("\x1b[1;2r\x1b[{rows};1H"),
+            _ => "\x1b[r\x1b[1;1H".to_string(),
+        };
+        let mut modes = String::new();
+        if next(2) == 0 {
+            modes.push_str("\x1b[4h");
+        }
+        if next(4) == 0 {
+            modes.push_str("\x1b]8;;u\x07");
+        }
+        if next(4) == 0 {
+            modes.push_str("\x1b[4:3;58:5:9m");
+        }
+        // the column where the base lands on the last one and the joiner wraps it
+        let column = cols;
+        let make = || {
+            let mut t = test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
+            with_11_vs16(&mut t);
+            match content {
+                0 => string_lines(&mut t, len, false, ""),
+                1 => string_lines(&mut t, len, true, ""),
+                2 => lines_of(&mut t, len, ""),
+                _ => {}
+            }
+            t.parse_str(&place);
+            t.parse_str(&modes);
+            t.parse_str(&format!("\x1b[{column}G"));
+            t
+        };
+        let label = format!(
+            "round {round}: {unit:?} at {cols}x{rows}+{scrollback}, rows of {len} (content \
+             {content}), {place:?}{modes:?}"
+        );
+        let units: Vec<u32> = unit.chars().map(u32::from).collect();
+        let probe = make();
+        let Some(fill) = probe.handler.rep_alike(&units) else {
+            panic!("{label}: the unit does not print alike");
+        };
+        let mut a = make();
+        let mut b = make();
+        let (head, _) = rep_head(&fill, &b.handler.cur_attr_data);
+        let mut joined = None;
+        for call in 0..2 {
+            if call == 1 {
+                // the same column again (the wrap left the cursor at 2)
+                a.parse_str(&format!("\x1b[{column}G"));
+                b.parse_str(&format!("\x1b[{column}G"));
+            }
+            assert!(a.handler.print_inner(&fill.codes, false, false), "{label}");
+            let before = joined_heads();
+            assert!(
+                b.handler.print_widened_wrap(&fill, &head, &mut joined),
+                "{label}"
+            );
+            if joined_heads() > before {
+                shared += 1;
+            } else {
+                unshared += 1;
+            }
+            assert_eq!(rep_state(&mut b), rep_state(&mut a), "{label}, call {call}");
+            compared += 1;
+        }
+    }
+    // the instrument: both ways of adding the joiners ran
+    assert!(compared == 3_000, "{compared}");
+    assert!(shared > 600, "{shared} shared");
+    assert!(unshared > 600, "{unshared} not shared");
+}
+
 /// M7 fix round 4 (code review F6), seeded (the review's random probe): rows of up to `21 cols`
 /// cells mixing strings, stale entries (a combined cell overwritten by a plain one) and plain
 /// cells, at odd and even widths, below a scroll region or at the scroll bottom, with and without
