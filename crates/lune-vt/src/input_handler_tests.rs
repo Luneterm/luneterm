@@ -3484,6 +3484,28 @@ fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
         (7, 3, 4, 2_503),
         &mut stuck,
     ));
+    // (M7 fix round 4, code review F6) the rows-of-strings cases at wider odd widths too, 21 and
+    // 79 columns (rows of 337 and 1,107 cells), where a widened unit's joiner wraps its base;
+    // with LUNE_VT_REP_MATRIX=full at more counts, cut at 21x5+2 from 1,009 on
+    let full = std::env::var("LUNE_VT_REP_MATRIX").is_ok_and(|v| v == "full");
+    let strings: Vec<RepCutCase> = cases
+        .iter()
+        .filter(|case| case.0.contains("over strings"))
+        .copied()
+        .collect();
+    assert_eq!(strings.len(), 5);
+    let counts: &[usize] = if full {
+        &[40, 211, 1_009, 5_003]
+    } else {
+        &[1_009]
+    };
+    let sizes: [RepCutSize; 2] = [(21, 5, 2, counts), (79, 3, 0, counts)];
+    skipped.extend(check_rep_cut(
+        &strings,
+        &sizes,
+        (21, 5, 2, 1_009),
+        &mut Vec::new(),
+    ));
     assert!(skipped.is_empty(), "{skipped:?}");
     // plan M7 step 13: which no-wrap insert cases batch their stuck inserts: the narrow units
     // (one code point and a cluster) at every size and count; a stuck wide unit is skipped
@@ -3995,8 +4017,8 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
 /// content and modes (insert, wraparound off, scroll regions, an open link, an underline
 /// colour, screen reader, lines longer than `cols`, and (M7 fix round 4) rows of strings longer
 /// than `(rows + 3) x (cols - 1)`, below a region with and without insert mode), at random small
-/// sizes and counts around and past the cuts, leaves the state of the uncapped print of all its
-/// repetitions.
+/// sizes (and, 1 seed in 32, 21 or 79 columns) and counts around and past the cuts, leaves the
+/// state of the uncapped print of all its repetitions.
 /// `LUNE_VT_REP_DIFF_SEEDS=<n>` runs more seeds (default 1000), `LUNE_VT_REP_DIFF_SEED=<n>`
 /// replays one.
 #[test]
@@ -4067,6 +4089,14 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
             (state % bound as u64) as usize
         };
         let cols = 2 + next(11);
+        // (M7 fix round 4, code review F6) and 1 in 32 seeds at a wider odd width, 21 or 79
+        // columns, where the rows of strings below are hundreds of cells long (the draws of the
+        // other seeds are unchanged)
+        let cols = match seed % 64 {
+            21 => 21,
+            42 => 79,
+            _ => cols,
+        };
         let rows = 1 + next(5);
         // (review S2 round 2) a large scrollback now and then: below a scroll region nothing
         // enters it, so the floor must not grow with it. The `long` lines below stay short
@@ -8015,7 +8045,7 @@ fn rep_below_region_large_scrollback_leaves_the_state_of_the_uncapped_print() {
 #[test]
 fn rep_widened_unit_at_odd_widths_over_rows_of_strings_leaves_the_state_of_the_uncapped_print() {
     // (columns, rows, scrollback, row length, below the region)
-    let setups: [(usize, usize, usize, usize, bool); 9] = [
+    let setups: [(usize, usize, usize, usize, bool); 12] = [
         (7, 4, 1_000, 107, true),
         (9, 3, 1_000, 69, true),
         (21, 5, 1_000, 221, true),
@@ -8023,13 +8053,22 @@ fn rep_widened_unit_at_odd_widths_over_rows_of_strings_leaves_the_state_of_the_u
         (79, 24, 1_000, 79 + 300, true),
         (3, 2, 10, 3 + 18, false),
         (5, 3, 20, 5 + 30, false),
+        (7, 4, 20, 7 + 42, false),
         (9, 4, 100, 9 + 270, false),
+        (21, 5, 50, 21 + 200, false),
+        (79, 24, 100, 79 + 79 * 6, false),
         (79, 24, 100, 79 + 79 * 12, false),
     ];
     for (cols, rows, scrollback, len, below) in setups {
         for unit in [VS16, KEYCAP] {
             for insert in [false, true] {
-                for count in [1_000usize, 5_000] {
+                // (at 79 columns two counts: each uncapped print walks rows of up to 2,379 cells)
+                let counts: &[usize] = if cols < 79 {
+                    &[200, 1_000, 5_000, 9_000]
+                } else {
+                    &[1_000, 5_000]
+                };
+                for &count in counts {
                     let make = || {
                         let mut t = test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
                         with_11_vs16(&mut t);
@@ -8052,7 +8091,7 @@ fn rep_widened_unit_at_odd_widths_over_rows_of_strings_leaves_the_state_of_the_u
                     let units: Vec<u32> = unit.chars().map(u32::from).collect();
                     let effective = capped.handler.rep_equivalent_repeats(&units, count);
                     // (at 79 columns the floor is past 5,000 units: one line is 39)
-                    if count == 5_000 && cols < 79 {
+                    if count >= 5_000 && cols < 79 {
                         assert!(effective < count, "{label}: not cut ({effective})");
                     }
                     capped.parse_str(&format!("\x1b[{count}b"));
@@ -8065,6 +8104,81 @@ fn rep_widened_unit_at_odd_widths_over_rows_of_strings_leaves_the_state_of_the_u
             }
         }
     }
+}
+
+/// M7 fix round 4 (code review F6), seeded (the review's random probe): rows of up to `21 cols`
+/// cells mixing strings, stale entries (a combined cell overwritten by a plain one) and plain
+/// cells, at odd and even widths, below a scroll region or at the scroll bottom, with and without
+/// insert mode, then REP of a widened unit (VS16, a keycap under `11-vs16`) or a narrow / wide
+/// one at counts up to 6,000: REP leaves the state of the uncapped print (cut or not). Before
+/// the fix 95 of 1,500 such cases below the region failed, all widened units at odd widths.
+#[test]
+fn rep_over_rows_of_strings_and_stale_entries_leaves_the_state_of_the_uncapped_print_seeded() {
+    let mut state: u64 = 0x1234_5678_9abc_def1;
+    let mut next = |bound: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % bound as u64) as usize
+    };
+    let (mut compared, mut cut, mut odd_widened) = (0, 0, 0);
+    for seed in 0..1_500 {
+        let cols = [3usize, 5, 7, 9, 11, 13, 21, 4, 8][next(9)];
+        let rows = 3 + next(3);
+        let unit = [VS16, KEYCAP, "e\u{301}", "\u{4e2d}"][next(4)];
+        let len = cols + next(20 * cols + 3);
+        let kinds: Vec<usize> = (0..len).map(|_| next(5)).collect();
+        let count = 1 + next(6_000);
+        let insert = next(4) != 0;
+        let below = next(3) != 0;
+        let make = || {
+            let mut t = test_handler(cols, rows, [OptionValue::Scrollback(100)]);
+            with_11_vs16(&mut t);
+            let buffer = t.handler.services.buffer.buffer_mut();
+            for y in 0..buffer.lines.len() {
+                let mut line = BufferLine::new(len, None, false);
+                for (c, &kind) in kinds.iter().enumerate() {
+                    let letter = u32::from(b'A') + (c % 26) as u32;
+                    line.set_cell_from_codepoint(c, letter, 1, &DEFAULT_ATTR_DATA);
+                    match kind {
+                        0 => line.add_codepoint_to_cell(c, 0x300 + (c % 3) as u32, 1),
+                        1 => {
+                            line.add_codepoint_to_cell(c, 0x301, 1);
+                            line.set_cell_from_codepoint(c, letter, 1, &DEFAULT_ATTR_DATA);
+                        }
+                        _ => {}
+                    }
+                }
+                buffer.lines.set(y, Some(line));
+            }
+            let region = if below { "\x1b[1;2r" } else { "" };
+            let insert = if insert { "\x1b[4h" } else { "" };
+            t.parse_str(&format!("{region}\x1b[{rows};1H{insert}"));
+            t.parse_str(unit);
+            t
+        };
+        let text = unit.repeat(count);
+        if text.len() >= MAX_PARSEBUFFER_LENGTH {
+            continue;
+        }
+        let label = format!(
+            "seed {seed}: {unit:?} at {cols}x{rows}, rows of {len}, below the region {below}, \
+             insert {insert}, REP {count}"
+        );
+        let mut capped = make();
+        let units: Vec<u32> = unit.chars().map(u32::from).collect();
+        cut += usize::from(capped.handler.rep_equivalent_repeats(&units, count) < count);
+        odd_widened += usize::from(cols % 2 == 1 && unit.contains('\u{fe0f}'));
+        capped.parse_str(&format!("\x1b[{count}b"));
+        let mut uncapped = make();
+        uncapped.parse_str(&format!("{text}\x1b[}}"));
+        assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+        compared += 1;
+    }
+    // the instrument: most runs compared, many of them cut, a fair share odd-width widened
+    assert!(compared > 1_400, "{compared} compared");
+    assert!(cut > 300, "{cut} cut");
+    assert!(odd_widened > 300, "{odd_widened} odd-width widened");
 }
 
 /// M7 fix round 3 (review S2): below a scroll region in insert mode every wrap lands on the
