@@ -42,6 +42,9 @@ use crate::parser::types::IdentifierError;
 
 pub mod keyboard_protocol;
 pub mod osc52;
+mod osc_command;
+mod osc_cwd;
+mod osc_progress;
 mod unknown_osc;
 pub mod vs16;
 mod xtversion;
@@ -52,6 +55,12 @@ mod ext_tests;
 mod keyboard_protocol_tests;
 #[cfg(test)]
 mod osc52_tests;
+#[cfg(test)]
+mod osc_command_tests;
+#[cfg(test)]
+mod osc_cwd_tests;
+#[cfg(test)]
+mod osc_progress_tests;
 #[cfg(test)]
 mod vs16_tests;
 
@@ -128,6 +137,8 @@ pub struct ExtState {
     pub(crate) osc52: osc52::Osc52State,
     /// The OSC 52 write gate (plan M7 D9).
     pub(crate) clipboard_write: bool,
+    /// The OSC 133 command state and the 2026 latch (plan M7 D13).
+    pub(crate) command: osc_command::CommandState,
 }
 
 /// The extension [`install`] registers: every handler of the standard set on one parser.
@@ -149,6 +160,9 @@ impl Extension<InputHandler> for StandardSet {
         }
         keyboard_protocol::register(parser)?;
         osc52::register(parser);
+        osc_cwd::register(parser);
+        osc_progress::register(parser);
+        osc_command::register(parser)?;
         unknown_osc::register(parser);
         Ok(())
     }
