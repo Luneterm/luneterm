@@ -42,14 +42,18 @@ use crate::parser::types::IdentifierError;
 
 pub mod keyboard_protocol;
 mod unknown_osc;
+pub mod vs16;
 mod xtversion;
 
 #[cfg(test)]
 mod ext_tests;
 #[cfg(test)]
 mod keyboard_protocol_tests;
+#[cfg(test)]
+mod vs16_tests;
 
 pub use keyboard_protocol::KeyboardProtocol;
+pub use vs16::UnicodeV11Vs16;
 
 /// What [`crate::Terminal::install_standard_extensions`] registers, beyond the always-on
 /// handlers (the unknown-OSC report).
@@ -60,6 +64,11 @@ pub struct StandardExtensions {
     /// name is written into the child's input, so anything else is refused
     /// ([`ExtensionError::InvalidXtversion`]).
     pub xtversion: Option<String>,
+    /// Register the `"11-vs16"` Unicode version ([`UnicodeV11Vs16`]) and make it the active one:
+    /// Unicode 11 widths, with a U+FE0F that follows a width-1 character making the pair two
+    /// cells wide. `false`: nothing is registered and the active version is untouched. The
+    /// host can switch versions afterwards through [`crate::Terminal::unicode_mut`].
+    pub vs16: bool,
 }
 
 /// Why [`crate::Terminal::install_standard_extensions`] refused.
@@ -149,6 +158,12 @@ pub(crate) fn install(
         }
     }
     input_handler.ext.installed = true;
+    if config.vs16 {
+        let unicode = &mut input_handler.services.unicode;
+        unicode.register(Box::new(UnicodeV11Vs16::new()));
+        // Registered on the line above, so the version is known.
+        let _ = unicode.set_active_version(UnicodeV11Vs16::VERSION);
+    }
     StandardSet {
         xtversion: config.xtversion.clone(),
     }
