@@ -2711,8 +2711,7 @@ fn rep_state(t: &mut TestTerm) -> RepState {
 /// others `print`; each case checks which. Lines compare whole, side-table entries included.
 #[test]
 fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
-    type Setup = fn(&mut TestTerm);
-    let cases: [(&str, Setup, &str, bool, bool); 25] = [
+    let cases: [RepCutCase; 25] = [
         ("plain", |_| {}, "a", true, true),
         ("wide, odd cols", |_| {}, "\u{4e2d}", true, true),
         ("cluster", |_| {}, "e\u{301}", true, true),
@@ -2872,18 +2871,62 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
     ];
     // sizes (cols, rows, scrollback) and counts around and past the cut; at 300x100 counts that
     // fill, wrap and scroll the screen (the line-fill path of review S3)
-    let small = [40, 97, 211, 9_007, 9_008, 20_011];
+    // (code review F10) by default the small sizes stop at 9008 and 300x100 runs a handful of
+    // cases at three counts; with LUNE_VT_REP_MATRIX=full every case runs at every size and
+    // count
+    let full = std::env::var("LUNE_VT_REP_MATRIX").is_ok_and(|v| v == "full");
+    let all_small = [40, 97, 211, 9_007, 9_008, 20_011];
+    let small = if full {
+        &all_small[..]
+    } else {
+        &all_small[..5]
+    };
     let large = [97, 9_008, 26_000, 40_000];
-    let sizes: [(usize, usize, usize, &[usize]); 5] = [
-        (7, 3, 4, &small),
-        (6, 4, 0, &small),
-        (2, 1, 0, &small),
-        (9, 2, 7, &small),
-        (300, 100, 5, &large),
+    let sizes: [RepCutSize; 4] = [
+        (7, 3, 4, small),
+        (6, 4, 0, small),
+        (2, 1, 0, small),
+        (9, 2, 7, small),
     ];
+    let mut skipped = check_rep_cut(&cases, &sizes, CUT_AT);
+    let large_cases = [
+        "plain",
+        "insert mode",
+        "below the region",
+        "open link",
+        "underline colour",
+    ];
+    let (large_cases, large): (Vec<RepCutCase>, &[usize]) = if full {
+        (cases.to_vec(), &large)
+    } else {
+        let cases = cases.iter().filter(|case| large_cases.contains(&case.0));
+        (cases.copied().collect(), &[97, 9_008, 40_000])
+    };
+    assert_eq!(large_cases.len(), if full { 25 } else { 5 });
+    skipped.extend(check_rep_cut(&large_cases, &[(300, 100, 5, large)], CUT_AT));
+    // only the five-byte units at the largest count
+    assert_eq!(skipped.len(), if full { 5 } else { 0 }, "{skipped:?}");
+}
+
+/// Where the REP cut tests check whether the cut applies: 7x3+4, REP 9007.
+const CUT_AT: (usize, usize, usize, usize) = (7, 3, 4, 9_007);
+
+/// A case of the REP cut tests: name, setup, the unit, whether the cut applies (checked at
+/// one size and count) and whether REP takes the line-fill path.
+type RepCutCase = (&'static str, fn(&mut TestTerm), &'static str, bool, bool);
+/// Columns, rows, scrollback and the REP counts to compare at that size.
+type RepCutSize<'a> = (usize, usize, usize, &'a [usize]);
+
+/// For every case, size and count: REP leaves the state of the uncapped print of all of its
+/// repetitions. Returns the labels whose uncapped print would not fit one `print` call.
+fn check_rep_cut(
+    cases: &[RepCutCase],
+    sizes: &[RepCutSize],
+    cut_at: (usize, usize, usize, usize),
+) -> Vec<String> {
     let mut skipped = Vec::new();
-    for (name, setup, unit, cut, fill) in cases {
-        for (cols, rows, scrollback, counts) in sizes {
+    for &(name, setup, unit, cut, fill) in cases {
+        for &(cols, rows, scrollback, counts) in sizes {
             for &count in counts {
                 let make = || {
                     let mut t = test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
@@ -2903,7 +2946,7 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
                 let units: Vec<u32> = repeated.chars().map(u32::from).collect();
                 let effective = capped.handler.rep_equivalent_repeats(&units, count);
                 assert!(effective <= count, "{label}");
-                if (cols, rows, scrollback, count) == (7, 3, 4, 9_007) {
+                if (cols, rows, scrollback, count) == cut_at {
                     assert_eq!(effective < count, cut, "{label}: {effective} of {count}");
                 }
                 capped.parse_str(&format!("\x1b[{count}b"));
@@ -2923,8 +2966,178 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
             }
         }
     }
-    // only the five-byte units at the largest count
-    assert_eq!(skipped.len(), 5, "{skipped:?}");
+    skipped
+}
+
+/// Code review F9: every line of the buffer made `len` cells long (`kind` 0: `cols + 1`, 1:
+/// `3 * cols`, 2: past what the buffer's own lines and rows shift out, `cols * (max_lines +
+/// rows + 8) + 1`), as a column shrink without reflow leaves them; lettered by column so a
+/// shift of the hidden tail shows, with a cluster, a wide character and an underline-coloured
+/// cell past the screen's columns where they fit; then `modes`.
+fn longer_lines(t: &mut TestTerm, kind: usize, modes: &str) {
+    use crate::buffer::constants::BgFlags;
+    let mut coloured = AttributeData::default();
+    coloured.bg |= BgFlags::HAS_EXTENDED;
+    coloured.extended = ExtendedAttrs::new(0x0040_0000, 0);
+    let cols = t.handler.services.buffer.cols;
+    let rows = t.handler.services.buffer.rows;
+    let buffer = t.handler.services.buffer.buffer_mut();
+    let len = match kind {
+        0 => cols + 1,
+        1 => 3 * cols,
+        _ => cols * (buffer.lines.max_length() + rows + 8) + 1,
+    };
+    for y in 0..buffer.lines.len() {
+        let mut line = BufferLine::new(len, None, false);
+        for c in 0..len {
+            let letter = u32::from(b'A') + (c % 26) as u32;
+            line.set_cell_from_codepoint(c, letter, 1, &DEFAULT_ATTR_DATA);
+        }
+        line.add_codepoint_to_cell(cols, 0x301, 1);
+        if len >= cols + 4 {
+            line.set_cell_from_codepoint(cols + 1, u32::from('\u{4e2d}'), 2, &DEFAULT_ATTR_DATA);
+            line.set_cell_from_codepoint(cols + 2, 0, 0, &DEFAULT_ATTR_DATA);
+            line.set_cell_from_codepoint(len - 1, u32::from('z'), 1, &coloured);
+        }
+        buffer.lines.set(y, Some(line));
+    }
+    t.parse_str(modes);
+}
+
+/// Code review F9: the REP cut in insert mode on lines longer than `cols`, where every insert
+/// shifts the hidden tail: below a scroll region (every wrap rewrites the last row) and
+/// without wraparound (every unit inserts at the cursor), for one code point, a cluster, a
+/// wide character and a wide cluster, and three line lengths; at the scroll bottom the
+/// scrolled-in lines are `cols` long (control).
+#[test]
+fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
+    const BELOW: &str = "\x1b[1;2r\x1b[999;1H\x1b[4h";
+    const NO_WRAP: &str = "\x1b[?7l\x1b[999;1H\x1b[4h";
+    let cases: [RepCutCase; 14] = [
+        (
+            "below the region, len cols + 1",
+            |t| longer_lines(t, 0, BELOW),
+            "a",
+            true,
+            true,
+        ),
+        (
+            "below the region, len 3 x cols",
+            |t| longer_lines(t, 1, BELOW),
+            "a",
+            true,
+            true,
+        ),
+        (
+            "below the region, longest",
+            |t| longer_lines(t, 2, BELOW),
+            "a",
+            true,
+            true,
+        ),
+        (
+            "below the region, cluster, longest",
+            |t| longer_lines(t, 2, BELOW),
+            "e\u{301}",
+            true,
+            true,
+        ),
+        (
+            "below the region, wide, longest",
+            |t| longer_lines(t, 2, BELOW),
+            "\u{4e2d}",
+            true,
+            true,
+        ),
+        (
+            "below the region, open link, wide cluster, 3 x cols",
+            |t| longer_lines(t, 1, &format!("\x1b]8;;u\x07{BELOW}")),
+            "\u{4e2d}\u{301}",
+            true,
+            true,
+        ),
+        (
+            "below the region, underline colour, longest",
+            |t| longer_lines(t, 2, &format!("\x1b[4:3;58:5:9m{BELOW}")),
+            "a",
+            true,
+            true,
+        ),
+        (
+            "no wraparound, len cols + 1",
+            |t| longer_lines(t, 0, NO_WRAP),
+            "a",
+            true,
+            false,
+        ),
+        (
+            "no wraparound, len 3 x cols",
+            |t| longer_lines(t, 1, NO_WRAP),
+            "a",
+            true,
+            false,
+        ),
+        (
+            "no wraparound, longest",
+            |t| longer_lines(t, 2, NO_WRAP),
+            "a",
+            true,
+            false,
+        ),
+        (
+            "no wraparound, cluster from the second column, longest",
+            |t| longer_lines(t, 2, "\x1b[?7l\x1b[4h\x1b[1;2H"),
+            "e\u{301}",
+            true,
+            false,
+        ),
+        (
+            "no wraparound, wide, longest",
+            |t| longer_lines(t, 2, NO_WRAP),
+            "\u{4e2d}",
+            true,
+            false,
+        ),
+        (
+            "no wraparound, wide cluster, 3 x cols",
+            |t| longer_lines(t, 1, NO_WRAP),
+            "\u{4e2d}\u{301}",
+            true,
+            false,
+        ),
+        (
+            "at the scroll bottom, longest",
+            |t| longer_lines(t, 2, "\x1b[999;1H\x1b[4h"),
+            "a",
+            true,
+            true,
+        ),
+    ];
+    // counts below and past the floors of the longest lines (at 7x3+4 below the region the
+    // floor is 224, and was 91 before review F9)
+    let counts = [40, 211, 1_009];
+    let sizes: [RepCutSize; 5] = [
+        (7, 3, 4, &counts),
+        (6, 4, 0, &counts),
+        (2, 1, 0, &counts),
+        (9, 2, 7, &counts),
+        (10, 3, 0, &counts),
+    ];
+    let mut skipped = check_rep_cut(&cases, &sizes, (7, 3, 4, 1_009));
+    // the screen reader floor (2048) comes first
+    let screen_reader: [RepCutCase; 1] = [(
+        "no wraparound, screen reader, open link, longest",
+        |t| {
+            t.set_option(OptionValue::ScreenReaderMode(true));
+            longer_lines(t, 2, &format!("\x1b]8;;u\x07{NO_WRAP}"));
+        },
+        "a",
+        true,
+        false,
+    )];
+    let sizes: [RepCutSize; 2] = [(7, 3, 4, &[2_503]), (10, 3, 0, &[2_503])];
+    skipped.extend(check_rep_cut(&screen_reader, &sizes, (7, 3, 4, 2_503)));
+    assert!(skipped.is_empty(), "{skipped:?}");
 }
 
 /// Review S7 (cases from the round-3 code review's probe, plus the S7 variants): the line-fill
@@ -3160,19 +3373,31 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
         ),
     ];
     // (3 columns hold one wide character per line)
-    let sizes = [
-        (7, 3, 4),
-        (8, 3, 0),
-        (2, 1, 0),
-        (5, 2, 3),
-        (3, 3, 2),
-        (300, 100, 5),
+    let small = [(7, 3, 4), (8, 3, 0), (2, 1, 0), (5, 2, 3), (3, 3, 2)];
+    // (code review F10) by default the small sizes stop at 9008 (past every cut, the screen
+    // reader floor included) and 300x100 runs a handful of cases at three counts; with
+    // LUNE_VT_REP_MATRIX=full every case runs at every size and count
+    let full = std::env::var("LUNE_VT_REP_MATRIX").is_ok_and(|v| v == "full");
+    let all_counts: &[usize] = &[1, 2, 3, 5, 6, 7, 13, 40, 97, 9_008, 30_001];
+    let counts = if full { all_counts } else { &all_counts[..10] };
+    let large_cases = [
+        "over odd wides",
+        "insert over odd wides",
+        "link over odd wides",
+        "insert into longer lines with entries, odd wides",
+        "underline colour over odd wides",
     ];
-    let counts = [1, 2, 3, 5, 6, 7, 13, 40, 97, 9_008, 30_001];
-    let mut filled = 0;
+    let large_counts: &[usize] = if full {
+        all_counts
+    } else {
+        &[97, 9_008, 30_001]
+    };
+    let (mut runs, mut filled) = (0, 0);
     for (name, setup, unit) in cases {
-        for (cols, rows, scrollback) in sizes {
-            for count in counts {
+        let large = (full || large_cases.contains(&name)).then_some(((300, 100, 5), large_counts));
+        let sizes = small.iter().map(|&size| (size, counts)).chain(large);
+        for ((cols, rows, scrollback), counts) in sizes {
+            for &count in counts {
                 let make = || {
                     let mut t = test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
                     setup(&mut t, cols, rows);
@@ -3186,6 +3411,7 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
                         <= cols;
                 fill.parse_str(&format!("\x1b[{count}b"));
                 assert_eq!(fill.handler.rep_fills, u64::from(fits), "{label}: path");
+                runs += 1;
                 filled += usize::from(fits);
                 let mut printed = make();
                 let text = {
@@ -3203,8 +3429,14 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
             }
         }
     }
-    // every case takes the fill path
-    assert_eq!(filled, 28 * 6 * 11, "fill path cases");
+    // every case takes the fill path, at every size and count of the matrix
+    let expected = if full {
+        28 * 6 * 11
+    } else {
+        28 * 5 * 10 + large_cases.len() * 3
+    };
+    assert_eq!(runs, expected, "matrix");
+    assert_eq!(filled, runs, "fill path cases");
 }
 
 #[test]

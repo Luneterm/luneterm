@@ -2136,24 +2136,58 @@ impl InputHandler {
     /// `n + k * per_line`. With wraparound on, every repetition after the first places its
     /// first code point (non-joining, width `w`) and joins the rest onto it without moving the
     /// cursor (the checks below), so every wrap after the first starts a line at column 0 in
-    /// the same state, and a fully printed line is the same line (the old row's cells from
-    /// the wrap column on are cleared, also in insert mode). After `rows + max_lines + 3`
-    /// wraps the cursor has reached the line it stays on (the scroll bottom, or the last row
-    /// below a region), the buffer is full (`ybase` and a user-scrolled `ydisp` no longer
-    /// move) and every line the print can reach holds that full line; `per_line` more units
-    /// then complete the current line, scroll or rewrite it, and print the same partial line
-    /// again. Lines outside the reach keep their content and markers. Damage, dirty rows and
-    /// the screen reader text (capped per drain; with screen reader mode on, the
-    /// `A11Y_TEXT_LIMIT` floor fills the cap in both) are the same; link markers on the reachable lines are created anew in both, so
-    /// only marker ids differ. Without wraparound the cursor stays on its row: once it reaches
-    /// the last column (`cols + 2` units), each single-code-point unit rewrites or skips the
-    /// same cell, a period of one unit. A unit with joiners (review S7) reaches the last column
-    /// within `cols / w + 1` units too; then a narrow unit rewrites the last cell with a fresh
-    /// base and the same joiners, and a wide one skips its base and stacks its joiners onto the
+    /// the same state, and a fully printed line of `cols` cells is the same line (the old
+    /// row's cells from the wrap column on are cleared, also in insert mode; for longer lines
+    /// see below). After `rows + max_lines + 3` wraps the cursor has reached the line it stays
+    /// on (the scroll bottom, or the last row below a region), the buffer is full (`ybase` and
+    /// a user-scrolled `ydisp` no longer move) and every line the print can reach holds that
+    /// full line; `per_line` more units then complete the current line, scroll or rewrite it,
+    /// and print the same partial line again. Lines outside the reach keep their content and
+    /// markers. Damage, dirty rows and the screen reader text (capped per drain; with screen
+    /// reader mode on, the `A11Y_TEXT_LIMIT` floor fills the cap in both) are the same; link
+    /// markers on the reachable lines are created anew in both, so only marker ids differ.
+    /// Without wraparound the cursor stays on its row: once it reaches the last column
+    /// (`cols + 2` units), each single-code-point unit rewrites or skips the same cell, a
+    /// period of one unit. A unit with joiners (review S7) reaches the last column within
+    /// `cols / w + 1` units too; then a narrow unit rewrites the last cell with a fresh base
+    /// and the same joiners, and a wide one skips its base and stacks its joiners onto the
     /// same cell (the one before the cursor), whose combined string stops growing at
     /// [`MAX_COMBINED_CODE_POINTS`] code points (at most that many units more, plus one for a
     /// cell that had no text); from then on every unit leaves the state as it found it, so
     /// `cols + MAX_COMBINED_CODE_POINTS + 3` units suffice.
+    ///
+    /// Insert mode on a line longer than `cols` (left by a column shrink without reflow; code
+    /// review F9): each insert also shifts the line's hidden tail `[cols, len)`, which keeps
+    /// changing after the visible cells repeat, so the floor waits until the tail holds only
+    /// cells the print made. Two facts carry the argument. (1) A unit's insert, the fix-ups
+    /// (`insert_cells`' at `pos - 1` and at the line end, `print`'s at `cols - 1`) and the
+    /// wrap's clear of `[wrap column, cols)` act on a cell from its own value and position
+    /// only, and every cell right of the insert moves right by the inserted width: content
+    /// that was at column `q` before `s` inserted cells is at `q + s`, or gone past `len`.
+    /// (2) The cells inserted, written and cleared are the same in every repetition. So once
+    /// every cell the row held has been pushed past `len`, its cells no longer depend on what
+    /// it held, and the same repetitions applied again give the same cells (a fixed point).
+    /// One more round of the same writes then fixes the side tables too, whose entries change
+    /// only when a flagged cell is written to their key.
+    ///  - Without wraparound, a narrow unit inserts once per repetition at the cursor (stuck
+    ///    at `cols - 1` past the last column), so the row's content from `min(x, cols - 1)` on
+    ///    has left the line after `len - min(x, cols - 1)` units and `len + 1` units suffice:
+    ///    the floor gets `len - cols` more (`len + 2` in all for one code point). A stuck wide
+    ///    unit is skipped before its insert, so its tail stops changing once it is stuck; the
+    ///    extra units change nothing there.
+    ///  - With wraparound, a line is printed again without scrolling only when the cursor is
+    ///    below the scroll region: every wrap then lands on the last row (`y` stops at
+    ///    `rows - 1`), and each full pass over it inserts `per_line * w` cells. Lines a wrap
+    ///    reaches by scrolling are blank lines of `cols` cells, and a line passed once is the
+    ///    same prefix in both prints. The last row needs `ceil(len / (per_line * w)) + 1` full
+    ///    passes, at most `ceil(excess / (per_line * w)) + 3` (`per_line * w >= cols - 1` and
+    ///    `cols >= 2`, so `ceil(cols / (per_line * w)) <= 2`). Of the floor's wraps at most
+    ///    `rows - 1` reach it and one pass is partial, which leaves `max_lines + 3 >= 4` full
+    ///    passes; the floor gets `ceil(excess / (per_line * w)) + 1` more lines of units.
+    ///
+    /// The extra units print as before. Without wraparound they go through `print`, one
+    /// `O(len)` insert each, so such a REP costs up to `O(len * (len - cols))` (the longest
+    /// line a resize left behind); with wraparound they take the line fill, `O(len)` per pass.
     fn rep_equivalent_repeats(&self, unit: &[u32], repeats: usize) -> usize {
         let services = &self.services;
         let unicode = &services.unicode;
@@ -2190,20 +2224,42 @@ impl InputHandler {
             return repeats;
         }
 
+        // LUNETERM: (code review F9) in insert mode, how far a line reaches past `cols`: the
+        // hidden tail every insert shifts (see the doc comment)
+        let insert_mode = services.core.modes.insert_mode;
+        let buffer = services.buffer.buffer();
+        let excess = |row: usize| {
+            buffer
+                .lines
+                .get(row)
+                .map_or(0, |line| line.len().saturating_sub(cols))
+        };
         let (period, floor) = if services.core.dec_private_modes.wraparound {
-            let per_line = cols / to_usize(i64::from(width));
-            let lines = rows.saturating_add(max_lines).saturating_add(3);
+            let w = to_usize(i64::from(width));
+            let per_line = cols / w;
+            let mut lines = rows.saturating_add(max_lines).saturating_add(3);
+            if insert_mode && buffer.y > buffer.scroll_bottom {
+                // every wrap rewrites the last row, shifting it by `per_line * w` cells
+                let last = buffer.ybase.saturating_add(rows).saturating_sub(1);
+                let passes = excess(last).div_ceil(per_line.saturating_mul(w).max(1));
+                lines = lines.saturating_add(passes).saturating_add(1);
+            }
             (per_line, per_line.saturating_mul(lines))
-        } else if unit.len() == 1 {
-            (1, cols.saturating_add(2))
         } else {
-            // LUNETERM: (review S7) see the doc comment: the joiners of a stuck wide unit
-            // stack onto one cell until its combined string is full
-            (
-                1,
+            let floor = if unit.len() == 1 {
+                cols.saturating_add(2)
+            } else {
+                // LUNETERM: (review S7) see the doc comment: the joiners of a stuck wide unit
+                // stack onto one cell until its combined string is full
                 cols.saturating_add(MAX_COMBINED_CODE_POINTS)
-                    .saturating_add(3),
-            )
+                    .saturating_add(3)
+            };
+            let excess = if insert_mode {
+                excess(abs_y(buffer))
+            } else {
+                0
+            };
+            (1, floor.saturating_add(excess))
         };
         // the screen reader text of the cut REP must reach the per-drain cap as the uncut does
         let floor = if services.options.options().screen_reader_mode {
