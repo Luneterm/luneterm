@@ -414,6 +414,14 @@ pub struct InputHandler {
     /// round 3, `print_repeated`; tests check the path).
     #[cfg(test)]
     pub(crate) rep_cycle_batches: u64,
+    /// Whole passes over the last row below the scroll region whose string copies were taken
+    /// at once (M7 fix round 5, `print_repeated`; tests check the path).
+    #[cfg(test)]
+    pub(crate) rep_copy_batches: u64,
+    /// Repetitions a widened unit's joiner wrapped on the last row below the scroll region,
+    /// through `print`'s own steps (M7 fix round 5; tests bound them per REP).
+    #[cfg(test)]
+    pub(crate) rep_joiner_wraps: u64,
 }
 
 impl ParserHost for InputHandler {
@@ -687,6 +695,10 @@ impl InputHandler {
             rep_stuck_batches: 0,
             #[cfg(test)]
             rep_cycle_batches: 0,
+            #[cfg(test)]
+            rep_copy_batches: 0,
+            #[cfg(test)]
+            rep_joiner_wraps: 0,
         }
     }
 
@@ -2347,8 +2359,9 @@ impl InputHandler {
     /// ([`BufferLine::last_combined_key`]). Cost: below the region with insert mode the line
     /// fill takes the settled passes at once, so only the passes before the strings settle
     /// cost (`O(len)` each, `O(len^2 / cols)` in all on a long row of strings); without insert
-    /// mode each line of the floor is one pass (`O(cols)` plus the copy, `O(len)` on a row of
-    /// strings).
+    /// mode (M7 fix round 5) the line fill takes the string copies of all but the last whole
+    /// pass at once (`O(K + runs)`, [`InputHandler::print_repeated`]), so the floor's lines
+    /// cost one batch and a pass or two there, not a pass each.
     fn rep_equivalent_repeats(&self, unit: &[u32], repeats: usize) -> usize {
         let services = &self.services;
         let unicode = &services.unicode;
@@ -2692,6 +2705,12 @@ impl InputHandler {
     ///    tail has, and once the strings the joiner's wrap copies have (M7 fix round 4, code
     ///    review F6; see [`InputHandler::rep_equivalent_repeats`]), which still takes one
     ///    `O(len)` pass per `pushed` cells of tail and per `cols - 1` of the row's last key.
+    ///  - (M7 fix round 5, code review F6 residual) Without insert mode, on the last row below
+    ///    the scroll region, that widened unit's passes from `span` differ only in the strings
+    ///    the joiner's wrap copies; there `p` whole passes leave the row's state of the first
+    ///    `p - 1` passes' copies taken in closed form and one real pass
+    ///    ([`InputHandler::copy_passes_at_once`] has the proof), `O(K + runs)` where they cost
+    ///    `O(len)` each.
     fn print_repeated(&mut self, fill: &RepFill, count: usize) {
         #[cfg(test)]
         {
@@ -2770,6 +2789,15 @@ impl InputHandler {
         let mut left = count;
         while left > 0 {
             let x = self.services.buffer.buffer().x;
+            if !insert_mode && wrap_copies && x == span && self.copy_passes_at_once(left, per_line)
+            {
+                // (M7 fix round 5) all but the last of the whole passes left, at once
+                left -= (left / per_line - 1) * per_line;
+                #[cfg(test)]
+                {
+                    self.rep_copy_batches += 1;
+                }
+            }
             if insert_mode && per_line > 0 && x == span {
                 // once a pass leaves what it reads as it found it, every later pass does the
                 // same, so the rest of the whole passes are taken at once
@@ -2821,6 +2849,14 @@ impl InputHandler {
             if fill.widens_at.is_some() && x + inserted <= cols && x + w > cols {
                 // (M7 fix round 1) the base fits the line and its widening joiner wraps it to
                 // the next one: `print`'s own steps for this repetition
+                #[cfg(test)]
+                {
+                    let rows = self.services.buffer.rows;
+                    let buffer = self.services.buffer.buffer();
+                    if buffer.y + 1 == rows && buffer.y > buffer.scroll_bottom {
+                        self.rep_joiner_wraps += 1;
+                    }
+                }
                 if !self.print_inner(&fill.codes, false, false) {
                     return;
                 }
@@ -2938,6 +2974,71 @@ impl InputHandler {
         }
         let y = buffer.y;
         self.dirty_row_tracker.mark_dirty(y);
+    }
+
+    /// LUNETERM: (M7 fix round 5, code review F6 residual) [`InputHandler::print_repeated`]'s
+    /// copy batch, called at a loop top with the cursor at `span = per_line × 2 = cols - 1`
+    /// (`cols` odd), insert mode off, for a widened unit whose joiner wraps its base
+    /// (`wrap_copies`) and `left` units to print. On the last row below the scroll region, with
+    /// the row at least `cols` long and `p = left / per_line >= 2` whole passes left, it gives
+    /// the row's combined strings the effect of the first `p - 1` passes
+    /// ([`BufferLine::shift_combined_classes_repeatedly`] with `c = cols - 1`, `k = p - 1`) and
+    /// returns true; the caller drops those `(p - 1) × per_line` units, and the last whole pass
+    /// then prints for real. Otherwise (or where the last key is `usize::MAX`) it changes
+    /// nothing and returns false.
+    ///
+    /// A pass from `span` is `per_line` units: the one whose base lands on the last column `c`
+    /// (`print`'s own steps, [`InputHandler::print_inner`]) and `per_line - 1` units of the line
+    /// fill from column 2. Below the region its wrap lands on the same row. On the row's
+    /// combined map it is `P = W_post ∘ S ∘ W_pre`:
+    ///  - `W_pre`: the base written at `c` (no string), and any joiner before the widening one
+    ///    added to it (a string at `c`, built from the unit alone);
+    ///  - `S`: the wrap's `copy_cells_from(snapshot, c, 0, 1)`, whose map part (upstream's
+    ///    FIXME) gives every key `j` the snapshot's value at `j + c` where held;
+    ///  - `W_post`: key 0 (the widening joiner and those after it added to the cell the copy
+    ///    put there: a fresh string from the base, or the string the copy brought from `c`,
+    ///    which `W_pre` wrote — either way the unit's head string, whatever the map held) and
+    ///    the heads of the fill at `2, 4, …, c - 2` (the head's string, a full overwrite).
+    ///
+    /// Every write of `W_pre` and `W_post` is at a key `< cols`, with a value that depends on
+    /// the unit only. **Lemma**: for `p >= 1`, `P^p(X) = P(F_{p-1}(X))`, `F` as in
+    /// [`BufferLine::shift_combined_classes_repeatedly`]. Let `A = {0, 2, …, c - 2}` be
+    /// `W_post`'s keys and `A' ⊆ {c}` `W_pre`'s. For a key `q >= 1` outside `A ∪ A'`, `P(Y)[q]`
+    /// is `Y[q + c]` where held and `Y[q]` otherwise (`q + c >= cols` is outside every write
+    /// set), and `q + c` is again such a key, so by induction (the step of `F_k = S^k`)
+    /// `P^m(X)[q] = F_m(X)[q]` for every `m`. `P(Y)` reads `Y` only at such keys: `S`'s sources
+    /// are the keys `>= c` (with `c` rewritten by `W_pre` first where `A'` holds it), its kept
+    /// values at keys of `A` and at key 0 are overwritten after it, and `W_post`'s values do not
+    /// depend on `Y`. So `P(P^{p-1}(X)) = P(F_{p-1}(X))`.
+    ///
+    /// Everything else a pass does is the same in every pass, so `p - 1` skipped passes and one
+    /// real one leave what `p` passes leave: every cell of `[0, cols)` is rewritten from the
+    /// unit and the current attributes alone (the base and its clear at `c`, the copied base and
+    /// head at 0, the stub at 1, the fill's heads and stubs at `2..c`; the start fix-up at
+    /// `c - 1` is overwritten by the fill's stub, or by the stub at 1 when `cols = 3`), and so
+    /// is each extended entry there (the writes insert the current attributes' entry, or none
+    /// without one: the copy moves an entry only from a cell carrying the flag, which the base
+    /// at `c` carries exactly when the attributes do); nothing is written at `>= cols` but by
+    /// `S`. The row is marked wrapped and dirty again; the cursor ends at `span` on the same
+    /// row; a link add finds the marker the first one cached on this row (as the line fill's
+    /// other batches argue); the screen reader text was queued up front; below the region a
+    /// wrap does not scroll, so no damage. The cut floor (`rep_equivalent_repeats`) is not
+    /// changed by this: it only makes those floor units cheap. Cost: `O(K + runs)` for the
+    /// batch, then the last pass, where the passes cost `O(len)` each (`O(len^2 / cols)` in all
+    /// on a long row of strings, about `K / (cols - 1)` of them until the strings settle).
+    fn copy_passes_at_once(&mut self, left: usize, per_line: usize) -> bool {
+        let cols = self.services.buffer.cols;
+        let rows = self.services.buffer.rows;
+        let passes = left / per_line.max(1);
+        let buffer = self.services.buffer.buffer_mut();
+        let below_last = buffer.y + 1 == rows && buffer.y > buffer.scroll_bottom;
+        if !below_last || passes < 2 {
+            return false;
+        }
+        let row = abs_y(buffer);
+        line_mut(buffer, row)
+            .filter(|line| line.len() >= cols)
+            .is_some_and(|line| line.shift_combined_classes_repeatedly(cols - 1, passes - 1))
     }
 
     /// LUNETERM: (plan M7 step 13, S7 residual 5) `print` of `count` repetitions of `unit`

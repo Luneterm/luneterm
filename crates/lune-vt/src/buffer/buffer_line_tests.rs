@@ -2508,6 +2508,123 @@ fn check_run_map<V: Clone + PartialEq + SameValue + std::fmt::Debug>(
     }
 }
 
+/// LUNETERM: (M7 fix round 5, code review F6 residual) `shift_classes_repeatedly(c, k)` is the
+/// loop of `k` self-copies `copy_shifted_from(&snapshot, c, 0)` (the real producer: the map part
+/// of a widened unit's joiner wrap below the scroll region on an odd number of columns). Axes:
+/// random maps with distinct and equal values (equal strings in distinct allocations), long runs,
+/// gaps, keys past a nominal line end and sparse high keys; `c` in `1..=40`; `k` at 0, 1, 2, the
+/// settle count `ceil((K + 1) / c)` and its neighbours, `usize::MAX / 2`, and random. The loop
+/// runs `min(k, settle + 2)` copies (the map is settled from `settle` on). Entries and maps (the
+/// one form) must be equal; for the shared map, a map shared with another holder is left as it
+/// is for that holder, and is not copied when nothing changes.
+#[test]
+fn shifting_classes_repeatedly_equals_the_loop_of_self_copies() {
+    check_shift_classes(|v| v as u8);
+    check_shift_classes(|v| -> Arc<str> { Arc::from(format!("c{v}\u{301}")) });
+}
+
+fn check_shift_classes<V: Clone + PartialEq + SameValue + std::fmt::Debug>(
+    value_of: impl Fn(usize) -> V,
+) {
+    let mut seed: u64 = 0x5eed_c1a5_5e5f_00d5;
+    let mut next = |bound: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % bound as u64) as usize
+    };
+    let (mut unsettled, mut settled, mut low_changed, mut unchanged_shared) = (0, 0, 0, 0);
+    for round in 0..7_000 {
+        let len = 1 + next(90);
+        let mut map = RunMap::<V>::default();
+        for _ in 0..1 + next(40) {
+            let first = match next(10) {
+                // keys past the nominal line end
+                0 => len + next(60),
+                // a sparse high key
+                1 => 150 + next(300),
+                _ => next(len),
+            };
+            let last = match next(4) {
+                // a long run
+                0 => first + next(3 * len),
+                _ => first + next(3),
+            };
+            // equal values often (a small alphabet), distinct ones too
+            let value = match next(3) {
+                0 => value_of(next(1_000)),
+                _ => value_of(next(3)),
+            };
+            match next(6) {
+                // a gap
+                0 => map.assign(first, last, None),
+                _ => map.assign(first, last, Some(value)),
+            }
+        }
+        let c = 1 + next(40);
+        let last_key = map.runs.last_key_value().map(|(_, (l, _))| *l);
+        let settle = last_key.map_or(0, |k| (k + 1).div_ceil(c));
+        let k = match next(8) {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            3 => settle.saturating_sub(1),
+            4 => settle,
+            5 => settle + 1,
+            6 => usize::MAX / 2,
+            _ => next(settle + 3),
+        };
+        let mut expected = map.clone();
+        for _ in 0..k.min(settle + 2) {
+            let snapshot = expected.clone();
+            expected.copy_shifted_from(&snapshot, c, 0);
+        }
+        let mut got = map.clone();
+        assert!(got.shift_classes_repeatedly(c, k), "round {round}");
+        assert_eq!(
+            got.entries(),
+            expected.entries(),
+            "round {round}: c {c} k {k} settle {settle}, {map:?}"
+        );
+        assert_eq!(got, expected, "round {round}: one form, c {c} k {k}");
+        if k > 0 && k < settle {
+            unsettled += 1;
+        } else if k >= settle && settle > 0 {
+            settled += 1;
+        }
+        let below_c = |m: &RunMap<V>| m.dense(0, c);
+        if below_c(&got) != below_c(&map) {
+            low_changed += 1;
+        }
+        // the shared map: the other holder keeps the map; no copy when nothing changes
+        let mut shared = SharedRunMap(Some(Arc::new(map.clone())));
+        let other = shared.clone();
+        assert!(shared.shift_classes_repeatedly(c, k));
+        assert_eq!(
+            shared.entries(),
+            expected.entries(),
+            "round {round}: shared"
+        );
+        assert_eq!(
+            other.entries(),
+            map.entries(),
+            "round {round}: other holder"
+        );
+        if got == map {
+            assert!(
+                matches!((&shared.0, &other.0), (Some(a), Some(b)) if Arc::ptr_eq(a, b)),
+                "round {round}: an unchanged shared map was copied"
+            );
+            unchanged_shared += 1;
+        }
+    }
+    // the instrument: every regime is exercised
+    assert!(unsettled > 1_000, "{unsettled} unsettled");
+    assert!(settled > 1_000, "{settled} settled");
+    assert!(low_changed > 300, "{low_changed} with keys below c changed");
+    assert!(unchanged_shared > 300, "{unchanged_shared} unchanged");
+}
+
 // ---- ReferenceBufferLine: the line with a per-key combined map, as shipped before plan M7 step 12 ----
 //
 // Moved verbatim from `buffer_line.rs` (`insert_sorted` and `BufferLine`, only `BufferLine`

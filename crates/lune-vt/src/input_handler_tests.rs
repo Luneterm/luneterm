@@ -4075,6 +4075,8 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         }
     };
     let (mut filled, mut batched, mut cycled, mut compared) = (0, 0, 0, 0);
+    // (M7 fix round 5) copy batches below the region without insert mode
+    let mut copy_batched = 0u64;
     // (review F5) seeds whose uncapped print would not fit one `print` call: counted, not a
     // failure. A unit of several code points stacked into one cell at a large count makes the
     // repeated text longer than one parse buffer; REP and print still agree, but this harness
@@ -4155,6 +4157,7 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         filled += capped.handler.rep_fills;
         batched += capped.handler.rep_stuck_batches;
         cycled += capped.handler.rep_cycle_batches;
+        copy_batched += capped.handler.rep_copy_batches;
         // the uncapped print: what REP repeats (nothing after no print, or where the cell
         // would start left of the line), `count` times in one `print` call
         let mut uncapped = make();
@@ -4181,6 +4184,10 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         assert!(filled > compared as u64 / 4, "{filled} of {compared}");
         assert!(batched > 0, "{batched} of {compared}");
         assert!(cycled > compared as u64 / 200, "{cycled} of {compared}");
+        assert!(
+            copy_batched > compared as u64 / 1_000,
+            "{copy_batched} copy batches of {compared}"
+        );
         // the skipped seeds stay rare (review F5): fewer than 1 in 10,000
         assert!(
             skipped < 1 + compared as u64 / 10_000,
@@ -4188,7 +4195,7 @@ fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded()
         );
         eprintln!(
             "rep diff: {compared} compared, {filled} filled, {batched} batched, {cycled} passes \
-             batched, {skipped} skipped"
+             batched, {copy_batched} copy batches, {skipped} skipped"
         );
     }
 }
@@ -8042,28 +8049,46 @@ fn rep_below_region_large_scrollback_leaves_the_state_of_the_uncapped_print() {
 /// strings longer than `(rows + 3) * (cols - 1)` (below the region the cut showed other text
 /// before; at the scroll bottom only the oldest lines' hidden entries differed), with and
 /// without insert mode: REP is cut and leaves the state of the uncapped print.
+///
+/// M7 fix round 5 (the F6 residual): below the region without insert mode, on the last row,
+/// the line fill takes the string copies of all but the last whole pass at once
+/// (`copy_passes_at_once`): asserted to fire once per REP from three passes on, with at most
+/// three real joiner wraps on that row per REP; the cursor one row above the last (below the
+/// region) is a setup of its own, where it must not fire (the wraps go to the next row). Axes
+/// (repo lesson): odd widths only (the shape needs one), even widths in
+/// `rep_below_region_large_scrollback…` and the seeded tests; rows of `cols` up to `cols +
+/// 2,300` cells; every cell a string (no hidden tail without strings); counts below the strings'
+/// settle count (79 columns, 1,000: about 25 of 31 passes) and past it.
 #[test]
 fn rep_widened_unit_at_odd_widths_over_rows_of_strings_leaves_the_state_of_the_uncapped_print() {
-    // (columns, rows, scrollback, row length, below the region)
-    let setups: [(usize, usize, usize, usize, bool); 12] = [
-        (7, 4, 1_000, 107, true),
-        (9, 3, 1_000, 69, true),
-        (21, 5, 1_000, 221, true),
-        (79, 24, 1_000, 79 + 2_300, true),
-        (79, 24, 1_000, 79 + 300, true),
-        (3, 2, 10, 3 + 18, false),
-        (5, 3, 20, 5 + 30, false),
-        (7, 4, 20, 7 + 42, false),
-        (9, 4, 100, 9 + 270, false),
-        (21, 5, 50, 21 + 200, false),
-        (79, 24, 100, 79 + 79 * 6, false),
-        (79, 24, 100, 79 + 79 * 12, false),
+    // (columns, rows, scrollback, row length, below the region, rows above the last)
+    let setups: [(usize, usize, usize, usize, bool, usize); 17] = [
+        (7, 4, 1_000, 107, true, 0),
+        (9, 3, 1_000, 69, true, 0),
+        (9, 3, 1_000, 9 + 175, true, 0),
+        (21, 5, 1_000, 221, true, 0),
+        (79, 24, 1_000, 79 + 2_300, true, 0),
+        (79, 24, 1_000, 79 + 300, true, 0),
+        (3, 3, 10, 3 + 40, true, 0),
+        (7, 5, 100, 7 + 200, true, 1),
+        (21, 6, 100, 21 + 300, true, 2),
+        (79, 24, 100, 79, true, 0),
+        (3, 2, 10, 3 + 18, false, 0),
+        (5, 3, 20, 5 + 30, false, 0),
+        (7, 4, 20, 7 + 42, false, 0),
+        (9, 4, 100, 9 + 270, false, 0),
+        (21, 5, 50, 21 + 200, false, 0),
+        (79, 24, 100, 79 + 79 * 6, false, 0),
+        (79, 24, 100, 79 + 79 * 12, false, 0),
     ];
-    for (cols, rows, scrollback, len, below) in setups {
+    for (cols, rows, scrollback, len, below, up) in setups {
         for unit in [VS16, KEYCAP] {
             for insert in [false, true] {
                 // (at 79 columns two counts: each uncapped print walks rows of up to 2,379 cells)
-                let counts: &[usize] = if cols < 79 {
+                let counts: &[usize] = if len == 9 + 175 {
+                    // (the review's probe seed 13, where a visible cell differed)
+                    &[316, 1_000, 5_000]
+                } else if cols < 79 {
                     &[200, 1_000, 5_000, 9_000]
                 } else {
                     &[1_000, 5_000]
@@ -8078,23 +8103,41 @@ fn rep_widened_unit_at_odd_widths_over_rows_of_strings_leaves_the_state_of_the_u
                             &mut t,
                             len,
                             false,
-                            &format!("{region}\x1b[{rows};1H{insert}"),
+                            &format!("{region}\x1b[{};1H{insert}", rows - up),
                         );
                         t.parse_str(unit);
                         t
                     };
                     let label = format!(
                         "{unit:?} at {cols}x{rows}+{scrollback}, rows of {len}, below the region \
-                         {below}, insert {insert}, REP {count}"
+                         {below} ({up} above the last row), insert {insert}, REP {count}"
                     );
                     let mut capped = make();
                     let units: Vec<u32> = unit.chars().map(u32::from).collect();
                     let effective = capped.handler.rep_equivalent_repeats(&units, count);
                     // (at 79 columns the floor is past 5,000 units: one line is 39)
-                    if count >= 5_000 && cols < 79 {
+                    if count >= 5_000 && cols < 79 && len > cols {
                         assert!(effective < count, "{label}: not cut ({effective})");
                     }
                     capped.parse_str(&format!("\x1b[{count}b"));
+                    // (M7 fix round 5) the copy batch: once per REP on the last row below the
+                    // region without insert mode, from three whole passes on; never elsewhere.
+                    // From a row above the last it fires once the wraps reach the last row.
+                    let per_line = cols / 2;
+                    let batches = capped.handler.rep_copy_batches;
+                    if up == 0 {
+                        let batched = below && !insert && effective >= 3 * per_line;
+                        assert_eq!(batches, u64::from(batched), "{label}: copy batches");
+                    } else {
+                        assert!(batches <= u64::from(!insert), "{label}: copy batches");
+                    }
+                    if below && !insert && up == 0 {
+                        assert!(
+                            capped.handler.rep_joiner_wraps <= 3,
+                            "{label}: {} joiner wraps",
+                            capped.handler.rep_joiner_wraps
+                        );
+                    }
                     let mut uncapped = make();
                     let text = unit.repeat(count);
                     assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
