@@ -19,6 +19,15 @@
 //!    so the lines keep L cells), then `CSI ? 7 l CSI 4 h` and the REP of `a` or `e U+0301` on the
 //!    last row, for L in 80 (the control), 300, 1000 and 2000, scrollback 10,000; and (M7 fix
 //!    round 1) of VS16 and the keycap under `11-vs16`.
+//!  - **REP below a scroll region** (M7 fix round 2, review S2): a region of rows 1..=10, the
+//!    cursor on the last row, insert mode, scrollback 10,000, at 80x24 and 300x100, for plain
+//!    `a`, `e U+0301`, a wide cluster, VS16 and the keycap (plain `a` is the ≤ 3× reference).
+//!  - **REP below a region on a long row, Windows mode** (M7 fix round 2, review S2): the
+//!    non-reflowing normal buffer shrunk from L columns to 80, below a region, insert mode, for
+//!    L in 300 and 2,000 — linear in L.
+//!  - **REP of a joining-base unit** (M7 fix round 2, review S3): a lone combining mark the
+//!    cursor sits on (wraparound off, a wide char skipped at the last column); every repetition
+//!    appends to the one capped cell, so the cost tracks plain REP.
 //!
 //! Each setup is checked once, outside the timing, to have the shape its name claims (the line
 //! length after the shrink, a link in the viewport, the cluster in the cells, the scrolled
@@ -74,6 +83,30 @@ fn new_terminal(cols: usize, rows: usize, scrollback: usize) -> Terminal {
 /// (the `11-vs16` provider active).
 fn new_vs16_terminal(cols: usize, rows: usize, scrollback: usize) -> Terminal {
     let mut term = new_terminal(cols, rows, scrollback);
+    let config = StandardExtensions {
+        vs16: true,
+        ..StandardExtensions::default()
+    };
+    assert!(term.install_standard_extensions(&config).is_ok());
+    term
+}
+
+/// [`new_terminal`] in Windows mode (no reflow on resize), so a column shrink leaves rows
+/// longer than the window — the Windows 10 configuration of review S2.
+fn new_winmode_terminal(cols: usize, rows: usize, scrollback: usize) -> Terminal {
+    let mut term = Terminal::new([
+        OptionValue::Cols(cols),
+        OptionValue::Rows(rows),
+        OptionValue::Scrollback(scrollback),
+        OptionValue::WindowsMode(true),
+    ]);
+    assert!(term.unicode_mut().set_active_version("11").is_ok());
+    term
+}
+
+/// [`new_winmode_terminal`] with the standard extensions installed and `vs16` on.
+fn new_winmode_vs16_terminal(cols: usize, rows: usize, scrollback: usize) -> Terminal {
+    let mut term = new_winmode_terminal(cols, rows, scrollback);
     let config = StandardExtensions {
         vs16: true,
         ..StandardExtensions::default()
@@ -337,6 +370,176 @@ fn no_wrap_insert() {
     }
 }
 
+/// REP below a scroll region (review S2 round 2): a region of rows 1..=10, the cursor on the
+/// last row, insert mode, wraparound on. Below the region nothing scrolls or trims, so the cut
+/// floor drops the scrollback; the cost should track plain REP, not grow with the 10,000-line
+/// scrollback. Plain `a` is in the table for the ratio the target bounds (≤ 3×).
+fn below_region() {
+    println!();
+    println!(
+        "REP below a scroll region (CSI 1;10 r, cursor last row, insert mode; ns per input byte, \
+         scrollback 10,000, median of {RUNS})"
+    );
+    println!("{:<22} {:>14} {:>14}", "variant", "80x24", "300x100");
+    const BELOW: &[u8] = b"\x1b[1;10r\x1b[999;1H\x1b[4h";
+    type Variant = (&'static str, String, Make, fn(&Terminal));
+    let variants: Vec<Variant> = vec![
+        ("plain a", "a".to_string(), new_terminal, |t| {
+            assert!(some_cell_has(t, "a"), "below-region REP printed no a");
+        }),
+        ("e+U+0301", NARROW_CLUSTER.to_string(), new_terminal, |t| {
+            assert!(
+                some_cell_has(t, NARROW_CLUSTER),
+                "no cluster below the region"
+            );
+        }),
+        (
+            "wide cluster",
+            WIDE_CLUSTER.to_string(),
+            new_terminal,
+            |t| {
+                assert!(
+                    some_cell_has(t, WIDE_CLUSTER),
+                    "no wide cluster below the region"
+                );
+            },
+        ),
+        ("VS16 (11-vs16)", VS16.to_string(), new_vs16_terminal, |t| {
+            assert!(some_cell_is(t, VS16, 2), "no VS16 cell below the region");
+        }),
+        (
+            "keycap (11-vs16)",
+            KEYCAP.to_string(),
+            new_vs16_terminal,
+            |t| {
+                assert!(
+                    some_cell_is(t, KEYCAP, 2),
+                    "no keycap cell below the region"
+                );
+            },
+        ),
+    ];
+    for (name, unit, make, check) in &variants {
+        let data = stream(unit);
+        let mut row = format!("{name:<22}");
+        for &(cols, rows) in &SIZES {
+            let ns = measure(
+                || {
+                    let mut term = make(cols, rows, 10_000);
+                    term.write(BELOW);
+                    term
+                },
+                &data,
+                check,
+            );
+            row.push_str(&format!(" {:>14}", format_ns(ns)));
+        }
+        println!("{row}");
+    }
+}
+
+/// REP below a region on a long row in a non-reflowing normal buffer (review S2 round 2):
+/// Windows mode (no reflow), a buffer of L cells shrunk to 80 columns (the rows keep L cells),
+/// a region of rows 1..=10, the cursor on the last row, insert mode, wraparound on. Linear in
+/// L; the orchestrator's target bounds it against the step-13 no-wrap insert `e+U+0301` figure.
+fn below_region_no_reflow() {
+    println!();
+    println!(
+        "REP below a region on a long row, Windows mode, no reflow (ns per input byte, 80x24, \
+         scrollback 10,000, median of {RUNS})"
+    );
+    println!("{:<22} {:>8} {:>14}", "variant", "L", "80x24");
+    let units: [(&str, &str, Make); 3] = [
+        ("a", "a", new_winmode_terminal),
+        ("e+U+0301", NARROW_CLUSTER, new_winmode_terminal),
+        ("VS16 (11-vs16)", VS16, new_winmode_vs16_terminal),
+    ];
+    for (name, unit, new_term) in units {
+        let data = stream(unit);
+        for &l in &[300usize, 2_000] {
+            let make = || {
+                let mut term = new_term(l, 24, 10_000);
+                for _ in 0..24 {
+                    term.write(&vec![b'x'; l]);
+                }
+                term.resize(80, 24);
+                term.write(b"\x1b[1;10r\x1b[999;1H\x1b[4h");
+                term
+            };
+            // the long row survived the shrink (no reflow in Windows mode)
+            {
+                let term = make();
+                let buffer = term.core().input_handler().services().buffer.buffer();
+                let last = buffer.ybase + 23;
+                let len = buffer.lines.get(last).map_or(0, |line| line.len());
+                assert_eq!(len, l, "the long row did not survive the shrink");
+            }
+            let ns = measure(make, &data, |t| {
+                assert!(
+                    some_cell_has(t, unit),
+                    "below-region long-row REP printed nothing"
+                );
+            });
+            println!("{name:<22} {l:>8} {:>14}", format_ns(ns));
+        }
+    }
+}
+
+/// REP of a unit whose first code point joins (review S3 round 2): a lone combining mark left
+/// at `cols - 3` by a wide char skipped at the last column without wraparound, the cursor on
+/// it; `3 x REP` after the one construction. Every repetition appends to the one cell, which
+/// caps, so the cut bounds the cost near plain REP (the target: ≤ 3×).
+fn joining_base() {
+    println!();
+    println!("REP of a joining-base unit (review S3 round 2; ns per input byte, median of {RUNS})");
+    println!(
+        "{:<24} {:>12} {:>12} {:>12} {:>12}",
+        "variant", "80x24 sb1k", "80x24 sb10k", "300x100 sb1k", "300x100 sb10k"
+    );
+    let configs: Vec<(usize, usize, usize)> = SIZES
+        .iter()
+        .flat_map(|&(cols, rows)| SCROLLBACKS.iter().map(move |&sb| (cols, rows, sb)))
+        .collect();
+    let data: Vec<u8> = REP
+        .iter()
+        .copied()
+        .cycle()
+        .take(REP.len() * REPS_PER_RUN)
+        .collect();
+    let cases: [(&str, &str, Make); 3] = [
+        ("joining base", "", new_terminal),
+        ("joining base, insert", "\x1b[4h", new_terminal),
+        ("joining base (11-vs16)", "", new_vs16_terminal),
+    ];
+    for (name, pre, make) in cases {
+        let mut row = format!("{name:<24}");
+        for &(cols, rows, sb) in &configs {
+            let ns = measure(
+                || {
+                    let mut term = make(cols, rows, sb);
+                    term.write(b"\x1b[?7l");
+                    term.write(pre.as_bytes());
+                    term.write("\x1b[999C\x1b[2D\u{301}x\u{4f60}".as_bytes());
+                    term
+                },
+                &data,
+                |t| {
+                    assert!(
+                        t.viewport()
+                            .cells
+                            .iter()
+                            .flatten()
+                            .any(|cell| cell.text.contains('\u{301}')),
+                        "joining-base REP left no combining mark"
+                    );
+                },
+            );
+            row.push_str(&format!(" {:>12}", format_ns(ns)));
+        }
+        println!("{row}");
+    }
+}
+
 fn main() {
     println!("rep_cost: lune-vt {}", env!("CARGO_PKG_VERSION"));
     println!(
@@ -351,6 +554,9 @@ fn main() {
     println!();
     at_screen_size();
     no_wrap_insert();
+    below_region();
+    below_region_no_reflow();
+    joining_base();
     println!();
     println!("load average after: {}", load_average());
 }
