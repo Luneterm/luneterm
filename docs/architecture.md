@@ -687,8 +687,8 @@ Where the repo can be cut later (nothing is split yet):
 
 - `lune-vt` can move to a library repo once the FFI, its second consumer, has settled its API. It
   takes `tools/xterm-oracle`, the goldens and the conformance harness with it.
-- `lune-ui` moves when a second app starts. `lune-termview` goes with it, and `lune-pty` with
-  whichever moves first.
+- `lune-ui` moves to its own project, `~/Projects/luneui-rs` (decided 2026-11-03; extraction in
+  progress there). `lune-termview` stays in Luneterm (luneui-rs D8). Where `lune-pty` goes is undecided.
 
 Invariants that keep a split cheap:
 
