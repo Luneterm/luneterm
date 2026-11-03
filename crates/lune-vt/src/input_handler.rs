@@ -2386,7 +2386,8 @@ impl InputHandler {
     /// ([`BufferLine::last_combined_key`]). Cost: below the region with insert mode the line
     /// fill takes the settled passes at once, so only the passes before the strings settle
     /// cost (`O(len)` each, `O(len^2 / cols)` in all on a long row of strings; M7 fix round 7:
-    /// replayed in dense arrays for VS16 and a keycap, still `O(len^2 / cols)`); without insert
+    /// replayed in dense arrays for every such unit, M7 fix round 8 included those with joiners
+    /// before the widening one, still `O(len^2 / cols)`); without insert
     /// mode (M7 fix round 5) the line fill takes the string copies of all but the last whole
     /// pass at once (`O(K + runs)`, [`InputHandler::print_repeated`]), so the floor's lines
     /// cost one batch and a pass or two there, not a pass each.
@@ -2760,12 +2761,13 @@ impl InputHandler {
     ///  - (M7 fix round 7, security S4) In insert mode on the last row below the scroll region,
     ///    that widened unit's whole passes over a row longer than `cols` (each `O(len)`, about
     ///    `(len - cols) / per_line + K / (cols - 1)` of them before the row repeats) are replayed
-    ///    in dense arrays where the unit's first joiner widens a one-cell base (VS16, a keycap;
-    ///    [`InputHandler::replay_wrap_passes`], [`BufferLine::replay_wrap_passes`]): the same
-    ///    writes as the passes, with the row compared at a few checkpoints to stop once it
-    ///    repeats (with an odd `per_line` the pushed cells alternate, period 2). Still
-    ///    `O(len^2 / cols)` per REP that runs the transient, at a lower constant; a unit with a
-    ///    joiner before the widening one keeps the passes and the batch above.
+    ///    in dense arrays (VS16, a keycap; M7 fix round 8: and units with joiners before the
+    ///    widening one, `a U+0301 U+FE0F`; [`InputHandler::replay_wrap_passes`],
+    ///    [`BufferLine::replay_wrap_passes`]): the same writes as the passes, with the row
+    ///    compared after passes 1, 2, 4, 8, … to stop once it repeats (with an odd `per_line`
+    ///    the pushed cells alternate, period 2). Still `O(len^2 / cols)` per REP that runs the
+    ///    transient, at a lower constant; rows the replay declines (keys far past the end) keep
+    ///    the passes and the batch above.
     fn print_repeated(&mut self, fill: &RepFill, count: usize) {
         #[cfg(test)]
         {
@@ -3176,9 +3178,12 @@ impl InputHandler {
 
     /// LUNETERM: (M7 fix round 7, plan revision 2 fix6; security S4) [`InputHandler::print_repeated`]'s
     /// insert-mode whole passes over the last row below the scroll region, for a widened unit
-    /// whose joiner wraps its base (`wrap_copies`, an odd number of columns) and whose first
-    /// joiner is the widening one over a base of one cell (VS16, a keycap: the units
-    /// [`InputHandler::print_widened_wrap`] prints by its own steps), called at a loop top with
+    /// whose joiner wraps its base (`wrap_copies`, an odd number of columns; the base is one
+    /// cell): the units whose first joiner is the widening one (VS16, a keycap: the units
+    /// [`InputHandler::print_widened_wrap`] prints by its own steps) and (M7 fix round 8,
+    /// security S4 round 8) those with joiners before it (`a U+0301 U+FE0F`, `print_inner`'s
+    /// steps: each such joiner keeps width 1 and is added to the base's cell at `c`, which
+    /// `pre`, built by the same calls on a scratch line, stands for). Called at a loop top with
     /// the cursor at `span = cols - 1`: `passes` passes replayed in dense arrays
     /// ([`BufferLine::replay_wrap_passes`], the same writes as the passes, its doc has the
     /// argument). Returns the passes computed, or `None`, having done nothing, where it does not
@@ -3195,6 +3200,8 @@ impl InputHandler {
     /// queued up front and the join state is set when the REP ends; the line fill's template
     /// and the shared joined head are caches checked against what they stand for. Before the
     /// passes the cut floor (`rep_equivalent_repeats`, unchanged) already bounds their number.
+    /// `print_inner`'s link add per code point lands on this row too (the joiners before the
+    /// widening one neither wrap nor move the cursor), so one add stands for them as well.
     fn replay_wrap_passes(
         &mut self,
         fill: &RepFill,
@@ -3203,7 +3210,8 @@ impl InputHandler {
         null_cell: &CellData,
         passes: usize,
     ) -> Option<usize> {
-        if fill.widens_at != Some(1) || fill.base_width != 1 || fill.codes.len() < 2 {
+        let widens_at = fill.widens_at?;
+        if widens_at == 0 || fill.base_width != 1 || fill.codes.len() <= widens_at {
             return None;
         }
         let cols = self.services.buffer.cols;
@@ -3219,9 +3227,24 @@ impl InputHandler {
         // (a row of `cols` cells has no old tail to push out: its passes repeat within a few,
         // which the round-3 batch takes as cheaply, sharing the strings the replay would rebuild)
         let line = line_mut(buffer, row).filter(|line| line.len() > cols)?;
+        let base = fill.codes.first().copied().unwrap_or(0);
+        // (M7 fix round 8) the cell `print_inner` leaves at `c` before the widening joiner:
+        // the base, then each earlier joiner added to it with its width (1, `rep_alike`)
+        let pre = (widens_at > 1).then(|| {
+            let mut scratch = BufferLine::new(1, None, false);
+            scratch.set_cell_from_codepoint(0, base, 1, &cur_attr);
+            let joiners = fill.codes.iter().zip(&fill.widths).take(widens_at).skip(1);
+            for (&code, &width) in joiners {
+                scratch.add_codepoint_to_cell(0, code, width);
+            }
+            let mut cell = CellData::new();
+            scratch.load_cell(0, &mut cell);
+            cell
+        });
         let unit = WrapUnit {
             cols,
-            base: fill.codes.first().copied().unwrap_or(0),
+            base,
+            pre: pre.as_ref(),
             head,
             stub,
             fill: null_cell,
