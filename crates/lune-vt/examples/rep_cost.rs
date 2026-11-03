@@ -714,6 +714,103 @@ fn odd_widths_over_strings() {
     }
 }
 
+/// (M7 fix round 7, plan revision 2 fix6; security S4) insert mode below a scroll region at odd
+/// widths over narrowed rows of strings: the shape whose passes run until the row's old tail
+/// has left it (about `(L - cols) / (cols / 2)` passes) and the copied strings have settled,
+/// each pass `O(L)`. The 3-REP stream as in the table above, then the first REP alone and the
+/// sustained cost: `unit REP` pairs 11 to 60 after 10 (the unit print between REPs re-arms the
+/// transient on about half of them; a bare repeated REP settles after the first).
+fn odd_widths_insert() {
+    println!();
+    println!(
+        "REP in insert mode below a region at odd widths over narrowed rows of strings, Windows \
+         mode, scrollback 10,000 (ns per input byte, median of {RUNS})"
+    );
+    let configs: [(usize, usize); 7] = [
+        (79, 2_000),
+        (21, 1_000),
+        (21, 2_000),
+        (9, 1_000),
+        (9, 2_000),
+        (5, 1_000),
+        (5, 2_000),
+    ];
+    let mut header = format!("{:<34}", "variant");
+    for (cols, l) in configs {
+        header.push_str(&format!(" {:>13}", format!("{l}->{cols}")));
+    }
+    println!("{header}");
+    const BELOW_INSERT: &str = "\x1b[1;10r\x1b[999;1H\x1b[4h";
+    // (name, unit, how the stream is built: 0 = 3 x (unit REP), 1 = the first pair alone,
+    // 2 = pairs 11..=60 after 10, the terminal, a unit that marks the printed cell)
+    let cases: [(&str, &str, u8, Make); 5] = [
+        ("plain a, below, insert", "a", 0, new_winmode_terminal),
+        ("VS16, below, insert", VS16, 0, new_winmode_vs16_terminal),
+        (
+            "keycap, below, insert",
+            KEYCAP,
+            0,
+            new_winmode_vs16_terminal,
+        ),
+        (
+            "VS16, below, insert, 1st REP",
+            VS16,
+            1,
+            new_winmode_vs16_terminal,
+        ),
+        (
+            "VS16, below, insert, REPs 11-60",
+            VS16,
+            2,
+            new_winmode_vs16_terminal,
+        ),
+    ];
+    for (name, unit, kind, new_term) in cases {
+        let pair: Vec<u8> = unit.bytes().chain(REP.iter().copied()).collect();
+        let (warm, data) = match kind {
+            0 => (Vec::new(), stream(unit)),
+            1 => (Vec::new(), pair.clone()),
+            _ => (pair.repeat(10), pair.repeat(50)),
+        };
+        let mut row = format!("{name:<34}");
+        for (cols, l) in configs {
+            let make = || {
+                let mut term = new_term(l, 24, 10_000);
+                let mut text = String::new();
+                for c in 0..l {
+                    text.push(char::from(b'a' + (c % 26) as u8));
+                    text.push(char::from_u32(0x300 + (c % 112) as u32).unwrap_or('\u{301}'));
+                }
+                for _ in 0..24 {
+                    term.write(text.as_bytes());
+                }
+                term.resize(cols, 24);
+                term.write(BELOW_INSERT.as_bytes());
+                term.write(&warm);
+                term
+            };
+            {
+                let term = make();
+                let buffer = term.core().input_handler().services().buffer.buffer();
+                let last = buffer.lines.get(buffer.ybase + 23);
+                assert_eq!(
+                    last.map_or(0, |line| line.len()),
+                    l,
+                    "the long row did not survive"
+                );
+            }
+            let ns = measure(make, &data, |t| {
+                assert!(
+                    some_cell_has(t, unit),
+                    "odd-width insert REP printed nothing"
+                );
+            });
+            row.push_str(&format!(" {:>13}", format_ns(ns)));
+        }
+        println!("{row}");
+    }
+}
+
 /// REP of a unit whose first code point joins (review S3 round 2): a lone combining mark left
 /// at `cols - 3` by a wide char skipped at the last column without wraparound, the cursor on
 /// it; `3 x REP` after the one construction. Every repetition appends to the one cell, which
@@ -781,12 +878,20 @@ fn main() {
         "stream: {REPS_PER_RUN} x (unit + CSI 1048576 b), Unicode 11, median of {RUNS} fresh terminals"
     );
     println!();
+    // (M7 fix round 7) `REP_COST_TABLE=odd_widths_insert` (or `below_region_odd`) runs that
+    // table alone
+    match std::env::var("REP_COST_TABLE").as_deref() {
+        Ok("odd_widths_insert") => return odd_widths_insert(),
+        Ok("below_region_odd") => return below_region_odd(),
+        _ => {}
+    }
     at_screen_size();
     no_wrap_insert();
     below_region();
     below_region_no_reflow();
     below_region_odd();
     odd_widths_over_strings();
+    odd_widths_insert();
     joining_base();
     println!();
     println!("load average after: {}", load_average());

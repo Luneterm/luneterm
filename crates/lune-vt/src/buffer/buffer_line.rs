@@ -1151,6 +1151,588 @@ pub(crate) struct JoinedHead {
     combined: SharedRunMap<Arc<str>>,
 }
 
+/// LUNETERM: (M7 fix round 7, plan revision 2 fix6) the unit [`BufferLine::replay_wrap_passes`]
+/// replays: the columns, the base code point, the cells every repetition writes (`head`, built
+/// by `print`'s calls, and its `stub`), `insert_cells`' fill (the null cell in the current
+/// attributes) and the current attributes.
+pub(crate) struct WrapUnit<'a> {
+    pub(crate) cols: usize,
+    pub(crate) base: u32,
+    pub(crate) head: &'a CellData,
+    pub(crate) stub: &'a CellData,
+    pub(crate) fill: &'a CellData,
+    pub(crate) attrs: &'a AttributeData,
+}
+
+/// LUNETERM: (M7 fix round 7, plan revision 2 fix6) the row [`BufferLine::replay_wrap_passes`]
+/// replays its passes on: the slots, and each side table as an index per key (0: none) into a
+/// list of its values, listed once per run of the map (equal values apart may have two
+/// indexes, so they are compared by value).
+struct DenseRow {
+    slots: Vec<[u32; CELL_SIZE]>,
+    comb: Vec<u32>,
+    ext: Vec<u32>,
+    strings: Vec<Arc<str>>,
+    values: Vec<ExtendedAttrs>,
+    /// the row's sources left of `c` whose wideness the strided pass reads before its moves
+    wide_left: Vec<bool>,
+    len: usize,
+    c: usize,
+    t: usize,
+    edge_fix: bool,
+    base: u32,
+    empty: u32,
+    head_string: u32,
+    default_ext: u32,
+    cur: DenseAttrs,
+    fil: DenseAttrs,
+    fill_slot: [u32; CELL_SIZE],
+    head_slot: [u32; CELL_SIZE],
+    stub_slot: [u32; CELL_SIZE],
+    head_ext: u32,
+    stub_ext: u32,
+}
+
+/// The colours and extended attributes a write carries (`ext`: an index, 0 when the
+/// attributes carry no flag).
+#[derive(Clone, Copy)]
+struct DenseAttrs {
+    fg: u32,
+    bg: u32,
+    ext: u32,
+}
+
+/// A copy of a [`DenseRow`]'s state, to find a pass that repeats an earlier one.
+struct DenseSnapshot {
+    slots: Vec<[u32; CELL_SIZE]>,
+    comb: Vec<u32>,
+    ext: Vec<u32>,
+}
+
+const NO_SOURCE: usize = usize::MAX;
+
+fn dense_wide(slot: &[u32; CELL_SIZE]) -> bool {
+    slot[0] >> Content::WIDTH_SHIFT == 2
+}
+
+fn dense_comb(slot: &[u32; CELL_SIZE]) -> bool {
+    slot[0] & Content::IS_COMBINED_MASK != 0
+}
+
+fn dense_ext(slot: &[u32; CELL_SIZE]) -> bool {
+    slot[2] & BgFlags::HAS_EXTENDED != 0
+}
+
+/// `held` or, where it is 0 (a flagged cell without an entry), `missing`.
+fn dense_or(held: u32, missing: u32) -> u32 {
+    match held {
+        0 => missing,
+        held => held,
+    }
+}
+
+impl DenseRow {
+    fn sl(&self, i: usize) -> [u32; CELL_SIZE] {
+        self.slots.get(i).copied().unwrap_or_default()
+    }
+
+    fn cb(&self, i: usize) -> u32 {
+        self.comb.get(i).copied().unwrap_or(0)
+    }
+
+    fn ex(&self, i: usize) -> u32 {
+        self.ext.get(i).copied().unwrap_or(0)
+    }
+
+    fn put_slot(&mut self, i: usize, slot: [u32; CELL_SIZE]) {
+        if let Some(held) = self.slots.get_mut(i) {
+            *held = slot;
+        }
+    }
+
+    fn put_comb(&mut self, i: usize, value: u32) {
+        if let Some(held) = self.comb.get_mut(i) {
+            *held = value;
+        }
+    }
+
+    fn put_ext(&mut self, i: usize, value: u32) {
+        if let Some(held) = self.ext.get_mut(i) {
+            *held = value;
+        }
+    }
+    fn new(line: &BufferLine, unit: &WrapUnit<'_>, kmax: usize) -> DenseRow {
+        let len = line.length;
+        let id = |i: usize| u32::try_from(i + 1).unwrap_or(0);
+        let (mut strings, held) = line.combined.dense_indexed(0, kmax);
+        let comb = held.iter().map(|o| o.map_or(0, id)).collect();
+        strings.push(shared_str(""));
+        let empty = id(strings.len() - 1);
+        strings.push(shared_str(&unit.head.combined_data));
+        let head_string = id(strings.len() - 1);
+        let (mut values, held_ext) = line.extended_attrs.dense_indexed(0, len);
+        let ext = held_ext.iter().map(|o| o.map_or(0, id)).collect();
+        let mut value_id = |attrs: ExtendedAttrs| {
+            values.push(attrs);
+            id(values.len() - 1)
+        };
+        let default_ext = value_id(ExtendedAttrs::default());
+        let flagged = |a: &AttributeData| a.bg & BgFlags::HAS_EXTENDED != 0;
+        let mut attrs = |a: &AttributeData| DenseAttrs {
+            fg: a.fg,
+            bg: a.bg,
+            ext: match flagged(a) {
+                true => value_id(a.extended),
+                false => 0,
+            },
+        };
+        let cur = attrs(unit.attrs);
+        let fil = attrs(unit.fill);
+        let head_ext = attrs(unit.head).ext;
+        let stub_ext = attrs(unit.stub).ext;
+        let slots = line
+            .data
+            .chunks_exact(CELL_SIZE)
+            .take(len)
+            .map(|s| <[u32; CELL_SIZE]>::try_from(s).unwrap_or_default())
+            .collect();
+        let cols = unit.cols;
+        let cell = |cell: &CellData| [cell.content, cell.fg, cell.bg];
+        DenseRow {
+            slots,
+            comb,
+            ext,
+            strings,
+            values,
+            wide_left: Vec::with_capacity(cols),
+            len,
+            c: cols - 1,
+            t: cols / 2 - 1,
+            edge_fix: cols < len,
+            base: unit.base,
+            empty,
+            head_string,
+            default_ext,
+            cur,
+            fil,
+            fill_slot: cell(unit.fill),
+            head_slot: cell(unit.head),
+            stub_slot: cell(unit.stub),
+            head_ext,
+            stub_ext,
+        }
+    }
+
+    /// `set_cell_from_codepoint(i, code, width, a)`.
+    fn write_code(&mut self, i: usize, code: u32, width: u32, a: DenseAttrs) {
+        if a.ext != 0 {
+            if let Some(ext) = self.ext.get_mut(i) {
+                *ext = a.ext;
+            }
+        }
+        if let Some(slot) = self.slots.get_mut(i) {
+            *slot = [code | (width << Content::WIDTH_SHIFT), a.fg, a.bg];
+        }
+    }
+
+    fn is_wide(&self, i: usize) -> bool {
+        self.slots.get(i).is_some_and(dense_wide)
+    }
+
+    /// One pass (see [`BufferLine::replay_wrap_passes`]).
+    fn pass(&mut self) {
+        let (c, len) = (self.c, self.len);
+        let (cur, fil) = (self.cur, self.fil);
+        // the start fix-up, then insert_cells(c, 1, fill): its fix-up, the shift, the fill,
+        // the line-end fix-up
+        if self.is_wide(c - 1) {
+            self.write_code(c - 1, 0, 1, cur);
+        }
+        if self.is_wide(c - 1) {
+            self.write_code(c - 1, 0, 1, fil);
+        }
+        // (whether a source of the strided inserts right of `c` carries a flag)
+        let (mut tail_comb, mut tail_ext) = (false, false);
+        if c + 1 < len {
+            for i in (c..len - 1).rev() {
+                let [content, _, bg] = self.sl(i);
+                if content & Content::IS_COMBINED_MASK != 0 {
+                    tail_comb = true;
+                    self.put_comb(i + 1, dense_or(self.cb(i), self.empty));
+                }
+                if bg & BgFlags::HAS_EXTENDED != 0 {
+                    tail_ext = true;
+                    self.put_ext(i + 1, dense_or(self.ex(i), self.default_ext));
+                }
+            }
+            self.slots.copy_within(c..len - 1, c + 1);
+        }
+        if fil.ext != 0 {
+            self.put_ext(c, fil.ext);
+        }
+        self.put_slot(c, self.fill_slot);
+        if self.is_wide(len - 1) {
+            self.write_code(len - 1, 0, 1, fil);
+        }
+        // the edge fix-up, the base
+        if self.is_wide(c) {
+            self.write_code(c, NULL_CELL_CODE, NULL_CELL_WIDTH, cur);
+        }
+        self.write_code(c, self.base, 1, cur);
+        // the wrap: the cell copied to 0 with the strings from `c` on, `c` cleared
+        let src = self.sl(c);
+        self.put_slot(0, src);
+        if dense_ext(&src) {
+            self.put_ext(0, self.ex(c));
+        }
+        for j in 0..self.comb.len() - c {
+            let held = self.cb(j + c);
+            if held != 0 {
+                self.put_comb(j, held);
+            }
+        }
+        self.write_code(c, 0, 1, cur);
+        // the joiners on column 0, the stub at 1
+        let first = self.sl(0);
+        self.put_slot(0, [self.head_slot[0], first[1], first[2]]);
+        self.put_comb(0, self.head_string);
+        self.write_code(1, 0, 0, cur);
+        if self.t > 0 {
+            self.strided(tail_comb, tail_ext);
+        }
+    }
+
+    /// The source `i` of the strided inserts as keys right of the edge read it (`right`) or
+    /// as others do: whether it carries a string, and which; whether it carries extended
+    /// attributes, and which (indexes, 0: none); whether it is wide.
+    fn source(&self, i: usize, right: bool) -> (u32, u32, bool) {
+        let slot = &self.sl(i);
+        let wide = dense_wide(slot);
+        if right && self.edge_fix && wide && i < self.c && i + self.t >= self.c {
+            return (0, self.cur.ext, false);
+        }
+        let comb = match dense_comb(slot) {
+            true => dense_or(self.cb(i), self.empty),
+            false => 0,
+        };
+        let ext = match dense_ext(slot) {
+            true => dense_or(self.ex(i), self.default_ext),
+            false => 0,
+        };
+        (comb, ext, wide)
+    }
+
+    /// `insert_cell_strided_then_set(2, 2, t, fill, c, attrs, (head, stub))`.
+    fn strided(&mut self, tail_comb: bool, tail_ext: bool) {
+        const POS: usize = 2;
+        let (c, t, len) = (self.c, self.t, self.len);
+        let (cur, fil) = (self.cur, self.fil);
+        let span = 2 * t;
+        // step 0's fix-up at `pos - 1`
+        if self.is_wide(POS - 1) {
+            self.write_code(POS - 1, 0, 1, fil);
+        }
+        let steps_at = |k: usize| match k == POS {
+            true => 0,
+            false => t.min((k - 1 - POS) / 2 + 1),
+        };
+        let fill_x = (fil.ext != 0).then_some(fil.ext);
+        let edge_x = (cur.ext != 0).then_some(cur.ext);
+        // the window's last extended entry where a fix-up after each step writes `fix` over a
+        // wide source (no fix-up entry: the shifts' last entry, `held`)
+        let fixed_up =
+            |row: &DenseRow, k: usize, right: bool, fix: Option<u32>, held: u32| match fix {
+                Some(fix) => (k - steps_at(k)..k).find_map(|i| match row.source(i, right) {
+                    (_, _, true) => Some(fix),
+                    (_, 0, false) => None,
+                    (_, ext, false) => Some(ext),
+                }),
+                None => (held != 0).then_some(held),
+            };
+        // the smallest source of a window carrying a string / extended attributes, kept as the
+        // keys descend (the window `k - steps ..= k - 1` loses its top key and may gain a key
+        // at its low end)
+        struct Window {
+            lo: usize,
+            hi: usize,
+            comb: usize,
+            ext: usize,
+        }
+        let scan = |row: &DenseRow, lo: usize, hi: usize, right: bool| {
+            let mut w = Window {
+                lo,
+                hi,
+                comb: NO_SOURCE,
+                ext: NO_SOURCE,
+            };
+            for i in (lo..=hi).rev() {
+                let (comb, ext, _) = row.source(i, right);
+                if comb != 0 {
+                    w.comb = i;
+                }
+                if ext != 0 {
+                    w.ext = i;
+                }
+            }
+            w
+        };
+        let slide = |row: &DenseRow, w: &mut Window, lo: usize, hi: usize, right: bool| {
+            if lo < w.lo {
+                let (comb, ext, _) = row.source(lo, right);
+                if comb != 0 {
+                    w.comb = lo;
+                }
+                if ext != 0 {
+                    w.ext = lo;
+                }
+            }
+            if w.comb != NO_SOURCE && w.comb > hi {
+                w.comb = NO_SOURCE;
+            }
+            if w.ext != NO_SOURCE && w.ext > hi {
+                w.ext = NO_SOURCE;
+            }
+            (w.lo, w.hi) = (lo, hi);
+        };
+        let comb_of = |row: &DenseRow, i: usize, right: bool| match i {
+            NO_SOURCE => 0,
+            i => row.source(i, right).0,
+        };
+        let ext_of = |row: &DenseRow, i: usize, right: bool| match i {
+            NO_SOURCE => 0,
+            i => row.source(i, right).1,
+        };
+
+        // side tables, keys right of the edge (window `k - t ..= k - 1`, right view)
+        if self.edge_fix {
+            let left_comb = (c + 1 - t..c).any(|i| self.source(i, true).0 != 0);
+            let left_ext = (c + 1 - t..c).any(|i| self.source(i, true).1 != 0) || self.cur.ext != 0;
+            if tail_comb || left_comb || tail_ext || left_ext || fill_x.is_some() {
+                let mut w = scan(self, len - 1 - t, len - 2, true);
+                for k in (c + 1..len).rev() {
+                    if k < len - 1 {
+                        slide(self, &mut w, k - t, k - 1, true);
+                    }
+                    let comb = comb_of(self, w.comb, true);
+                    if comb != 0 {
+                        self.put_comb(k, comb);
+                    }
+                    let held = ext_of(self, w.ext, true);
+                    let ext = match k == len - 1 {
+                        true => fixed_up(self, k, true, fill_x, held),
+                        false => (held != 0).then_some(held),
+                    };
+                    if let Some(ext) = ext {
+                        self.put_ext(k, ext);
+                    }
+                }
+            }
+        }
+        // the edge (or the last key, when the line is `cols` long) and the keys left of it
+        let mut w: Option<Window> = None;
+        for k in (POS..=c).rev() {
+            let offset = k - POS;
+            let steps = steps_at(k);
+            if steps == 0 {
+                w = None;
+            } else {
+                let (lo, hi) = (k - steps, k - 1);
+                match w.as_mut() {
+                    Some(win) => slide(self, win, lo, hi, false),
+                    None => w = Some(scan(self, lo, hi, false)),
+                }
+            }
+            let (min_comb, min_ext) = w
+                .as_ref()
+                .map_or((NO_SOURCE, NO_SOURCE), |w| (w.comb, w.ext));
+            let comb_held = comb_of(self, min_comb, false);
+            let held = ext_of(self, min_ext, false);
+            let written = offset < span;
+            let even = offset % 2 == 0;
+            let comb = match (written, even) {
+                (true, true) => self.head_string,
+                _ => comb_held,
+            };
+            if comb != 0 {
+                self.put_comb(k, comb);
+            }
+            let written_x = match (written, even) {
+                (true, true) => self.head_ext,
+                (true, false) => self.stub_ext,
+                _ => 0,
+            };
+            let is_fill = even && offset / 2 < t;
+            let gap_fix = !even && (1..t).contains(&(offset.div_ceil(2)));
+            let last_wide = steps > 0 && self.is_wide(k - steps);
+            let ext = if written_x != 0 {
+                Some(written_x)
+            } else if is_fill && fill_x.is_some() {
+                fill_x
+            } else if k == len - 1 {
+                fixed_up(self, k, false, fill_x, held)
+            } else if self.edge_fix && k == c {
+                fixed_up(self, k, false, edge_x, held)
+            } else if gap_fix && fill_x.is_some() && last_wide {
+                fill_x
+            } else {
+                (held != 0).then_some(held)
+            };
+            if let Some(ext) = ext {
+                self.put_ext(k, ext);
+            }
+        }
+
+        // cells: keys from the edge take their last source `k - t` (the wide ones the edge
+        // fix-up rewrote, as keys right of it read them), the fix-ups at the edge and the last
+        // key; keys left of it the head and stub
+        let mut wide_left = std::mem::take(&mut self.wide_left);
+        wide_left.clear();
+        wide_left.extend((c - t..c).map(|i| self.is_wide(i)));
+        let last_source = len - 1 - t;
+        let last_wide = match last_source < c {
+            true => !self.edge_fix && wide_left.get(last_source + t - c).copied().unwrap_or(false),
+            false => self.is_wide(last_source),
+        };
+        self.slots.copy_within(c - t..len - t, c);
+        if self.edge_fix {
+            for (i, &wide) in wide_left.iter().enumerate().skip(1) {
+                if wide {
+                    let k = c + i;
+                    if k < len {
+                        self.put_slot(
+                            k,
+                            [
+                                NULL_CELL_CODE | (NULL_CELL_WIDTH << Content::WIDTH_SHIFT),
+                                cur.fg,
+                                cur.bg,
+                            ],
+                        );
+                    }
+                }
+            }
+            if wide_left.first().copied().unwrap_or(false) {
+                self.put_slot(c, [1 << Content::WIDTH_SHIFT, cur.fg, cur.bg]);
+            }
+        }
+        if last_wide {
+            self.put_slot(len - 1, [1 << Content::WIDTH_SHIFT, fil.fg, fil.bg]);
+        }
+        self.wide_left = wide_left;
+        let (head_slot, stub_slot) = (self.head_slot, self.stub_slot);
+        for (k, slot) in self.slots.iter_mut().enumerate().take(c).skip(POS) {
+            *slot = match (k - POS) % 2 {
+                0 => head_slot,
+                _ => stub_slot,
+            };
+        }
+    }
+
+    fn snapshot(&self) -> DenseSnapshot {
+        DenseSnapshot {
+            slots: self.slots.clone(),
+            comb: self.comb.clone(),
+            ext: self.ext.clone(),
+        }
+    }
+
+    fn same_as(&self, copy: &DenseSnapshot) -> bool {
+        self.slots == copy.slots && self.same_strings(&copy.comb) && self.same_ext(&copy.ext)
+    }
+
+    /// The strings equal to those of `comb` (by value: a string may be listed twice).
+    fn same_strings(&self, comb: &[u32]) -> bool {
+        let chars = |i: u32| {
+            (i as usize)
+                .checked_sub(1)
+                .and_then(|i| self.strings.get(i))
+                .map(|s| &**s)
+        };
+        self.comb.len() == comb.len()
+            && self
+                .comb
+                .iter()
+                .zip(comb)
+                .all(|(&a, &b)| a == b || chars(a) == chars(b))
+    }
+
+    /// The extended attributes equal to those of `ext` (by value).
+    fn same_ext(&self, ext: &[u32]) -> bool {
+        let value = |i: u32| (i as usize).checked_sub(1).and_then(|i| self.values.get(i));
+        self.ext.len() == ext.len()
+            && self
+                .ext
+                .iter()
+                .zip(ext)
+                .all(|(&a, &b)| a == b || value(a) == value(b))
+    }
+
+    /// The slots written back and each map rebuilt where it differs from `start` (the row
+    /// before the passes; touching equal values merged, extended attributes past the line
+    /// kept). A map that holds what it held is left as it is (shared, no rebuild).
+    fn write_back(self, line: &mut BufferLine, start: &DenseSnapshot) {
+        for (cell, slot) in line.data.chunks_exact_mut(CELL_SIZE).zip(&self.slots) {
+            cell.copy_from_slice(slot);
+        }
+        if !self.same_ext(&start.ext) {
+            self.write_back_ext(line);
+        }
+        if self.same_strings(&start.comb) {
+            return;
+        }
+        let mut runs: BTreeMap<usize, (usize, Arc<str>)> = BTreeMap::new();
+        let mut open: Option<(usize, usize, u32)> = None;
+        for (k, &held) in self.comb.iter().enumerate() {
+            match open.as_mut() {
+                Some((_, end, value))
+                    if held != 0
+                        && *end + 1 == k
+                        && (*value == held
+                            || self.strings.get(*value as usize - 1)
+                                == self.strings.get(held as usize - 1)) =>
+                {
+                    *end = k
+                }
+                _ => {
+                    if let Some((first, end, value)) = open.take() {
+                        if let Some(chars) = self.strings.get(value as usize - 1) {
+                            runs.insert(first, (end, chars.clone()));
+                        }
+                    }
+                    if held != 0 {
+                        open = Some((k, k, held));
+                    }
+                }
+            }
+        }
+        if let Some((first, end, value)) = open {
+            if let Some(chars) = self.strings.get(value as usize - 1) {
+                runs.insert(first, (end, chars.clone()));
+            }
+        }
+        line.combined = match runs.is_empty() {
+            true => SharedRunMap::default(),
+            false => SharedRunMap(Some(Arc::new(RunMap { runs }))),
+        };
+    }
+
+    fn write_back_ext(&self, line: &mut BufferLine) {
+        let mut built: Vec<(usize, (usize, ExtendedAttrs))> = Vec::new();
+        for (k, &held) in self.ext.iter().enumerate() {
+            let Some(&value) = (held as usize)
+                .checked_sub(1)
+                .and_then(|i| self.values.get(i))
+            else {
+                continue;
+            };
+            match built.last_mut() {
+                Some((_, (end, prior))) if *end + 1 == k && *prior == value => *end = k,
+                _ => built.push((k, (k, value))),
+            }
+        }
+        line.extended_attrs.splice_runs(0, self.len - 1, built);
+    }
+}
+
 /// Typed array based bufferline implementation.
 ///
 /// There are 2 ways to insert data into the cell buffer:
@@ -3534,6 +4116,121 @@ impl BufferLine {
         }
         self.combined.insert_ascending(combined_updates);
         self.extended_attrs.insert_ascending(extended_updates);
+    }
+
+    /// LUNETERM: (M7 fix round 7, plan revision 2 fix6; security S4) `passes` whole passes of
+    /// `InputHandler::print_repeated` over the last row below the scroll region in insert mode,
+    /// for a widened unit whose joiner wraps its base (`unit.cols` odd, the unit's first joiner
+    /// the widening one, a base of one cell), from the cursor at `c = cols - 1`, replayed in
+    /// dense arrays. Returns the passes it computed (fewer than `passes` once the row repeats,
+    /// below), or `None`, having changed nothing, where it does not apply (the guards below;
+    /// the caller then prints the passes as before).
+    ///
+    /// A pass is `h = cols / 2` units. The first (`InputHandler::print_widened_wrap`): the
+    /// start fix-up at `c - 1`, `insert_cells(c, 1, fill)`, the edge fix-up at `c`, the base
+    /// written at `c`, the joiner's `print_wrap` (below the region it stays on this row): the
+    /// cell at `c` copied to 0 with the line's strings from `c` on (`copy_cells_from_source`,
+    /// upstream's FIXME: key `j` takes the snapshot's value at `j + c` where held), then `c`
+    /// cleared; the joiners added to column 0 (the head's cell and string, which `head` was
+    /// built from by the same calls) and the stub at 1. The other `h - 1`: one
+    /// `insert_cell_strided_then_set(2, 2, h - 1, fill, c, attrs, (head, stub))`, which is the
+    /// loop of `insert_cells` and edge fix-ups and then the writes. [`DenseRow::pass`] makes
+    /// those same writes, in the same order, on a dense copy of the row: the slots, and each
+    /// side table as an index per key into a list of its values (the strings over every key up
+    /// to the last held one, which the copy reads past the line's end; the extended attributes
+    /// over the line, whose keys past the end no pass touches). The single insert is the shift
+    /// `shift_cells_right` documents (a flagged cell carries its entries as `load_cell` reads
+    /// them, an unflagged one writes none). The strided inserts are the one pass
+    /// `insert_cell_strided_with` documents and runs: each key's last source `k - J(k)`, the
+    /// string and attributes of the smallest flagged source of its window, the fix-ups at
+    /// `pos - 1`, `len - 1` and the edge, the wide sources the edge fix-up rewrites as keys
+    /// right of it read them, the head and stub written over `2..c`; the side tables first,
+    /// from the right (every key reads sources left of it only), then the cells. So the row it
+    /// leaves is the row the passes leave — the argument of
+    /// [`BufferLine::insert_block_repeatedly`]: the loop, densely — and
+    /// `replaying_wrap_passes_equals_the_real_per_pass_loop` compares the two.
+    ///
+    /// A pass reads only the row, so once the row after some pass equals the row after an
+    /// earlier one, `d` passes apart, it repeats with period `d` from there: the passes left
+    /// are cut to their remainder mod `d`. The row is compared with a copy taken at pass 0 and
+    /// then at `T = ceil((len - cols) / h) + ceil(K' / c) + 2` (`K'` = the strings' key range;
+    /// the old tail has left the row and the copied strings have settled by about then) and its
+    /// doublings, one and two passes after each (with an odd `h` the pushed cells alternate,
+    /// period 2). A wrong `T` costs passes, never the state. The maps are rebuilt once at the
+    /// end, touching equal values merged (their one form), and not at all when the first pass
+    /// changed nothing.
+    ///
+    /// Cost: per pass `O(L + K)` of moves (`L` the length, `K` the last string key) and `O(L)`
+    /// of flag reads, plus a side-table walk where a source carries a flag, with no allocation;
+    /// the passes up to the repeat are about `T`, so a REP is still `O((L + K)^2 / cols)`.
+    ///
+    /// Guards (else `None`): `cols` odd and at least 3, the line at least `cols` long and its
+    /// slots all held, `head` a combined cell two wide whose string starts with `unit.base`,
+    /// `stub` and `fill` not combined and `fill` not wide, and the strings' last key not far
+    /// past the line (`K + 1 <= len + 2 × held + 4096`, as the closed form of the copy asks).
+    pub(crate) fn replay_wrap_passes(
+        &mut self,
+        unit: &WrapUnit<'_>,
+        passes: usize,
+    ) -> Option<usize> {
+        let cols = unit.cols;
+        let len = self.length;
+        let (head, stub, fill) = (unit.head, unit.stub, unit.fill);
+        let applies = passes > 0
+            && cols >= 3
+            && cols % 2 == 1
+            && len >= cols
+            && self.data.len() >= len.saturating_mul(CELL_SIZE)
+            && head.content & Content::IS_COMBINED_MASK != 0
+            && head.get_width() == 2
+            && head.combined_data.chars().next().map(u32::from) == Some(unit.base)
+            && stub.content & Content::IS_COMBINED_MASK == 0
+            && fill.content & Content::IS_COMBINED_MASK == 0
+            && fill.get_width() != 2;
+        if !applies {
+            return None;
+        }
+        let kmax = match self.combined.last_key() {
+            Some(last) => last.checked_add(1)?.max(len),
+            None => len,
+        };
+        let affordable = len
+            .saturating_add(self.combined.len().saturating_mul(2))
+            .saturating_add(4096);
+        if kmax > affordable || u32::try_from(kmax.saturating_add(16)).is_err() {
+            return None;
+        }
+        let mut row = DenseRow::new(self, unit, kmax);
+        let (c, h) = (cols - 1, cols / 2);
+        let first_check = ((len - cols).div_ceil(h) + kmax.div_ceil(c) + 2).max(3);
+        let mut checkpoint = 0;
+        let mut next_check = first_check;
+        let start = row.snapshot();
+        let mut copy = row.snapshot();
+        let mut done = 0;
+        let mut unchanged = false;
+        while done < passes {
+            row.pass();
+            done += 1;
+            let apart = done - checkpoint;
+            if apart <= 2 && row.same_as(&copy) {
+                unchanged = checkpoint == 0 && apart == 1;
+                for _ in 0..(passes - done) % apart {
+                    row.pass();
+                    done += 1;
+                }
+                break;
+            }
+            if done == next_check {
+                checkpoint = done;
+                next_check = done.saturating_mul(2);
+                copy = row.snapshot();
+            }
+        }
+        if !unchanged {
+            row.write_back(self, &start);
+        }
+        Some(done)
     }
 
     /// The cells of `insert_cells_repeatedly`'s rewritten sources (indexes from `pos`, moved
