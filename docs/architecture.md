@@ -555,8 +555,9 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     `Θ(K^2 / cols)` entries over those lines (K up to a narrowed row's length, `cols` down to
     2): a memory amplification of upstream's copy that no exact algorithm on this representation avoids (R1-D4, for the security review).
   - **M7 fix round 7** (plan revision 2, step fix6; security S4): the reach of this whole family
-    (a widened unit, VS16 or keycap with `11-vs16`, whose joiner wraps its base at an odd width
-    over a row longer than `cols`) was understated as "a narrowed row of strings (Windows 10
+    (a widened unit with `11-vs16`, a VS16 after a one-cell base with or without joiners before
+    or after it: VS16 emoji, keycaps, `a U+0301 U+FE0F`; whose widening joiner wraps its base at
+    an odd width over a row longer than `cols`) was understated as "a narrowed row of strings (Windows 10
     without reflow)". Rows longer than `cols` exist after the user narrows the window **in the
     alt buffer on every platform**: it has no scrollback, so it never reflows
     (`Buffer::is_reflow_enabled` requires `has_scrollback`), and in the normal buffer without
@@ -576,14 +577,15 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     revision 2 R2-D1 = build, behind a prototype gate): no linear or bounded-settle closed form
     exists (planner probes P1, P5), so the passes are replayed in dense arrays instead
     (`BufferLine::replay_wrap_passes`, called by `InputHandler::replay_wrap_passes` on the last
-    row below the region in insert mode, for a row longer than `cols` and a unit whose first
-    joiner widens a one-cell base: VS16, a keycap). It makes each pass's writes, in order, on
-    the slots and on per-key indexes into the strings and attributes (the strings over every
-    key the copy reads, past the line's end too), and rebuilds the maps once; a pass reads only
-    the row, so the row is compared at pass 0, at `T = ceil((len - cols) / h) + ceil(K' / c) +
-    2` and its doublings, one and two passes after each, and the passes left are cut to their
-    remainder once it repeats (with an odd `h` the pushed cells alternate: period 2, never a
-    fixed point, at 79 columns). State identity: the replay against the real per-pass calls
+    row below the region in insert mode, for a row longer than `cols`; in fix round 7 only for
+    a unit whose first joiner widens a one-cell base: VS16, a keycap; fix round 8 below). It
+    makes each pass's writes, in order, on the slots and on per-key indexes into the strings
+    and attributes (the strings over every key the copy reads, past the line's end too), and
+    rebuilds the maps once; a pass reads only the row, so the row is compared at checkpoints,
+    one and two passes after each, and the passes left are cut to their remainder once it
+    repeats (with an odd `h` the pushed cells alternate: period 2, never a fixed point, at 79
+    columns). Fix round 7's checkpoints were pass 0, `T = ceil((len - cols) / h) + ceil(K' / c)
+    + 2` and its doublings; fix round 8's are passes 0, 1, 2, 4, 8, …. State identity: the replay against the real per-pass calls
     (`replaying_wrap_passes_equals_the_real_per_pass_loop`, 6,000 rounds), the uncapped print
     over plain rows, stale tails, keys past the end and the narrowed alt buffer, the matrix
     and the seeded differential; eight mutants (pass count, truncated transient, keys past the
@@ -596,9 +598,37 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     944 -> 36 us, 2000 -> 9 3.99 ms -> 130 us, 1000 -> 5 2.28 ms -> 117 us, 2000 -> 5 9.58 ms
     -> 457 us (keycap alike); first REP 1.21 -> 0.072 ms (79) up to 23.1 -> 0.73 ms (5);
     sustained (unit + REP pairs 11-60) 9.8 -> 6.4 us (79) up to 2.86 ms -> 322 us (5), all
-    below the Q23-accepted link REP (845 us). Plain `a` in the same setup: 29-30 us. Rows of
-    `cols` cells keep the round-3 batch (no tail to push out; the replay's map rebuild cost
-    more there).
+    below the Q23-accepted link REP (845 us) for VS16 and the keycap. Plain `a` in the same
+    setup: 29-30 us. Rows of `cols` cells keep the round-3 batch (no tail to push out; the
+    replay's map rebuild cost more there). Not covered in fix round 7: units with a joiner
+    before the widening one (`a U+0301 U+FE0F`, `U+2764 U+0301 U+FE0F`, `a U+0301 U+0302
+    U+FE0F`) kept the per-pass loop at the pre-fix cost (security review round 8, alt buffer,
+    first pair / sustained per byte: 2000 -> 5 394 ms / 3.05 ms, 2000 -> 9 203 ms / 884 us).
+  - **M7 fix round 8** (security S4 round 8, code review F9): the replay covers units with
+    joiners before the widening one. Those joiners keep width 1 and are added to the base's
+    cell at `c = cols - 1` before the widening one wraps it: the cell becomes a combined cell
+    whose string (`WrapUnit::pre`, built by the same calls on a scratch line) the copy carries
+    to key 0, where the remaining joiners append to it (the head's string), and the clear
+    leaves stale at key `c`; `DenseRow::pass` writes `pre` at `c` after the base, before the
+    copy. The repeat checks moved to passes 1, 2, 4, 8, … (a row repeating from pass `τ` stops
+    by `2τ + 2`; round 7's first checkpoint `T` ran a row that repeated early to `T`: security
+    round 8, `\r VS16 CSI 9999 b` at 2000 -> 3, 2.2 -> 658 us per byte). No unit shape of the
+    class declines the replay (its guards hold by construction for every unit `rep_alike`
+    accepts with a widening joiner); rows whose string keys reach past `len + 2 x runs + 4096`
+    still take the per-pass loop. State identity: the primitive differential with six such
+    units (one past `MAX_COMBINED_CODE_POINTS`), the uncapped print over plain rows, stale
+    tails, keys past the end and the narrowed alt buffer, the batch test and the seeded
+    differential; the joiner string written one column off fails all five. `bench-rep.sh` table
+    "REP in insert mode below a region on the narrowed alt screen" (the security review's
+    shape: alt buffer, `unit REP` pairs, first pair / mean per input byte over pairs 11-210,
+    one terminal; before = fix round 7's tree with the same example, same session, macOS arm64,
+    load 5.3-6.6), after: every unit (VS16, keycap, `a U+0301 U+FE0F`, `U+2764`/`U+26A0 U+0301
+    U+FE0F`, `a U+0301 U+0302 U+FE0F`) 5.3-9.0 us at 1000 -> 21, 14-18 us at 1000 -> 9, 53-67
+    us at 2000 -> 9, 196-224 us at 2000 -> 5 (`a U+0301 U+FE0F` was 36 us, 195 us, 794 us,
+    2.90 ms; its first pair 375 -> 11.7 ms at 2000 -> 5); VS16 at 2000 -> 5 325 -> 223 us from
+    the schedule; `\r VS16 CSI 9999 b` at 2000 -> 3 668 -> 1.6 us. The Q23 link REP in the same
+    run: 791 us, so all are below it, the worst (224 us) 3.5x under. Still `O((L + K)^2 / cols)`
+    per REP that runs the transient.
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as
