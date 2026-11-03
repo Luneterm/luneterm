@@ -491,7 +491,8 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     Below-region REP at 80x24 / 300x100 sb10k: plain 101 / 234 ns, `e U+0301` 144 / 295 ns (1.4x /
     1.3x), wide cluster 2.2x / 2.3x, VS16 2.4x / 2.4x, keycap 2.4x / 2.3x, `a` in a link or with an
     underline colour 1.5x (was 9.8-14.2x plain, and 2.5-3.1 ms per byte before round 2). The
-    no-reflow long row (Windows 10 after a narrowing, wraparound on) is linear in L: `e U+0301` at
+    no-reflow long row (after a narrowing: the alt buffer on every platform, the normal buffer
+    on Windows 10 or in `windows_mode`; wraparound on) is linear in L: `e U+0301` at
     L = 300 / 1000 / 2000 is 1.9 / 6.0 / 12.5 us (was 363.8 us at 2000, and 48.4 ms before round
     2), VS16 9.2 us, `a` in a link 13.0 us, with an underline colour 12.3 us (the review's 51.6 /
     44.4 ms), against 10.1 us for the step-13 no-wrap insert of `e U+0301` from 2000 in the same
@@ -518,9 +519,9 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     (was 0.71 ms); in insert mode 0.95 / 4.0 ms, unchanged (round 3's insert passes already
     walked the tail); at the scroll bottom ~1.5 / ~0.95 ms, unchanged. Plain `a` in the same
     setup is 0.2-0.3 us (no insert) and 29 us (insert). So the shape is O(L^2 / cols): one O(len)
-    copy per wrap until the strings settle, now counted, not cut. It needs a narrowed row of
-    strings (Windows 10 without reflow), an odd width and `11-vs16`; an O(len) closed form of
-    the copy is not built.
+    copy per wrap until the strings settle, now counted, not cut. It needs a row longer than
+    `cols` at an odd width and `11-vs16` (reach corrected in fix round 7, below); an O(len)
+    closed form of the copy is not built.
   - **M7 fix round 5** (plan revision 1, step fix5; the F6 residual): the floor is unchanged;
     how its units print changed. (A) Below the region without insert mode, the last row's whole
     passes differ only in the strings the joiner's wrap copies, and `p` passes leave the state
@@ -549,10 +550,29 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     83 us (21 -> 21), 955 -> 100 us (2000 -> 21): 1.1-2.1x plain `a` with and without insert
     mode. Insert mode below the region is still O(L^2 / cols) (the copy interleaves with the
     insert shifts; plan revision 1 R1-D3), now 941 us -> 398 us at 2000 -> 79 and 3.98 -> 1.77 ms
-    at 2000 -> 21 (the row clone gone). Where the chain's lines survive the REP (too few scrolls
-    after them to discard them), the exact state holds `Θ(K^2 / cols)` entries over those lines
-    (K up to a narrowed row's length, `cols` down to 2): a memory amplification of upstream's
-    copy that no exact algorithm on this representation avoids (R1-D4, for the security review).
+    at 2000 -> 21 (the row clone gone; reach and settlement: fix round 7). Where the chain's
+    lines survive the REP (too few scrolls after them to discard them), the exact state holds
+    `Θ(K^2 / cols)` entries over those lines (K up to a narrowed row's length, `cols` down to
+    2): a memory amplification of upstream's copy that no exact algorithm on this representation avoids (R1-D4, for the security review).
+  - **M7 fix round 7** (plan revision 2, step fix6; security S4): the reach of this whole family
+    (a widened unit, VS16 or keycap with `11-vs16`, whose joiner wraps its base at an odd width
+    over a row longer than `cols`) was understated as "a narrowed row of strings (Windows 10
+    without reflow)". Rows longer than `cols` exist after the user narrows the window **in the
+    alt buffer on every platform**: it has no scrollback, so it never reflows
+    (`Buffer::is_reflow_enabled` requires `has_scrollback`), and in the normal buffer without
+    reflow (Windows 10 ConPTY < 21376, `windows_mode`). Rows of plain text reach it as well as
+    rows of strings. In insert mode below the region the cost is O(L^2 / cols) per REP that has
+    to run the transient: about `(len - cols) / (cols / 2)` passes until the row's old tail has
+    left it, then `K / (cols - 1)` more for the copied strings, each O(len). It **settles**: a
+    bare repeated REP is free after the first (planner probe P4, scratch crate `rev2-probe`,
+    release: 49 ms then 0.00 ms per REP at 9 columns, L = 1000; 20 ms then 0.00 ms at 21). The
+    sustained cost needs a standalone unit print between REPs (itself O(L)), which disturbs the
+    fixed point and makes about half of such REPs pay again (phase-dependent). Security review
+    round 7, alt buffer, defaults + `11-vs16`, first REP / mean per input byte over REPs 11-210:
+    L = 1000 at 21 columns 19 ms / 38 us, at 9 columns 49 ms / 209 us; L = 2000 at 21 columns
+    80 ms / 145 us, at 9 columns 226 ms / 861 us, at 5 columns 386 ms / 2.91 ms. The surviving
+    scroll-bottom chain (R1-D4) can form in the alt buffer too (read from the code, not
+    measured); there `max_length = rows`, so its ceiling is `rows x K` entries.
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as
