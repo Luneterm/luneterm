@@ -182,6 +182,54 @@ upstream does (after EXECUTE, CSI and ESC dispatch, OSC end, DCS unhook, and in 
 **Async.** Handlers are synchronous and return `bool`; upstream's resumable/`Promise` path is not
 ported (the engine's `write` is synchronous).
 
+**Lunegit's additions (M7).** Source files and deviations: `docs/porting-xterm.md`, "Ported from
+Lunegit". Nothing below is active until the host calls
+`Terminal::install_standard_extensions(&StandardExtensions) -> Result<(), ExtensionError>` once,
+right after `Terminal::new`; a terminal that never calls it behaves as xterm.js, so every
+upstream-equal test and golden is unaffected. `StandardExtensions { xtversion: Option<String>,
+vs16: bool, clipboard_write: bool }`; a second call is `ExtensionError::AlreadyInstalled`, a bad
+XTVERSION name `ExtensionError::InvalidXtversion` (nothing is registered then).
+
+- **Extensions** (`ext/`, one file each): kitty keyboard flags (1 and 4; stack of 8 per screen) and
+  modifyOtherKeys; XTVERSION (`DCS > | name ST`, name from the host); the unknown-OSC report;
+  `"11-vs16"` Unicode version; OSC 52 clipboard write; OSC 7 and 9;9 cwd; OSC 9;4 progress;
+  OSC 133 marks with the synchronized-update latch. They are handlers on the parser's own registry
+  (no second dispatch path); an extension that registers CSI `t` bypasses the window-option guard
+  (`extension.rs`).
+- **Events** the host receives from `drain_events`: `CwdChanged(String)`, `Progress(Progress {
+  state, percent })`, `CommandMark(CommandMark { kind, exit_code })`, `SyncUpdateInCommand`,
+  `ClipboardWrite(String)` and `UnknownOsc { ident, len }`. `Modes` gains `kitty_keyboard_flags`
+  (active screen) and `modify_other_keys`.
+- **Encoders** on `Terminal`, all returning the bytes to write to the PTY (`Option<Vec<u8>>`, `None`
+  when nothing is sent: `disable_stdin`, mouse not reported, focus reporting off, empty paste),
+  all through `triggerDataEvent` so `scroll_on_user_input` applies as upstream: `key_event(&TerminalKeyEvent)`
+  (kitty, then modifyOtherKeys, then legacy, from the live modes and DECCKM), `key_input`,
+  `char_input`, `mouse_event(&TerminalMouseEvent)` (the engine's own DECSET protocol and
+  encoding, zero-based cells in), `focus_event(bool)` (`ESC [ I` / `ESC [ O` only after
+  `CSI ? 1004 h`, no scroll) and `paste(&str)`. Pure forms: `encode_key(&TerminalKeyEvent,
+  KeyboardModes) -> Vec<u8>` and `paste_bytes(&str, bracketed: bool) -> Vec<u8>` (the sanitizer,
+  ledger row 19). The bytes are returned, not queued as `HostEvent::Response`.
+- **Reset hook:** `Terminal::reset_keyboard_protocol()` (ledger row 11).
+- **Runtime gate:** `Terminal::set_clipboard_write(bool)` / `clipboard_write()` (OSC 52).
+
+**Host duties M9 inherits from M7** (in addition to the list above):
+- Write every encoder result to the PTY (`PtyWriter`), after mapping the toolkit's events to
+  `TerminalKeyEvent`, `TerminalModifiers` and `TerminalMouseEvent`. Mouse positions are zero-based
+  cells; pixel `x`, `y` matter only under `CSI ? 1016 h`.
+- Send paste text only through `Terminal::paste` / `paste_bytes`; never write clipboard text to the
+  PTY directly.
+- Own the clipboard setting: `StandardExtensions::clipboard_write` and `set_clipboard_write`
+  (default `false`). `ClipboardWrite` arrives only while it is on; the host decides what to do
+  with the text (no query is ever answered).
+- Pass `StandardExtensions::xtversion` (the terminal's name; `lune-vt` has none) and choose `vs16`.
+- Route `CwdChanged` (new-tab directory), `Progress` and `CommandMark` / `SyncUpdateInCommand` to
+  the UI; validate a cwd before using it (the engine only guarantees no control characters, at most
+  4096 bytes and a non-empty text).
+- Call `reset_keyboard_protocol()` when the foreground process changes (M11 wires it).
+- Not done in `lune-vt`: win32-input-mode, kitty flags 2, 8 and 16, mouse wheel to arrow keys in the
+  alternate screen (the browser layer's job in xterm.js), OSC 133 options beyond the mark letter
+  and `D`'s exit code.
+
 **Errors and limits.** Upstream `throw`s are `Result::Err` (`IdentifierError`, `ParamsError`).
 The parser never panics on any input: clippy denies indexing, `unwrap`, `expect` and `panic` in
 its non-test code, and `crates/lune-vt/tests/no_panic.rs` feeds it seeded random bytes (debug
@@ -275,7 +323,9 @@ of their own, so anything that owns a `BufferService` directly must:
 `crates/lune-vt/src/input_handler.rs`, `core_terminal.rs`, `windows_mode.rs`,
 `services/{core,core_mouse,log}_service.rs` and `headless/terminal.rs` are ports of the xterm.js
 6.0.0 files of the same names (status of every file and the conventions this section summarises:
-`docs/porting-xterm.md`). `engine.rs` holds the host-facing types, which are original.
+`docs/porting-xterm.md`). `engine.rs` holds the host-facing types, which are original. Lunegit's
+additions are in `ext/` (parser extensions) and `input/` (encoders), described below under
+"Lunegit's additions (M7)".
 
 **Composition.** `Terminal` (`headless/terminal.rs`) wraps one `CoreTerminal`. `CoreTerminal`
 holds `parser: EscapeSequenceParser<InputHandler>` and `input_handler: InputHandler`, side by
@@ -283,7 +333,9 @@ side so their borrows are disjoint. `InputHandler` is the parser's host (`Parser
 `CoreServices`: options, buffer (`BufferService`, with both buffers), log, core, mouse, unicode,
 charset and OSC links, plus upstream's private state, the event queue and the damage. Handlers
 are closures registered once by `InputHandler::register_handlers`; `Extension`s register on the
-same parser afterwards and run first (newest first).
+same parser afterwards and run first (newest first). The standard extensions keep their state in
+`InputHandler.ext` (`ExtState`, a `// LUNETERM:` field), so parser closures and the encoders read
+the same value with no reference back to the host.
 
 **Write path.** `Terminal::write(&[u8])` calls `InputHandler::parse`, which decodes UTF-8
 (`Utf8ToUtf32`, streaming), splits input into 131072-byte chunks and feeds the parser. It is
@@ -295,7 +347,7 @@ spawns or calls back.
 `viewport` and `modes`; `Terminal` implements it and adds upstream's headless surface (`new`,
 `write_str`, `input`, `reset`, `clear`, `add_marker`, `set_option`, `read_row`, `link_uri`,
 `idle`, `set_logger`, `unicode_mut`, `register_*_handler`, `add_extension`, `buffers`, `core`).
-The input encoders (key and mouse encoding) are M7.
+The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
 
 - **Events** (`HostEvent`) are queued while `write` runs, in the order upstream fires them, and
   drained by the host: `Response(Vec<u8>)` (DA, DSR, DECRQM, DECRQSS replies and `input`; two
@@ -303,60 +355,280 @@ The input encoders (key and mouse encoding) are M7.
   104, 110-112; the engine never answers a colour report, the host knows the theme),
   `FocusReportRequested`, `WindowReport(WindowReportKind)`, `A11yText` and `A11yTab` (only with
   `screen_reader_mode`), and `UnknownOsc` and `ClipboardWrite`, which the core never produces
-  (M7). OSC 52, queries included, reaches only the fallback that logs (ledger row 13).
+  (M7; the core never produces them, the standard extensions do), `CwdChanged`, `Progress`,
+  `CommandMark` and `SyncUpdateInCommand` (M7, standard extensions only). Without
+  `install_standard_extensions`, OSC 52, queries included, reaches only the fallback that logs
+  (ledger row 13).
 - **Bounded queues** (user decisions Q10 and Q11). `TitleChanged` has no payload and at most one
   is queued per drain (read the title from `Viewport::title`, an `Arc<str>` shared with the
   engine, so a snapshot never copies it); `A11yText` merges consecutive characters and stops at
   `A11Y_TEXT_LIMIT` (2048 bytes) per drain. Everything else is exact. With these, the events
   of one drain weigh at most 16 units per byte written plus 4 KiB (checked on every fuzz seed,
   `engine_fuzz.rs` `event_cost`: a payload byte weighs 1, a payload-free event 1); without
-  them a few bytes of XTWINOPS 22/23 or REP queued gigabytes. The weight is not the memory: a
+  them a few bytes of XTWINOPS 22/23 or REP queued gigabytes. The M7 events fit the same bound:
+  `ClipboardWrite`, `CwdChanged` and `Progress` are last-wins per drain, replaced in place (O(1));
+  `CommandMark` is exact; `UnknownOsc` is capped at 64 per drain (`UNKNOWN_OSC_LIMIT`); each
+  payload is at most the bytes that produced it, except `ClipboardWrite`: invalid UTF-8 in the
+  decoded data becomes U+FFFD (3 bytes per bad byte), so its text can reach about 2.25x the
+  base64 that produced it (`////` gives 9 bytes); the drain bound still holds (`event_cost`
+  weighs the real length). The weight is not the memory: a
   queued `HostEvent` is 48 bytes, so 1 MiB of BEL holds about 48 MiB until drained (measured,
   48.5x). M9 sizes its drain cadence for about 50x the bytes of one write.
-- **Work per input byte** (fix rounds 1 and 2 of the M6 review). Where upstream's cost per
-  byte grows with a count the input controls, the engine caps or batches it, each in a
-  `// LUNETERM:` block: `OscLinkService` checks the link's last marker before walking all of
-  them (printing inside a link open across the buffer is no longer O(scrollback) per
-  character), keeps at most `MAX_LINKS` (4096) links and `MAX_LINK_MARKERS` (8192) link markers,
-  evicting the least recently extended link (its cells keep their attributes and lose the
-  link), disposes an evicted link's markers in one walk per buffer and filters a link's marker
-  list once per disposal batch (ED 3 and RIS after a buffer-long link are linear, not
-  quadratic); IL, DL, SU and SD move the markers once per sequence (`splice_rotate`), not once
-  per shifted line; a cell's combined string holds at most `MAX_COMBINED_CODE_POINTS` (64,
-  `buffer_line.rs`); REP prints only the repetitions that still change the state
-  (`rep_equivalent_repeats`, tested equal to the full print), and a unit that prints alike
-  (a character with its joiners, also in insert mode, inside an open link or with screen reader
-  mode) fills whole lines (`print_repeated`, review S7): one insert pass per line in insert mode,
-  on lines longer than `cols` too (`BufferLine::insert_cells_repeatedly`, with `print`'s fix-up
-  at `cols - 1`), and one data pass plus one extended-attribute run per line
-  (`BufferLine::set_cells_repeatedly`; a line's extended attributes are a `RunMap` of runs, so
-  an underline colour or link costs one entry per run, not a tree insert per cell; review S7
-  round 4). No log line carries pty output or user
-  input: unknown OSC and DCS log their identifier and payload length, the parse and the
-  data/binary events log lengths only.
+- **Work per input byte** (fix rounds 1 and 2 of the M6 review; the S7 residuals in M7). Where
+  upstream's cost per byte grows with a count the input controls, the engine caps or batches it,
+  each in a `// LUNETERM:` block: `OscLinkService` checks the link's last marker before looking
+  further (printing inside a link open across the buffer is not O(scrollback) per character), keeps
+  at most `MAX_LINKS` (4096) links and `MAX_LINK_MARKERS` (8192) link markers, evicting the least
+  recently extended link (its cells keep their attributes and lose the link), disposes an evicted
+  link's markers in one walk per buffer and filters a link's marker list once per disposal batch
+  (ED 3 and RIS after a buffer-long link are linear, not quadratic); IL, DL, SU and SD move the
+  markers once per sequence (`splice_rotate`), not once per shifted line; a cell's combined string
+  holds at most `MAX_COMBINED_CODE_POINTS` (64, `buffer_line.rs`); REP prints only the repetitions
+  that still change the state (`rep_equivalent_repeats`, tested equal to the full print), and a unit
+  that prints alike (a character with its joiners, also in insert mode, inside an open link or with
+  screen reader mode) fills whole lines (`print_repeated`, review S7): one insert pass per line in
+  insert mode, on lines longer than `cols` too (`BufferLine::insert_cells_repeatedly`, with
+  `print`'s fix-up at `cols - 1`), and one data pass plus one extended-attribute run per line
+  (`BufferLine::set_cells_repeatedly`; a line's extended attributes and combined strings are
+  `RunMap`s of runs, so an underline colour, a link or a cluster costs one entry per run, not a
+  tree insert per cell). No log line carries pty output or user input: unknown OSC and DCS log
+  their identifier and payload length, the parse and the data/binary events log lengths only.
 
-  **Residual, accepted (not capped):** every line change (a scroll, a trim, one IL/DL/SU/SD
-  sequence, a print onto a new line inside an open link) walks the buffer's live markers, as
-  upstream's per-marker listeners do. Link markers are bounded by `MAX_LINK_MARKERS` plus the
-  link being extended, which can mark every line (rows + scrollback), so the walk is
-  O(`MAX_LINK_MARKERS` + rows + scrollback) per line change. Measured (release, 80x24,
-  `a CR LF` inside one link open across the buffer): about 0.55 µs per byte at scrollback 1,000
-  and 5.4 µs at 10,000, against about 30 ns with no link; one IL with 8192 markers outside the
-  region costs about 7 µs at 80x24 and 39 µs at 300x100. So the work of a chunk is
-  O(bytes x (rows + scrollback)) with a long link, not O(bytes): **M9's flow control must bound
-  the work per slice (time or line changes), not only the bytes.** REP multiplies this: one
-  15-byte REP inside an open link prints up to a buffer's worth of lines (2^20 code points, or
-  `cols x (rows + scrollback + 3)` cells), so with a link open it costs O((rows + scrollback)^2)
-  marker visits and cannot be sliced (review S7, accepted residual Q18). A REP of a grapheme
-  cluster stores one combined string per cell. Measured after S7 round 4 (3735c84; scratch
-  `fr4probe`, release fat LTO, median of 5 terminals each writing 3 x (unit + `CSI 1048576 b`);
-  notes "M6 fix round 4"): at 300x100 with scrollback 10,000, link REP about 0.88 ms and
-  cluster REP about 0.98 ms per input byte (plain REP 83 µs, DECALN 27 µs in the same run). The
-  security review's `vtprobe` gives link REP at 80x24 with scrollback 10,000 as 39-42 ms per
-  byte; single runs of the two probes differ by up to 3x on the same machine, so plan from the
-  order of magnitude. In insert mode on lines longer than `cols` (after a column shrink without
-  reflow), a REP without wraparound prints up to `len - cols` more repetitions, one `O(len)`
-  insert each (code review F9).
+  **M7 closed three S7 residuals** (security-review finding `rep-slow-path-amplification`, user
+  decisions Q18 and Q21), each behaviour-identical to the code it replaced (a differential against
+  a test-only copy of it, `docs/porting-xterm.md`, "S7 residuals closed in M7"):
+  1. `MarkerSet` has a trim offset and a line index, so a line change no longer walks every live
+     marker: `on_trim` visits only the markers it disposes, an insert, delete or rotation only the
+     markers on the lines it moves, and link markers are a `VecDeque`. A line change is therefore
+     not O(`MAX_LINK_MARKERS` + rows + scrollback) any more (tests count visits: a trim of one line
+     over 10,000 markers visits 1; a REP of `a CSI 1048576 b` in an open link at 80x24 with scrollback 1,000
+     visits 3,154 markers, against 2,153,500 on the pre-change tree, same test).
+  2. A cluster's combined string is a shared `Arc<str>` in a run: a narrow-cluster REP is one
+     run and one allocation per line.
+  3. A no-wrap insert REP on a line longer than `cols` batches the stuck inserts: at most
+     `cols + 4` insert passes however long the line (test), where it was one O(len) pass per
+     repetition.
+
+  **Measured after** (`scripts/bench-rep.sh` = `crates/lune-vt/examples/rep_cost.rs`; release,
+  aarch64 macOS, rustc 1.92.0; median of 5 fresh terminals, each writing 3 x (unit +
+  `CSI 1048576 b`), Unicode 11, ns per input byte; run at the M7 tip 4248f2f, load average 4.30
+  before and 4.44 after on an interactive Mac, so compare ratios inside one table, not absolute
+  values across tables). Before: the same script at f081990 (load average 3.01 before, 4.31 after).
+
+  | per input byte | 80x24 sb1k | 80x24 sb10k | 300x100 sb1k | 300x100 sb10k |
+  |---|---|---|---|---|
+  | plain `a`, before / after | 8.7 / 9.5 us | 88.2 / 96.0 us | 25.5 / 27.8 us | 83.2 / 88.9 us |
+  | link `a`, before / after | 131.4 / 74.9 us | 10.38 ms / 792.6 us | 182.6 / 106.0 us | 895.3 / 255.9 us |
+  | narrow cluster, before / after | 220.3 / 11.3 us | 1.29 ms / 73.9 us | 885.6 / 27.0 us | 1.09 ms / 39.9 us |
+  | wide cluster, before / after | 102.1 / 81.0 us | 987.7 / 817.1 us | 376.2 / 283.9 us | 922.7 / 628.1 us |
+  | DECALN (control), before / after | 1.6 / 1.6 us | 1.6 / 1.7 us | 27.8 / 27.5 us | 27.8 / 27.3 us |
+
+  | no-wrap insert REP, `e` + U+0301, line length L -> window | before | after |
+  |---|---|---|
+  | L = 300 -> 80x24 | 273.7 us | 3.8 us |
+  | L = 1000 -> 80x24 | 4.67 ms | 12.9 us |
+  | L = 2000 -> 80x24 | 21.96 ms | 27.4 us |
+  | L = 2000 -> 300x100 | 19.47 ms | 73.9 us |
+  | control, L = 80 -> 80x24 | 1.3 us | 690 ns |
+
+  Link REP against plain REP in the same table: 80x24 sb10k 118x before, 8.3x after; 300x100
+  sb10k 10.8x before, 2.9x after. Narrow cluster: 14.6x and 13.1x before, 0.77x and 0.45x after
+  (cheaper than plain: one allocation per line). Insert REP at L = 2000 -> 80x24 against the
+  same-run control: about 40x the control after (27.4 us / 690 ns), linear in L as designed (target:
+  at most 2 x control x L / 80 = 34.5 us here, met).
+
+  **What is left.**
+  - Link REP missed its step target (at most 4x plain) at 80x24: 8.3x with scrollback 10,000 (the
+    ratio is the same at scrollback 1,000, 7.9x: a fixed cost per scrolled line, about 0.6 us by
+    inference from the table, not profiled, and no longer growing with scrollback). The user
+    accepted this (Q23). At 300x100 the target is met (2.9x).
+  - Wide-cluster REP was 8.5x plain at 80x24 sb10k and 7.1x at 300x100 sb10k; M7 fix round 1
+    shares a fresh line's combined map copy-on-write (`SharedRunMap`), and a joiner that widens a
+    narrow base (VS16 under `11-vs16`, review S1, which skipped both the cut and the line fill)
+    now takes the cut, the line fill (insert mode: `BufferLine::insert_cell_strided`) and the
+    batched stuck inserts. Same script at the fix-round tip, load average 7.26 (the "after"
+    reading printed the same value): wide cluster 0.98x / 1.09x plain at 80x24 / 300x100 sb10k,
+    VS16 1.04x / 1.16x, keycap 0.85x / 0.73x; inside an open link wide cluster 0.68x / 0.81x and
+    VS16 0.72x / 0.85x the narrow link REP; no-wrap insert VS16 at L = 2000 -> 80x24 16.0 us
+    (0.61x `e U+0301`, linear in L). Insert mode with wraparound: VS16 0.75x to 0.79x insert `a`;
+    with an underline colour 2.1x to 3.6x insert `a` (300x100 sb1k the worst: the per-key pass
+    of the strided insert with extended entries).
+  - One REP is still one unit of work of up to 2^20 code points (or `cols x (rows + scrollback + 3)`
+    cells): it cannot be sliced, but its cost is now linear in the lines it prints, not quadratic.
+    **M7 fix round 2** tightened two cases of the cut floor (review S2, S3): below a scroll
+    region a wrap neither scrolls nor trims, so the floor no longer counts the scrollback
+    (`cols x (rows + 3)`, plus the long-row passes in insert mode) — before, a full scrollback
+    made every one of `max_lines` units a pass over the last row (2.5-50 ms per byte); and a REP
+    whose unit's first code point joins without moving the cursor (a lone combining mark the
+    cursor sits on) is cut to `MAX_COMBINED_CODE_POINTS + 2`, the point its one growing cell is
+    full, instead of running 2^20 code points through `print` (was ~0.9 ms per byte).
+  - The pre-M7 `a CR LF` inside a long link (0.55 us per byte at scrollback 1,000 and 5.4 us at
+    10,000 against 30 ns with no link; one IL with 8192 markers outside the region about 7 us at
+    80x24 and 39 us at 300x100) was not re-measured after step 11: the probe covers REP only.
+    The visit-count tests show the walk is gone for trims, inserts, deletes and rotations; the
+    figures are the old ones. **M9's flow control still bounds the work per slice (time or line
+    changes), not only the bytes**, until that is measured.
+  - In insert mode on lines longer than `cols` (after a column shrink without reflow), a REP
+    without wraparound still prints up to `len - cols` more repetitions to reach the same state
+    (code review F9, state identity); each is no longer an O(len) insert.
+  - **M7 fix round 2** (review S2, S3; figures `bench-rep.sh`, load 11.9, ratios within a table):
+    after the scrollback was dropped from the below-region floor, plain below-region REP is
+    540 ns / 5.9 us (80x24 / 300x100 sb10k), VS16 short-line 6.5 us (was 2.50 ms, ~385x), the
+    no-reflow long-row `e U+0301` L=2000 is 363.8 us (was 48.4 ms, ~133x), and the joining-base
+    REP is ~400 ns at every size (was ~0.9 ms, ~2000x). Two sub-targets were left open there and
+    are met by fix round 3 (next item).
+  - **M7 fix round 3** (review S2's two open targets; figures `bench-rep.sh`, load 9.7, ratios
+    within a table). Below a scroll region in insert mode every wrap lands on the last row, so
+    `print_repeated` compares the state a whole pass reads (the row's first `cols` cells, or the
+    whole line and its entries past it when the hidden tail is no longer than what a pass pushes
+    into it) before and after each pass, and once a pass leaves it as it found it takes the rest
+    of the whole passes at once: nothing to do on a short row, one
+    `BufferLine::insert_block_repeatedly` (O(len), proven against its loop) on a long row's tail.
+    The line fill's insert passes lost their per-cell side-table work where the writes hide the
+    inserts' entries (`insert_cells_repeatedly_then_set`, `insert_cell_strided_then_set`: one
+    shift, the fix-ups, the writes), `insert_cells`' shift is one pass (`shift_cells_right`), and
+    the `RunMap`s read in one walk (indexed dense reads, cut-run walks, a cursor, range splicing).
+    Below-region REP at 80x24 / 300x100 sb10k: plain 101 / 234 ns, `e U+0301` 144 / 295 ns (1.4x /
+    1.3x), wide cluster 2.2x / 2.3x, VS16 2.4x / 2.4x, keycap 2.4x / 2.3x, `a` in a link or with an
+    underline colour 1.5x (was 9.8-14.2x plain, and 2.5-3.1 ms per byte before round 2). The
+    no-reflow long row (after a narrowing: the alt buffer on every platform, the normal buffer
+    on Windows 10 or in `windows_mode`; wraparound on) is linear in L: `e U+0301` at
+    L = 300 / 1000 / 2000 is 1.9 / 6.0 / 12.5 us (was 363.8 us at 2000, and 48.4 ms before round
+    2), VS16 9.2 us, `a` in a link 13.0 us, with an underline colour 12.3 us (the review's 51.6 /
+    44.4 ms), against 10.1 us for the step-13 no-wrap insert of `e U+0301` from 2000 in the same
+    run (itself 26.7 us before this round). Left: a widened unit (VS16, keycap) on an odd number
+    of columns is wrapped by its joiner, whose wrap copies the old row's strings from `cols - 1`
+    on, the tail's included (upstream's copy), so on a long row its passes settle only with the
+    tail: 53.6 us per byte at L = 2000 narrowed to 79 columns (12.5x plain there; short rows 3.1x
+    / 3.4x).
+  - **M7 fix round 4** (code review F6, F7): the cut floor of rounds 1-3 was **not**
+    state-identical for that widened unit on an odd number of columns over rows longer than
+    `cols` that hold combined strings. Each joiner wrap runs upstream's `copyCellsFrom(oldRow,
+    cols - 1, 0, 1)`, whose FIXME copy moves every string at a key `>= cols - 1` (stale entries
+    and keys past the line's end included) `cols - 1` to the left, so a row's strings settle
+    only after about `last key / (cols - 1)` wraps; below a region the cut REP showed other text
+    (insert off), at the scroll bottom the oldest lines' hidden entries differed. The floor now
+    adds `ceil((K + 1) / (cols - 1)) + 1` lines, `K` the largest combined key on the rows the
+    print reaches (each row's last cell too in insert mode), read in O(log n) per row
+    (`BufferLine::last_combined_key`); state identity is tested at 7, 9, 21 and 79 columns, below
+    the region and at the scroll bottom, insert on and off (dedicated test, the review's seeded
+    probe, the matrix, the 300k-seed differential). Cost of this shape (`bench-rep.sh` table
+    "REP at odd widths over narrowed rows of strings", Windows mode, sb10k; before = the same
+    table built on fix round 3, same run, load ~3.5): below the region without insert VS16 at
+    L = 2000 is 0.55 ms per byte at 79 columns (was 0.35 ms, cut too early) and 1.38 ms at 21
+    (was 0.71 ms); in insert mode 0.95 / 4.0 ms, unchanged (round 3's insert passes already
+    walked the tail); at the scroll bottom ~1.5 / ~0.95 ms, unchanged. Plain `a` in the same
+    setup is 0.2-0.3 us (no insert) and 29 us (insert). So the shape is O(L^2 / cols): one O(len)
+    copy per wrap until the strings settle, now counted, not cut. It needs a row longer than
+    `cols` at an odd width and `11-vs16` (reach corrected in fix round 7, below); an O(len)
+    closed form of the copy is not built.
+  - **M7 fix round 5** (plan revision 1, step fix5; the F6 residual): the floor is unchanged;
+    how its units print changed. (A) Below the region without insert mode, the last row's whole
+    passes differ only in the strings the joiner's wrap copies, and `p` passes leave the state
+    of the first `p - 1` copies taken in closed form (`BufferLine::shift_combined_classes_repeatedly`,
+    `F_k(M)[j]` = the value of the largest held key of `j`'s class in `j..=j + k (cols - 1)`,
+    O(K + runs); lemma in `InputHandler::copy_passes_at_once`) and one real pass. (B1) A joiner
+    wrap no longer clones the old row (`CellsSource`: the copied cells and the shared strings),
+    a copy of a row onto itself is one closed-form self-copy, and the wrapping repetition
+    (`print_widened_wrap`, `print`'s steps) shares the head string between the lines that hold no
+    other, which the fill's template (now also keyed on a one-run "before" map) takes in O(1).
+    (B2) At the scroll bottom the first `ceil(K / (cols - 1)) - 1` scrolling joiner wraps skip
+    their strings' copy when at least `max_length` scrolls follow (the lines they land on are
+    then discarded; proof in `InputHandler::chain_copies_to_skip`). State identity: the closed
+    form against the loop of copies, the direct wrap against `print_inner`, the skip bound at
+    `max_length - 1 / 0 / +1`, the matrix, the 300k-seed differential; 12 mutants of the bounds
+    (11 in fix round 5, the chain skip's `plain` term in fix round 7) each fail a test (notes.md
+    "fix round 5", "fix round 7"). Cost (`bench-rep.sh` table "REP at odd widths over
+    narrowed rows of strings", Windows mode, sb10k, VS16, median of 5; before = fix round 4's
+    tree with the same example, load ~4.5; after load ~3): below the region without insert at
+    L = 2000, 543 us -> 12.1 us per byte at 79 columns and 1.38 ms -> 9.0 us at 21; linear in L
+    (1000 -> 2000 at 79 columns: 6.8 -> 12.1 us); but still 6.7x / 12.5x the same unit at the
+    even widths 80 / 22 (1.8 us / 721 ns) and 40x / 51x plain `a` — every REP rebuilds the row's
+    O(K) string map in the batch and in each real joiner wrap's self-copy, because the fill's
+    heads keep the row from being a fixed point of the copy (85% of the time in a profile).
+    At the scroll bottom 1.41 ms -> 135 us (79 -> 79), 1.55 ms -> 157 us (2000 -> 79), 462 ->
+    83 us (21 -> 21), 955 -> 100 us (2000 -> 21): 1.1-2.1x plain `a` with and without insert
+    mode. Insert mode below the region is still O(L^2 / cols) (the copy interleaves with the
+    insert shifts; plan revision 1 R1-D3), now 941 us -> 398 us at 2000 -> 79 and 3.98 -> 1.77 ms
+    at 2000 -> 21 (the row clone gone; reach and settlement: fix round 7). Where the chain's
+    lines survive the REP (too few scrolls after them to discard them), the exact state holds
+    `Θ(K^2 / cols)` entries over those lines (K up to a narrowed row's length, `cols` down to
+    2): a memory amplification of upstream's copy that no exact algorithm on this representation avoids (R1-D4, for the security review).
+  - **M7 fix round 7** (plan revision 2, step fix6; security S4): the reach of this whole family
+    (a widened unit with `11-vs16`, a VS16 after a one-cell base with or without joiners before
+    or after it: VS16 emoji, keycaps, `a U+0301 U+FE0F`; whose widening joiner wraps its base at
+    an odd width over a row longer than `cols`) was understated as "a narrowed row of strings (Windows 10
+    without reflow)". Rows longer than `cols` exist after the user narrows the window **in the
+    alt buffer on every platform**: it has no scrollback, so it never reflows
+    (`Buffer::is_reflow_enabled` requires `has_scrollback`), and in the normal buffer without
+    reflow (Windows 10 ConPTY < 21376, `windows_mode`). Rows of plain text reach it as well as
+    rows of strings. In insert mode below the region the cost is O(L^2 / cols) per REP that has
+    to run the transient: about `(len - cols) / (cols / 2)` passes until the row's old tail has
+    left it, then `K / (cols - 1)` more for the copied strings, each O(len). It **settles**: a
+    bare repeated REP is free after the first (planner probe P4, scratch crate `rev2-probe`,
+    release: 49 ms then 0.00 ms per REP at 9 columns, L = 1000; 20 ms then 0.00 ms at 21). The
+    sustained cost needs a standalone unit print between REPs (itself O(L)), which disturbs the
+    fixed point and makes about half of such REPs pay again (phase-dependent). Security review
+    round 7, alt buffer, defaults + `11-vs16`, first REP / mean per input byte over REPs 11-210:
+    L = 1000 at 21 columns 19 ms / 38 us, at 9 columns 49 ms / 209 us; L = 2000 at 21 columns
+    80 ms / 145 us, at 9 columns 226 ms / 861 us, at 5 columns 386 ms / 2.91 ms. The surviving
+    scroll-bottom chain (R1-D4) can form in the alt buffer too (read from the code, not
+    measured); there `max_length = rows`, so its ceiling is `rows x K` entries. Part B (plan
+    revision 2 R2-D1 = build, behind a prototype gate): no linear or bounded-settle closed form
+    exists (planner probes P1, P5), so the passes are replayed in dense arrays instead
+    (`BufferLine::replay_wrap_passes`, called by `InputHandler::replay_wrap_passes` on the last
+    row below the region in insert mode, for a row longer than `cols`; in fix round 7 only for
+    a unit whose first joiner widens a one-cell base: VS16, a keycap; fix round 8 below). It
+    makes each pass's writes, in order, on the slots and on per-key indexes into the strings
+    and attributes (the strings over every key the copy reads, past the line's end too), and
+    rebuilds the maps once; a pass reads only the row, so the row is compared at checkpoints,
+    one and two passes after each, and the passes left are cut to their remainder once it
+    repeats (with an odd `h` the pushed cells alternate: period 2, never a fixed point, at 79
+    columns). Fix round 7's checkpoints were pass 0, `T = ceil((len - cols) / h) + ceil(K' / c)
+    + 2` and its doublings; fix round 8's are passes 0, 1, 2, 4, 8, …. State identity: the replay against the real per-pass calls
+    (`replaying_wrap_passes_equals_the_real_per_pass_loop`, 6,000 rounds), the uncapped print
+    over plain rows, stale tails, keys past the end and the narrowed alt buffer, the matrix
+    and the seeded differential; eight mutants (pass count, truncated transient, keys past the
+    end, the stale entry at the base, the copy width, off the last row, without insert mode,
+    unmerged maps) each fail a test. Still `O((L + K)^2 / cols)` per REP that runs the
+    transient, a constant-factor mitigation: `bench-rep.sh` table "REP in insert mode below a
+    region at odd widths" (Windows mode, sb10k, median of 5, before = fix round 6's tree with
+    the same example, same session, load ~6.8), VS16 per input byte, 3-REP stream, L -> cols:
+    2000 -> 79 532 -> 37 us, 1000 -> 21 446 -> 29 us, 2000 -> 21 1.79 ms -> 85 us, 1000 -> 9
+    944 -> 36 us, 2000 -> 9 3.99 ms -> 130 us, 1000 -> 5 2.28 ms -> 117 us, 2000 -> 5 9.58 ms
+    -> 457 us (keycap alike); first REP 1.21 -> 0.072 ms (79) up to 23.1 -> 0.73 ms (5);
+    sustained (unit + REP pairs 11-60) 9.8 -> 6.4 us (79) up to 2.86 ms -> 322 us (5), all
+    below the Q23-accepted link REP (845 us) for VS16 and the keycap. Plain `a` in the same
+    setup: 29-30 us. Rows of `cols` cells keep the round-3 batch (no tail to push out; the
+    replay's map rebuild cost more there). Not covered in fix round 7: units with a joiner
+    before the widening one (`a U+0301 U+FE0F`, `U+2764 U+0301 U+FE0F`, `a U+0301 U+0302
+    U+FE0F`) kept the per-pass loop at the pre-fix cost (security review round 8, alt buffer,
+    first pair / sustained per byte: 2000 -> 5 394 ms / 3.05 ms, 2000 -> 9 203 ms / 884 us).
+  - **M7 fix round 8** (security S4 round 8, code review F9): the replay covers units with
+    joiners before the widening one. Those joiners keep width 1 and are added to the base's
+    cell at `c = cols - 1` before the widening one wraps it: the cell becomes a combined cell
+    whose string (`WrapUnit::pre`, built by the same calls on a scratch line) the copy carries
+    to key 0, where the remaining joiners append to it (the head's string), and the clear
+    leaves stale at key `c`; `DenseRow::pass` writes `pre` at `c` after the base, before the
+    copy. The repeat checks moved to passes 1, 2, 4, 8, … (a row repeating from pass `τ` stops
+    by `2τ + 2`; round 7's first checkpoint `T` ran a row that repeated early to `T`: security
+    round 8, `\r VS16 CSI 9999 b` at 2000 -> 3, 2.2 -> 658 us per byte). No unit shape of the
+    class declines the replay (its guards hold by construction for every unit `rep_alike`
+    accepts with a widening joiner); rows whose string keys reach past `len + 2 x runs + 4096`
+    still take the per-pass loop. State identity: the primitive differential with six such
+    units (one past `MAX_COMBINED_CODE_POINTS`), the uncapped print over plain rows, stale
+    tails, keys past the end and the narrowed alt buffer, the batch test and the seeded
+    differential; the joiner string written one column off fails all five. `bench-rep.sh` table
+    "REP in insert mode below a region on the narrowed alt screen" (the security review's
+    shape: alt buffer, `unit REP` pairs, first pair / mean per input byte over pairs 11-210,
+    one terminal; before = fix round 7's tree with the same example, same session, macOS arm64,
+    load 5.3-6.6), after: every unit (VS16, keycap, `a U+0301 U+FE0F`, `U+2764`/`U+26A0 U+0301
+    U+FE0F`, `a U+0301 U+0302 U+FE0F`) 5.3-9.0 us at 1000 -> 21, 14-18 us at 1000 -> 9, 53-67
+    us at 2000 -> 9, 196-224 us at 2000 -> 5 (`a U+0301 U+FE0F` was 36 us, 195 us, 794 us,
+    2.90 ms; its first pair 375 -> 11.7 ms at 2000 -> 5); VS16 at 2000 -> 5 325 -> 223 us from
+    the schedule; `\r VS16 CSI 9999 b` at 2000 -> 3 668 -> 1.6 us. The Q23 link REP in the same
+    run: 791 us, so all are below it, the worst (224 us) 3.5x under. Still `O((L + K)^2 / cols)`
+    per REP that runs the transient.
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as
@@ -402,7 +674,7 @@ IL, DL, SU, SD, CHT, CBT and REP loops are bounded.
 
 | Point | Mechanism | Example |
 |---|---|---|
-| Escape-sequence behaviour | `lune_vt::Extension<C>` (`Terminal::add_extension`) registers handlers on the `EscapeSequenceParser<C>` itself (newest-first, like xterm.js `register*Handler`); there is no separate registry | kitty keyboard, XTVERSION, OSC 7 cwd, OSC 9;4 progress |
+| Escape-sequence behaviour | `lune_vt::Extension<C>` (`Terminal::add_extension`) registers handlers on the `EscapeSequenceParser<C>` itself (newest-first, like xterm.js `register*Handler`); there is no separate registry | kitty keyboard, XTVERSION, OSC 7 cwd, OSC 9;4 progress (all shipped in `lune-vt/src/ext/`, installed together by `Terminal::install_standard_extensions`; a new one is a new file there, registered by `StandardSet`) |
 | PTY strategy | `lune_pty::PtyBackend` | portable-pty backend; later a session-daemon backend |
 | OS glass | `lune_ui::material::Material` applied by `lune_ui::material::apply` (the `lune_ui::Backdrop` trait documents the capability levels) | macOS vibrancy / Liquid Glass, Windows acrylic/Mica, KDE blur |
 | Theme | `lune_ui::theme::Theme` value handed to the `Painter` | `lunegit_dark::THEME` |

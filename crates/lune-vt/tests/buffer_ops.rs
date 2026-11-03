@@ -421,7 +421,7 @@ fn forward(st: &mut State, op: usize) {
     // Every marker an entry holds is live in the buffer that holds it, and no entry is empty.
     let ids: Vec<u32> = st.osc.link_ids().collect();
     for link_id in ids {
-        let markers = st.osc.link_markers(link_id).unwrap().to_vec();
+        let markers = st.osc.link_markers(link_id).unwrap().collect::<Vec<_>>();
         assert!(!markers.is_empty(), "op {op}: link without markers");
         for m in markers {
             assert!(

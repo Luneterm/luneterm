@@ -6,13 +6,15 @@
 //! nothing here needs Node. [`trace`] is the parser-trace runner (`tests/parser_trace.rs`; the
 //! `lune-vt` fuzz test includes the same file by path, see its header); [`screen`] renders the
 //! screen dump and Lunegit's grid from a `lune_vt::Terminal` (`tests/screen_goldens.rs`,
-//! `tests/lunegit_vectors.rs`).
+//! `tests/lunegit_vectors.rs`); [`lunegit_input`] reads the Lunegit key-encoder and OSC-scanner
+//! goldens (`goldens/lunegit-input/`, written by `tools/lunegit-oracle`).
 
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub mod escape;
+pub mod lunegit_input;
 pub mod screen;
 pub mod trace;
 

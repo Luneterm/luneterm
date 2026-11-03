@@ -11,6 +11,7 @@
 #![allow(unreachable_pub, dead_code)]
 
 use lune_vt::HostEvent;
+use lune_vt::StandardExtensions;
 use lune_vt::Terminal;
 use lune_vt::buffer::buffer::Buffer;
 use lune_vt::buffer::cell_data::CellData;
@@ -34,11 +35,38 @@ pub struct Run {
     pub title: String,
 }
 
+/// The standard extensions the "extensions installed" replays use (plan M7 step 9): everything on
+/// but VS16, which changes widths by design. A reply to `CSI > q` needs a name, so one is given;
+/// the gate is on so an OSC 52 write reaches the handler's queue path too.
+pub fn standard_extensions() -> StandardExtensions {
+    StandardExtensions {
+        xtversion: Some("lune-vt-test".to_string()),
+        vs16: false,
+        clipboard_write: true,
+    }
+}
+
 impl Run {
     pub fn new(cols: usize, rows: usize) -> Self {
+        Run::with_extensions(cols, rows, None)
+    }
+
+    /// As [`Run::new`], with the standard extensions installed after the oracle's Unicode
+    /// version is set (so `vs16: true` leaves `"11-vs16"` active).
+    pub fn with_extensions(
+        cols: usize,
+        rows: usize,
+        extensions: Option<&StandardExtensions>,
+    ) -> Self {
         let mut term = Terminal::new([OptionValue::Cols(cols), OptionValue::Rows(rows)]);
         // The oracle activates "11"; the name is registered by `Terminal::new`.
         let _ = term.unicode_mut().set_active_version("11");
+        if let Some(config) = extensions {
+            // A fresh terminal: the only error is an invalid XTVERSION name, a bug in the caller.
+            if let Err(error) = term.install_standard_extensions(config) {
+                panic!("install_standard_extensions: {error}");
+            }
+        }
         Run {
             term,
             responses: Vec::new(),
@@ -74,8 +102,21 @@ pub fn run<'a, I>(size: Option<(usize, usize)>, resize: Option<(usize, usize)>, 
 where
     I: IntoIterator<Item = &'a [u8]>,
 {
+    run_with(None, size, resize, chunks)
+}
+
+/// [`run`] with the standard extensions installed when `extensions` is `Some`.
+pub fn run_with<'a, I>(
+    extensions: Option<&StandardExtensions>,
+    size: Option<(usize, usize)>,
+    resize: Option<(usize, usize)>,
+    chunks: I,
+) -> Run
+where
+    I: IntoIterator<Item = &'a [u8]>,
+{
     let (cols, rows) = size.unwrap_or(DEFAULT_SIZE);
-    let mut run = Run::new(cols, rows);
+    let mut run = Run::with_extensions(cols, rows, extensions);
     for chunk in chunks {
         run.write(chunk);
     }
@@ -96,6 +137,32 @@ where
     I: IntoIterator<Item = &'a [u8]>,
 {
     dump_run(&run(size, resize, chunks))
+}
+
+/// [`dump`] with the standard extensions installed when `extensions` is `Some`.
+pub fn dump_with<'a, I>(
+    extensions: Option<&StandardExtensions>,
+    size: Option<(usize, usize)>,
+    resize: Option<(usize, usize)>,
+    chunks: I,
+) -> Vec<String>
+where
+    I: IntoIterator<Item = &'a [u8]>,
+{
+    dump_run(&run_with(extensions, size, resize, chunks))
+}
+
+/// [`grid`] with the standard extensions installed when `extensions` is `Some`.
+pub fn grid_with<'a, I>(
+    extensions: Option<&StandardExtensions>,
+    size: Option<(usize, usize)>,
+    resize: Option<(usize, usize)>,
+    chunks: I,
+) -> Vec<String>
+where
+    I: IntoIterator<Item = &'a [u8]>,
+{
+    grid_rows(&run_with(extensions, size, resize, chunks).term)
 }
 
 /// Lunegit's grid (FORMAT.md "Grid") for a run of `chunks`, one escaped string per row.

@@ -50,10 +50,17 @@ use crate::engine::{
     CellColor, Damage, HostEvent, Modes, MouseEncoding, MouseTracking, UnderlineStyle, Viewport,
     ViewportCell, ViewportCursor, VtEngine,
 };
+use crate::ext::{ExtensionError, StandardExtensions};
 use crate::extension::Extension;
+use crate::input::key_encoder::{KeyboardModes, encode_key};
+use crate::input::key_event::{TerminalKey, TerminalKeyEvent, TerminalModifiers};
+use crate::input::legacy_key_encoder::{legacy_char_input, legacy_key_input};
+use crate::input::mouse_event::TerminalMouseEvent;
+use crate::input::paste::paste_bytes;
 use crate::input_handler::InputHandler;
 use crate::parser::params::Params;
 use crate::parser::types::{FunctionIdentifier, HandlerId, IdentifierError};
+use crate::services::core_mouse_service::MouseReport;
 use crate::services::log_service::Logger;
 use crate::services::options_service::{OptionError, OptionKey, OptionValue, TerminalOptions};
 use crate::services::unicode_service::UnicodeService;
@@ -315,6 +322,18 @@ impl Terminal {
         self.core.add_extension(extension)
     }
 
+    /// Register Lunegit's terminal additions (plan M7 D2): XTVERSION when `config` names the
+    /// terminal, the unknown-OSC report, and as later steps land the keyboard protocols and the
+    /// rest. Call it once, right after [`Terminal::new`]; the second call is
+    /// [`ExtensionError::AlreadyInstalled`]. A terminal that never calls it behaves exactly as
+    /// xterm.js.
+    pub fn install_standard_extensions(
+        &mut self,
+        config: &StandardExtensions,
+    ) -> Result<(), ExtensionError> {
+        self.core.install_standard_extensions(config)
+    }
+
     /// The core (read access for the conformance dump).
     pub fn core(&self) -> &CoreTerminal {
         &self.core
@@ -417,7 +436,171 @@ impl Terminal {
             cursor_hidden: services.core.is_cursor_hidden,
             mouse_tracking,
             mouse_encoding,
+            kitty_keyboard_flags: self
+                .core
+                .input_handler()
+                .ext
+                .keyboard
+                .flags(services.buffer.buffers.is_alt_active()),
+            modify_other_keys: self.core.input_handler().ext.keyboard.modify_other_keys(),
         }
+    }
+
+    /// The keyboard protocol state (read-only): the kitty stacks and the modifyOtherKeys level.
+    pub fn keyboard_protocol(&self) -> &crate::ext::KeyboardProtocol {
+        &self.core.input_handler().ext.keyboard
+    }
+
+    /// Clear the kitty keyboard stacks of both screens and the modifyOtherKeys level, as RIS and
+    /// DECSTR do. The host calls it when the application that set them is gone and the terminal
+    /// is reused (Lunegit ledger row 11: a program that exits without popping its flags).
+    pub fn reset_keyboard_protocol(&mut self) {
+        self.core.input_handler_mut().ext.keyboard.reset();
+    }
+
+    /// Turn the OSC 52 clipboard-write gate on or off (initially
+    /// [`crate::StandardExtensions::clipboard_write`]). Takes effect at the next OSC 52; with the
+    /// gate off a valid write is consumed and dropped. Without the standard extensions installed
+    /// it changes nothing: OSC 52 then reaches the core's unknown-OSC fallback only.
+    pub fn set_clipboard_write(&mut self, enabled: bool) {
+        self.core.input_handler_mut().ext.clipboard_write = enabled;
+    }
+
+    /// Whether the OSC 52 clipboard-write gate is on.
+    pub fn clipboard_write(&self) -> bool {
+        self.core.input_handler().ext.clipboard_write
+    }
+
+    /// The live keyboard modes the key encoder reads: the kitty flags of the active screen, the
+    /// modifyOtherKeys level and DECCKM.
+    pub fn keyboard_modes(&self) -> KeyboardModes {
+        let handler = self.core.input_handler();
+        let services = handler.services();
+        KeyboardModes {
+            kitty_flags: handler
+                .ext
+                .keyboard
+                .flags(services.buffer.buffers.is_alt_active()),
+            modify_other_keys: handler.ext.keyboard.modify_other_keys(),
+            application_cursor_keys: services.core.dec_private_modes.application_cursor_keys,
+        }
+    }
+
+    /// The bytes to write to the PTY for a keystroke, under the live keyboard protocol state
+    /// (kitty, modifyOtherKeys, DECCKM; see [`encode_key`]). Lunegit's `GenerateKeyEvent`.
+    ///
+    /// Like upstream's user-input path it goes through `triggerDataEvent`: `None` with
+    /// `disable_stdin`, and with `scroll_on_user_input` the display scrolls to the bottom first.
+    /// `None` also when the key sends nothing (an invalid character code point), without
+    /// scrolling. The bytes are returned, not queued as a [`HostEvent::Response`].
+    pub fn key_event(&mut self, event: &TerminalKeyEvent) -> Option<Vec<u8>> {
+        let bytes = encode_key(event, self.keyboard_modes());
+        self.send_data(bytes, true)
+    }
+
+    /// Lunegit's `GenerateKeyInput`: the legacy bytes of a functional key with the live DECCKM
+    /// state, whatever the keyboard protocol (same `None` rules as [`Terminal::key_event`]).
+    pub fn key_input(&mut self, key: TerminalKey, modifiers: TerminalModifiers) -> Option<Vec<u8>> {
+        let decckm = self.keyboard_modes().application_cursor_keys;
+        self.send_data(legacy_key_input(key, modifiers, decckm).into_bytes(), true)
+    }
+
+    /// Lunegit's `GenerateCharInput`: Ctrl folds `c` to its C0 byte, Alt prefixes ESC (same `None`
+    /// rules as [`Terminal::key_event`]).
+    pub fn char_input(&mut self, c: char, modifiers: TerminalModifiers) -> Option<Vec<u8>> {
+        self.send_data(legacy_char_input(c, modifiers).into_bytes(), true)
+    }
+
+    /// A pointer event as the bytes to write to the PTY, from the engine's own mouse state (the
+    /// protocol and encoding the application selected with DECSET; see [`TerminalMouseEvent`] for
+    /// the coordinate convention). `None` when no tracking is on, the protocol does not report
+    /// this event, the position is outside the terminal, the default encoding cannot express the
+    /// position, or `disable_stdin` is set. Reports other than the default encoding go through
+    /// `triggerDataEvent(.., true)` (so they scroll on user input); the default encoding's bytes
+    /// go through `triggerBinaryEvent` and are returned raw (a coordinate above 95 is one byte
+    /// above 0x7F, not UTF-8).
+    pub fn mouse_event(&mut self, event: &TerminalMouseEvent) -> Option<Vec<u8>> {
+        let core_event = event.to_core()?;
+        let services = &mut self.core.input_handler_mut().services;
+        let (cols, rows) = (services.buffer.cols, services.buffer.rows);
+        match services
+            .mouse
+            .trigger_mouse_event(&core_event, cols, rows)?
+        {
+            MouseReport::Data(report) => self.send_data(report.into_bytes(), true),
+            MouseReport::Binary(report) => {
+                let text = services.core.trigger_binary_event(
+                    &report,
+                    services.options.options(),
+                    &services.log,
+                )?;
+                // One byte per character (the encoding only produces U+0000..=U+00FF).
+                text.chars()
+                    .map(|c| u8::try_from(u32::from(c)).ok())
+                    .collect()
+            }
+            MouseReport::Suppressed => None,
+        }
+    }
+
+    /// The focus report: `ESC [ I` (gained) or `ESC [ O` (lost), only while the application has
+    /// focus reporting on (`CSI ? 1004 h`); `None` otherwise or with `disable_stdin`. As xterm.js's
+    /// browser terminal it is sent through `triggerDataEvent` without the user-input flag, so it
+    /// does not scroll.
+    pub fn focus_event(&mut self, focused: bool) -> Option<Vec<u8>> {
+        if !self
+            .core
+            .input_handler()
+            .services()
+            .core
+            .dec_private_modes
+            .send_focus
+        {
+            return None;
+        }
+        let report: &[u8] = if focused { b"\x1b[I" } else { b"\x1b[O" };
+        self.send_data(report.to_vec(), false)
+    }
+
+    /// The bytes to write to the PTY for pasting `text`: line breaks as `\r`, and with bracketed
+    /// paste on (`CSI ? 2004 h`) the sanitized text between `ESC [ 200 ~` and `ESC [ 201 ~` (see
+    /// [`paste_bytes`], which holds the invariant). `None` for an empty text or with
+    /// `disable_stdin`. Like xterm.js's `paste` it goes through `triggerDataEvent(.., true)`. The
+    /// text is never logged (the core logs lengths only).
+    pub fn paste(&mut self, text: &str) -> Option<Vec<u8>> {
+        if text.is_empty() {
+            return None;
+        }
+        let bracketed = self
+            .core
+            .input_handler()
+            .services()
+            .core
+            .dec_private_modes
+            .bracketed_paste_mode;
+        self.send_data(paste_bytes(text, bracketed), true)
+    }
+
+    /// `triggerDataEvent` (plan M7 D6): the bytes to send, `None` if there are none or stdin is
+    /// disabled; with `was_user_input` and `scroll_on_user_input` the display scrolls to the
+    /// bottom first. The encoders only produce UTF-8, so the text passes through as is.
+    fn send_data(&mut self, bytes: Vec<u8>, was_user_input: bool) -> Option<Vec<u8>> {
+        if bytes.is_empty() {
+            return None;
+        }
+        let data = String::from_utf8(bytes).ok()?;
+        let services = &mut self.core.input_handler_mut().services;
+        let event = services.core.trigger_data_event(
+            &data,
+            was_user_input,
+            services.buffer.buffer(),
+            services.options.options(),
+            &services.log,
+        )?;
+        if event.scroll_to_bottom {
+            self.core.scroll_to_bottom();
+        }
+        Some(data.into_bytes())
     }
 }
 
