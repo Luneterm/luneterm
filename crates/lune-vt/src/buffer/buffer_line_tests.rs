@@ -2038,7 +2038,10 @@ mod edge_semantics {
     /// base, `print_wrap`'s same-row branch: the row marked wrapped, the copy of one cell with
     /// the strings from a `cells_source` of the row, the clear; the joiners, the stub), then
     /// the line fill's `insert_cell_strided_then_set` from column 2. The real per-pass loop the
-    /// replay is checked against.
+    /// replay is checked against. (M7 fix round 8) For a unit with joiners before the widening
+    /// one (`widens_at > 1`), `print_inner`'s calls instead: those joiners added to the base's
+    /// cell at `c` (`x - 1`), then the wrap, then every later joiner added to column 0 (no
+    /// shared head), the stub written after the widening one.
     #[allow(clippy::too_many_arguments)]
     fn real_wrap_pass(
         line: &mut BufferLine,
@@ -2060,16 +2063,20 @@ mod edge_semantics {
             line.set_cell_from_codepoint(c, NULL_CELL_CODE, NULL_CELL_WIDTH, attrs);
         }
         line.set_cell_from_codepoint(c, codes[0].0, 1, attrs);
+        let widens_at = codes.iter().position(|&(_, width)| width == 2).unwrap();
+        for &(code, width) in &codes[1..widens_at] {
+            line.add_codepoint_to_cell(c, code, width);
+        }
         line.is_wrapped = true;
         let source = line.cells_source(c, 1).unwrap();
         line.copy_cells_from_source(&source, 0, true);
         line.set_cell_from_codepoint(c, 0, 1, attrs);
-        let shared = line.join_head_shared(0, head, joined);
+        let shared = widens_at == 1 && line.join_head_shared(0, head, joined);
         if !shared {
-            line.add_codepoint_to_cell(0, codes[1].0, codes[1].1);
+            line.add_codepoint_to_cell(0, codes[widens_at].0, codes[widens_at].1);
         }
         line.set_cell_from_codepoint(1, 0, 0, attrs);
-        for &(code, width) in &codes[2..] {
+        for &(code, width) in &codes[widens_at + 1..] {
             if !shared {
                 line.add_codepoint_to_cell(0, code, width);
             }
@@ -2092,7 +2099,11 @@ mod edge_semantics {
     /// left the row, around the point the row repeats, far past it, and random. The expected
     /// side runs the real loop; past the point where its row equals the row one or two passes
     /// before (a pass reads only the row), it takes the passes' remainder, which the real
-    /// loop's own determinism gives.
+    /// loop's own determinism gives. Units (M7 fix round 8, security S4 round 8): VS16 and a
+    /// keycap (the first joiner widens), and units with joiners before the widening one, whose
+    /// string at `c` the copy carries to key 0 and the clear leaves stale at `c`: `a U+0301
+    /// U+FE0F`, `❤ U+0301 U+FE0F`, `⚠ U+0301 U+FE0F`, `a U+0301 U+0302 U+FE0F`, `1 U+0301 U+FE0F
+    /// U+20E3`, and a base with 70 marks before the VS16 (past `MAX_COMBINED_CODE_POINTS`).
     #[test]
     fn replaying_wrap_passes_equals_the_real_per_pass_loop() {
         let mut seed: u64 = 0x51c3_e0a7_9b26_d48f;
@@ -2102,11 +2113,22 @@ mod edge_semantics {
             seed ^= seed << 17;
             (seed % bound as u64) as usize
         };
-        let units: [&[(u32, u32)]; 2] = [
+        let mut capped_unit = vec![(0x61, 1)];
+        capped_unit.extend((0..70).map(|i| (0x300 + i, 1)));
+        capped_unit.push((0xfe0f, 2));
+        let units: [&[(u32, u32)]; 8] = [
             &[(0x26a0, 1), (0xfe0f, 2)],
             &[(0x31, 1), (0xfe0f, 2), (0x20e3, 2)],
+            &[(0x61, 1), (0x301, 1), (0xfe0f, 2)],
+            &[(0x2764, 1), (0x301, 1), (0xfe0f, 2)],
+            &[(0x26a0, 1), (0x301, 1), (0xfe0f, 2)],
+            &[(0x61, 1), (0x301, 1), (0x302, 1), (0xfe0f, 2)],
+            &[(0x31, 1), (0x301, 1), (0xfe0f, 2), (0x20e3, 2)],
+            &capped_unit,
         ];
         let (mut mid, mut past, mut keys_past, mut plain, mut computed_less) = (0, 0, 0, 0, 0);
+        // (M7 fix round 8) rounds of units with joiners before the widening one, mid-transient
+        let (mut joiner_first, mut joiner_first_mid) = (0, 0);
         let mut rounds = 0;
         while rounds < 6_000 {
             let cols = match next(8) {
@@ -2140,10 +2162,21 @@ mod edge_semantics {
                 }
                 _ => {}
             }
-            let codes = units[next(2)];
+            // (half the rounds a unit with joiners before the widening one)
+            let codes = match next(2) {
+                0 => units[next(2)],
+                _ => units[2 + next(units.len() - 2)],
+            };
+            let widens_at = codes.iter().position(|&(_, width)| width == 2).unwrap();
             let mut scratch = BufferLine::new(2, None, false);
             scratch.set_cell_from_codepoint(0, codes[0].0, 1, &attrs);
-            for &(code, width) in &codes[1..] {
+            let mut pre = None;
+            for (i, &(code, width)) in codes.iter().enumerate().skip(1) {
+                if i == widens_at && i > 1 {
+                    let mut cell = CellData::new();
+                    scratch.load_cell(0, &mut cell);
+                    pre = Some(cell);
+                }
                 scratch.add_codepoint_to_cell(0, code, width);
             }
             scratch.set_cell_from_codepoint(1, 0, 0, &attrs);
@@ -2200,6 +2233,7 @@ mod edge_semantics {
             let unit = WrapUnit {
                 cols,
                 base: codes[0].0,
+                pre: pre.as_ref(),
                 head: &head,
                 stub: &stub,
                 fill: &fill,
@@ -2290,6 +2324,10 @@ mod edge_semantics {
                 p if p > settle => past += 1,
                 _ => {}
             }
+            if widens_at > 1 {
+                joiner_first += 1;
+                joiner_first_mid += usize::from(p > 0 && p < settle);
+            }
             keys_past += usize::from(line.last_combined_key().is_some_and(|k| k >= len));
             plain += usize::from(kind == 3);
             // even widths: no replay
@@ -2308,6 +2346,14 @@ mod edge_semantics {
         assert!(keys_past > 300, "{keys_past} with keys past the end");
         assert!(plain > 300, "{plain} plain rows");
         assert!(computed_less > 300, "{computed_less} cut at the repeat");
+        assert!(
+            joiner_first > 2_500,
+            "{joiner_first} with joiners before the widening one"
+        );
+        assert!(
+            joiner_first_mid > 500,
+            "{joiner_first_mid} of them mid-transient"
+        );
     }
 
     /// LUNETERM: (M7 fix round 3, review S2) `insert_block_repeatedly` leaves exactly what its

@@ -9,7 +9,9 @@
 # the even widths 80 and 22 as the same-unit reference, plain `a` and the keycap at the scroll
 # bottom), and (M7 fix round 7) REP in insert mode below a region at odd widths over narrowed
 # rows of strings at the security review's geometries (first REP and sustained rows too;
-# `REP_COST_TABLE=odd_widths_insert` or `below_region_odd` runs that table alone). Median of 5 fresh terminals
+# `REP_COST_TABLE=odd_widths_insert` or `below_region_odd` runs that table alone), and (M7 fix round
+# 8) the same shape on the narrowed alt screen with `unit REP` pairs, units with a joiner before
+# the widening one and the Q23 link-REP bar (`REP_COST_TABLE=alt_sustained`). Median of 5 fresh terminals
 # each; prints one table with the machine's load average. No pass/fail threshold: the S7 residual steps (plan M7 11 to 13) and the M7 fix rounds
 # compare their before and after tables from this script.
 # Needs only a Rust toolchain. Takes about a minute; run it on an idle machine and read the load

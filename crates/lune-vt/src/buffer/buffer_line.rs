@@ -1154,10 +1154,14 @@ pub(crate) struct JoinedHead {
 /// LUNETERM: (M7 fix round 7, plan revision 2 fix6) the unit [`BufferLine::replay_wrap_passes`]
 /// replays: the columns, the base code point, the cells every repetition writes (`head`, built
 /// by `print`'s calls, and its `stub`), `insert_cells`' fill (the null cell in the current
-/// attributes) and the current attributes.
+/// attributes) and the current attributes. (M7 fix round 8, security S4 round 8) `pre`: for a
+/// unit with joiners before the widening one, the cell the base and those joiners leave (built
+/// by the same calls: `set_cell_from_codepoint(base, 1)`, then `add_codepoint_to_cell` per
+/// joiner), `None` when the first joiner is the widening one.
 pub(crate) struct WrapUnit<'a> {
     pub(crate) cols: usize,
     pub(crate) base: u32,
+    pub(crate) pre: Option<&'a CellData>,
     pub(crate) head: &'a CellData,
     pub(crate) stub: &'a CellData,
     pub(crate) fill: &'a CellData,
@@ -1183,6 +1187,8 @@ struct DenseRow {
     base: u32,
     empty: u32,
     head_string: u32,
+    /// the joiners before the widening one: the content they leave at `c` and their string
+    pre: Option<(u32, u32)>,
     default_ext: u32,
     cur: DenseAttrs,
     fil: DenseAttrs,
@@ -1270,6 +1276,10 @@ impl DenseRow {
         let empty = id(strings.len() - 1);
         strings.push(shared_str(&unit.head.combined_data));
         let head_string = id(strings.len() - 1);
+        let pre = unit.pre.map(|cell| {
+            strings.push(shared_str(&cell.combined_data));
+            (cell.content, id(strings.len() - 1))
+        });
         let (mut values, held_ext) = line.extended_attrs.dense_indexed(0, len);
         let ext = held_ext.iter().map(|o| o.map_or(0, id)).collect();
         let mut value_id = |attrs: ExtendedAttrs| {
@@ -1312,6 +1322,7 @@ impl DenseRow {
             base: unit.base,
             empty,
             head_string,
+            pre,
             default_ext,
             cur,
             fil,
@@ -1379,6 +1390,16 @@ impl DenseRow {
             self.write_code(c, NULL_CELL_CODE, NULL_CELL_WIDTH, cur);
         }
         self.write_code(c, self.base, 1, cur);
+        // (M7 fix round 8) the joiners before the widening one: `add_codepoint_to_cell(c, ..)`
+        // each (the base fits, so `x - 1 = c`), the first moving the base and itself into a
+        // string at `c` and setting the flag, the later ones appending, each setting width 1:
+        // the cell's content becomes `pre`'s (colours kept) and key `c` its string
+        if let Some((content, string)) = self.pre {
+            if let Some(slot) = self.slots.get_mut(c) {
+                slot[0] = content;
+            }
+            self.put_comb(c, string);
+        }
         // the wrap: the cell copied to 0 with the strings from `c` on, `c` cleared
         let src = self.sl(c);
         self.put_slot(0, src);
@@ -4120,19 +4141,26 @@ impl BufferLine {
 
     /// LUNETERM: (M7 fix round 7, plan revision 2 fix6; security S4) `passes` whole passes of
     /// `InputHandler::print_repeated` over the last row below the scroll region in insert mode,
-    /// for a widened unit whose joiner wraps its base (`unit.cols` odd, the unit's first joiner
-    /// the widening one, a base of one cell), from the cursor at `c = cols - 1`, replayed in
-    /// dense arrays. Returns the passes it computed (fewer than `passes` once the row repeats,
-    /// below), or `None`, having changed nothing, where it does not apply (the guards below;
-    /// the caller then prints the passes as before).
+    /// for a widened unit whose joiner wraps its base (`unit.cols` odd, a base of one cell),
+    /// from the cursor at `c = cols - 1`, replayed in dense arrays. Returns the passes it
+    /// computed (fewer than `passes` once the row repeats, below), or `None`, having changed
+    /// nothing, where it does not apply (the guards below; the caller then prints the passes as
+    /// before).
     ///
-    /// A pass is `h = cols / 2` units. The first (`InputHandler::print_widened_wrap`): the
-    /// start fix-up at `c - 1`, `insert_cells(c, 1, fill)`, the edge fix-up at `c`, the base
-    /// written at `c`, the joiner's `print_wrap` (below the region it stays on this row): the
+    /// A pass is `h = cols / 2` units. The first (`InputHandler::print_widened_wrap`, or
+    /// `print_inner` for a unit with joiners before the widening one): the start fix-up at
+    /// `c - 1`, `insert_cells(c, 1, fill)`, the edge fix-up at `c`, the base written at `c`;
+    /// (M7 fix round 8) the joiners before the widening one, each kept at width 1, added to
+    /// `c` (`x - 1`, the base one cell wide): the first moves the base and itself into a string
+    /// at `c` and sets the flag, the later ones append, so `c` holds `unit.pre` (its content,
+    /// the colours the base wrote, its string at key `c`); the widening joiner's `print_wrap`
+    /// (below the region it stays on this row): the
     /// cell at `c` copied to 0 with the line's strings from `c` on (`copy_cells_from_source`,
     /// upstream's FIXME: key `j` takes the snapshot's value at `j + c` where held), then `c`
-    /// cleared; the joiners added to column 0 (the head's cell and string, which `head` was
-    /// built from by the same calls) and the stub at 1. The other `h - 1`: one
+    /// cleared (key `c` keeps its string: the snapshot's at `2c` where held, else what it held,
+    /// `pre`'s for such a unit); the widening joiner and the later ones added to column 0 (the copied
+    /// cell, `pre`'s string at key 0 for such a unit, appended to: the head's cell and string,
+    /// which `head` was built from by the same calls) and the stub at 1. The other `h - 1`: one
     /// `insert_cell_strided_then_set(2, 2, h - 1, fill, c, attrs, (head, stub))`, which is the
     /// loop of `insert_cells` and edge fix-ups and then the writes. [`DenseRow::pass`] makes
     /// those same writes, in the same order, on a dense copy of the row: the slots, and each
@@ -4153,21 +4181,27 @@ impl BufferLine {
     /// A pass reads only the row, so once the row after some pass equals the row after an
     /// earlier one, `d` passes apart, it repeats with period `d` from there: the passes left
     /// are cut to their remainder mod `d`. The row is compared with a copy taken at pass 0 and
-    /// then at `T = ceil((len - cols) / h) + ceil(K' / c) + 2` (`K'` = the strings' key range;
-    /// the old tail has left the row and the copied strings have settled by about then) and its
-    /// doublings, one and two passes after each (with an odd `h` the pushed cells alternate,
-    /// period 2). A wrong `T` costs passes, never the state. The maps are rebuilt once at the
-    /// end, touching equal values merged (their one form), and not at all when the first pass
-    /// changed nothing.
+    /// (M7 fix round 8, security round 8) at passes 1, 2, 4, 8, … (doubling), one and two
+    /// passes after each until the next (with an odd `h` the pushed cells alternate, period
+    /// 2). A row that repeats from pass `τ` is caught by the first checkpoint `>= τ`, so at
+    /// most `2τ + 2` passes run whatever the row's length (fix round 7's first checkpoint, `T =
+    /// ceil((len - cols) / h) + ceil(K' / c) + 2`, ran a row that settled early to `T`). The
+    /// schedule costs passes, never the state. The maps are rebuilt once at the end, touching
+    /// equal values merged (their one form), and not at all when the first pass changed
+    /// nothing.
     ///
     /// Cost: per pass `O(L + K)` of moves (`L` the length, `K` the last string key) and `O(L)`
     /// of flag reads, plus a side-table walk where a source carries a flag, with no allocation;
-    /// the passes up to the repeat are about `T`, so a REP is still `O((L + K)^2 / cols)`.
+    /// a snapshot `O(L + K)` per checkpoint (`log2` of the passes); the passes up to the repeat
+    /// are at most twice the transient, which on rows of strings is about `ceil((len - cols) /
+    /// h) + ceil(K / c)`, so a REP is still `O((L + K)^2 / cols)`.
     ///
     /// Guards (else `None`): `cols` odd and at least 3, the line at least `cols` long and its
     /// slots all held, `head` a combined cell two wide whose string starts with `unit.base`,
-    /// `stub` and `fill` not combined and `fill` not wide, and the strings' last key not far
-    /// past the line (`K + 1 <= len + 2 × held + 4096`, as the closed form of the copy asks).
+    /// `pre` (when given) a combined cell one wide whose string starts with `unit.base` and
+    /// begins `head`'s, `stub` and `fill` not combined and `fill` not wide, and the strings'
+    /// last key not far past the line (`K + 1 <= len + 2 × held + 4096`, as the closed form of
+    /// the copy asks).
     pub(crate) fn replay_wrap_passes(
         &mut self,
         unit: &WrapUnit<'_>,
@@ -4184,6 +4218,12 @@ impl BufferLine {
             && head.content & Content::IS_COMBINED_MASK != 0
             && head.get_width() == 2
             && head.combined_data.chars().next().map(u32::from) == Some(unit.base)
+            && unit.pre.is_none_or(|pre| {
+                pre.content & Content::IS_COMBINED_MASK != 0
+                    && pre.get_width() == 1
+                    && pre.combined_data.chars().next().map(u32::from) == Some(unit.base)
+                    && head.combined_data.starts_with(&*pre.combined_data)
+            })
             && stub.content & Content::IS_COMBINED_MASK == 0
             && fill.content & Content::IS_COMBINED_MASK == 0
             && fill.get_width() != 2;
@@ -4201,10 +4241,8 @@ impl BufferLine {
             return None;
         }
         let mut row = DenseRow::new(self, unit, kmax);
-        let (c, h) = (cols - 1, cols / 2);
-        let first_check = ((len - cols).div_ceil(h) + kmax.div_ceil(c) + 2).max(3);
         let mut checkpoint = 0;
-        let mut next_check = first_check;
+        let mut next_check = 1;
         let start = row.snapshot();
         let mut copy = row.snapshot();
         let mut done = 0;

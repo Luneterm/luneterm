@@ -38,6 +38,14 @@
 //!    rows' last key. Plain `a` in the same setup is the reference. M7 fix round 5 adds rows
 //!    not narrowed (L = cols), the even widths 80 and 22 (no joiner wrap: the reference for the
 //!    same unit and L), plain `a` at the scroll bottom and the keycap there.
+//!  - **REP in insert mode below a region at odd widths over narrowed rows of strings** (M7
+//!    fix round 7, security S4): Windows mode, the review's geometries, VS16 and the keycap
+//!    (3-REP stream, first REP, REPs 11-60); M7 fix round 8 adds `a U+0301 U+FE0F` (a joiner
+//!    before the widening one).
+//!  - **REP on the narrowed alt screen** (M7 fix round 8, security S4 round 8): the review's
+//!    `secprobe` shape (alt buffer, `unit REP` pairs, first pair and pairs 11-210, one terminal
+//!    each) for plain `a`, VS16, the keycap and units with joiners before the widening one; the
+//!    review's worst pair shape (`\r VS16 CSI 9999 b` at 2000 -> 3); the Q23 link REP bar.
 //!  - **REP of a joining-base unit** (M7 fix round 2, review S3): a lone combining mark the
 //!    cursor sits on (wraparound off, a wide char skipped at the last column); every repetition
 //!    appends to the one capped cell, so the cost tracks plain REP.
@@ -65,6 +73,8 @@ const WIDE_CLUSTER: &str = "\u{1F468}\u{200D}";
 const VS16: &str = "\u{26a0}\u{fe0f}";
 /// A keycap, `1 U+FE0F U+20E3`: a joiner after the widening one.
 const KEYCAP: &str = "1\u{fe0f}\u{20e3}";
+/// `a U+0301 U+FE0F`: a joiner before the widening one (M7 fix round 8, security S4 round 8).
+const JOINER_VS16: &str = "a\u{301}\u{fe0f}";
 const LINK: &str = "\x1b]8;;http://x\x1b\\";
 /// Insert mode (wraparound stays on), and with an underline colour (extended attributes).
 const INSERT: &str = "\x1b[4h";
@@ -743,9 +753,28 @@ fn odd_widths_insert() {
     const BELOW_INSERT: &str = "\x1b[1;10r\x1b[999;1H\x1b[4h";
     // (name, unit, how the stream is built: 0 = 3 x (unit REP), 1 = the first pair alone,
     // 2 = pairs 11..=60 after 10, the terminal, a unit that marks the printed cell)
-    let cases: [(&str, &str, u8, Make); 5] = [
+    let cases: [(&str, &str, u8, Make); 8] = [
         ("plain a, below, insert", "a", 0, new_winmode_terminal),
         ("VS16, below, insert", VS16, 0, new_winmode_vs16_terminal),
+        // (M7 fix round 8) a joiner before the widening one
+        (
+            "a U+0301 U+FE0F, below, insert",
+            JOINER_VS16,
+            0,
+            new_winmode_vs16_terminal,
+        ),
+        (
+            "a U+0301 U+FE0F, 1st REP",
+            JOINER_VS16,
+            1,
+            new_winmode_vs16_terminal,
+        ),
+        (
+            "a U+0301 U+FE0F, REPs 11-60",
+            JOINER_VS16,
+            2,
+            new_winmode_vs16_terminal,
+        ),
         (
             "keycap, below, insert",
             KEYCAP,
@@ -809,6 +838,108 @@ fn odd_widths_insert() {
         }
         println!("{row}");
     }
+}
+
+/// (M7 fix round 8, security S4 round 8) the security review's shape of S4's real reach: the
+/// alt screen filled with 24 rows of L cells (a letter and a combining mark each), narrowed to
+/// `cols` (the alt buffer has no scrollback, so it never reflows), `CSI 1;10 r`, the cursor on
+/// row 24, insert mode, defaults + `11-vs16`; then `unit CSI 1048576 b` pairs, the unit printed
+/// between REPs (the sustained case). Per unit and geometry: the first pair (ms) and the mean
+/// per input byte over pairs 11 to 210, one terminal each (as the review's `secprobe` measured
+/// it). Then the review's worst VS16 pair shape (`\r unit CSI 9999 b` at 2000 -> 3, 14 bytes)
+/// and, as the bar, the Q23-accepted link REP (`a` REP x 3 in an open link, 80x24 sb10k, median
+/// of 5) in the same run.
+fn alt_sustained() {
+    println!();
+    println!(
+        "REP in insert mode below a region on the narrowed alt screen (security S4's reach), \
+         unit REP pairs: first pair / mean per input byte over pairs 11-210"
+    );
+    let geometries: [(usize, usize); 4] = [(1_000, 21), (1_000, 9), (2_000, 9), (2_000, 5)];
+    let mut header = format!("{:<28}", "unit");
+    for (l, cols) in geometries {
+        header.push_str(&format!(" {:>22}", format!("{l}->{cols}")));
+    }
+    println!("{header}");
+    let units: [(&str, &str); 7] = [
+        ("plain a", "a"),
+        ("VS16 (U+26A0 U+FE0F)", VS16),
+        ("keycap", KEYCAP),
+        ("a U+0301 U+FE0F", JOINER_VS16),
+        ("U+2764 U+0301 U+FE0F", "\u{2764}\u{301}\u{fe0f}"),
+        ("U+26A0 U+0301 U+FE0F", "\u{26a0}\u{301}\u{fe0f}"),
+        ("a U+0301 U+0302 U+FE0F", "a\u{301}\u{302}\u{fe0f}"),
+    ];
+    let alt_rows = |l: usize, cols: usize| {
+        let mut term = new_vs16_terminal(l, 24, 1_000);
+        term.write(b"\x1b[?1049h");
+        let mut text = String::new();
+        for c in 0..l {
+            text.push(char::from(b'a' + (c % 26) as u8));
+            text.push(char::from_u32(0x300 + (c % 112) as u32).unwrap_or('\u{301}'));
+        }
+        for _ in 0..24 {
+            term.write(text.as_bytes());
+        }
+        term.resize(cols, 24);
+        term.write(b"\x1b[1;10r\x1b[24;1H\x1b[4h");
+        let buffer = term.core().input_handler().services().buffer.buffer();
+        let last = buffer.lines.get(buffer.ybase + 23);
+        assert_eq!(
+            last.map_or(0, |line| line.len()),
+            l,
+            "the alt row was reflowed"
+        );
+        term
+    };
+    // (first pair in ns, mean ns per byte over pairs 11..=210)
+    let sustained = |l: usize, cols: usize, pair: &[u8], unit: &str| {
+        let mut term = alt_rows(l, cols);
+        let start = Instant::now();
+        term.write(pair);
+        let first = start.elapsed().as_nanos() as f64;
+        for _ in 0..9 {
+            term.write(pair);
+        }
+        let start = Instant::now();
+        for _ in 0..200 {
+            term.write(pair);
+        }
+        let per_byte = start.elapsed().as_nanos() as f64 / (200 * pair.len()) as f64;
+        assert!(some_cell_has(&term, unit), "alt-screen REP printed nothing");
+        (first, per_byte)
+    };
+    for (name, unit) in units {
+        let pair: Vec<u8> = unit.bytes().chain(REP.iter().copied()).collect();
+        let mut row = format!("{name:<28}");
+        for (l, cols) in geometries {
+            let (first, per_byte) = sustained(l, cols, &pair, unit);
+            let cell = format!("{} / {}", format_ns(first), format_ns(per_byte));
+            row.push_str(&format!(" {cell:>22}"));
+        }
+        println!("{row}");
+    }
+    let pair = format!("\r{VS16}\x1b[9999b");
+    let (first, per_byte) = sustained(2_000, 3, pair.as_bytes(), VS16);
+    println!(
+        "{:<28} {:>22}",
+        "\\r VS16 CSI 9999 b, 2000->3",
+        format!("{} / {}", format_ns(first), format_ns(per_byte))
+    );
+    let link = measure(
+        || {
+            let mut term = new_terminal(80, 24, 10_000);
+            term.write(LINK.as_bytes());
+            term
+        },
+        &stream("a"),
+        |t| assert!(some_cell_has(t, "a"), "link REP printed nothing"),
+    );
+    println!(
+        "{:<28} {:>22}",
+        "Q23 bar: link a, 80x24 sb10k",
+        format_ns(link)
+    );
 }
 
 /// REP of a unit whose first code point joins (review S3 round 2): a lone combining mark left
@@ -883,6 +1014,8 @@ fn main() {
     match std::env::var("REP_COST_TABLE").as_deref() {
         Ok("odd_widths_insert") => return odd_widths_insert(),
         Ok("below_region_odd") => return below_region_odd(),
+        // (M7 fix round 8)
+        Ok("alt_sustained") => return alt_sustained(),
         _ => {}
     }
     at_screen_size();
@@ -892,6 +1025,7 @@ fn main() {
     below_region_odd();
     odd_widths_over_strings();
     odd_widths_insert();
+    alt_sustained();
     joining_base();
     println!();
     println!("load average after: {}", load_average());
