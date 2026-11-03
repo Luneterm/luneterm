@@ -102,6 +102,25 @@ lost.
   encoder must emit VK, scan code and control state from the platform key event. Only one
   sequence (a plain `a`) was measured here. Measure the modified keys before relying on it.
 
+### Status after M7: which of these the encoder meets
+
+The encoders are in `lune-vt` (`Terminal::key_event`, `key_input`, `char_input`, `mouse_event`,
+`focus_event`, `paste`; `docs/architecture.md`, "lune-vt engine"). They take no platform input:
+the same bytes are produced on every OS, so each line below is about the bytes, not about a
+measurement on Windows. Nothing here was re-measured through ConPTY; `conpty_input.tsv` is
+unchanged.
+
+| Recommendation | Status |
+|---|---|
+| Legacy encoding as the default | **Met.** The kitty and modifyOtherKeys branches of `encode_key` run only when the application asked for them (`kitty_flags & 1`, modifyOtherKeys level >= 1); with neither the bytes are `legacy_key_input` / `legacy_char_input`, which `goldens/lunegit-input/keys.golden` pins row by row against Lunegit's own encoder (its legacy generator is itself a port of XTerm.NET's, which sent these bytes before the engine swap). Backspace is `7f` (`legacy_key_encoder.rs`). |
+| No kitty / modifyOtherKeys unless the program asked | **Met in the encoder.** The state starts at 0, only the application's own `CSI > Ps u` / `CSI = Ps ; Pm u` / `CSI > 4 ; Pv m` set it, and RIS, DECSTR and `Terminal::reset_keyboard_protocol()` clear it (ledger row 11). Whether ConPTY forwards such a request to the terminal was not measured. |
+| No unsolicited CPR | **Met.** The M7 replies (XTVERSION, the kitty flags query, the modifyOtherKeys query) are answers to queries only, and the engine's CPR logic is unchanged (M6 D11). |
+| Focus reports only after DECSET 1004 | **Met in the encoder.** `focus_event` returns `None` unless `CSI ? 1004 h` is on (`focus_*` tests in `headless/terminal_tests.rs`). Whether conhost forwards the child's `?1004h` stays unmeasured. |
+| Prefer SGR mouse | **Not the encoder's choice.** `mouse_event` encodes in the protocol and encoding the application selected with DECSET (`?9`, `?1000`, `?1002`, `?1003`; default, `?1006`, `?1016`). A program that selects the default encoding gets the X10-style bytes that garble keys-mode readers. |
+| Lone Esc, Esc + key timing | **The host's.** The encoder returns `ESC` for Escape; when it is written is the host's (M9). |
+| Ctrl+Space, 4-byte UTF-8, Ctrl+Z | **Not fixable in plain VT.** Ctrl+Space encodes as NUL (a comment in `legacy_key_encoder.rs` notes XTerm.NET does too); the others are conhost limitations. |
+| win32-input-mode | **Not implemented.** Out of scope for M7 (plan risks); M9 decides after measuring modified keys. |
+
 ## How to re-measure
 
 On Windows (or on CI, where the lune-pty soak runs the test six times per run):

@@ -839,14 +839,13 @@ impl Buffer {
         self.lines.observer_mut().dispose(id);
     }
 
-    /// Disposes the markers in `ids` in one walk, logged in creation order (unknown ids are
-    /// ignored).
+    /// Disposes the markers in `ids`, logged in creation order (unknown ids are ignored).
     pub fn dispose_markers(&mut self, ids: &HashSet<MarkerId>) {
         self.lines.observer_mut().dispose_all(ids);
     }
 
     /// The live marker, `None` once disposed.
-    pub fn marker(&self, id: MarkerId) -> Option<&Marker> {
+    pub fn marker(&self, id: MarkerId) -> Option<Marker> {
         self.lines.observer().get(id)
     }
 

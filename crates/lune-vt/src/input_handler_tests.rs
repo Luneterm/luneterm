@@ -238,6 +238,21 @@ fn with_vs16(t: &mut TestTerm) {
     unicode.set_active_version("vs16-test").unwrap();
 }
 
+/// The shipped VS16 provider (`11-vs16`, plan M7 step 4) active, as
+/// `StandardExtensions { vs16: true }` leaves it (M7 fix round 1).
+fn with_11_vs16(t: &mut TestTerm) {
+    let unicode = &mut t.handler.services.unicode;
+    unicode.register(Box::new(crate::ext::vs16::UnicodeV11Vs16::new()));
+    unicode.set_active_version("11-vs16").unwrap();
+}
+
+/// VS16 (`U+26A0 U+FE0F`: 2 cells under `11-vs16`), a keycap (`1 U+FE0F U+20E3`: a joiner
+/// after the widening one) and an emoji with a ZWJ (a wide base and a joiner): the units of
+/// M7 fix round 1.
+const VS16: &str = "\u{26a0}\u{fe0f}";
+const KEYCAP: &str = "1\u{fe0f}\u{20e3}";
+const EMOJI_ZWJ: &str = "\u{1F468}\u{200D}";
+
 /// Upstream `Params.fromArray([..])` of plain params.
 fn params(values: &[i32]) -> Params {
     let items: Vec<ParamsArrayItem> = values.iter().map(|&v| ParamsArrayItem::Param(v)).collect();
@@ -2711,7 +2726,7 @@ fn rep_state(t: &mut TestTerm) -> RepState {
 /// others `print`; each case checks which. Lines compare whole, side-table entries included.
 #[test]
 fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
-    let cases: [RepCutCase; 25] = [
+    let cases: [RepCutCase; 40] = [
         ("plain", |_| {}, "a", true, true),
         ("wide, odd cols", |_| {}, "\u{4e2d}", true, true),
         ("cluster", |_| {}, "e\u{301}", true, true),
@@ -2864,8 +2879,128 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
             true,
             true,
         ),
-        // the cursor-moving join is not proven periodic: no cut
-        ("joiner that widens", with_vs16, "a\u{fe0f}", false, false),
+        // (M7 fix round 1, review S1) a joiner that widens a narrow base: cut and filled
+        ("joiner that widens", with_vs16, "a\u{fe0f}", true, true),
+        (
+            "joiner that widens, then a joiner",
+            with_vs16,
+            "a\u{fe0f}\u{301}",
+            true,
+            true,
+        ),
+        ("11-vs16, VS16", with_11_vs16, VS16, true, true),
+        ("11-vs16, keycap", with_11_vs16, KEYCAP, true, true),
+        ("11-vs16, emoji ZWJ", with_11_vs16, EMOJI_ZWJ, true, true),
+        (
+            "11-vs16, insert mode, VS16 over clusters and wides",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("e\u{301}\u{4e2d}e\u{301}x\r\n\u{4e2d}\u{301}e\u{301}\u{26a0}\u{fe0f}\x1b[H\x1b[4h")
+            },
+            VS16,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, insert mode, keycap below the region",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("1\r\n2\r\n3\x1b[1;2r\x1b[3;1H\x1b[4h")
+            },
+            KEYCAP,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, open link, VS16",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("\x1b]8;;u\x07")
+            },
+            VS16,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, open link, insert mode, emoji ZWJ",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("xyz\r\n12\x1b]8;;u\x07\x1b[H\x1b[4h")
+            },
+            EMOJI_ZWJ,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, screen reader, keycap",
+            |t| {
+                with_11_vs16(t);
+                t.set_option(OptionValue::ScreenReaderMode(true));
+            },
+            KEYCAP,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, underline colour, insert mode, open link, VS16",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("xyz\r\n12\x1b[4:3;58:5:9m\x1b]8;;u\x07\x1b[H\x1b[4h")
+            },
+            VS16,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, no wraparound, VS16",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("\x1b[?7l")
+            },
+            VS16,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, keycap",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("\x1b[?7l")
+            },
+            KEYCAP,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, insert mode, VS16",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("xyz\x1b[?7l\x1b[4h\x1b[H")
+            },
+            VS16,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, insert mode, keycap",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("x\u{4e2d}z\x1b[?7l\x1b[4h\x1b[H")
+            },
+            KEYCAP,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, emoji ZWJ",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str("\x1b[?7l")
+            },
+            EMOJI_ZWJ,
+            true,
+            false,
+        ),
         // repetitions that alternate are not alike: no cut, no fill
         ("alternating widths", with_alternating_b, "b", false, false),
     ];
@@ -2888,7 +3023,29 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
         (2, 1, 0, small),
         (9, 2, 7, small),
     ];
-    let mut skipped = check_rep_cut(&cases, &sizes, CUT_AT);
+    let mut stuck = Vec::new();
+    let mut skipped = check_rep_cut(&cases, &sizes, CUT_AT, &mut stuck);
+    // plan M7 step 13: only the no-wrap insert cases of a narrow base batch their stuck
+    // inserts (M7 fix round 1: widened ones too), at every small size (at 300 columns only
+    // with the full matrix, below 300 units not)
+    let batching = [
+        "no wraparound, insert mode, cluster",
+        "11-vs16, no wraparound, insert mode, VS16",
+        "11-vs16, no wraparound, insert mode, keycap",
+    ];
+    for (name, label, batches) in &stuck {
+        // (the keycap's joiner stacks onto the cell left of the cursor until its string is
+        // full, about 60 units, before the batch)
+        let count: usize = label.rsplit(' ').next().unwrap().parse().unwrap();
+        if name.ends_with("keycap") && batching.contains(name) && count <= 200 {
+            assert!(*batches <= 1, "{label}: stuck path");
+            continue;
+        }
+        let expected = batching.contains(name) && !label.contains(" 300x");
+        if !batching.contains(name) || expected {
+            assert_eq!(*batches, u64::from(expected), "{label}: stuck path");
+        }
+    }
     let large_cases = [
         "plain",
         "insert mode",
@@ -2902,10 +3059,37 @@ fn rep_cut_to_the_buffer_leaves_the_state_of_the_uncapped_print() {
         let cases = cases.iter().filter(|case| large_cases.contains(&case.0));
         (cases.copied().collect(), &[97, 9_008, 40_000])
     };
-    assert_eq!(large_cases.len(), if full { 25 } else { 5 });
-    skipped.extend(check_rep_cut(&large_cases, &[(300, 100, 5, large)], CUT_AT));
-    // only the five-byte units at the largest count
-    assert_eq!(skipped.len(), if full { 5 } else { 0 }, "{skipped:?}");
+    assert_eq!(large_cases.len(), if full { 40 } else { 5 });
+    skipped.extend(check_rep_cut(
+        &large_cases,
+        &[(300, 100, 5, large)],
+        CUT_AT,
+        &mut Vec::new(),
+    ));
+    // only the runs whose uncapped text would not fit one `print` call: none by default; with
+    // the full matrix the units of four bytes or more at the largest counts (M7 fix round 1
+    // added the VS16, keycap and emoji units), counted from the units themselves
+    let too_long = |cases: &[RepCutCase], sizes: &[RepCutSize]| {
+        cases
+            .iter()
+            .flat_map(|case| {
+                sizes
+                    .iter()
+                    .flat_map(move |size| size.3.iter().map(move |&count| case.2.len() * count))
+            })
+            .filter(|&bytes| bytes >= MAX_PARSEBUFFER_LENGTH)
+            .count()
+    };
+    let expected = if full {
+        too_long(&cases, &sizes) + too_long(&large_cases, &[(300, 100, 5, large)])
+    } else {
+        0
+    };
+    assert_eq!(skipped.len(), expected, "{skipped:?}");
+    assert!(
+        !full || expected < 80,
+        "most of the full matrix runs compare"
+    );
 }
 
 /// Where the REP cut tests check whether the cut applies: 7x3+4, REP 9007.
@@ -2918,11 +3102,13 @@ type RepCutCase = (&'static str, fn(&mut TestTerm), &'static str, bool, bool);
 type RepCutSize<'a> = (usize, usize, usize, &'a [usize]);
 
 /// For every case, size and count: REP leaves the state of the uncapped print of all of its
-/// repetitions. Returns the labels whose uncapped print would not fit one `print` call.
+/// repetitions. Returns the labels whose uncapped print would not fit one `print` call, and
+/// adds every run's case name, label and batched stuck inserts (plan M7 step 13) to `stuck`.
 fn check_rep_cut(
     cases: &[RepCutCase],
     sizes: &[RepCutSize],
     cut_at: (usize, usize, usize, usize),
+    stuck: &mut Vec<(&'static str, String, u64)>,
 ) -> Vec<String> {
     let mut skipped = Vec::new();
     for &(name, setup, unit, cut, fill) in cases {
@@ -2951,6 +3137,7 @@ fn check_rep_cut(
                 }
                 capped.parse_str(&format!("\x1b[{count}b"));
                 assert_eq!(capped.handler.rep_fills, u64::from(fill), "{label}: path");
+                stuck.push((name, label.clone(), capped.handler.rep_stuck_batches));
                 // the uncapped print of every repetition: one `print` call with all of them
                 // (one parse chunk), then a CSI with no handler, which ends the print as REP's
                 // CSI does
@@ -2975,18 +3162,25 @@ fn check_rep_cut(
 /// shift of the hidden tail shows, with a cluster, a wide character and an underline-coloured
 /// cell past the screen's columns where they fit; then `modes`.
 fn longer_lines(t: &mut TestTerm, kind: usize, modes: &str) {
+    let cols = t.handler.services.buffer.cols;
+    let rows = t.handler.services.buffer.rows;
+    let len = match kind {
+        0 => cols + 1,
+        1 => 3 * cols,
+        _ => cols * (t.buffer().lines.max_length() + rows + 8) + 1,
+    };
+    lines_of(t, len, modes);
+}
+
+/// [`longer_lines`] with every line `len` cells long (M7 fix round 3: the lengths a Windows 10
+/// window's narrowing leaves, from its old width).
+fn lines_of(t: &mut TestTerm, len: usize, modes: &str) {
     use crate::buffer::constants::BgFlags;
     let mut coloured = AttributeData::default();
     coloured.bg |= BgFlags::HAS_EXTENDED;
     coloured.extended = ExtendedAttrs::new(0x0040_0000, 0);
     let cols = t.handler.services.buffer.cols;
-    let rows = t.handler.services.buffer.rows;
     let buffer = t.handler.services.buffer.buffer_mut();
-    let len = match kind {
-        0 => cols + 1,
-        1 => 3 * cols,
-        _ => cols * (buffer.lines.max_length() + rows + 8) + 1,
-    };
     for y in 0..buffer.lines.len() {
         let mut line = BufferLine::new(len, None, false);
         for c in 0..len {
@@ -3004,6 +3198,38 @@ fn longer_lines(t: &mut TestTerm, kind: usize, modes: &str) {
     t.parse_str(modes);
 }
 
+/// M7 fix round 4 (code review F6): every line of the buffer made `len` cells long with a string
+/// in every cell (a letter and a combining mark; the marks cycle through 112, so neighbouring
+/// strings differ), as a column shrink without reflow leaves rows of text with accents; with
+/// `stale`, the cells of the back half past `cols` keep their entry but hold a plain letter (a
+/// combined cell overwritten by a plain one); then `modes`.
+fn string_lines(t: &mut TestTerm, len: usize, stale: bool, modes: &str) {
+    let cols = t.handler.services.buffer.cols;
+    let buffer = t.handler.services.buffer.buffer_mut();
+    for y in 0..buffer.lines.len() {
+        let mut line = BufferLine::new(len, None, false);
+        for c in 0..len {
+            let letter = u32::from(b'A') + ((c + y) % 26) as u32;
+            line.set_cell_from_codepoint(c, letter, 1, &DEFAULT_ATTR_DATA);
+            line.add_codepoint_to_cell(c, 0x300 + (c % 112) as u32, 1);
+            if stale && c >= cols + (len - cols) / 2 {
+                line.set_cell_from_codepoint(c, u32::from(b'q'), 1, &DEFAULT_ATTR_DATA);
+            }
+        }
+        buffer.lines.set(y, Some(line));
+    }
+    t.parse_str(modes);
+}
+
+/// [`string_lines`] of the `longer_lines` kind 2 length, `cols * (max_lines + rows + 8) + 1`.
+fn longest_string_lines(t: &mut TestTerm, modes: &str) {
+    let cols = t.handler.services.buffer.cols;
+    let rows = t.handler.services.buffer.rows;
+    let len = cols * (t.buffer().lines.max_length() + rows + 8) + 1;
+    with_11_vs16(t);
+    string_lines(t, len, false, modes);
+}
+
 /// Code review F9: the REP cut in insert mode on lines longer than `cols`, where every insert
 /// shifts the hidden tail: below a scroll region (every wrap rewrites the last row) and
 /// without wraparound (every unit inserts at the cursor), for one code point, a cluster, a
@@ -3013,7 +3239,7 @@ fn longer_lines(t: &mut TestTerm, kind: usize, modes: &str) {
 fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
     const BELOW: &str = "\x1b[1;2r\x1b[999;1H\x1b[4h";
     const NO_WRAP: &str = "\x1b[?7l\x1b[999;1H\x1b[4h";
-    let cases: [RepCutCase; 14] = [
+    let cases: [RepCutCase; 29] = [
         (
             "below the region, len cols + 1",
             |t| longer_lines(t, 0, BELOW),
@@ -3112,6 +3338,163 @@ fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
             true,
             true,
         ),
+        // M7 fix round 1: a joiner that widens a narrow base, and a wide base with a joiner
+        (
+            "11-vs16, below the region, VS16, longest",
+            |t| {
+                with_11_vs16(t);
+                longer_lines(t, 2, BELOW)
+            },
+            VS16,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, below the region, open link, keycap, 3 x cols",
+            |t| {
+                with_11_vs16(t);
+                longer_lines(t, 1, &format!("\x1b]8;;u\x07{BELOW}"))
+            },
+            KEYCAP,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, below the region, emoji ZWJ, longest",
+            |t| {
+                with_11_vs16(t);
+                longer_lines(t, 2, BELOW)
+            },
+            EMOJI_ZWJ,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, no wraparound, VS16, longest",
+            |t| {
+                with_11_vs16(t);
+                longer_lines(t, 2, NO_WRAP)
+            },
+            VS16,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, VS16 from the second column, len cols + 1",
+            |t| {
+                with_11_vs16(t);
+                // (at 2 columns the second is the last, where VS16 does not fit)
+                let column = if t.handler.services.buffer.cols > 2 {
+                    2
+                } else {
+                    1
+                };
+                longer_lines(t, 0, &format!("\x1b[?7l\x1b[4h\x1b[1;{column}H"))
+            },
+            VS16,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, keycap, longest",
+            |t| {
+                with_11_vs16(t);
+                longer_lines(t, 2, NO_WRAP)
+            },
+            KEYCAP,
+            true,
+            false,
+        ),
+        (
+            "11-vs16, no wraparound, underline colour, emoji ZWJ, 3 x cols",
+            |t| {
+                with_11_vs16(t);
+                longer_lines(t, 1, &format!("\x1b[4:3;58:5:9m{NO_WRAP}"))
+            },
+            EMOJI_ZWJ,
+            true,
+            false,
+        ),
+        // M7 fix round 4 (code review F6): rows of strings, where a widened unit's joiner wraps
+        // its base on an odd number of columns and each such wrap copies the strings from
+        // `cols - 1` on, `cols - 1` to the left (upstream's copy); with and without insert mode
+        (
+            "11-vs16, below the region, VS16 over strings, longest",
+            |t| longest_string_lines(t, BELOW),
+            VS16,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, below the region without insert, VS16 over strings, longest",
+            |t| longest_string_lines(t, "\x1b[1;2r\x1b[999;1H"),
+            VS16,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, below the region without insert, keycap over strings, longest",
+            |t| longest_string_lines(t, "\x1b[1;2r\x1b[999;1H"),
+            KEYCAP,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, at the scroll bottom, VS16 over strings, longest",
+            |t| longest_string_lines(t, "\x1b[999;1H\x1b[4h"),
+            VS16,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, at the scroll bottom without insert, VS16 over strings, longest",
+            |t| longest_string_lines(t, "\x1b[999;1H"),
+            VS16,
+            true,
+            true,
+        ),
+        // M7 fix round 5: the strings' copy of the first joiner wraps at the scroll bottom is
+        // skipped where the REP's own scrolls discard their lines; the counts straddle that
+        // bound (at 7x3+4, 211 and 1,009 skip, 40 does not; at 21x5+2, 1,009 and 5,003 do, 40
+        // and 211 do not); with a region from row 2 (`scroll_top` > 0) and a keycap
+        (
+            "11-vs16, at the scroll bottom without insert, keycap over strings, longest",
+            |t| longest_string_lines(t, "\x1b[999;1H"),
+            KEYCAP,
+            true,
+            true,
+        ),
+        (
+            "11-vs16, at the scroll bottom of a region from row 2, VS16 over strings, longest",
+            |t| longest_string_lines(t, "\x1b[2r\x1b[999;1H"),
+            VS16,
+            true,
+            true,
+        ),
+        // M7 fix round 7 (plan revision 2 fix6): insert mode below the region over plain rows
+        // (no string), whose passes at odd widths are replayed densely too
+        (
+            "11-vs16, below the region, VS16 over plain rows, longest",
+            |t| {
+                with_11_vs16(t);
+                let cols = t.handler.services.buffer.cols;
+                let rows = t.handler.services.buffer.rows;
+                let len = cols * (t.buffer().lines.max_length() + rows + 8) + 1;
+                let buffer = t.handler.services.buffer.buffer_mut();
+                for y in 0..buffer.lines.len() {
+                    let mut line = BufferLine::new(len, None, false);
+                    for c in 0..len {
+                        let letter = u32::from(b'a') + ((c + y) % 26) as u32;
+                        line.set_cell_from_codepoint(c, letter, 1, &DEFAULT_ATTR_DATA);
+                    }
+                    buffer.lines.set(y, Some(line));
+                }
+                t.parse_str(BELOW);
+            },
+            VS16,
+            true,
+            true,
+        ),
     ];
     // counts below and past the floors of the longest lines (at 7x3+4 below the region the
     // floor is 224, and was 91 before review F9)
@@ -3123,7 +3506,8 @@ fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
         (9, 2, 7, &counts),
         (10, 3, 0, &counts),
     ];
-    let mut skipped = check_rep_cut(&cases, &sizes, (7, 3, 4, 1_009));
+    let mut stuck = Vec::new();
+    let mut skipped = check_rep_cut(&cases, &sizes, (7, 3, 4, 1_009), &mut stuck);
     // the screen reader floor (2048) comes first
     let screen_reader: [RepCutCase; 1] = [(
         "no wraparound, screen reader, open link, longest",
@@ -3136,8 +3520,108 @@ fn rep_cut_on_lines_longer_than_cols_leaves_the_state_of_the_uncapped_print() {
         false,
     )];
     let sizes: [RepCutSize; 2] = [(7, 3, 4, &[2_503]), (10, 3, 0, &[2_503])];
-    skipped.extend(check_rep_cut(&screen_reader, &sizes, (7, 3, 4, 2_503)));
+    skipped.extend(check_rep_cut(
+        &screen_reader,
+        &sizes,
+        (7, 3, 4, 2_503),
+        &mut stuck,
+    ));
+    // (M7 fix round 4, code review F6) the rows-of-strings cases at wider odd widths too, 21 and
+    // 79 columns (rows of 337 and 1,107 cells), where a widened unit's joiner wraps its base;
+    // with LUNE_VT_REP_MATRIX=full at more counts, cut at 21x5+2 from 1,009 on
+    let full = std::env::var("LUNE_VT_REP_MATRIX").is_ok_and(|v| v == "full");
+    let strings: Vec<RepCutCase> = cases
+        .iter()
+        .filter(|case| case.0.contains("over strings"))
+        .copied()
+        .collect();
+    assert_eq!(strings.len(), 7);
+    let counts: &[usize] = if full {
+        &[40, 211, 1_009, 5_003]
+    } else {
+        &[1_009]
+    };
+    let sizes: [RepCutSize; 2] = [(21, 5, 2, counts), (79, 3, 0, counts)];
+    skipped.extend(check_rep_cut(
+        &strings,
+        &sizes,
+        (21, 5, 2, 1_009),
+        &mut Vec::new(),
+    ));
     assert!(skipped.is_empty(), "{skipped:?}");
+    // plan M7 step 13: which no-wrap insert cases batch their stuck inserts: the narrow units
+    // (one code point and a cluster) at every size and count; a stuck wide unit is skipped
+    // before its insert (nothing to batch) and the other cases wrap
+    let batched = [
+        "no wraparound, len cols + 1",
+        "no wraparound, len 3 x cols",
+        "no wraparound, longest",
+        "no wraparound, cluster from the second column, longest",
+        "no wraparound, screen reader, open link, longest",
+        "11-vs16, no wraparound, VS16, longest",
+        "11-vs16, no wraparound, VS16 from the second column, len cols + 1",
+    ];
+    let mut seen = 0;
+    for (name, label, batches) in &stuck {
+        if name.ends_with("keycap, longest") {
+            // the keycap's last joiner joins the cell left of the cursor, which may take up to
+            // about 60 units through `print` to settle (its string filling up) before the
+            // batch
+            let count: usize = label.rsplit(' ').next().unwrap().parse().unwrap();
+            assert!(*batches <= 1, "{label}: stuck path");
+            assert!(count <= 200 || *batches == 1, "{label}: stuck path");
+            continue;
+        }
+        let expected = batched.contains(name);
+        seen += usize::from(expected);
+        assert_eq!(*batches, u64::from(expected), "{label}: stuck path");
+    }
+    assert_eq!(seen, 6 * 5 * 3 + 2, "batched runs");
+}
+
+/// Plan M7 step 13 (S7 residual 5), timing-free: a no-wrap insert REP of a narrow unit on a
+/// line longer than `cols` shifts the line at most `cols + 3` times through `print` (the units
+/// until the cursor sticks at the last column) and once batched, whatever the line's length;
+/// a REP that starts stuck, twice. Before, every unit up to the F9 floor shifted it once:
+/// `len - cols` more passes.
+#[test]
+fn rep_no_wrap_insert_on_a_long_line_makes_a_bounded_number_of_insert_passes() {
+    use crate::buffer::buffer_line::insert_passes;
+    const NO_WRAP: &str = "\x1b[?7l\x1b[999;1H\x1b[4h";
+    for (cols, kind) in [(7, 0), (7, 1), (7, 2), (10, 2), (80, 1), (80, 2)] {
+        // (M7 fix round 1) and a joiner that widens a narrow base, stuck at `cols - 1`
+        for unit in ["a", "e\u{301}", VS16] {
+            let label = format!("{unit:?} at {cols} cols, line kind {kind}");
+            let mut t = test_handler(cols, 3, [OptionValue::Scrollback(4)]);
+            with_11_vs16(&mut t);
+            longer_lines(&mut t, kind, NO_WRAP);
+            let len = t.buffer().lines.get(abs_y(t.buffer())).unwrap().len();
+            assert!(len > cols, "{label}");
+            t.parse_str(unit);
+            let before = insert_passes();
+            t.parse_str("\x1b[1048576b");
+            let passes = insert_passes() - before;
+            assert!(
+                passes <= cols as u64 + 4,
+                "{label}: {passes} passes over {len} cells"
+            );
+            assert_eq!(t.handler.rep_stuck_batches, 1, "{label}: stuck path");
+            let stuck_x = if unit == VS16 { cols - 1 } else { cols };
+            assert_eq!(t.buffer().x, stuck_x, "{label}");
+            if unit == VS16 {
+                // (a stuck VS16 leaves only its base in the last cell, with the join state of
+                // two cells: a REP after it repeats the cell two columns back)
+                continue;
+            }
+            // stuck already: one unit through `print`, the rest batched
+            t.parse_str(unit);
+            let before = insert_passes();
+            t.parse_str("\x1b[1048576b");
+            let passes = insert_passes() - before;
+            assert!(passes <= 2, "{label}, stuck: {passes} passes");
+            assert_eq!(t.handler.rep_stuck_batches, 2, "{label}: stuck path");
+        }
+    }
 }
 
 /// Review S7 (cases from the round-3 code review's probe, plus the S7 variants): the line-fill
@@ -3195,7 +3679,7 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
             buffer.lines.set(y, Some(line));
         }
     }
-    let cases: [(&str, Setup, &str); 28] = [
+    let cases: [(&str, Setup, &str); 42] = [
         // (a sequence between the unit and REP ends the print: REP repeats nothing)
         ("uk charset", |t, _, _| t.parse_str("\x1b(A"), "#"),
         ("over even wides", |t, c, r| fill_wides(t, c, r, ""), "a"),
@@ -3371,6 +3855,134 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
             |t, c, _| t.parse_str(&format!("{}\x1b[4:3;58:5:9m", "y".repeat(c - 1))),
             "e\u{301}",
         ),
+        // M7 fix round 1: a joiner that widens a narrow base (VS16 under `11-vs16`, alone and
+        // followed by a joiner) and a wide base with a joiner (an emoji and a ZWJ)
+        (
+            "VS16 over odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "x")
+            },
+            VS16,
+        ),
+        (
+            "VS16 over even wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "")
+            },
+            VS16,
+        ),
+        (
+            "keycap over odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "x")
+            },
+            KEYCAP,
+        ),
+        (
+            "emoji ZWJ over odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "x")
+            },
+            EMOJI_ZWJ,
+        ),
+        (
+            "VS16, base on the last column",
+            |t, c, r| {
+                with_11_vs16(t);
+                // (with one row and no scrollback, the wrap's carry finds the old row
+                // recycled and drops the base: the REP unit is then no VS16 at all)
+                if r > 1 {
+                    t.parse_str(&"y".repeat(c - 1));
+                }
+            },
+            VS16,
+        ),
+        (
+            "insert VS16 over odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "x");
+                t.parse_str("\x1b[4h");
+            },
+            VS16,
+        ),
+        (
+            "insert keycap over even wides, bg colour",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "");
+                t.parse_str("\x1b[42m\x1b[4h");
+            },
+            KEYCAP,
+        ),
+        (
+            "link VS16 over odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                fill_wides(t, c, r, "x");
+                t.parse_str("\x1b]8;;u\x07");
+            },
+            VS16,
+        ),
+        (
+            "screen reader keycap over odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                t.set_option(OptionValue::ScreenReaderMode(true));
+                fill_wides(t, c, r, "x");
+            },
+            KEYCAP,
+        ),
+        (
+            "insert VS16 into longer lines with entries, odd wides",
+            |t, c, r| {
+                with_11_vs16(t);
+                long_lines_of(t, c, r, "x");
+                t.parse_str("\x1b[4h");
+            },
+            VS16,
+        ),
+        (
+            "insert VS16 into longer lines, below the region",
+            |t, c, r| {
+                with_11_vs16(t);
+                long_lines_of(t, c, r, "x");
+                t.parse_str("\x1b[1;2r\x1b[999;1H\x1b[4h");
+            },
+            VS16,
+        ),
+        (
+            "insert keycap into longer lines, underline colour, open link",
+            |t, c, r| {
+                with_11_vs16(t);
+                long_lines_of(t, c, r, "");
+                t.parse_str("\x1b]8;;u\x07\x1b[4:3;58:5:9m\x1b[4h");
+            },
+            KEYCAP,
+        ),
+        (
+            "insert emoji ZWJ into longer lines, below the region, open link",
+            |t, c, r| {
+                with_11_vs16(t);
+                long_lines_of(t, c, r, "x");
+                t.parse_str("\x1b]8;;u\x07\x1b[1;2r\x1b[999;1H\x1b[4h");
+            },
+            EMOJI_ZWJ,
+        ),
+        (
+            "underline colour VS16 under a link over coloured cells",
+            |t, c, r| {
+                with_11_vs16(t);
+                t.parse_str("\x1b[58:5:3m");
+                fill_wides(t, c, r, "x");
+                t.parse_str("\x1b]8;;u\x07\x1b[4:2m");
+            },
+            VS16,
+        ),
     ];
     // (3 columns hold one wide character per line)
     let small = [(7, 3, 4), (8, 3, 0), (2, 1, 0), (5, 2, 3), (3, 3, 2)];
@@ -3386,6 +3998,9 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
         "link over odd wides",
         "insert into longer lines with entries, odd wides",
         "underline colour over odd wides",
+        "VS16 over odd wides",
+        "insert VS16 over odd wides",
+        "link VS16 over odd wides",
     ];
     let large_counts: &[usize] = if full {
         all_counts
@@ -3431,12 +4046,220 @@ fn rep_fill_leaves_the_state_of_print_over_existing_content() {
     }
     // every case takes the fill path, at every size and count of the matrix
     let expected = if full {
-        28 * 6 * 11
+        42 * 6 * 11
     } else {
-        28 * 5 * 10 + large_cases.len() * 3
+        42 * 5 * 10 + large_cases.len() * 3
     };
     assert_eq!(runs, expected, "matrix");
     assert_eq!(filled, runs, "fill path cases");
+}
+
+/// M7 fix round 1 (review S1 and the wide cluster REP), seeded: REP of wide and widened units
+/// (VS16, a keycap, an emoji and a ZWJ, a wide cluster) and of narrow ones, after random
+/// content and modes (insert, wraparound off, scroll regions, an open link, an underline
+/// colour, screen reader, lines longer than `cols`, and (M7 fix round 4) rows of strings longer
+/// than `(rows + 3) x (cols - 1)`, below a region with and without insert mode), at random small
+/// sizes (and, 1 seed in 32, 21 or 79 columns) and counts around and past the cuts, leaves the
+/// state of the uncapped print of all its repetitions.
+/// `LUNE_VT_REP_DIFF_SEEDS=<n>` runs more seeds (default 1000), `LUNE_VT_REP_DIFF_SEED=<n>`
+/// replays one.
+#[test]
+fn rep_of_wide_and_widened_units_leaves_the_state_of_the_uncapped_print_seeded() {
+    const UNITS: [&str; 14] = [
+        VS16,
+        KEYCAP,
+        EMOJI_ZWJ,
+        "a\u{fe0f}",
+        "\u{2764}\u{fe0f}\u{301}",
+        // (M7 fix round 7, code review F8) a joiner before the widening one
+        "a\u{301}\u{fe0f}",
+        "\u{2764}\u{301}\u{fe0f}",
+        // (M7 fix round 8, security S4 round 8) two joiners before it; a keycap after one
+        "a\u{301}\u{302}\u{fe0f}",
+        "1\u{301}\u{fe0f}\u{20e3}",
+        "\u{4e2d}\u{301}",
+        "\u{4e2d}",
+        "e\u{301}",
+        "a",
+        // (review S3 round 2) a unit whose first code point joins: a lone combining mark left
+        // at `cols - 3` (wraparound off, a wide char skipped at the last column, the cursor on
+        // it); REP reads it and the cut applies. The construction repositions regardless of the
+        // random content before it, so the read cell is not always this bare unit — the
+        // comparison holds either way.
+        "\x1b[?7l\x1b[999C\x1b[2D\u{301}x\u{4f60}",
+    ];
+    const CONTENT: [&str; 22] = [
+        "x",
+        "\u{4e2d}",
+        "e\u{301}",
+        VS16,
+        KEYCAP,
+        EMOJI_ZWJ,
+        "\r\n",
+        "\x1b[4h",
+        "\x1b[4l",
+        "\x1b[?7l",
+        "\x1b[?7h",
+        "\x1b]8;;u\x07",
+        "\x1b]8;;\x07",
+        "\x1b[4:3;58:5:9m",
+        "\x1b[0m",
+        "\x1b[1;2r",
+        "\x1b[r",
+        "\x1b[999;1H",
+        "\x1b[H",
+        "\x1b[2;3H",
+        "\x1b[1;2H",
+        "yyyyyyy",
+    ];
+    let seeds: Vec<u64> = match std::env::var("LUNE_VT_REP_DIFF_SEED") {
+        Ok(seed) => vec![seed.parse().unwrap()],
+        Err(_) => {
+            let n = std::env::var("LUNE_VT_REP_DIFF_SEEDS")
+                .ok()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(1_000);
+            (1..=n).collect()
+        }
+    };
+    let (mut filled, mut batched, mut cycled, mut compared) = (0, 0, 0, 0);
+    // (M7 fix round 5) copy batches below the region without insert mode, chain skips at the
+    // scroll bottom
+    let (mut copy_batched, mut chain_skipped) = (0u64, 0u64);
+    // (M7 fix round 7) insert-mode passes below the region replayed densely
+    let mut replayed = 0u64;
+    // (review F5) seeds whose uncapped print would not fit one `print` call: counted, not a
+    // failure. A unit of several code points stacked into one cell at a large count makes the
+    // repeated text longer than one parse buffer; REP and print still agree, but this harness
+    // drives the uncapped side in one chunk.
+    let mut skipped = 0u64;
+    for seed in seeds {
+        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        let mut next = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        let cols = 2 + next(11);
+        // (M7 fix round 4, code review F6) and 1 in 32 seeds at a wider odd width, 21 or 79
+        // columns, where the rows of strings below are hundreds of cells long (the draws of the
+        // other seeds are unchanged)
+        let cols = match seed % 64 {
+            21 => 21,
+            42 => 79,
+            _ => cols,
+        };
+        let rows = 1 + next(5);
+        // (review S2 round 2) a large scrollback now and then: below a scroll region nothing
+        // enters it, so the floor must not grow with it. The `long` lines below stay short
+        // (kind 0 or 1), so this allocates a tall buffer, not a wide one.
+        let scrollback = if next(32) == 0 { 10_000 } else { next(7) };
+        let screen_reader = next(6) == 0;
+        let long = next(5);
+        // (M7 fix round 3) rows a Windows 10 window's narrowing leaves, of up to 8 x cols
+        let long_len = cols * (2 + next(7)) + next(3);
+        // (M7 fix round 4, code review F6) or rows of strings longer than `(rows + 3) x (cols -
+        // 1)`, where a widened unit's joiner wraps its base on an odd number of columns and
+        // each such wrap copies the strings from `cols - 1` on, `cols - 1` to the left; with
+        // stale entries in the back half of their tail now and then
+        let strings_len = (rows + 3) * cols.saturating_sub(1) + cols + next(4 * cols + 1);
+        let stale = next(3) == 0;
+        let mut setup = String::new();
+        for _ in 0..next(14) {
+            setup.push_str(CONTENT[next(CONTENT.len())]);
+        }
+        // (M7 fix round 3, review S2) and often below a scroll region in insert mode, where
+        // whole passes over the last row are batched once they settle; (M7 fix round 4) and
+        // below it without insert mode, where every wrap rewrites the last row in place
+        match next(8) {
+            0 | 1 => setup.push_str("\x1b[1;2r\x1b[999;1H\x1b[4h"),
+            2 => setup.push_str("\x1b[1;2r\x1b[999;1H\x1b[4l"),
+            _ => {}
+        }
+        let unit = UNITS[next(UNITS.len())];
+        let count = match next(4) {
+            0 => [97, 211, 1_009, 3_001, 9_008][next(5)],
+            _ => 1 + next(60),
+        };
+        let make = || {
+            let mut t = test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
+            with_11_vs16(&mut t);
+            if screen_reader {
+                t.set_option(OptionValue::ScreenReaderMode(true));
+            }
+            match long {
+                0 | 1 => longer_lines(&mut t, long, ""),
+                2 => lines_of(&mut t, long_len, ""),
+                3 => string_lines(&mut t, strings_len, stale, ""),
+                _ => {}
+            }
+            t.parse_str(&setup);
+            t.parse_str(unit);
+            t
+        };
+        let label = format!(
+            "seed {seed}: {cols}x{rows}+{scrollback}, long {long} ({long_len}, strings \
+             {strings_len}, stale {stale}), screen reader {screen_reader}, {setup:?} then \
+             {unit:?}, REP {count}"
+        );
+        let mut capped = make();
+        capped.parse_str(&format!("\x1b[{count}b"));
+        filled += capped.handler.rep_fills;
+        batched += capped.handler.rep_stuck_batches;
+        cycled += capped.handler.rep_cycle_batches;
+        copy_batched += capped.handler.rep_copy_batches;
+        chain_skipped += capped.handler.rep_chain_skips;
+        replayed += capped.handler.rep_wrap_replays;
+        // the uncapped print: what REP repeats (nothing after no print, or where the cell
+        // would start left of the line), `count` times in one `print` call
+        let mut uncapped = make();
+        let text = {
+            let join = uncapped.handler.preceding_join_state;
+            let width = UnicodeService::extract_width(join) as usize;
+            let buffer = uncapped.buffer();
+            match buffer.x.checked_sub(width).filter(|_| join != 0) {
+                Some(x) => buffer.lines.get(abs_y(buffer)).unwrap().get_string(x),
+                None => String::new(),
+            }
+        };
+        let text = text.repeat(count);
+        if text.len() >= MAX_PARSEBUFFER_LENGTH {
+            skipped += 1;
+            continue;
+        }
+        uncapped.parse_str(&format!("{text}\x1b[}}"));
+        assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+        compared += 1;
+    }
+    if std::env::var("LUNE_VT_REP_DIFF_SEED").is_err() {
+        // the line fill and the batched stuck inserts both ran
+        assert!(filled > compared as u64 / 4, "{filled} of {compared}");
+        assert!(batched > 0, "{batched} of {compared}");
+        assert!(cycled > compared as u64 / 200, "{cycled} of {compared}");
+        assert!(
+            copy_batched > compared as u64 / 1_000,
+            "{copy_batched} copy batches of {compared}"
+        );
+        assert!(
+            chain_skipped > compared as u64 / 1_000,
+            "{chain_skipped} chain skips of {compared}"
+        );
+        assert!(
+            replayed > compared as u64 / 1_000,
+            "{replayed} wrap replays of {compared}"
+        );
+        // the skipped seeds stay rare (review F5): fewer than 1 in 10,000
+        assert!(
+            skipped < 1 + compared as u64 / 10_000,
+            "{skipped} skipped of {compared}"
+        );
+        eprintln!(
+            "rep diff: {compared} compared, {filled} filled, {batched} batched, {cycled} passes \
+             batched, {copy_batched} copy batches, {chain_skipped} chain skips, {replayed} wrap \
+             replays, {skipped} skipped"
+        );
+    }
 }
 
 #[test]
@@ -6545,7 +7368,11 @@ fn osc_8_print_adds_the_line_to_the_link() {
     t.parse_str("\x1b]8;;u\x07ab\r\ncd\x1b]8;;\x07ef");
     let id = 1;
     assert_eq!(
-        t.handler.services.osc_link.link_markers(id).map(<[_]>::len),
+        t.handler
+            .services
+            .osc_link
+            .link_markers(id)
+            .map(|m| m.len()),
         Some(2)
     );
     let cell_url = |t: &TestTerm, row: usize, x: usize| {
@@ -6607,6 +7434,88 @@ fn rep_inside_an_open_link_looks_up_markers_once_per_line() {
         (5..=6).contains(&markers),
         "every line of the buffer is in the link: {markers}"
     );
+}
+
+/// Review S7 residual 1: a REP that scrolls a full scrollback inside an open link visits a
+/// few markers per printed line in total (link lookups plus marker-set events: one trimmed
+/// marker and one added line each), where the walks of every marker made it O(lines x
+/// markers). Counts visits, not time.
+#[test]
+fn rep_inside_an_open_link_over_a_full_scrollback_visits_few_markers_per_line() {
+    let mut t = test_handler(80, 24, [OptionValue::Scrollback(1000)]);
+    t.parse_str("\x1b]8;;http://x\x07");
+    t.parse_str(&format!("{}\r\n", "a".repeat(79)).repeat(1100));
+    t.parse_str("a");
+    let markers_before = t.handler.services.osc_link.marker_count();
+    assert_eq!(markers_before, 1024, "the link holds every line");
+    let reset = |t: &mut TestTerm| {
+        t.handler.services.osc_link.marker_visits = 0;
+        let buffers = &mut t.handler.services.buffer.buffers;
+        buffers.normal_mut().lines.observer_mut().visits = 0;
+        buffers.alt_mut().lines.observer_mut().visits = 0;
+    };
+    reset(&mut t);
+    let count = 1_048_576u64;
+    t.parse_str(&format!("\x1b[{count}b"));
+    let buffers = &t.handler.services.buffer.buffers;
+    let visits = t.handler.services.osc_link.marker_visits
+        + buffers.normal().markers().visits
+        + buffers.alt().markers().visits;
+    let lines = count / 80 + 1;
+    assert!(
+        visits <= 8 * lines,
+        "{visits} marker visits for {lines} printed lines"
+    );
+    assert_eq!(t.handler.services.osc_link.marker_count(), 1024);
+    assert_eq!(t.buffer().markers().len(), 1024);
+}
+
+/// Plan M7 step 12 (S7 residual 2): a narrow-cluster REP stores each line's combined strings
+/// as at most two runs sharing one allocation, and allocates one string per line, not one per
+/// cell (a `String` per cell before). Counts allocations and references, not time.
+#[test]
+fn rep_of_a_narrow_cluster_shares_one_string_per_line() {
+    use crate::buffer::buffer_line::combined_allocations;
+    use std::sync::Arc;
+    let mut t = test_handler(80, 24, [OptionValue::Scrollback(1000)]);
+    t.parse_str("e\u{301}");
+    let before = combined_allocations();
+    let k = 10;
+    // the rest of line 0, k - 1 full lines and one cell of line k
+    t.parse_str(&format!("\x1b[{}b", 80 * k));
+    assert_eq!(t.handler.rep_fills, 1);
+    let allocations = combined_allocations() - before;
+    // the REP's head cell, then one string per line
+    assert!(
+        allocations <= k as u64 + 2,
+        "{allocations} combined strings allocated for {} lines",
+        k + 1
+    );
+    let buffer = t.buffer();
+    for row in 0..=k {
+        let line = buffer.lines.get(row).unwrap();
+        let runs = line.combined_runs();
+        assert!(
+            (1..=2).contains(&runs.len()),
+            "row {row}: {} runs",
+            runs.len()
+        );
+        let shared = &runs[0].2;
+        assert_eq!(&**shared, "e\u{301}");
+        for x in (0..line.len()).filter(|&x| line.is_combined(x) != 0) {
+            let run = runs
+                .iter()
+                .find(|&&(first, last, _)| first <= x && x <= last);
+            assert!(
+                run.is_some_and(|(_, _, chars)| Arc::ptr_eq(chars, shared)),
+                "row {row} cell {x}"
+            );
+        }
+        for (_, _, chars) in &runs {
+            // held by the line's run and by this copy only, however many cells it covers
+            assert_eq!(Arc::strong_count(chars), 2, "row {row}");
+        }
+    }
 }
 
 /// Review S2: links without an id repeated on one line (and overwritten) stay capped, with
@@ -7096,5 +8005,1093 @@ fn line_insert_delete_and_scroll_walk_the_markers_once_per_sequence() {
             set.len() >= outside,
             "{seq:?}: markers outside the region survive"
         );
+    }
+}
+
+/// Review S2 round 2: below a scroll region nothing scrolls or trims (`print_wrap` clamps the
+/// cursor to the last row with `ybase`/`ydisp` fixed), so the REP cut floor drops the
+/// scrollback (`max_lines`). With a 10,000-line scrollback the floor stays small — the cut
+/// still fires at counts the old floor (which counted the scrollback) left uncut — and leaves
+/// the state of the uncapped print, with and without a long row in the normal buffer (a column
+/// shrink without reflow leaves such rows; `longer_lines` builds them directly). M7 fix round 4
+/// (code review F6): also at odd widths, and over long rows of strings with a widened unit, with
+/// and without insert mode.
+#[test]
+fn rep_below_region_large_scrollback_leaves_the_state_of_the_uncapped_print() {
+    type Setup = fn(&mut TestTerm);
+    // a region of rows 1..=2, the cursor on the last row, insert mode (so a long row's tail
+    // shifts): below the region, nothing enters the 10,000-line scrollback
+    const BELOW: &str = "\x1b[1;2r\x1b[999;1H\x1b[4h";
+    // M7 fix round 4 (code review F6): rows of strings longer than `(rows + 3) * (cols - 1)`,
+    // where on an odd number of columns a widened unit's joiner wraps its base and each such
+    // wrap copies the row's strings from `cols - 1` on, `cols - 1` to the left (upstream's copy)
+    fn strings(t: &mut TestTerm, modes: &str) {
+        let (cols, rows) = (
+            t.handler.services.buffer.cols,
+            t.handler.services.buffer.rows,
+        );
+        with_11_vs16(t);
+        string_lines(t, (rows + 3) * (cols - 1) + cols + 7, false, modes);
+    }
+    const BELOW_NO_INSERT: &str = "\x1b[1;2r\x1b[999;1H";
+    let cases: [(&str, Setup, &str); 8] = [
+        ("plain", |t| t.parse_str(BELOW), "a"),
+        ("cluster", |t| t.parse_str(BELOW), "e\u{301}"),
+        (
+            "VS16",
+            |t| {
+                with_11_vs16(t);
+                t.parse_str(BELOW);
+            },
+            VS16,
+        ),
+        ("long row, len 3 x cols", |t| longer_lines(t, 1, BELOW), "a"),
+        (
+            "long row, cluster",
+            |t| longer_lines(t, 1, BELOW),
+            "e\u{301}",
+        ),
+        ("long row of strings, VS16", |t| strings(t, BELOW), VS16),
+        (
+            "long row of strings, VS16, insert off",
+            |t| strings(t, BELOW_NO_INSERT),
+            VS16,
+        ),
+        (
+            "long row of strings, keycap, insert off",
+            |t| strings(t, BELOW_NO_INSERT),
+            KEYCAP,
+        ),
+    ];
+    // counts past every floor at these sizes but below the old scrollback floor; the uncapped
+    // text fits one parse buffer (VS16 is six bytes a repetition, the keycap nine); (M7 fix
+    // round 4) odd widths, where a widened unit's joiner wraps its base
+    for &(cols, rows) in &[(8usize, 4usize), (16, 6), (80, 24), (7, 4), (9, 3), (21, 5)] {
+        for &(name, setup, unit) in &cases {
+            let count = 5_000;
+            let make = || {
+                let mut t = test_handler(cols, rows, [OptionValue::Scrollback(10_000)]);
+                setup(&mut t);
+                t.parse_str(unit);
+                t
+            };
+            let label = format!("{name} at {cols}x{rows} sb10000, REP {count}");
+            let mut capped = make();
+            let repeated = {
+                let buffer = capped.buffer();
+                let width = UnicodeService::extract_width(capped.handler.preceding_join_state);
+                let x = buffer.x.saturating_sub(width as usize);
+                buffer.lines.get(abs_y(buffer)).unwrap().get_string(x)
+            };
+            let units: Vec<u32> = repeated.chars().map(u32::from).collect();
+            let effective = capped.handler.rep_equivalent_repeats(&units, count);
+            // the floor no longer counts the 10,000-line scrollback, so a count of 5,000 is cut
+            // (the old floor, `rows + max_lines + 3` lines, would have left it uncut)
+            assert!(
+                effective < count,
+                "{label}: not cut ({effective} of {count})"
+            );
+            capped.parse_str(&format!("\x1b[{count}b"));
+            let mut uncapped = make();
+            let text = repeated.repeat(count);
+            assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
+            uncapped.parse_str(&format!("{text}\x1b[}}"));
+            assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+        }
+    }
+}
+
+/// M7 fix round 4 (code review F6): on an odd number of columns a widened unit (VS16, a keycap
+/// under `11-vs16`) puts its base on the last column, and its joiner wraps it; that wrap copies
+/// every string of the old row at a key `>= cols - 1` to the new row, `cols - 1` to the left
+/// (upstream's `copyCellsFrom` FIXME), stale entries and keys past the line's end included. So a
+/// row's strings keep moving for about `last key / (cols - 1)` such wraps: on the same row below a
+/// scroll region, from line to line at the scroll bottom. The REP cut floor counts them
+/// (`ceil((K + 1) / (cols - 1)) + 1` more lines); the review's reproducers, over rows of
+/// strings longer than `(rows + 3) * (cols - 1)` (below the region the cut showed other text
+/// before; at the scroll bottom only the oldest lines' hidden entries differed), with and
+/// without insert mode: REP is cut and leaves the state of the uncapped print.
+///
+/// M7 fix round 5 (the F6 residual): below the region without insert mode, on the last row,
+/// the line fill takes the string copies of all but the last whole pass at once
+/// (`copy_passes_at_once`): asserted to fire once per REP from three passes on, with at most
+/// three real joiner wraps on that row per REP; the cursor one row above the last (below the
+/// region) is a setup of its own, where it must not fire (the wraps go to the next row). Axes
+/// (repo lesson): odd widths only (the shape needs one), even widths in
+/// `rep_below_region_large_scrollback…` and the seeded tests; rows of `cols` up to `cols +
+/// 2,300` cells; every cell a string (no hidden tail without strings); counts below the strings'
+/// settle count (79 columns, 1,000: about 25 of 31 passes) and past it.
+///
+/// M7 fix round 7 (code review F8): `a U+0301 U+FE0F` joins VS16 and a keycap, a unit whose joiner
+/// before the widening one makes the wrapped cell 0 a combined cell. (M7 fix round 8, security
+/// S4 round 8) it takes the dense replay of the insert-mode passes too.
+#[test]
+fn rep_widened_unit_at_odd_widths_over_rows_of_strings_leaves_the_state_of_the_uncapped_print() {
+    // (columns, rows, scrollback, row length, below the region, rows above the last)
+    let setups: [(usize, usize, usize, usize, bool, usize); 17] = [
+        (7, 4, 1_000, 107, true, 0),
+        (9, 3, 1_000, 69, true, 0),
+        (9, 3, 1_000, 9 + 175, true, 0),
+        (21, 5, 1_000, 221, true, 0),
+        (79, 24, 1_000, 79 + 2_300, true, 0),
+        (79, 24, 1_000, 79 + 300, true, 0),
+        (3, 3, 10, 3 + 40, true, 0),
+        (7, 5, 100, 7 + 200, true, 1),
+        (21, 6, 100, 21 + 300, true, 2),
+        (79, 24, 100, 79, true, 0),
+        (3, 2, 10, 3 + 18, false, 0),
+        (5, 3, 20, 5 + 30, false, 0),
+        (7, 4, 20, 7 + 42, false, 0),
+        (9, 4, 100, 9 + 270, false, 0),
+        (21, 5, 50, 21 + 200, false, 0),
+        (79, 24, 100, 79 + 79 * 6, false, 0),
+        (79, 24, 100, 79 + 79 * 12, false, 0),
+    ];
+    for (cols, rows, scrollback, len, below, up) in setups {
+        // (M7 fix round 7, code review F8) and a unit with a joiner before the widening one
+        for unit in [VS16, KEYCAP, "a\u{301}\u{fe0f}"] {
+            for insert in [false, true] {
+                // (at 79 columns two counts: each uncapped print walks rows of up to 2,379 cells)
+                let counts: &[usize] = if len == 9 + 175 {
+                    // (the review's probe seed 13, where a visible cell differed)
+                    &[316, 1_000, 5_000]
+                } else if cols < 79 {
+                    &[200, 1_000, 5_000, 9_000]
+                } else {
+                    &[1_000, 5_000]
+                };
+                for &count in counts {
+                    let make = || {
+                        let mut t = test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
+                        with_11_vs16(&mut t);
+                        let region = if below { "\x1b[1;2r" } else { "" };
+                        let insert = if insert { "\x1b[4h" } else { "" };
+                        string_lines(
+                            &mut t,
+                            len,
+                            false,
+                            &format!("{region}\x1b[{};1H{insert}", rows - up),
+                        );
+                        t.parse_str(unit);
+                        t
+                    };
+                    let label = format!(
+                        "{unit:?} at {cols}x{rows}+{scrollback}, rows of {len}, below the region \
+                         {below} ({up} above the last row), insert {insert}, REP {count}"
+                    );
+                    let mut capped = make();
+                    let units: Vec<u32> = unit.chars().map(u32::from).collect();
+                    let effective = capped.handler.rep_equivalent_repeats(&units, count);
+                    // (at 79 columns the floor is past 5,000 units: one line is 39)
+                    if count >= 5_000 && cols < 79 && len > cols {
+                        assert!(effective < count, "{label}: not cut ({effective})");
+                    }
+                    capped.parse_str(&format!("\x1b[{count}b"));
+                    // (M7 fix round 5) the copy batch: once per REP on the last row below the
+                    // region without insert mode, from three whole passes on; never elsewhere.
+                    // From a row above the last it fires once the wraps reach the last row.
+                    let per_line = cols / 2;
+                    let batches = capped.handler.rep_copy_batches;
+                    if up == 0 {
+                        let batched = below && !insert && effective >= 3 * per_line;
+                        assert_eq!(batches, u64::from(batched), "{label}: copy batches");
+                    } else {
+                        assert!(batches <= u64::from(!insert), "{label}: copy batches");
+                    }
+                    // (M7 fix round 7) the dense replay of the insert-mode passes: once per
+                    // REP on the last row below the region where a whole pass is left from
+                    // `cols - 1` (the REP starts at column 2: `per_line - 1` units first), for
+                    // every unit here (M7 fix round 8: the joiner before the widening one too);
+                    // never elsewhere
+                    let replays = capped.handler.rep_wrap_replays;
+                    if up == 0 {
+                        let replayed =
+                            below && insert && len > cols && effective + 1 >= 2 * per_line;
+                        assert_eq!(replays, u64::from(replayed), "{label}: replays");
+                    } else {
+                        let possible = insert && len > cols;
+                        assert!(replays <= u64::from(possible), "{label}: replays");
+                    }
+                    if below && !insert && up == 0 {
+                        assert!(
+                            capped.handler.rep_joiner_wraps <= 3,
+                            "{label}: {} joiner wraps",
+                            capped.handler.rep_joiner_wraps
+                        );
+                    }
+                    let mut uncapped = make();
+                    let text = unit.repeat(count);
+                    assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
+                    uncapped.parse_str(&format!("{text}\x1b[}}"));
+                    assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+                }
+            }
+        }
+    }
+}
+
+/// M7 fix round 7 (plan revision 2 fix6, security S4): in insert mode on the last row below a
+/// scroll region, at an odd number of columns, the whole passes of a widened unit whose first
+/// joiner widens a one-cell base (VS16, a keycap) are replayed in dense arrays
+/// (`replay_wrap_passes`). Rows it must carry exactly: plain rows (no string), rows of strings
+/// with a stale back half and strings at keys past the line's end, and the alt buffer narrowed
+/// from a wide window (it has no scrollback, so it never reflows and keeps its rows' length on
+/// every platform: the reach security review S4 names); plain attributes, an underline colour,
+/// inside a link. REP leaves the state of the uncapped print, and the replay fires once per REP
+/// where a whole pass is left from `cols - 1`, never at an even width. Axes (repo lesson):
+/// column parity (3, 5, 9, 21 and the even 8 and 22), row length (`cols`, `3 cols + 2`, `10 cols
+/// + 1`), hidden side tables (none, stale strings, keys past the end, extended attributes).
+///
+/// M7 fix round 8 (security S4 round 8, review F9): and units with joiners before the widening
+/// one (`a U+0301 U+FE0F`, `❤ U+0301 U+FE0F`, `a U+0301 U+0302 U+FE0F`), replayed alike: the
+/// string those joiners leave at `cols - 1` is carried to column 0 and left stale there.
+#[test]
+fn rep_insert_below_the_region_at_odd_widths_replays_its_passes_and_leaves_the_state_of_the_uncapped_print()
+ {
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Rows {
+        Plain,
+        StalePast,
+        Alt,
+    }
+    let (mut replayed, mut runs) = (0, 0);
+    for cols in [3usize, 5, 9, 21, 8, 22] {
+        let per_line = cols / 2;
+        for kind in [Rows::Plain, Rows::StalePast, Rows::Alt] {
+            for len in [cols, 3 * cols + 2, 10 * cols + 1] {
+                for unit in [
+                    VS16,
+                    KEYCAP,
+                    "a\u{301}\u{fe0f}",
+                    "\u{2764}\u{301}\u{fe0f}",
+                    "a\u{301}\u{302}\u{fe0f}",
+                ] {
+                    for attrs in ["", "\x1b[4:3;58:5:9m", "\x1b]8;;u\x07"] {
+                        for count in [per_line, 3 * cols, 1_009] {
+                            let make = || {
+                                let rows = 4;
+                                let mut t = match kind {
+                                    Rows::Alt => {
+                                        let mut t =
+                                            test_handler(len, rows, [OptionValue::Scrollback(100)]);
+                                        with_11_vs16(&mut t);
+                                        t.parse_str("\x1b[?1049h");
+                                        for r in 0..rows {
+                                            let mut text = format!("\x1b[{};1H", r + 1);
+                                            for c in 0..len {
+                                                text.push(char::from(b'a' + ((c + r) % 26) as u8));
+                                                let mark = 0x300 + (c % 112) as u32;
+                                                text.push(char::from_u32(mark).unwrap());
+                                            }
+                                            t.parse_str(&text);
+                                        }
+                                        t.resize(cols, rows);
+                                        t
+                                    }
+                                    _ => {
+                                        let mut t = test_handler(
+                                            cols,
+                                            rows,
+                                            [OptionValue::Scrollback(100)],
+                                        );
+                                        with_11_vs16(&mut t);
+                                        match kind {
+                                            Rows::Plain => {
+                                                let buffer = t.buffer_mut();
+                                                for y in 0..buffer.lines.len() {
+                                                    let mut line =
+                                                        BufferLine::new(len, None, false);
+                                                    for c in 0..len {
+                                                        let letter =
+                                                            u32::from(b'a') + ((c + y) % 26) as u32;
+                                                        line.set_cell_from_codepoint(
+                                                            c,
+                                                            letter,
+                                                            1,
+                                                            &DEFAULT_ATTR_DATA,
+                                                        );
+                                                    }
+                                                    buffer.lines.set(y, Some(line));
+                                                }
+                                            }
+                                            _ => {
+                                                string_lines(&mut t, len, true, "");
+                                                let buffer = t.buffer_mut();
+                                                for y in 0..buffer.lines.len() {
+                                                    let mut line =
+                                                        buffer.lines.get(y).unwrap().clone();
+                                                    line.set_cell(
+                                                        len + 2 * cols + 3,
+                                                        &CellData::from_char_data(&(
+                                                            0,
+                                                            "p\u{301}".to_string(),
+                                                            1,
+                                                            0,
+                                                        )),
+                                                    );
+                                                    buffer.lines.set(y, Some(line));
+                                                }
+                                            }
+                                        }
+                                        t
+                                    }
+                                };
+                                t.parse_str(attrs);
+                                t.parse_str("\x1b[1;2r\x1b[4;1H\x1b[4h");
+                                t.parse_str(unit);
+                                t
+                            };
+                            let label = format!(
+                                "{unit:?} at {cols} columns, {kind:?} rows of {len}, attrs \
+                                 {attrs:?}, REP {count}"
+                            );
+                            let mut capped = make();
+                            {
+                                let buffer = capped.buffer();
+                                let row = buffer.lines.get(abs_y(buffer)).unwrap();
+                                assert_eq!(row.len(), len, "{label}: row length");
+                                if kind == Rows::StalePast {
+                                    assert!(
+                                        row.last_combined_key().unwrap() > len,
+                                        "{label}: keys past the end"
+                                    );
+                                }
+                            }
+                            let units: Vec<u32> = unit.chars().map(u32::from).collect();
+                            let effective = capped.handler.rep_equivalent_repeats(&units, count);
+                            capped.parse_str(&format!("\x1b[{count}b"));
+                            let expected =
+                                cols % 2 == 1 && len > cols && effective + 1 >= 2 * per_line;
+                            assert_eq!(
+                                capped.handler.rep_wrap_replays,
+                                u64::from(expected),
+                                "{label}: replays"
+                            );
+                            replayed += capped.handler.rep_wrap_replays;
+                            runs += 1;
+                            let mut uncapped = make();
+                            uncapped.parse_str(&format!("{}\x1b[}}", unit.repeat(count)));
+                            assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(runs, 6 * 3 * 3 * 5 * 3 * 3);
+    assert!(replayed > 750, "{replayed} replays of {runs}");
+}
+
+/// M7 fix round 5 (code review F6 residual), part B2: at the scroll bottom a widened unit's
+/// joiner wraps (odd widths) chain the rows' strings from line to line; REP skips the strings'
+/// copy of the first `m = ceil(K / (cols - 1)) - 1` scrolling ones when at least `max_length`
+/// scrolls follow the `m`-th (the lines they made are then discarded). Rows of strings `cols +
+/// 4 (cols - 1) + 3` cells long (`K mod (cols - 1) = 3`, so `m` is tight), at 7, 9 and 21
+/// columns; scrollback 0, 10 and 1,000; the cursor on the scroll bottom with `scroll_top` 0 and
+/// 2, and above a region at row 1 (descents into rows the scrolls never discard); insert mode
+/// on and off; VS16, a keycap, and (M7 fix round 7, code review F8) units with a joiner before
+/// the widening one (`a U+0301 U+FE0F`, `❤ U+0301 U+FE0F`), whose wrapped cell 0 is a combined
+/// cell the skipped copy would have brought a key 0 to. Counts make the scrolls after the
+/// `m`-th exactly `max_length - 1`, `max_length` and `max_length + 1` (the last line full or
+/// holding one unit), plus a short REP where the chain's lines survive: REP leaves the state of
+/// the uncapped print every time, and `rep_chain_skips` fires exactly on the `>=` side.
+///
+/// Three starts (M7 fix round 7, F8), the kind of the REP's first wrap being an axis of the
+/// bound (`plain` in `chain_copies_to_skip`): column 2 (the unit alone: the first line ends at
+/// `cols - 1`, the first wrap is a joiner wrap), column 3 (one plain cell before the unit: the
+/// first line ends at `cols`, the first wrap is a plain wrap, one more scroll to wait for at the
+/// scroll bottom) and column `cols` (the pending-wrap state: no unit fits, the first wrap is
+/// plain). Hidden side-table contents: strings in every cell, and at 7 columns also stale
+/// entries in the back half of the tail.
+///
+/// Axes (repo lesson): odd widths (the shape needs one; even widths never wrap from `cols -
+/// 1`), rows longer than `cols`, strings in every hidden cell (and stale ones), the start
+/// column; the mutants of the bound (`m - 1`, the discard bound `max_length - 1`, skipping on
+/// descent, `plain = 0`) fail it.
+#[test]
+fn rep_chain_copies_skipped_at_the_scroll_bottom_leave_the_state_of_the_uncapped_print() {
+    // (where the REP starts, as a cursor setup before the unit, whether the first wrap is plain)
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Start {
+        Joiner,
+        Plain,
+        Pending,
+    }
+    let units: [&str; 4] = [VS16, KEYCAP, "a\u{301}\u{fe0f}", "\u{2764}\u{301}\u{fe0f}"];
+    let (mut fired, mut held_back) = (0, 0);
+    let mut by_start = [0u32; 3];
+    for cols in [7usize, 9, 21] {
+        let c = cols - 1;
+        let per_line = cols / 2;
+        let rows = 5;
+        let len = cols + 4 * c + 3;
+        let key = len - 1;
+        let m = key.div_ceil(c) - 1;
+        let scrollbacks: &[usize] = if cols == 7 { &[0, 10, 1_000] } else { &[0, 10] };
+        let stales: &[bool] = if cols == 7 { &[false, true] } else { &[false] };
+        for &scrollback in scrollbacks {
+            let max_length = rows + scrollback;
+            // (region, cursor row, descents to the scroll bottom)
+            let places = [
+                (String::new(), rows, 0),
+                (format!("\x1b[3;{rows}r"), rows, 0),
+                (format!("\x1b[3;{rows}r"), 1, rows - 1),
+            ];
+            for (region, row, descents) in &places {
+                for insert in [false, true] {
+                    for unit in units {
+                        for start in [Start::Joiner, Start::Plain, Start::Pending] {
+                            // (the stale rows: one start each, enough to vary the axis)
+                            for &stale in stales {
+                                if stale && (start as usize) != (scrollback % 3) {
+                                    continue;
+                                }
+                                // (scrolls after the m-th skipped wrap, units on the last line)
+                                let mut shapes: Vec<(isize, usize)> = Vec::new();
+                                for delta in [-1isize, 0, 1] {
+                                    shapes.push((delta, 1));
+                                }
+                                shapes.push((0, per_line));
+                                // a short REP: the chain's lines survive
+                                shapes.push((-(max_length as isize), 1));
+                                for (delta, last) in shapes {
+                                    // units the REP's first line takes: from column 2 it ends at
+                                    // `cols - 1` (a joiner wrap); from column 3 at `cols`; from
+                                    // `cols` none fits (a pending wrap)
+                                    let u0 = match start {
+                                        Start::Joiner => per_line - 1,
+                                        Start::Plain => (cols - 3) / 2,
+                                        Start::Pending => 0,
+                                    };
+                                    // the first scrolling wrap is a plain wrap (no copy, not one
+                                    // of the `m` joiner wraps) when the REP starts at the scroll
+                                    // bottom and its first line ends at `cols`
+                                    let plain =
+                                        usize::from(*descents == 0 && start != Start::Joiner);
+                                    let wraps =
+                                        (descents + plain + m + max_length) as isize + delta;
+                                    let Ok(wraps) = usize::try_from(wraps) else {
+                                        continue;
+                                    };
+                                    if wraps == 0 {
+                                        continue;
+                                    }
+                                    let count = u0 + (wraps - 1) * per_line + last;
+                                    let make = || {
+                                        let mut t = test_handler(
+                                            cols,
+                                            rows,
+                                            [OptionValue::Scrollback(scrollback)],
+                                        );
+                                        with_11_vs16(&mut t);
+                                        let insert = if insert { "\x1b[4h" } else { "" };
+                                        string_lines(
+                                            &mut t,
+                                            len,
+                                            stale,
+                                            &format!("{region}\x1b[{row};1H{insert}"),
+                                        );
+                                        match start {
+                                            Start::Joiner => {}
+                                            Start::Plain => t.parse_str("x"),
+                                            // (the unit takes two cells: the REP starts at `cols`)
+                                            Start::Pending => {
+                                                t.parse_str(&format!("\x1b[{}G", cols - 1));
+                                            }
+                                        }
+                                        t.parse_str(unit);
+                                        t
+                                    };
+                                    let label = format!(
+                                        "{unit:?} at {cols}x{rows}+{scrollback}, {region:?} row \
+                                         {row}, insert {insert}, stale {stale}, start {start:?}, \
+                                         {wraps} wraps (m {m}, plain {plain}, delta {delta}), REP \
+                                         {count}"
+                                    );
+                                    let mut capped = make();
+                                    let at = capped.buffer().x;
+                                    let want = match start {
+                                        Start::Joiner => 2,
+                                        Start::Plain => 3,
+                                        Start::Pending => cols,
+                                    };
+                                    assert_eq!(at, want, "{label}: the REP's start column");
+                                    let units: Vec<u32> = unit.chars().map(u32::from).collect();
+                                    assert_eq!(
+                                        capped.handler.rep_equivalent_repeats(&units, count),
+                                        count,
+                                        "{label}: cut"
+                                    );
+                                    capped.parse_str(&format!("\x1b[{count}b"));
+                                    let expected = delta >= 0;
+                                    assert_eq!(
+                                        capped.handler.rep_chain_skips,
+                                        u64::from(expected),
+                                        "{label}: chain skips"
+                                    );
+                                    if expected {
+                                        fired += 1;
+                                    } else {
+                                        held_back += 1;
+                                    }
+                                    by_start[start as usize] += 1;
+                                    let mut uncapped = make();
+                                    let text = unit.repeat(count);
+                                    assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
+                                    uncapped.parse_str(&format!("{text}\x1b[}}"));
+                                    assert_eq!(
+                                        rep_state(&mut capped),
+                                        rep_state(&mut uncapped),
+                                        "{label}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        fired > 100 && held_back > 50,
+        "{fired} fired, {held_back} held back"
+    );
+    // the instrument: every start ran
+    assert!(by_start.iter().all(|&n| n > 100), "{by_start:?}");
+}
+
+/// M7 fix round 7 (code review F8): the visible case of the chain skip's `plain` term. A unit
+/// with a joiner before the widening one (`❤ U+0301 U+FE0F`) wraps through a combined cell 0, so
+/// a skipped copy that should not have been skipped leaves the head reading `U+FE0F` instead of
+/// `❤ U+0301 U+FE0F` (the review's probe seed 8320: 5x3, scrollback 0, the last row at column 2,
+/// REP 9; over rows of strings, so the copy has a key to bring). Over the counts around that one (the REP's first line ends at `cols - 1`: a joiner
+/// wrap first, so no plain term; one plain cell first: the first wrap is plain) the capped line
+/// reads like the uncapped one. The counter assertions of
+/// `rep_chain_copies_skipped_at_the_scroll_bottom_…` pin the bound itself.
+#[test]
+fn rep_chain_skip_of_a_unit_with_a_joiner_before_the_widening_one_keeps_the_visible_text() {
+    let text = |t: &mut TestTerm| {
+        let buffer = t.buffer();
+        (0..buffer.lines.len())
+            .map(|y| {
+                buffer
+                    .lines
+                    .get(y)
+                    .unwrap()
+                    .translate_to_string(false, None, None, None)
+            })
+            .collect::<Vec<_>>()
+    };
+    let units = ["\u{2764}\u{301}\u{fe0f}", "a\u{301}\u{fe0f}"];
+    let (mut skips, mut compared) = (0, 0);
+    for unit in units {
+        // (rows of strings: `cols` and a few more cells, and `cols + 4 (cols - 1) + 3`)
+        for len in [5usize, 9, 24] {
+            for pre in ["", "x"] {
+                for count in 1..=40usize {
+                    let make = || {
+                        let mut t = test_handler(5, 3, [OptionValue::Scrollback(0)]);
+                        with_11_vs16(&mut t);
+                        string_lines(&mut t, len, false, &format!("\x1b[3;1H{pre}"));
+                        t.parse_str(unit);
+                        t
+                    };
+                    let label = format!("{unit:?} after {pre:?}, rows of {len}, REP {count}");
+                    let mut capped = make();
+                    capped.parse_str(&format!("\x1b[{count}b"));
+                    skips += capped.handler.rep_chain_skips;
+                    let mut uncapped = make();
+                    uncapped.parse_str(&format!("{}\x1b[}}", unit.repeat(count)));
+                    assert_eq!(text(&mut capped), text(&mut uncapped), "{label}: text");
+                    assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+                    compared += 1;
+                }
+            }
+        }
+    }
+    // the instrument: the skip ran in some of them
+    assert_eq!(compared, 480);
+    assert!(skips > 0, "{skips} chain skips");
+}
+
+/// M7 fix round 5 (code review F6 residual): `print_widened_wrap` (REP's direct path for the
+/// repetition whose widening joiner wraps its base) leaves the state of `print_inner` of the
+/// unit, the call it replaces: one call and then a second from the same column (the second
+/// takes the shared head the first made), over rows the wrap scrolls in (scroll bottom, with
+/// and without a region top), the same row below the region, and an existing row reached by
+/// descent; at odd and even widths (an even width takes the joiner wrap from an odd column);
+/// over rows of strings, stale entries or plain cells, of `cols` cells and longer; insert mode
+/// on and off; with an open link and an underline colour now and then; VS16, a keycap, `a
+/// U+FE0F` and a unit with a joiner after the widening one; and a unit whose widening joiner
+/// is not the first (which takes `print_inner` itself). Whole states compare (`rep_state`).
+#[test]
+fn rep_widened_wrap_equals_print_inner() {
+    use crate::buffer::buffer_line::joined_heads;
+    let mut state: u64 = 0x7e57_a11e_5eed_0001;
+    let mut next = |bound: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % bound as u64) as usize
+    };
+    const UNITS: [&str; 6] = [
+        VS16,
+        KEYCAP,
+        "a\u{fe0f}",
+        "\u{2764}\u{fe0f}\u{301}",
+        "\u{2764}\u{301}\u{fe0f}",
+        "a\u{301}\u{fe0f}",
+    ];
+    let (mut shared, mut unshared, mut compared) = (0, 0, 0);
+    for round in 0..1_500 {
+        let cols = [3usize, 5, 7, 9, 21, 4, 8][next(7)];
+        let rows = 3 + next(3);
+        let scrollback = [0, 10][next(2)];
+        let unit = UNITS[next(UNITS.len())];
+        let len = cols + [0, 1, 3 * cols][next(3)];
+        let content = next(4);
+        let place = match next(4) {
+            0 => format!("\x1b[{rows};1H"),
+            1 => format!("\x1b[2;{rows}r\x1b[{rows};1H"),
+            2 => format!("\x1b[1;2r\x1b[{rows};1H"),
+            _ => "\x1b[r\x1b[1;1H".to_string(),
+        };
+        let mut modes = String::new();
+        if next(2) == 0 {
+            modes.push_str("\x1b[4h");
+        }
+        if next(4) == 0 {
+            modes.push_str("\x1b]8;;u\x07");
+        }
+        if next(4) == 0 {
+            modes.push_str("\x1b[4:3;58:5:9m");
+        }
+        // the column where the base lands on the last one and the joiner wraps it
+        let column = cols;
+        let make = || {
+            let mut t = test_handler(cols, rows, [OptionValue::Scrollback(scrollback)]);
+            with_11_vs16(&mut t);
+            match content {
+                0 => string_lines(&mut t, len, false, ""),
+                1 => string_lines(&mut t, len, true, ""),
+                2 => lines_of(&mut t, len, ""),
+                _ => {}
+            }
+            t.parse_str(&place);
+            t.parse_str(&modes);
+            t.parse_str(&format!("\x1b[{column}G"));
+            t
+        };
+        let label = format!(
+            "round {round}: {unit:?} at {cols}x{rows}+{scrollback}, rows of {len} (content \
+             {content}), {place:?}{modes:?}"
+        );
+        let units: Vec<u32> = unit.chars().map(u32::from).collect();
+        let probe = make();
+        let Some(fill) = probe.handler.rep_alike(&units) else {
+            panic!("{label}: the unit does not print alike");
+        };
+        let mut a = make();
+        let mut b = make();
+        let (head, _) = rep_head(&fill, &b.handler.cur_attr_data);
+        let mut joined = None;
+        for call in 0..2 {
+            if call == 1 {
+                // the same column again (the wrap left the cursor at 2)
+                a.parse_str(&format!("\x1b[{column}G"));
+                b.parse_str(&format!("\x1b[{column}G"));
+            }
+            assert!(
+                a.handler.print_inner(&fill.codes, false, false, true),
+                "{label}"
+            );
+            let before = joined_heads();
+            assert!(
+                b.handler
+                    .print_widened_wrap(&fill, &head, &mut joined, true),
+                "{label}"
+            );
+            if joined_heads() > before {
+                shared += 1;
+            } else {
+                unshared += 1;
+            }
+            assert_eq!(rep_state(&mut b), rep_state(&mut a), "{label}, call {call}");
+            compared += 1;
+        }
+    }
+    // the instrument: both ways of adding the joiners ran
+    assert!(compared == 3_000, "{compared}");
+    assert!(shared > 600, "{shared} shared");
+    assert!(unshared > 600, "{unshared} not shared");
+}
+
+/// M7 fix round 4 (code review F6), seeded (the review's random probe): rows of up to `21 cols`
+/// cells mixing strings, stale entries (a combined cell overwritten by a plain one) and plain
+/// cells, at odd and even widths, below a scroll region or at the scroll bottom, with and without
+/// insert mode, then REP of a widened unit (VS16, a keycap under `11-vs16`) or a narrow / wide
+/// one at counts up to 6,000: REP leaves the state of the uncapped print (cut or not). Before
+/// the fix 95 of 1,500 such cases below the region failed, all widened units at odd widths.
+#[test]
+fn rep_over_rows_of_strings_and_stale_entries_leaves_the_state_of_the_uncapped_print_seeded() {
+    let mut state: u64 = 0x1234_5678_9abc_def1;
+    let mut next = |bound: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % bound as u64) as usize
+    };
+    let (mut compared, mut cut, mut odd_widened) = (0, 0, 0);
+    for seed in 0..1_500 {
+        let cols = [3usize, 5, 7, 9, 11, 13, 21, 4, 8][next(9)];
+        let rows = 3 + next(3);
+        let unit = [VS16, KEYCAP, "e\u{301}", "\u{4e2d}"][next(4)];
+        let len = cols + next(20 * cols + 3);
+        let kinds: Vec<usize> = (0..len).map(|_| next(5)).collect();
+        let count = 1 + next(6_000);
+        let insert = next(4) != 0;
+        let below = next(3) != 0;
+        let make = || {
+            let mut t = test_handler(cols, rows, [OptionValue::Scrollback(100)]);
+            with_11_vs16(&mut t);
+            let buffer = t.handler.services.buffer.buffer_mut();
+            for y in 0..buffer.lines.len() {
+                let mut line = BufferLine::new(len, None, false);
+                for (c, &kind) in kinds.iter().enumerate() {
+                    let letter = u32::from(b'A') + (c % 26) as u32;
+                    line.set_cell_from_codepoint(c, letter, 1, &DEFAULT_ATTR_DATA);
+                    match kind {
+                        0 => line.add_codepoint_to_cell(c, 0x300 + (c % 3) as u32, 1),
+                        1 => {
+                            line.add_codepoint_to_cell(c, 0x301, 1);
+                            line.set_cell_from_codepoint(c, letter, 1, &DEFAULT_ATTR_DATA);
+                        }
+                        _ => {}
+                    }
+                }
+                buffer.lines.set(y, Some(line));
+            }
+            let region = if below { "\x1b[1;2r" } else { "" };
+            let insert = if insert { "\x1b[4h" } else { "" };
+            t.parse_str(&format!("{region}\x1b[{rows};1H{insert}"));
+            t.parse_str(unit);
+            t
+        };
+        let text = unit.repeat(count);
+        if text.len() >= MAX_PARSEBUFFER_LENGTH {
+            continue;
+        }
+        let label = format!(
+            "seed {seed}: {unit:?} at {cols}x{rows}, rows of {len}, below the region {below}, \
+             insert {insert}, REP {count}"
+        );
+        let mut capped = make();
+        let units: Vec<u32> = unit.chars().map(u32::from).collect();
+        cut += usize::from(capped.handler.rep_equivalent_repeats(&units, count) < count);
+        odd_widened += usize::from(cols % 2 == 1 && unit.contains('\u{fe0f}'));
+        capped.parse_str(&format!("\x1b[{count}b"));
+        let mut uncapped = make();
+        uncapped.parse_str(&format!("{text}\x1b[}}"));
+        assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+        compared += 1;
+    }
+    // the instrument: most runs compared, many of them cut, a fair share odd-width widened
+    assert!(compared > 1_400, "{compared} compared");
+    assert!(cut > 300, "{cut} cut");
+    assert!(odd_widened > 300, "{odd_widened} odd-width widened");
+}
+
+/// M7 fix round 3 (review S2): below a scroll region in insert mode every wrap lands on the
+/// last row, so once a whole pass leaves what it reads as it found it, the line fill takes the
+/// rest of the whole passes at once (the row's tail as one `insert_block_repeatedly` when it
+/// is longer than the cells a pass pushes into it). For plain, combined, wide, widened and
+/// extended units, inside a link and with screen reader mode, on rows of `cols` cells and
+/// longer (a Windows 10 window narrowed from L columns leaves rows of L cells; `lines_of`
+/// builds them), at a 10,000-line scrollback: REP leaves the state of the uncapped print; the
+/// passes are batched once; and the row is shifted a bounded number of times whatever its
+/// length (before, once per line of the cut floor, `rows + 3` plus one per `cols` of tail).
+#[test]
+fn rep_below_region_batches_settled_passes_and_leaves_the_state_of_the_uncapped_print() {
+    use crate::buffer::buffer_line::insert_passes;
+    type Setup = fn(&mut TestTerm);
+    const BELOW: &str = "\x1b[1;2r\x1b[999;1H\x1b[4h";
+    let plain: Setup = |_| {};
+    let vs16: Setup = with_11_vs16;
+    let cases: [(&str, Setup, &str, &str); 11] = [
+        ("plain", plain, "", "a"),
+        ("cluster", plain, "", "e\u{301}"),
+        ("wide", plain, "", "\u{4e2d}"),
+        ("wide cluster", plain, "", "\u{4e2d}\u{301}"),
+        ("emoji ZWJ", vs16, "", EMOJI_ZWJ),
+        ("VS16", vs16, "", VS16),
+        ("keycap", vs16, "", KEYCAP),
+        ("underline colour", plain, "\x1b[4:3;58:5:9m", "a"),
+        ("open link, VS16", vs16, "\x1b]8;;u\x07", VS16),
+        ("open link, cluster", plain, "\x1b]8;;u\x07", "e\u{301}"),
+        // (M7 fix round 8) a joiner before the widening one
+        ("joiner, VS16", vs16, "", "a\u{301}\u{fe0f}"),
+    ];
+    let mut checked = 0;
+    for &(cols, rows) in &[(8usize, 4usize), (9, 3), (16, 6), (80, 24)] {
+        for &(name, provider, modes, unit) in &cases {
+            for tail in [0, 1, 3 * cols, 24 * cols + 5] {
+                for screen_reader in [false, true] {
+                    if screen_reader && (cols, tail) != (16, 3 * 16) {
+                        continue;
+                    }
+                    let count = 5_000;
+                    let make = || {
+                        let mut t = test_handler(cols, rows, [OptionValue::Scrollback(10_000)]);
+                        provider(&mut t);
+                        if screen_reader {
+                            t.set_option(OptionValue::ScreenReaderMode(true));
+                        }
+                        if tail > 0 {
+                            lines_of(&mut t, cols + tail, "");
+                        }
+                        t.parse_str(modes);
+                        t.parse_str(BELOW);
+                        t.parse_str(unit);
+                        t
+                    };
+                    let label = format!(
+                        "{name} at {cols}x{rows} sb10000, rows of cols + {tail}, screen reader \
+                         {screen_reader}, REP {count}"
+                    );
+                    let mut capped = make();
+                    let repeated = {
+                        let buffer = capped.buffer();
+                        let join = capped.handler.preceding_join_state;
+                        let width = UnicodeService::extract_width(join) as usize;
+                        let x = buffer.x.saturating_sub(width);
+                        buffer.lines.get(abs_y(buffer)).unwrap().get_string(x)
+                    };
+                    let passes = insert_passes();
+                    capped.parse_str(&format!("\x1b[{count}b"));
+                    let passes = insert_passes() - passes;
+                    assert_eq!(capped.handler.rep_fills, 1, "{label}: line fill");
+                    // a few passes before the state settles, the batch, the last partial pass;
+                    // but where a widened unit's joiner wraps it (an odd number of columns),
+                    // the wrap copies the tail's strings into the row (upstream's copy), so the
+                    // row settles only once the tail has: (M7 fix round 7) those passes are
+                    // replayed densely instead, with no insert pass
+                    let widened =
+                        matches!(name, "VS16" | "keycap" | "open link, VS16" | "joiner, VS16");
+                    let replayed = widened && cols % 2 == 1 && tail > 0;
+                    assert_eq!(
+                        capped.handler.rep_cycle_batches,
+                        u64::from(!replayed),
+                        "{label}: batched"
+                    );
+                    assert_eq!(
+                        capped.handler.rep_wrap_replays,
+                        u64::from(replayed),
+                        "{label}: replayed"
+                    );
+                    assert!(passes <= 12, "{label}: {passes} insert passes");
+                    let mut uncapped = make();
+                    let text = repeated.repeat(count);
+                    assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
+                    uncapped.parse_str(&format!("{text}\x1b[}}"));
+                    assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 4 * 11 * 4 + 11, "cases checked");
+
+    // a widened unit on an odd number of columns, over rows whose every cell holds its own
+    // string: the joiner's wrap copies the old row's strings from `cols - 1` on (upstream's
+    // copy), the hidden tail's included, into the row and the tail, so the passes settle only
+    // with the whole line; the batch must not treat the tail as merely pushed
+    for &(cols, rows) in &[(9usize, 3usize), (7, 4), (11, 2)] {
+        for unit in [VS16, KEYCAP] {
+            for tail in [2 * cols, 5 * cols + 3] {
+                let count = 3_001;
+                let make = || {
+                    let mut t = test_handler(cols, rows, [OptionValue::Scrollback(10_000)]);
+                    with_11_vs16(&mut t);
+                    let buffer = t.handler.services.buffer.buffer_mut();
+                    for y in 0..buffer.lines.len() {
+                        let mut line = BufferLine::new(cols + tail, None, false);
+                        for c in 0..cols + tail {
+                            line.set_cell_from_codepoint(c, u32::from('a'), 1, &DEFAULT_ATTR_DATA);
+                            line.add_codepoint_to_cell(c, 0x300 + (c % 60) as u32, 1);
+                        }
+                        buffer.lines.set(y, Some(line));
+                    }
+                    t.parse_str(BELOW);
+                    t.parse_str(unit);
+                    t
+                };
+                let label = format!("{unit:?} over strings at {cols}x{rows}, tail {tail}");
+                let mut capped = make();
+                capped.parse_str(&format!("\x1b[{count}b"));
+                let mut uncapped = make();
+                uncapped.parse_str(&format!("{}\x1b[}}", unit.repeat(count)));
+                assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+                // (the cut leaves too few passes for the whole line to settle here)
+                assert!(capped.handler.rep_cycle_batches <= 1, "{label}: batched");
+            }
+        }
+    }
+
+    // (M7 fix round 4, code review F7) the batch's whole-line check where the joiner's wrap
+    // copies the tail's strings: a hidden tail whose back half holds plain cells with stale
+    // entries (combined cells overwritten by plain ones), at counts below the cut floor, so the
+    // batch fires while the copy still moves those entries; the visible cells settle first, so
+    // a batch that compared only them (and took the tail as merely pushed) would leave other
+    // entries
+    // (M7 fix round 7) VS16 and the keycap take the dense replay of the passes now
+    // (`replay_wrap_passes`); (M7 fix round 8) and so do units with joiners before the widening
+    // one. The batch's whole-line check over a tail is left for rows the replay declines
+    // (string keys far past the row's end), checked after this loop.
+    let (mut batched, mut replayed) = (0, 0);
+    for &(cols, rows) in &[(9usize, 3usize), (7, 4), (11, 2), (5, 3)] {
+        for unit in [VS16, KEYCAP, "a\u{301}\u{fe0f}"] {
+            for tail in [3 * cols, 6 * cols + 2, 2 * cols + 1] {
+                for count in (2..160usize).step_by(3) {
+                    let make = || {
+                        let mut t = test_handler(cols, rows, [OptionValue::Scrollback(10_000)]);
+                        with_11_vs16(&mut t);
+                        lines_of(&mut t, cols + tail, "");
+                        let buffer = t.handler.services.buffer.buffer_mut();
+                        for y in 0..buffer.lines.len() {
+                            let mut line = buffer.lines.get(y).unwrap().clone();
+                            for c in (cols + tail / 2)..(cols + tail) {
+                                line.add_codepoint_to_cell(c, 0x300, 1);
+                                let q = u32::from(b'q');
+                                line.set_cell_from_codepoint(c, q, 1, &DEFAULT_ATTR_DATA);
+                            }
+                            buffer.lines.set(y, Some(line));
+                        }
+                        t.parse_str(BELOW);
+                        t.parse_str(unit);
+                        t
+                    };
+                    let label = format!(
+                        "{unit:?} over a stale tail at {cols}x{rows}, tail {tail}, REP {count}"
+                    );
+                    let mut capped = make();
+                    capped.parse_str(&format!("\x1b[{count}b"));
+                    batched += capped.handler.rep_cycle_batches;
+                    replayed += capped.handler.rep_wrap_replays;
+                    let mut uncapped = make();
+                    uncapped.parse_str(&format!("{}\x1b[}}", unit.repeat(count)));
+                    assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+                }
+            }
+        }
+    }
+    // the batch fired in many of them when written (706 of 1,272 runs, VS16 and the keycap
+    // alone; in fix round 7 353 of the 636 runs of the third unit); the replay fired in 930 of
+    // the 1,272 runs of VS16 and the keycap in fix round 7 and fires for the third unit alike
+    // since fix round 8, so the batch no longer does here
+    assert_eq!(batched, 0, "{batched} batches");
+    assert!(replayed > 900, "{replayed} replays");
+
+    // (M7 fix round 8) a row the replay declines (a string key far past the row's end, past
+    // `len + 2 x held + 4096`): the passes run as before (the per-pass loop and the batch's
+    // whole-line check), for both unit shapes
+    for unit in [VS16, "a\u{301}\u{fe0f}"] {
+        for count in [40usize, 157] {
+            let (cols, rows, tail) = (9usize, 3usize, 3 * 9);
+            let make = || {
+                let mut t = test_handler(cols, rows, [OptionValue::Scrollback(100)]);
+                with_11_vs16(&mut t);
+                lines_of(&mut t, cols + tail, "");
+                let buffer = t.handler.services.buffer.buffer_mut();
+                for y in 0..buffer.lines.len() {
+                    let mut line = buffer.lines.get(y).unwrap().clone();
+                    let far = 4 * (cols + tail) + 5_000;
+                    line.set_cell(
+                        far,
+                        &CellData::from_char_data(&(0, "p\u{301}".to_string(), 1, 0)),
+                    );
+                    buffer.lines.set(y, Some(line));
+                }
+                t.parse_str(BELOW);
+                t.parse_str(unit);
+                t
+            };
+            let label = format!("{unit:?} with a far key at {cols}x{rows}, REP {count}");
+            let mut capped = make();
+            capped.parse_str(&format!("\x1b[{count}b"));
+            assert_eq!(capped.handler.rep_wrap_replays, 0, "{label}: replays");
+            let mut uncapped = make();
+            uncapped.parse_str(&format!("{}\x1b[}}", unit.repeat(count)));
+            assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+        }
+    }
+}
+
+/// Review S3 round 2: a REP whose unit's first code point joins — a lone combining mark left at
+/// `cols - 3` by a wide char skipped at the last column without wraparound, the cursor on it.
+/// Every repetition appends to the one cell before the cursor, which stops growing at
+/// `MAX_COMBINED_CODE_POINTS`, so the cut is `MAX_COMBINED_CODE_POINTS + 2` (the
+/// `A11Y_TEXT_LIMIT` floor under screen reader mode) and leaves the state of the uncapped
+/// print. The unit takes `print`, not the line fill (its base joins).
+#[test]
+fn rep_joining_base_cut_leaves_the_state_of_the_uncapped_print() {
+    for &(cols, rows, sb) in &[
+        (7usize, 3usize, 4usize),
+        (80, 24, 1_000),
+        (300, 100, 10_000),
+    ] {
+        for insert in [false, true] {
+            for vs16 in [false, true] {
+                for screen_reader in [false, true] {
+                    let count = if screen_reader { 3_001 } else { 211 };
+                    let make = || {
+                        let mut t = test_handler(cols, rows, [OptionValue::Scrollback(sb)]);
+                        if vs16 {
+                            with_11_vs16(&mut t);
+                        }
+                        if screen_reader {
+                            t.set_option(OptionValue::ScreenReaderMode(true));
+                        }
+                        let mut s = String::from("\x1b[?7l");
+                        if insert {
+                            s.push_str("\x1b[4h");
+                        }
+                        s.push_str("\x1b[999C\x1b[2D\u{301}x\u{4f60}");
+                        t.parse_str(&s);
+                        t
+                    };
+                    let label = format!(
+                        "{cols}x{rows} sb{sb} insert={insert} vs16={vs16} \
+                         screen_reader={screen_reader} REP {count}"
+                    );
+                    let mut capped = make();
+                    let repeated = {
+                        let buffer = capped.buffer();
+                        let width =
+                            UnicodeService::extract_width(capped.handler.preceding_join_state);
+                        let x = buffer.x.saturating_sub(width as usize);
+                        buffer.lines.get(abs_y(buffer)).unwrap().get_string(x)
+                    };
+                    assert_eq!(
+                        repeated, "\u{301}",
+                        "{label}: the unit begins with a joiner"
+                    );
+                    let units: Vec<u32> = repeated.chars().map(u32::from).collect();
+                    let effective = capped.handler.rep_equivalent_repeats(&units, count);
+                    let floor = if screen_reader {
+                        A11Y_TEXT_LIMIT
+                    } else {
+                        MAX_COMBINED_CODE_POINTS + 2
+                    };
+                    assert_eq!(effective, floor, "{label}: cut floor");
+                    capped.parse_str(&format!("\x1b[{count}b"));
+                    assert_eq!(capped.handler.rep_fills, 0, "{label}: took the fill path");
+                    let mut uncapped = make();
+                    let text = repeated.repeat(count);
+                    assert!(text.len() < MAX_PARSEBUFFER_LENGTH, "{label}");
+                    uncapped.parse_str(&format!("{text}\x1b[}}"));
+                    assert_eq!(rep_state(&mut capped), rep_state(&mut uncapped), "{label}");
+                }
+            }
+        }
     }
 }
