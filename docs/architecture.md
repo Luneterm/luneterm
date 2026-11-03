@@ -572,7 +572,33 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
     L = 1000 at 21 columns 19 ms / 38 us, at 9 columns 49 ms / 209 us; L = 2000 at 21 columns
     80 ms / 145 us, at 9 columns 226 ms / 861 us, at 5 columns 386 ms / 2.91 ms. The surviving
     scroll-bottom chain (R1-D4) can form in the alt buffer too (read from the code, not
-    measured); there `max_length = rows`, so its ceiling is `rows x K` entries.
+    measured); there `max_length = rows`, so its ceiling is `rows x K` entries. Part B (plan
+    revision 2 R2-D1 = build, behind a prototype gate): no linear or bounded-settle closed form
+    exists (planner probes P1, P5), so the passes are replayed in dense arrays instead
+    (`BufferLine::replay_wrap_passes`, called by `InputHandler::replay_wrap_passes` on the last
+    row below the region in insert mode, for a row longer than `cols` and a unit whose first
+    joiner widens a one-cell base: VS16, a keycap). It makes each pass's writes, in order, on
+    the slots and on per-key indexes into the strings and attributes (the strings over every
+    key the copy reads, past the line's end too), and rebuilds the maps once; a pass reads only
+    the row, so the row is compared at pass 0, at `T = ceil((len - cols) / h) + ceil(K' / c) +
+    2` and its doublings, one and two passes after each, and the passes left are cut to their
+    remainder once it repeats (with an odd `h` the pushed cells alternate: period 2, never a
+    fixed point, at 79 columns). State identity: the replay against the real per-pass calls
+    (`replaying_wrap_passes_equals_the_real_per_pass_loop`, 6,000 rounds), the uncapped print
+    over plain rows, stale tails, keys past the end and the narrowed alt buffer, the matrix
+    and the seeded differential; eight mutants (pass count, truncated transient, keys past the
+    end, the stale entry at the base, the copy width, off the last row, without insert mode,
+    unmerged maps) each fail a test. Still `O((L + K)^2 / cols)` per REP that runs the
+    transient, a constant-factor mitigation: `bench-rep.sh` table "REP in insert mode below a
+    region at odd widths" (Windows mode, sb10k, median of 5, before = fix round 6's tree with
+    the same example, same session, load ~6.8), VS16 per input byte, 3-REP stream, L -> cols:
+    2000 -> 79 532 -> 37 us, 1000 -> 21 446 -> 29 us, 2000 -> 21 1.79 ms -> 85 us, 1000 -> 9
+    944 -> 36 us, 2000 -> 9 3.99 ms -> 130 us, 1000 -> 5 2.28 ms -> 117 us, 2000 -> 5 9.58 ms
+    -> 457 us (keycap alike); first REP 1.21 -> 0.072 ms (79) up to 23.1 -> 0.73 ms (5);
+    sustained (unit + REP pairs 11-60) 9.8 -> 6.4 us (79) up to 2.86 ms -> 322 us (5), all
+    below the Q23-accepted link REP (845 us). Plain `a` in the same setup: 29-30 us. Rows of
+    `cols` cells keep the round-3 batch (no tail to push out; the replay's map rebuild cost
+    more there).
 - **Damage** (`Damage`) is coalesced: the union of refresh rows, `full` (resize, buffer switch,
   reset), `cursor_moved`, `scrolled`.
 - **`Viewport`** is a snapshot of the visible rows (`ViewportCell`: text, width, colours as

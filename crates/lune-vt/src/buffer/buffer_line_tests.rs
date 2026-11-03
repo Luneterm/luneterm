@@ -2031,6 +2031,285 @@ mod edge_semantics {
         assert!(one_shift_short > 300, "{one_shift_short}");
     }
 
+    /// LUNETERM: (M7 fix round 7, plan revision 2 fix6) one whole pass of
+    /// `InputHandler::print_repeated` over the last row below the scroll region in insert mode,
+    /// for a widened unit whose joiner wraps its base, from the cursor at `cols - 1`: the calls
+    /// `print_widened_wrap` makes there (the start fix-up, `insert_cells`, the edge fix-up, the
+    /// base, `print_wrap`'s same-row branch: the row marked wrapped, the copy of one cell with
+    /// the strings from a `cells_source` of the row, the clear; the joiners, the stub), then
+    /// the line fill's `insert_cell_strided_then_set` from column 2. The real per-pass loop the
+    /// replay is checked against.
+    #[allow(clippy::too_many_arguments)]
+    fn real_wrap_pass(
+        line: &mut BufferLine,
+        cols: usize,
+        codes: &[(u32, u32)],
+        head: &CellData,
+        stub: &CellData,
+        fill: &CellData,
+        attrs: &AttributeData,
+        joined: &mut Option<JoinedHead>,
+        template: &mut Option<CombinedTemplate>,
+    ) {
+        let c = cols - 1;
+        if line.get_width(c - 1) == 2 {
+            line.set_cell_from_codepoint(c - 1, 0, 1, attrs);
+        }
+        line.insert_cells(c, 1, fill);
+        if line.get_width(c) == 2 {
+            line.set_cell_from_codepoint(c, NULL_CELL_CODE, NULL_CELL_WIDTH, attrs);
+        }
+        line.set_cell_from_codepoint(c, codes[0].0, 1, attrs);
+        line.is_wrapped = true;
+        let source = line.cells_source(c, 1).unwrap();
+        line.copy_cells_from_source(&source, 0, true);
+        line.set_cell_from_codepoint(c, 0, 1, attrs);
+        let shared = line.join_head_shared(0, head, joined);
+        if !shared {
+            line.add_codepoint_to_cell(0, codes[1].0, codes[1].1);
+        }
+        line.set_cell_from_codepoint(1, 0, 0, attrs);
+        for &(code, width) in &codes[2..] {
+            if !shared {
+                line.add_codepoint_to_cell(0, code, width);
+            }
+        }
+        let h = cols / 2;
+        if h > 1 {
+            line.insert_cell_strided_then_set(2, 2, h - 1, fill, c, attrs, (head, stub), template);
+        }
+    }
+
+    /// LUNETERM: (M7 fix round 7, plan revision 2 fix6) `replay_wrap_passes(unit, p)` leaves
+    /// the line `p` real passes leave ([`real_wrap_pass`], each pass's calls), whole lines
+    /// compared: cells, both side tables with stale entries and keys past the end. Axes (repo
+    /// lesson): column parity — the shape needs odd widths, so 3, 5, 7, 9, 21, 79 and random
+    /// odd ones (even widths take no replay; `None` is checked for them); row length — `cols`,
+    /// `cols + 1`, `3 cols` and up to past the settle point; hidden side tables — random rows
+    /// (narrow, wide, combined, extended cells, stale entries, flagged cells without one, keys
+    /// past the end), rows of strings with a stale back half, plain rows; attributes plain,
+    /// with an underline colour, in a link. Passes 0, 1, 2, around the point the old tail has
+    /// left the row, around the point the row repeats, far past it, and random. The expected
+    /// side runs the real loop; past the point where its row equals the row one or two passes
+    /// before (a pass reads only the row), it takes the passes' remainder, which the real
+    /// loop's own determinism gives.
+    #[test]
+    fn replaying_wrap_passes_equals_the_real_per_pass_loop() {
+        let mut seed: u64 = 0x51c3_e0a7_9b26_d48f;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let units: [&[(u32, u32)]; 2] = [
+            &[(0x26a0, 1), (0xfe0f, 2)],
+            &[(0x31, 1), (0xfe0f, 2), (0x20e3, 2)],
+        ];
+        let (mut mid, mut past, mut keys_past, mut plain, mut computed_less) = (0, 0, 0, 0, 0);
+        let mut rounds = 0;
+        while rounds < 6_000 {
+            let cols = match next(8) {
+                0 => 3,
+                1 => 5,
+                2 => 7,
+                3 => 9,
+                4 => 21,
+                5 if next(4) == 0 => 79,
+                _ => 3 + 2 * next(8),
+            };
+            let h = cols / 2;
+            let len = match next(6) {
+                0 => cols,
+                1 => cols + 1,
+                2 => 3 * cols,
+                _ => cols + next(8 * cols + 20),
+            };
+            let mut attrs = AttributeData {
+                fg: 0x0300_0011,
+                ..AttributeData::default()
+            };
+            match next(4) {
+                0 => {
+                    attrs.bg |= BgFlags::HAS_EXTENDED;
+                    attrs.extended = ExtendedAttrs::new(6, 0);
+                }
+                1 => {
+                    attrs.bg |= BgFlags::HAS_EXTENDED;
+                    attrs.extended = ExtendedAttrs::new(0, 3);
+                }
+                _ => {}
+            }
+            let codes = units[next(2)];
+            let mut scratch = BufferLine::new(2, None, false);
+            scratch.set_cell_from_codepoint(0, codes[0].0, 1, &attrs);
+            for &(code, width) in &codes[1..] {
+                scratch.add_codepoint_to_cell(0, code, width);
+            }
+            scratch.set_cell_from_codepoint(1, 0, 0, &attrs);
+            let (mut head, mut stub) = (CellData::new(), CellData::new());
+            scratch.load_cell(0, &mut head);
+            scratch.load_cell(1, &mut stub);
+            let mut fill = null_cell();
+            fill.fg = attrs.fg;
+            fill.bg = attrs.bg;
+            fill.extended = attrs.extended;
+            let kind = next(4);
+            let mut line = match kind {
+                0 | 1 => random_line(&mut next, len),
+                2 => {
+                    // a row of strings, its back half plain cells with stale strings now and then
+                    let mut line = null_line(len);
+                    let stale = next(2) == 0;
+                    for c in 0..len {
+                        line.set_cell_from_codepoint(
+                            c,
+                            u32::from(b'A') + (c % 26) as u32,
+                            1,
+                            &DEFAULT_ATTR_DATA,
+                        );
+                        line.add_codepoint_to_cell(c, 0x300 + (c % 112) as u32, 1);
+                        if stale && c >= cols + (len - cols) / 2 {
+                            line.set_cell_from_codepoint(c, u32::from(b'q'), 1, &DEFAULT_ATTR_DATA);
+                        }
+                    }
+                    line
+                }
+                _ => {
+                    // a plain row
+                    let mut line = null_line(len);
+                    for c in 0..len {
+                        line.set_cell_from_codepoint(
+                            c,
+                            u32::from(b'a') + (c % 26) as u32,
+                            1,
+                            &DEFAULT_ATTR_DATA,
+                        );
+                    }
+                    line
+                }
+            };
+            if next(4) == 0 {
+                line.combined
+                    .insert(len + next(3 * cols + 2), "past".into());
+            }
+            if next(6) == 0 {
+                line.extended_attrs
+                    .insert(len + next(3), ExtendedAttrs::new(7, 7));
+            }
+            let unit = WrapUnit {
+                cols,
+                base: codes[0].0,
+                head: &head,
+                stub: &stub,
+                fill: &fill,
+                attrs: &attrs,
+            };
+            // the real loop, its rows kept until it repeats one or two passes apart
+            let tail_out = (len - cols).div_ceil(h);
+            let bound = tail_out + line.last_combined_key().unwrap_or(0).div_ceil(cols - 1) + 8;
+            let mut rows = vec![line.clone()];
+            let (mut joined, mut template) = (None, None);
+            let mut repeat: Option<(usize, usize)> = None;
+            while repeat.is_none() && rows.len() <= 4 * bound + 8 {
+                let mut row = rows.last().unwrap().clone();
+                real_wrap_pass(
+                    &mut row,
+                    cols,
+                    codes,
+                    &head,
+                    &stub,
+                    &fill,
+                    &attrs,
+                    &mut joined,
+                    &mut template,
+                );
+                let n = rows.len();
+                // (a row and the next differ only in `is_wrapped` after pass 0)
+                let same = |a: &BufferLine, b: &BufferLine| {
+                    a.data == b.data
+                        && a.combined == b.combined
+                        && a.extended_attrs == b.extended_attrs
+                };
+                for apart in [1, 2] {
+                    if repeat.is_none()
+                        && n >= apart
+                        && n - apart >= 1
+                        && same(&row, &rows[n - apart])
+                    {
+                        repeat = Some((n - apart, apart));
+                    }
+                }
+                rows.push(row);
+            }
+            let Some((settle, period)) = repeat else {
+                panic!(
+                    "round {rounds}: the real loop did not repeat within {} passes",
+                    rows.len()
+                );
+            };
+            let expected_at = |p: usize| -> BufferLine {
+                match p < rows.len() {
+                    true => rows[p].clone(),
+                    false => rows[settle + (p - settle) % period].clone(),
+                }
+            };
+            let choices = [
+                0,
+                1,
+                2,
+                tail_out.saturating_sub(1),
+                settle.saturating_sub(1),
+                settle,
+                settle + 1,
+                settle + 2,
+                1_000_003,
+                next(2 * settle + 4),
+            ];
+            let p = choices[next(choices.len())];
+            let mut replayed = line.clone();
+            let done = replayed.replay_wrap_passes(&unit, p);
+            match p {
+                0 => assert_eq!(done, None, "round {rounds}: no passes"),
+                _ => {
+                    let done = done.unwrap();
+                    assert!(done <= p);
+                    computed_less += usize::from(done < p);
+                    replayed.is_wrapped = true;
+                }
+            }
+            let expected = expected_at(p);
+            assert_eq!(
+                replayed, expected,
+                "round {rounds}: cols {cols} len {len} kind {kind} codes {codes:?} attrs {attrs:?} \
+                 p {p} (settle {settle}, period {period}, tail out {tail_out}) line {line:?}"
+            );
+            match p {
+                0 => {}
+                p if p < settle => mid += 1,
+                p if p > settle => past += 1,
+                _ => {}
+            }
+            keys_past += usize::from(line.last_combined_key().is_some_and(|k| k >= len));
+            plain += usize::from(kind == 3);
+            // even widths: no replay
+            let mut even = line.clone();
+            let even_unit = WrapUnit {
+                cols: cols + 1,
+                ..unit
+            };
+            if len > cols {
+                assert_eq!(even.replay_wrap_passes(&even_unit, 3), None);
+            }
+            rounds += 1;
+        }
+        assert!(mid > 1_000, "{mid} mid-transient");
+        assert!(past > 1_000, "{past} past the repeat");
+        assert!(keys_past > 300, "{keys_past} with keys past the end");
+        assert!(plain > 300, "{plain} plain rows");
+        assert!(computed_less > 300, "{computed_less} cut at the repeat");
+    }
+
     /// LUNETERM: (M7 fix round 3, review S2) `insert_block_repeatedly` leaves exactly what its
     /// loop leaves (per step: the cells right of `start` shifted by `step`, the next cells of
     /// the block pushed at `start`, the line-end fix-up), whole lines compared: cells and both

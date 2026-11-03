@@ -7,8 +7,10 @@
 # joiner wraps its base there), and (M7 fix round 4) REP at odd widths over narrowed rows of
 # combined strings (that wrap copies the rows' strings; M7 fix round 5 adds rows not narrowed,
 # the even widths 80 and 22 as the same-unit reference, plain `a` and the keycap at the scroll
-# bottom). Median of 5 fresh terminals each; prints one table with the machine's load
-# average. No pass/fail threshold: the S7 residual steps (plan M7 11 to 13) and the M7 fix rounds
+# bottom), and (M7 fix round 7) REP in insert mode below a region at odd widths over narrowed
+# rows of strings at the security review's geometries (first REP and sustained rows too;
+# `REP_COST_TABLE=odd_widths_insert` or `below_region_odd` runs that table alone). Median of 5 fresh terminals
+# each; prints one table with the machine's load average. No pass/fail threshold: the S7 residual steps (plan M7 11 to 13) and the M7 fix rounds
 # compare their before and after tables from this script.
 # Needs only a Rust toolchain. Takes about a minute; run it on an idle machine and read the load
 # average printed with the table.
