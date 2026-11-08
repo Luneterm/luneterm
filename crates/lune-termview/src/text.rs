@@ -73,6 +73,45 @@ fn shape_line(
     (glyphs, advance)
 }
 
+/// Shapes "W" in `family`; returns the resolved face's (ascent, descent) in em, read with swash,
+/// and the shaped advance in logical px. `None` when no face resolves.
+fn w_face_em(
+    fs: &mut FontSystem,
+    family: &str,
+    size: f32,
+    line_height: f32,
+) -> (Option<(f64, f64)>, f32) {
+    let attrs = Attrs::new().family(Family::Name(family));
+    let mut buffer = make_buffer(size, line_height);
+    let (glyphs, advance) = shape_line(fs, &mut buffer, &attrs, "W");
+    let face = glyphs.first().and_then(|g| {
+        let font = fs.get_font(g.font_id, g.weight)?;
+        let m = font.as_swash().metrics(&[]);
+        let upem = f64::from(m.units_per_em);
+        (upem > 0.0).then(|| (f64::from(m.ascent) / upem, f64::from(m.descent) / upem))
+    });
+    (face, advance)
+}
+
+/// The font's natural line height at `size` logical px: `(ascent + descent) / units_per_em ×
+/// size` of the face cosmic-text resolves for `family`, unrounded. With no face at all it is
+/// `1.2 × size`, `cell_metrics`'s fallback. A `size` that is not a positive finite number counts
+/// as 13, as in `cell_metrics`; the result is always finite and above 0.
+pub fn natural_line_height(fs: &mut FontSystem, family: &str, size: f32) -> f32 {
+    // The cap keeps `1.2 * size` finite for any finite input.
+    let size = sane_px(size, 13.0).min(1.0e6);
+    let (face, _) = w_face_em(fs, family, size, size * 1.3);
+    let height = match face {
+        Some((asc_em, desc_em)) => ((asc_em + desc_em) * f64::from(size)) as f32,
+        None => 1.2 * size,
+    };
+    if height.is_finite() && height > 0.0 {
+        height
+    } else {
+        1.2 * size
+    }
+}
+
 /// Cell metrics per D3, in physical px. `advance` is the shaped advance of "W" in
 /// `fonts.family`. With no face at all, the cell is 0.6 em wide and 1.2 em tall (ascent 0.95 em,
 /// descent 0.25 em); a bad `scale` counts as 1 and nothing panics.
@@ -83,17 +122,7 @@ pub fn cell_metrics(fs: &mut FontSystem, fonts: &TermFonts, scale: f32) -> CellM
     let s = f64::from(scale);
     let size64 = f64::from(size);
 
-    let attrs = Attrs::new().family(Family::Name(&fonts.family));
-    let mut buffer = make_buffer(size, line_height);
-    let (glyphs, advance) = shape_line(fs, &mut buffer, &attrs, "W");
-
-    // ascent, descent in em
-    let face = glyphs.first().and_then(|g| {
-        let font = fs.get_font(g.font_id, g.weight)?;
-        let m = font.as_swash().metrics(&[]);
-        let upem = f64::from(m.units_per_em);
-        (upem > 0.0).then(|| (f64::from(m.ascent) / upem, f64::from(m.descent) / upem))
-    });
+    let (face, advance) = w_face_em(fs, &fonts.family, size, line_height);
     let (cell_w, asc_em, desc_em) = match face {
         Some((a, d)) if advance > 0.0 => ((f64::from(advance) * s).round().max(1.0), a, d),
         _ => ((0.6 * size64 * s).round().max(1.0), 0.95, 0.25),
@@ -327,6 +356,62 @@ mod tests {
             "{m:?}"
         );
         assert_eq!((m.font_size, m.scale), (13.0, 1.0));
+    }
+
+    #[test]
+    fn natural_line_height_is_the_swash_formula_for_the_face() {
+        let mut r = rig();
+        // The test's own reading of the committed font: parse the face and use swash directly.
+        let id =
+            r.fs.db()
+                .faces()
+                .find(|f| f.families[0].0 == r.mono && f.weight == fontdb::Weight::NORMAL)
+                .expect("regular face")
+                .id;
+        let m =
+            r.fs.get_font(id, Weight::NORMAL)
+                .expect("font")
+                .as_swash()
+                .metrics(&[]);
+        let upem = f64::from(m.units_per_em);
+        for size in [13.0_f32, 12.0, 20.5, 1.0] {
+            let want =
+                ((f64::from(m.ascent) + f64::from(m.descent)) / upem * f64::from(size)) as f32;
+            let got = natural_line_height(&mut r.fs, &r.mono.clone(), size);
+            assert_eq!(got, want, "size {size}");
+        }
+        // Not rounded to whole px, and what cell_metrics' char_h at 1x rounds up from.
+        let got = natural_line_height(&mut r.fs, &r.mono.clone(), 13.0);
+        assert_ne!(got, got.round(), "{got}");
+        let f = fonts(&r, false);
+        let m1 = cell_metrics(&mut r.fs, &f, 1.0);
+        assert_eq!(got.ceil() as u32, m1.char_h);
+    }
+
+    #[test]
+    fn natural_line_height_without_a_face_is_1_2_em() {
+        let mut fs =
+            FontSystem::new_with_locale_and_db("en-US".to_owned(), fontdb::Database::new());
+        assert_eq!(natural_line_height(&mut fs, "Nope", 13.0), 1.2 * 13.0);
+        assert_eq!(natural_line_height(&mut fs, "Nope", 20.0), 1.2 * 20.0);
+    }
+
+    #[test]
+    fn natural_line_height_sanitizes_the_size() {
+        let mut r = rig();
+        let mono = r.mono.clone();
+        let default = natural_line_height(&mut r.fs, &mono, 13.0);
+        for bad in [0.0, -3.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(natural_line_height(&mut r.fs, &mono, bad), default, "{bad}");
+        }
+        let mut empty =
+            FontSystem::new_with_locale_and_db("en-US".to_owned(), fontdb::Database::new());
+        for bad in [0.0, f32::NAN, f32::MAX] {
+            let h = natural_line_height(&mut empty, "Nope", bad);
+            assert!(h.is_finite() && h > 0.0, "{bad}: {h}");
+        }
+        let huge = natural_line_height(&mut r.fs, &mono, f32::MAX);
+        assert!(huge.is_finite() && huge > 0.0);
     }
 
     #[test]

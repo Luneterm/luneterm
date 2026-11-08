@@ -747,6 +747,101 @@ fn viewport_with_rows_streams_the_same_rows_and_keeps_the_rest() {
     assert_eq!(rest, full);
 }
 
+/// `viewport_state` is `viewport()` minus the cells and links, whatever the screen shows.
+fn assert_state_matches_viewport(t: &Terminal) {
+    let (v, s) = (t.viewport(), t.viewport_state());
+    assert_eq!((s.cols, s.rows), (v.cols, v.rows));
+    assert_eq!(s.cursor, v.cursor);
+    assert_eq!(
+        (s.viewport_top, s.base_y, s.total_lines, s.is_at_bottom),
+        (v.viewport_top, v.base_y, v.total_lines, v.is_at_bottom)
+    );
+    assert_eq!(s.title, v.title);
+    assert_eq!(s.alt_screen, v.alt_screen);
+}
+
+#[test]
+fn viewport_state_follows_a_scrolled_back_viewport() {
+    let mut t = term([OptionValue::Cols(4), OptionValue::Rows(2)]);
+    t.write_str("l0\r\nl1\r\nl2\r\nl3");
+    let s = t.viewport_state();
+    assert_eq!((s.cols, s.rows), (4, 2));
+    assert_eq!((s.viewport_top, s.base_y, s.total_lines), (2, 2, 4));
+    assert!(s.is_at_bottom);
+    assert_state_matches_viewport(&t);
+    t.scroll_lines(-1);
+    let s = t.viewport_state();
+    assert_eq!((s.viewport_top, s.base_y, s.total_lines), (1, 2, 4));
+    assert!(s.viewport_top < s.base_y && !s.is_at_bottom);
+    // The cursor is on line 3, below the shown lines 1..=2: hidden, reported at row 0.
+    assert!(!s.cursor.visible);
+    assert_eq!(s.cursor.y, 0);
+    t.scroll_to_bottom();
+    assert!(t.viewport_state().cursor.visible);
+    t.scroll_lines(-1);
+    t.scroll_to_top();
+    let s = t.viewport_state();
+    assert_eq!((s.viewport_top, s.is_at_bottom), (0, false));
+    assert!(!s.cursor.visible);
+    assert_eq!(s.cursor.y, 0);
+    assert_state_matches_viewport(&t);
+    t.scroll_to_bottom();
+    assert!(t.viewport_state().is_at_bottom);
+}
+
+#[test]
+fn viewport_state_reports_the_alt_screen() {
+    let mut t = term([OptionValue::Cols(4), OptionValue::Rows(2)]);
+    t.write_str("a\r\nb\r\nc");
+    assert!(!t.viewport_state().alt_screen);
+    t.write_str("\x1b[?1049h");
+    let s = t.viewport_state();
+    assert!(s.alt_screen);
+    assert_eq!((s.viewport_top, s.base_y, s.total_lines), (0, 0, 2));
+    assert_state_matches_viewport(&t);
+    t.write_str("\x1b[?1049l");
+    let s = t.viewport_state();
+    assert!(!s.alt_screen);
+    assert!(s.total_lines > 2, "the main buffer kept its scrollback");
+    assert_state_matches_viewport(&t);
+}
+
+#[test]
+fn viewport_state_reports_a_hidden_cursor_style_blink_and_title() {
+    let mut t = term([OptionValue::Cols(6), OptionValue::Rows(2)]);
+    t.write_str("ab");
+    let s = t.viewport_state();
+    assert_eq!((s.cursor.x, s.cursor.y, s.cursor.visible), (2, 0, true));
+    assert_eq!(
+        (s.cursor.style, s.cursor.blink),
+        (CursorStyle::Block, false)
+    );
+    assert_eq!(&*s.title, "");
+
+    t.write_str("\x1b[?25l");
+    assert!(!t.viewport_state().cursor.visible);
+    t.write_str("\x1b[?25h");
+    assert!(t.viewport_state().cursor.visible);
+
+    // DECSCUSR: 5 = blinking bar, 4 = steady underline
+    t.write_str("\x1b[5 q");
+    let s = t.viewport_state();
+    assert_eq!((s.cursor.style, s.cursor.blink), (CursorStyle::Bar, true));
+    t.write_str("\x1b[4 q");
+    let s = t.viewport_state();
+    assert_eq!(
+        (s.cursor.style, s.cursor.blink),
+        (CursorStyle::Underline, false)
+    );
+
+    t.write_str("\x1b]0;hello\x07");
+    let s = t.viewport_state();
+    assert_eq!(&*s.title, "hello");
+    // The title is shared, not copied.
+    assert!(std::sync::Arc::ptr_eq(&s.title, &t.viewport_state().title));
+    assert_state_matches_viewport(&t);
+}
+
 #[test]
 fn viewport_cursor_visibility_style_and_blink() {
     let mut t = term([OptionValue::Cols(5), OptionValue::Rows(2)]);
