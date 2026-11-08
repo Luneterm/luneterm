@@ -191,9 +191,9 @@ pub fn dump_frames(dir: &Path) -> Result<Vec<PathBuf>, DumpError> {
 }
 
 /// The frames drawn per scene: the first starts what animates (a dialog opening, a tab revealed),
-/// the last, a second and a half on, is the picture. A scene's clock starts at zero on a fresh UI
+/// the last, after the focus animations, is the picture. A scene's clock starts at zero on a fresh UI
 /// state, so a scene cannot show what an earlier one left behind.
-const FRAME_TIMES_MS: [u64; 3] = [0, 800, 1600];
+const FRAME_TIMES_MS: [u64; 4] = [0, 800, 1600, 2400];
 
 /// Draws `scene` into a fresh target, warming up first as the toolkit's own dump does, and writes
 /// the last frame.

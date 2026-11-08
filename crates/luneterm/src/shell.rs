@@ -17,7 +17,7 @@ use lune_ui::scene::LayerId;
 use lune_ui::text::{Spec, Style};
 use lune_ui::ui::{Sense, Ui};
 use lune_ui::widgets::caption::{CaptionButton, CaptionOptions};
-use lune_ui::widgets::dialog::{Cancel, Dialog, DialogGlass};
+use lune_ui::widgets::dialog::{Cancel, Dialog, DialogGlass, DialogOptions};
 use lune_ui::widgets::field::FieldOptions;
 use lune_ui::widgets::scrollbar::{self, ThumbGeometry, thumb_geometry};
 use lune_ui::widgets::tab_strip::{self, Tab as StripItem, TabEvent, TabKey, TabStripOptions};
@@ -495,7 +495,16 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
 
 /// The close-confirm or rename dialog (Lunegit's copy, `en.json`; layout as the spike's).
 fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
-    let glass = DialogGlass::of(ui.theme());
+    // The window layer's glass under the card and no blur of the scrim, so the terminal stays
+    // readable behind the dialog (director verdict, step 2 batch 1). Step 6's dialogs use the same.
+    let glass = DialogGlass {
+        fill: ui.theme().glass.window.premultiplied(),
+        noise: true,
+    };
+    let options = DialogOptions {
+        scrim_blur: false,
+        ..DialogOptions::default()
+    };
     match modal {
         Modal::Confirm { message, dont_ask } => {
             let dialog = Dialog {
@@ -505,7 +514,7 @@ fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
                 confirm: "Close",
                 cancel: Cancel::Default,
             };
-            let r = ui.dialog("confirm-close", &dialog, &glass, |ui, x, y, w| {
+            let r = ui.dialog_with("confirm-close", &dialog, &options, &glass, |ui, x, y, w| {
                 let rect = Rect::new(x, y + 12.0, w, 22.0);
                 ui.checkbox("dont-ask", rect, dont_ask, "Don't ask again");
             });
@@ -527,7 +536,7 @@ fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
             };
             let mut submitted = false;
             let mut ime = None;
-            let r = ui.dialog("rename-tab", &dialog, &glass, |ui, x, y, w| {
+            let r = ui.dialog_with("rename-tab", &dialog, &options, &glass, |ui, x, y, w| {
                 let theme = *ui.theme();
                 let label = Spec::plain(
                     "TAB NAME",
