@@ -1202,8 +1202,48 @@ fn session_threaded_no_deadlock_and_writer_caps() {
     }
 }
 
+/// T5 (deterministic part, review r10 F1): the interleaving that lost a wake under the old
+/// swap-then-store publish, replayed by hand on one thread.
+/// Steps: a UI `take_update` clears the flag, the engine publishes U1 (wake), the same take
+/// takes U1, then the engine publishes U2 and, between its store and its swap, the UI handles
+/// U1's wake (clear, take). Invariant: an Update in the mailbox always has a wake pending.
+#[test]
+fn session_publish_wake_is_never_lost() {
+    let mut rig = rig_published();
+    let u1 = rig.feed(b"one").expect("u1");
+    let u2 = rig.feed(b"two").expect("u2");
+    let shared = Shared::new(Arc::new(Stats::default()));
+    let calls = std::cell::Cell::new(0u32);
+    let wake = || calls.set(calls.get() + 1);
+    let u1_seq = u1.seq;
+    let mut u1 = Some(u1);
+    let first = shared.take_update_with(&mut || {
+        shared.publish_with(u1.take().expect("once"), &wake, &mut || {});
+    });
+    assert_eq!(first.map(|u| u.seq), Some(u1_seq), "the take finds U1");
+    assert_eq!(calls.get(), 1, "U1 woke the UI");
+    let u2_seq = u2.seq;
+    let mut handled = None;
+    shared.publish_with(u2, &wake, &mut || handled = Some(shared.take_update()));
+    let left = lock(&shared.mailbox).as_ref().map(|u| u.seq);
+    let pending = shared.wake_pending.load(Ordering::SeqCst);
+    assert!(
+        left.is_none() || pending,
+        "U2 left in the mailbox with no wake pending (lost wake)"
+    );
+    let handled = handled.expect("the wake was handled").map(|u| u.seq);
+    assert_eq!(
+        handled.or(left),
+        Some(u2_seq),
+        "U2 is taken or still waiting"
+    );
+    assert!(calls.get() <= 2, "at most one wake per Update");
+}
+
 /// T5: 10,000 publish/take cycles against racing consumers (one woken, one spinning). Every
-/// Update is taken exactly once, in order, and waker calls equal Updates published.
+/// Update is taken exactly once, in order. A spinning take can beat an Update's wake to it, so
+/// waker calls are at most the Updates published, never more (none is lost: every Update is
+/// taken, and the deterministic interleaving test above covers the lost-wake order).
 #[test]
 fn session_threaded_publish_and_wake() {
     let (pty, _probe, tx) = FakePty::scripted(Gate::Open);
@@ -1273,10 +1313,10 @@ fn session_threaded_publish_and_wake() {
         seqs.iter().enumerate().all(|(i, &s)| s == i as u64 + 1),
         "each exactly once"
     );
-    assert_eq!(
-        woken.calls.load(Ordering::SeqCst),
-        published,
-        "one wake per Update"
+    let calls = woken.calls.load(Ordering::SeqCst);
+    assert!(
+        (1..=published).contains(&calls),
+        "{calls} wakes for {published} Updates: at most one per Update"
     );
 }
 
