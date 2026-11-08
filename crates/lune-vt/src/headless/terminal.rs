@@ -48,7 +48,7 @@ use crate::buffer::marker::MarkerId;
 use crate::core_terminal::{CoreTerminal, core_reset, handle_windows_pty_option_change};
 use crate::engine::{
     CellColor, Damage, HostEvent, Modes, MouseEncoding, MouseTracking, UnderlineStyle, Viewport,
-    ViewportCell, ViewportCursor, VtEngine,
+    ViewportCell, ViewportCursor, ViewportState, VtEngine,
 };
 use crate::ext::{ExtensionError, StandardExtensions};
 use crate::extension::Extension;
@@ -373,14 +373,10 @@ impl Terminal {
     /// [`Viewport`] has an empty `cells`, everything else as [`Terminal::viewport`]. For a host
     /// that converts the cells itself and would otherwise hold a second copy of the screen.
     pub fn viewport_with_rows(&self, mut on_row: impl FnMut(&[ViewportCell])) -> Viewport {
-        let input_handler = self.core.input_handler();
-        let services = input_handler.services();
-        let (cols, rows) = (services.buffer.cols, services.buffer.rows);
-        let buffer = services.buffer.buffer();
-
+        let state = self.viewport_state();
         let mut links = BTreeMap::new();
-        let mut row = Vec::with_capacity(cols);
-        for y in 0..rows {
+        let mut row = Vec::with_capacity(state.cols);
+        for y in 0..state.rows {
             self.read_row(y, &mut row);
             for cell in &row {
                 if cell.link_id != 0 && !links.contains_key(&cell.link_id) {
@@ -391,6 +387,33 @@ impl Terminal {
             }
             on_row(&row);
         }
+
+        Viewport {
+            cols: state.cols,
+            rows: state.rows,
+            cells: Vec::new(),
+            cursor: state.cursor,
+            viewport_top: state.viewport_top,
+            base_y: state.base_y,
+            total_lines: state.total_lines,
+            is_at_bottom: state.is_at_bottom,
+            title: state.title,
+            alt_screen: state.alt_screen,
+            links,
+        }
+    }
+
+    // LUNETERM: O(1) read of everything in a viewport except its cells and links, so a host can
+    // follow the cursor, title and scroll position every frame without `read_row` per row (an
+    // addition; upstream has no single accessor). `viewport_with_rows` builds its non-cell
+    // fields from this, so there is one code path.
+    /// The viewport's size, cursor, scroll position, title and screen kind, without cells or
+    /// links: no per-cell work, and the title is shared, not copied.
+    pub fn viewport_state(&self) -> ViewportState {
+        let input_handler = self.core.input_handler();
+        let services = input_handler.services();
+        let (cols, rows) = (services.buffer.cols, services.buffer.rows);
+        let buffer = services.buffer.buffer();
 
         let cursor_line = buffer.ybase.saturating_add(buffer.y);
         let inside = cursor_line >= buffer.ydisp && cursor_line - buffer.ydisp < rows;
@@ -408,10 +431,9 @@ impl Terminal {
             blink: dec.cursor_blink.unwrap_or(opts.cursor_blink),
         };
 
-        Viewport {
+        ViewportState {
             cols,
             rows,
-            cells: Vec::new(),
             cursor,
             viewport_top: buffer.ydisp,
             base_y: buffer.ybase,
@@ -419,7 +441,6 @@ impl Terminal {
             is_at_bottom: buffer.ydisp >= buffer.ybase,
             title: input_handler.window_title_shared(),
             alt_screen: services.buffer.buffers.is_alt_active(),
-            links,
         }
     }
 

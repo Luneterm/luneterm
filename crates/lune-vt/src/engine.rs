@@ -314,6 +314,25 @@ pub struct Viewport {
     pub links: BTreeMap<u32, String>,
 }
 
+/// [`Viewport`] without its cells and links: what a host reads every frame (`Terminal::viewport_state`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewportState {
+    pub cols: usize,
+    pub rows: usize,
+    pub cursor: ViewportCursor,
+    /// First buffer line shown (upstream `ydisp`).
+    pub viewport_top: usize,
+    /// First line of the bottom page (upstream `ybase`).
+    pub base_y: usize,
+    /// Lines in the active buffer, scrollback included.
+    pub total_lines: usize,
+    /// The viewport shows the bottom page.
+    pub is_at_bottom: bool,
+    /// The window title, shared with the engine.
+    pub title: Arc<str>,
+    pub alt_screen: bool,
+}
+
 /// A VT engine instance: one per terminal session. Not thread-safe by design; the session owns it.
 pub trait VtEngine {
     fn columns(&self) -> u16;

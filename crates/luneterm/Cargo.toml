@@ -12,6 +12,23 @@ lune-vt.workspace = true
 lune-pty.workspace = true
 lune-ui.workspace = true
 lune-termview.workspace = true
+# Versions as the toolkit's lock resolves them (winit 0.30, wgpu 30); the facade re-exports neither.
+winit = "0.30"
+wgpu = "30"
+pollster = "0.4"
+
+# The DLL-search test (tests/dll_search_gpu.rs) loads and inspects modules.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "dll_search_gpu"
+harness = false
+
+# The end-to-end harness: real PTY children, re-run as the child (tests/e2e/child.rs).
+[[test]]
+name = "e2e"
+harness = false

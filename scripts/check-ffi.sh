@@ -93,7 +93,7 @@ build() {
   local label="$1"
   shift
   echo "check-ffi: building ($label)" >&2
-  cargo build -p luneterm-ffi --profile ffi-release --message-format=json "$@" > "$WORK/build.json"
+  cargo build --locked -p luneterm-ffi --profile ffi-release --message-format=json "$@" > "$WORK/build.json"
   python3 -I - "$WORK/build.json" << 'PY'
 import json, sys
 found = []

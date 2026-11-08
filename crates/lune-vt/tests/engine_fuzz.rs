@@ -18,7 +18,8 @@
 //! Checked per seed:
 //!  - no panic (debug builds keep integer-overflow checks on);
 //!  - bounds after every operation (`check_bounds`): buffer line counts, title stacks, link table
-//!    against live markers, event bytes against the bytes written, viewport shape, kitty stacks
+//!    against live markers, event bytes against the bytes written, viewport shape and
+//!    `viewport_state` against `viewport()`, kitty stacks
 //!    (at most 8 entries, flags within the supported bits) and modifyOtherKeys (at most 2); per
 //!    drain at most one each of `ClipboardWrite`, `CwdChanged` and `Progress` and at most 64
 //!    `UnknownOsc`; a reset leaves the keyboard protocol cleared;
@@ -1502,6 +1503,36 @@ fn check_bounds(sim: &Sim) {
     assert!(term.read_row(rows.saturating_sub(1), &mut cells));
     assert_eq!(cells.len(), cols, "read_row width");
     assert!(!term.read_row(rows, &mut cells), "read_row past the bottom");
+
+    // `viewport_state` (M9 D3) is `viewport()` without its cells and links, and agrees with the
+    // engine's own accessors.
+    let state = term.viewport_state();
+    assert_eq!(state.cols, viewport.cols, "state cols");
+    assert_eq!(state.rows, viewport.rows, "state rows");
+    assert_eq!(state.cursor, viewport.cursor, "state cursor");
+    assert_eq!(
+        state.viewport_top, viewport.viewport_top,
+        "state viewport_top"
+    );
+    assert_eq!(state.base_y, viewport.base_y, "state base_y");
+    assert_eq!(state.total_lines, viewport.total_lines, "state total_lines");
+    assert_eq!(
+        state.is_at_bottom, viewport.is_at_bottom,
+        "state is_at_bottom"
+    );
+    assert_eq!(state.title, viewport.title, "state title");
+    assert_eq!(state.alt_screen, viewport.alt_screen, "state alt_screen");
+    assert_eq!((state.cols, state.rows), (cols, rows));
+    assert_eq!(
+        state.total_lines,
+        active.lines.len(),
+        "state total_lines vs buffer"
+    );
+    assert_eq!(state.viewport_top, active.ydisp);
+    assert_eq!(state.base_y, active.ybase);
+    assert_eq!(state.is_at_bottom, active.ydisp >= active.ybase);
+    assert_eq!(state.alt_screen, buffers.is_alt_active());
+    assert_eq!(&*state.title, term.core().input_handler().window_title());
 }
 
 // ------------------------------------------------------------------------------------------
