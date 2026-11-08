@@ -244,7 +244,7 @@ pub unsafe extern "C" fn luneterm_engine_resize(
 /// # Safety
 ///
 /// `engine` is NULL, misaligned, or a live handle; `cols` and `rows` are NULL, misaligned, or
-/// writable.
+/// writable, and distinct from each other: aliasing them is undefined behaviour.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn luneterm_engine_size(
     engine: *mut LunetermEngine,

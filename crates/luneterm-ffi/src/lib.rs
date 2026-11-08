@@ -14,7 +14,10 @@
 //!
 //! The contract lives in the header, `include/luneterm.h` (types, constants, ownership and
 //! threading rules), and in `docs/architecture.md` ("luneterm-ffi (C ABI)"). `viewport.cursor_x`
-//! is `0..=cols + 1` and is not clamped. The cap-memory example needs
+//! is `0..=cols + 1` and is not clamped. The caps (4096 x 2048, scrollback 100,000) do not keep memory
+//! small: a full buffer is `cols x (rows + scrollback)` cells of at least 12 bytes, ~4.7 GiB at
+//! 12 B/cell and ~9.7 GiB at 25 B/cell (derived, not measured); a host that cannot afford that
+//! passes smaller sizes. `luneterm_engine_size`'s two out-parameters must be distinct pointers. The cap-memory example needs
 //! `cargo run --profile ffi-release -p luneterm-ffi --example cap_memory`.
 //!
 //! 64-bit targets only (D6).

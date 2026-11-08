@@ -704,6 +704,8 @@ The Lunegit-side swap (P/Invoke, deleting the V8 host) is not part of M8.
   arrive), one call at a time. A call made while another is running on the same handle returns
   `ERR_BUSY` without waiting; the host serializes. Freeing a handle another thread may still call is
   a host bug (`free` on a busy handle is `ERR_BUSY` and frees nothing).
+- **Aliased out-parameters.** `luneterm_engine_size` has two out-parameters (`cols`, `rows`); they must
+  be distinct pointers, aliasing them is undefined behaviour (the header says so too).
 - **Panics.** A panic is caught, the call returns `ERR_PANIC` and the handle is poisoned (its state
   may break engine invariants): every later call except `luneterm_engine_free` returns
   `ERR_POISONED`. The payload is dropped, never formatted, and the library installs no panic hook.
@@ -715,14 +717,26 @@ The Lunegit-side swap (P/Invoke, deleting the V8 host) is not part of M8.
   prove `catch_unwind` works in the shipping profile.
 - **Caps (D5).** `LUNETERM_MAX_COLS` 4096, `LUNETERM_MAX_ROWS` 2048, `LUNETERM_MAX_SCROLLBACK`
   100000. A size over a cap (at `luneterm_engine_new` or `_resize`) is `ERR_INVALID_ARGUMENT` and
-  changes nothing; below 2 x 1 it is clamped, as the engine does. The caps bound memory: measured on
-  macOS arm64 with `cargo run --profile ffi-release -p luneterm-ffi --example cap_memory` (peak RSS,
-  `getrusage`): 4096 x 2048 with scrollback 0 and every cell filled is 202 MiB (25 bytes per cell,
-  15.6 for letter + combining mark), and one `luneterm_engine_viewport` call raises the peak to
-  439 MiB (slot 224 MiB = 28 bytes per cell, plus the text pool). The security ledger's REP chain
+  changes nothing; below 2 x 1 it is clamped, as the engine does.
+  **Memory at the caps is GiB-scale.** A buffer holds `cols x (rows + scrollback)` cells, each at
+  least 12 bytes (`CELL_SIZE = 3` u32 in `BufferLine`). At the caps that is
+  4096 x (2048 + 100,000) = 417,988,608 cells: **~4.7 GiB at 12 bytes per cell, ~9.7 GiB at the
+  measured 25 bytes per cell (both derived, not measured)**, and a child process fills it by
+  printing ~420 MB of long lines. A host that must bound memory lower chooses smaller
+  `cols`, `rows` and `scrollback` in its config; the library does not lower them (D5 keeps the caps
+  as they are, user decision 2026-11-08).
+  What was measured, on macOS arm64 with
+  `cargo run --profile ffi-release -p luneterm-ffi --example cap_memory` (peak RSS, `getrusage`),
+  is the **scrollback-0** case only: 4096 x 2048 with every cell filled is 202 MiB (25 bytes per
+  cell, 15.6 for letter + combining mark), and one `luneterm_engine_viewport` call raises the peak to
+  439 MiB (slot 224 MiB = 28 bytes per cell, plus the text pool). The viewport call adds only that
+  slot and pool, on top of whatever the buffer already holds. The security ledger's REP chain
   construction (`rep-scroll-bottom-chain-memory`, premise "K is bounded by the display") is bounded by
   the column cap; the example's case (b) at 4096 columns peaks at 5.8 MiB, which was not validated
-  against the ledger's own 77 MB figure (a stated limit, see notes of M8 step 6).
+  against the ledger's own 77 MB figure (a stated limit, see notes of M8 step 6). Time is bounded by
+  the column cap too: at 4096 columns narrowed to 5, an odd-width REP over rows of strings costs up
+  to ~1.13 ms per input byte (41 ms for the first pair); this is user-accepted (Q28) and recorded
+  in the security ledger.
 - **ABI version policy.** `luneterm_abi_version()` returns `ABI_VERSION` (1, `LUNETERM_ABI_VERSION`
   in the header); a host refuses a library whose value differs. It is bumped on any change to an
   existing export's signature or meaning, a struct layout, a constant's value, or a removal. Adding an
