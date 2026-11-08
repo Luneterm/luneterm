@@ -21,7 +21,7 @@ use super::types::{
     HandlerId, OscFallbackAction, OscFallbackFn, OscHandler, OscStringFn, remove_entry,
 };
 
-type Entry<C> = (HandlerId, Box<dyn OscHandler<C>>);
+type Entry<C> = (HandlerId, Box<dyn OscHandler<C> + Send>);
 
 /// The handlers of the running sequence (upstream `_active`).
 enum Active<C> {
@@ -76,7 +76,7 @@ impl<C> OscParser<C> {
     pub fn register_handler(
         &mut self,
         ident: i32,
-        handler: impl OscHandler<C> + 'static,
+        handler: impl OscHandler<C> + Send + 'static,
     ) -> HandlerId {
         let id = HandlerId(self.next_id);
         self.next_id = self.next_id.wrapping_add(1);
@@ -90,7 +90,7 @@ impl<C> OscParser<C> {
         &mut self,
         ident: i32,
         id: HandlerId,
-        handler: Box<dyn OscHandler<C>>,
+        handler: Box<dyn OscHandler<C> + Send>,
     ) {
         self.handlers.entry(ident).or_default().push((id, handler));
     }
@@ -120,7 +120,7 @@ impl<C> OscParser<C> {
     /// Set the handler called for idents without registered handlers.
     pub fn set_handler_fallback(
         &mut self,
-        handler: impl FnMut(&mut C, i32, OscFallbackAction<'_>) + 'static,
+        handler: impl FnMut(&mut C, i32, OscFallbackAction<'_>) + Send + 'static,
     ) {
         self.handler_fb = Box::new(handler);
     }
@@ -281,7 +281,7 @@ impl<C> fmt::Debug for OscStringHandler<C> {
 
 impl<C> OscStringHandler<C> {
     /// Wrap `handler(host, payload) -> handled`.
-    pub fn new(handler: impl FnMut(&mut C, &str) -> bool + 'static) -> Self {
+    pub fn new(handler: impl FnMut(&mut C, &str) -> bool + Send + 'static) -> Self {
         OscStringHandler {
             data: String::new(),
             utf16_len: 0,

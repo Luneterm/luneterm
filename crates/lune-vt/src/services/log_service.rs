@@ -37,7 +37,7 @@ fn rank(level: LogLevel) -> u8 {
 /// Level-gated logging to an optional sink.
 pub struct LogService {
     level: LogLevel,
-    logger: Option<Box<dyn Logger>>,
+    logger: Option<Box<dyn Logger + Send>>,
 }
 
 impl fmt::Debug for LogService {
@@ -67,7 +67,7 @@ impl LogService {
     }
 
     /// Sets (or removes) the sink.
-    pub fn set_logger(&mut self, logger: Option<Box<dyn Logger>>) {
+    pub fn set_logger(&mut self, logger: Option<Box<dyn Logger + Send>>) {
         self.logger = logger;
     }
 

@@ -11,9 +11,8 @@
 //!
 //! Charset designators are all seven intermediates times all sixteen flags of `Charsets.ts`.
 
-use std::cell::RefCell;
 use std::collections::HashSet;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use lune_vt::Terminal;
 use lune_vt::services::log_service::Logger;
@@ -213,11 +212,14 @@ fn registrations() -> Vec<Registration> {
 }
 
 #[derive(Clone, Default)]
-struct Capture(Rc<RefCell<Vec<String>>>);
+struct Capture(Arc<Mutex<Vec<String>>>);
 
 impl Logger for Capture {
     fn log(&self, _level: LogLevel, message: &str) {
-        self.0.borrow_mut().push(message.to_string());
+        self.0
+            .lock()
+            .expect("capture lock")
+            .push(message.to_string());
     }
 }
 
@@ -227,7 +229,7 @@ fn logged(input: &[u8]) -> Vec<String> {
     let mut term = Terminal::new([OptionValue::LogLevel(LogLevel::Debug)]);
     term.set_logger(Some(Box::new(capture.clone())));
     term.write(input);
-    capture.0.take()
+    std::mem::take(&mut *capture.0.lock().expect("capture lock"))
 }
 
 fn is_unknown(message: &str) -> bool {

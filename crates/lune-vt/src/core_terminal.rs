@@ -220,7 +220,7 @@ impl CoreTerminal {
     pub fn register_esc_handler(
         &mut self,
         id: FunctionIdentifier,
-        callback: impl FnMut(&mut InputHandler) -> bool + 'static,
+        callback: impl FnMut(&mut InputHandler) -> bool + Send + 'static,
     ) -> Result<HandlerId, IdentifierError> {
         InputHandler::register_esc_handler(&mut self.parser, id, callback)
     }
@@ -229,7 +229,7 @@ impl CoreTerminal {
     pub fn register_dcs_handler(
         &mut self,
         id: FunctionIdentifier,
-        callback: impl FnMut(&mut InputHandler, &str, &Params) -> bool + 'static,
+        callback: impl FnMut(&mut InputHandler, &str, &Params) -> bool + Send + 'static,
     ) -> Result<HandlerId, IdentifierError> {
         InputHandler::register_dcs_handler(&mut self.parser, id, callback)
     }
@@ -239,7 +239,7 @@ impl CoreTerminal {
     pub fn register_csi_handler(
         &mut self,
         id: FunctionIdentifier,
-        callback: impl FnMut(&mut InputHandler, &Params) -> bool + 'static,
+        callback: impl FnMut(&mut InputHandler, &Params) -> bool + Send + 'static,
     ) -> Result<HandlerId, IdentifierError> {
         InputHandler::register_csi_handler(&mut self.parser, id, callback)
     }
@@ -248,7 +248,7 @@ impl CoreTerminal {
     pub fn register_osc_handler(
         &mut self,
         ident: i32,
-        callback: impl FnMut(&mut InputHandler, &str) -> bool + 'static,
+        callback: impl FnMut(&mut InputHandler, &str) -> bool + Send + 'static,
     ) -> HandlerId {
         InputHandler::register_osc_handler(&mut self.parser, ident, callback)
     }

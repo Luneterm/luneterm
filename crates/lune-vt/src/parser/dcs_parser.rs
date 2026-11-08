@@ -18,7 +18,7 @@ use super::types::{
     DcsFallbackAction, DcsFallbackFn, DcsHandler, DcsStringFn, HandlerId, remove_entry,
 };
 
-type Entry<C> = (HandlerId, Box<dyn DcsHandler<C>>);
+type Entry<C> = (HandlerId, Box<dyn DcsHandler<C> + Send>);
 
 /// The handlers of the running sequence (upstream `_active`).
 enum Active<C> {
@@ -71,7 +71,7 @@ impl<C> DcsParser<C> {
     pub fn register_handler(
         &mut self,
         ident: u32,
-        handler: impl DcsHandler<C> + 'static,
+        handler: impl DcsHandler<C> + Send + 'static,
     ) -> HandlerId {
         let id = HandlerId(self.next_id);
         self.next_id = self.next_id.wrapping_add(1);
@@ -85,7 +85,7 @@ impl<C> DcsParser<C> {
         &mut self,
         ident: u32,
         id: HandlerId,
-        handler: Box<dyn DcsHandler<C>>,
+        handler: Box<dyn DcsHandler<C> + Send>,
     ) {
         self.handlers.entry(ident).or_default().push((id, handler));
     }
@@ -115,7 +115,7 @@ impl<C> DcsParser<C> {
     /// Set the handler called for idents without registered handlers.
     pub fn set_handler_fallback(
         &mut self,
-        handler: impl FnMut(&mut C, u32, DcsFallbackAction<'_>) + 'static,
+        handler: impl FnMut(&mut C, u32, DcsFallbackAction<'_>) + Send + 'static,
     ) {
         self.handler_fb = Box::new(handler);
     }
@@ -232,7 +232,7 @@ impl<C> fmt::Debug for DcsStringHandler<C> {
 
 impl<C> DcsStringHandler<C> {
     /// Wrap `handler(host, payload, params) -> handled`.
-    pub fn new(handler: impl FnMut(&mut C, &str, &Params) -> bool + 'static) -> Self {
+    pub fn new(handler: impl FnMut(&mut C, &str, &Params) -> bool + Send + 'static) -> Self {
         let mut params = Params::new();
         set_empty_params(&mut params);
         DcsStringHandler {

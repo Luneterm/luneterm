@@ -143,7 +143,7 @@ pub struct CoreMouseProtocol {
     /// The events the protocol wants, a hint for the host.
     pub events: CoreMouseEventType,
     /// Applies protocol restrictions (may adjust the event); `false` drops the event.
-    pub restrict: Box<dyn Fn(&mut CoreMouseEvent) -> bool>,
+    pub restrict: Box<dyn Fn(&mut CoreMouseEvent) -> bool + Send>,
 }
 
 impl fmt::Debug for CoreMouseProtocol {
@@ -155,7 +155,7 @@ impl fmt::Debug for CoreMouseProtocol {
 }
 
 /// `CoreMouseEncoding` (`Types.ts:382`): an empty string suppresses the report.
-pub type CoreMouseEncoding = Box<dyn Fn(&CoreMouseEvent) -> String>;
+pub type CoreMouseEncoding = Box<dyn Fn(&CoreMouseEvent) -> String + Send>;
 
 /// The throw sites of the `activeProtocol`/`activeEncoding` setters.
 #[derive(Debug, Clone, PartialEq, Eq)]

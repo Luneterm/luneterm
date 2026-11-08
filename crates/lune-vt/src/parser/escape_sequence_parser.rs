@@ -589,7 +589,7 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     }
 
     /// Set the print handler (`data` is a run of printable code points).
-    pub fn set_print_handler(&mut self, handler: impl FnMut(&mut C, &[u32]) + 'static) {
+    pub fn set_print_handler(&mut self, handler: impl FnMut(&mut C, &[u32]) + Send + 'static) {
         self.print_handler = Box::new(handler);
     }
 
@@ -603,7 +603,7 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     pub fn register_esc_handler(
         &mut self,
         id: FunctionIdentifier,
-        handler: impl FnMut(&mut C) -> bool + 'static,
+        handler: impl FnMut(&mut C) -> bool + Send + 'static,
     ) -> Result<HandlerId, IdentifierError> {
         let ident = identifier(&id, ESC_FINAL_RANGE)?;
         let handler_id = self.next_id();
@@ -622,12 +622,16 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     }
 
     /// Set the handler for ESC sequences without a handler that returned `true`.
-    pub fn set_esc_handler_fallback(&mut self, handler: impl FnMut(&mut C, u32) + 'static) {
+    pub fn set_esc_handler_fallback(&mut self, handler: impl FnMut(&mut C, u32) + Send + 'static) {
         self.esc_handler_fb = Box::new(handler);
     }
 
     /// Set the handler of the C0/C1 control `flag` (one handler per flag; replaces).
-    pub fn set_execute_handler(&mut self, flag: char, handler: impl FnMut(&mut C) + 'static) {
+    pub fn set_execute_handler(
+        &mut self,
+        flag: char,
+        handler: impl FnMut(&mut C) + Send + 'static,
+    ) {
         self.execute_handlers
             .insert(execute_key(flag), Box::new(handler));
     }
@@ -638,7 +642,10 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     }
 
     /// Set the handler for controls without a handler.
-    pub fn set_execute_handler_fallback(&mut self, handler: impl FnMut(&mut C, u32) + 'static) {
+    pub fn set_execute_handler_fallback(
+        &mut self,
+        handler: impl FnMut(&mut C, u32) + Send + 'static,
+    ) {
         self.execute_handler_fb = Box::new(handler);
     }
 
@@ -647,7 +654,7 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     pub fn register_csi_handler(
         &mut self,
         id: FunctionIdentifier,
-        handler: impl FnMut(&mut C, &Params) -> bool + 'static,
+        handler: impl FnMut(&mut C, &Params) -> bool + Send + 'static,
     ) -> Result<HandlerId, IdentifierError> {
         let ident = identifier(&id, CSI_FINAL_RANGE)?;
         let handler_id = self.next_id();
@@ -668,7 +675,7 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     /// Set the handler for CSI sequences without a handler that returned `true`.
     pub fn set_csi_handler_fallback(
         &mut self,
-        handler: impl FnMut(&mut C, u32, &Params) + 'static,
+        handler: impl FnMut(&mut C, u32, &Params) + Send + 'static,
     ) {
         self.csi_handler_fb = Box::new(handler);
     }
@@ -677,7 +684,7 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     pub fn register_dcs_handler(
         &mut self,
         id: FunctionIdentifier,
-        handler: impl DcsHandler<C> + 'static,
+        handler: impl DcsHandler<C> + Send + 'static,
     ) -> Result<HandlerId, IdentifierError> {
         let ident = identifier(&id, CSI_FINAL_RANGE)?;
         let handler_id = self.next_id();
@@ -696,7 +703,7 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     /// Set the handler for DCS sequences without registered handlers.
     pub fn set_dcs_handler_fallback(
         &mut self,
-        handler: impl FnMut(&mut C, u32, DcsFallbackAction<'_>) + 'static,
+        handler: impl FnMut(&mut C, u32, DcsFallbackAction<'_>) + Send + 'static,
     ) {
         self.dcs_parser.set_handler_fallback(handler);
     }
@@ -706,7 +713,7 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     pub fn register_osc_handler(
         &mut self,
         ident: i32,
-        handler: impl OscHandler<C> + 'static,
+        handler: impl OscHandler<C> + Send + 'static,
     ) -> HandlerId {
         let handler_id = self.next_id();
         self.osc_parser
@@ -722,7 +729,7 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     /// Set the handler for OSC commands without registered handlers.
     pub fn set_osc_handler_fallback(
         &mut self,
-        handler: impl FnMut(&mut C, i32, OscFallbackAction<'_>) + 'static,
+        handler: impl FnMut(&mut C, i32, OscFallbackAction<'_>) + Send + 'static,
     ) {
         self.osc_parser.set_handler_fallback(handler);
     }
@@ -730,7 +737,7 @@ impl<C: ParserHost + 'static> EscapeSequenceParser<C> {
     /// Set the parse error handler; it returns whether to abort the current `parse` call.
     pub fn set_error_handler(
         &mut self,
-        handler: impl FnMut(&mut C, &ParsingState<'_>) -> bool + 'static,
+        handler: impl FnMut(&mut C, &ParsingState<'_>) -> bool + Send + 'static,
     ) {
         self.error_handler = Box::new(handler);
     }
