@@ -198,7 +198,7 @@ fn zsh_gets_zdotdir_and_the_users_directory_and_its_arguments_are_untouched() {
         &i,
         Some("/opt/zsh"),
         &strs(&["-l", "-f"]),
-        &vars(&[("HOME", "/h")]),
+        &vars(&[("HOME", abs("/h").as_str())]),
         Os::Linux,
     )
     .expect("zsh");
@@ -213,7 +213,7 @@ fn zsh_gets_zdotdir_and_the_users_directory_and_its_arguments_are_untouched() {
     let invalid = |k: &str| match k {
         "SHELL" => Var::Set("/bin/zsh".into()),
         "ZDOTDIR" => Var::Invalid,
-        "HOME" => Var::Set("/h".into()),
+        "HOME" => Var::Set(abs("/h")),
         _ => Var::Unset,
     };
     assert_eq!(

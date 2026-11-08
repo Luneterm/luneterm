@@ -8,7 +8,7 @@ reviewed change). Flipping a Class B entry to `done` is a luneui-rs commit.
 
 - Toolkit read: `~/Projects/luneui-rs` at `5216931d8ae06f01cbf38e3408bc43b1096dceed` (`main`, "Merge
   branch 'orch/library-pass'"), the rev Luneterm pins. Paths marked `L:` are in that repo at that rev.
-- Luneterm at `b535456` (M9 step 8) for the CI runs below. Written 2026-11-08.
+- Luneterm at `b535456` (M9 step 8) for the CI runs below. Written 2026-11-08; the Windows section was extended on 2026-11-09 (M10 step 8).
 - Not yet run: the hands-on macOS run (the user's stop after M9's last step) and any Windows or Linux
   window. Every item that waits on them says so; nothing below is rounded up to a pass.
 
@@ -23,7 +23,7 @@ Lunegit). The owner line in luneui-rs still says "M9 to M11"; M11 no longer exis
 | What the done standard needs | Evidence so far | Status |
 |---|---|---|
 | macOS `Vibrancy` (NSVisualEffect, light, kept active) on a real window | The app applies it through `material::apply(window, Material::Vibrancy)` for the default Lunegit glass style (`crates/luneterm/src/app.rs`, `apply_material`). A debug launch on this Mac (Apple M1 Pro, 2026-11-08, M9 step 6) returned `Ok`: stderr held only the adapter line and no `glass: ... continuing opaque` line. Nobody looked at the window. | **Pending the hands-on macOS run**: how it looks over a busy desktop, active and inactive window, against Lunegit |
-| Windows acrylic and Mica | Not run. CI has no window. | M10 (the user's glass checks) |
+| Windows acrylic and Mica | `material::apply` returned `Ok` for Default (acrylic), Mica, Mica Alt and Off, switched live from the settings page on claude-vm-win with no error and no crash (2026-11-09). **Not judged:** the VM has no 3D acceleration (WARP), so no OS material shows. The glass look needs a real GPU. | The user's glass check (step 9) |
 | The inactive window | Not run. The toolkit no longer draws an inactive solid, so `VibrancyFollowsWindow` changes nothing in the fills; the app maps the Lunegit style to `Vibrancy` (M9 step 4 note). | M10 |
 | Liquid Glass on macOS versions without it | Not run. | M10 |
 | Blur and noise against Avalonia's defaults | Not run. | M10 |
@@ -34,7 +34,7 @@ Lunegit). The owner line in luneui-rs still says "M9 to M11"; M11 no longer exis
 |---|---|---|
 | Acquire, present, resize, skip while hidden in a consumer's window | The app's frame loop handles all three `Acquired` results (`app.rs`, `redraw`): `Frame` draws, `Skip` sets `ControlFlow::Wait` and shows the window, `Redraw` asks for another redraw; `Occluded` stops redraws and the session keeps pumping without drawing; a lost device rebuilds the stack. The macOS debug launch (2026-11-08) opened the window, ran a login shell, idled at 0.0% CPU and exited 15 ms after the shell's SIGHUP. | **Pending the hands-on macOS run** for what was seen: first frame, live resize, minimise and restore, occlusion |
 | A pixel gate on a presented frame | Offscreen only. The e2e case E8 draws a real session through the toolkit's `dump` path and compares it to a reference replay: byte-identical on macOS and on Windows CI (1040 x 660), so the scene is stable; presented frames cannot be captured on this Mac (no screen capture). | M10: tried on claude-vm-win (P19), otherwise recorded as not closed |
-| Windows window path | Not run (`WindowSurface` on DX12 has not been exercised by a consumer). The offscreen path works on windows-latest. | Pending the VM run, M10 |
+| Windows window path | **Run on claude-vm-win, 2026-11-09 (M10 step 8)**: the window opened on DX12 with the adapter `Microsoft Basic Render Driver` (WARP), drew, presented, took live resize (maximise, restore, edge drag; the ConPTY followed: 208x46, then 111x28) and the device was never lost. See the Windows section. | Seen on WARP only; a real GPU is the user's stop |
 
 ## Toolkit gaps
 
@@ -51,11 +51,57 @@ Each was worked around app-side. Dates are when the evidence was read or produce
 | 7 | The paste size limit is a silent refusal | `L: crates/lune-ui-winit/src/clipboard.rs:5-19` and `docs/components/platform/clipboard.md:107`: `MAX_PASTE_BYTES` 33,554,432; a longer read gives `ClipboardUnavailable`, with no truncation and no size. 2026-11-08 | The app treats it as "nothing to paste" | Optionally report the size, so a consumer can say why |
 | 8 | The tab strip's empty space and the `+` button: the strip puts `+` at its right end (not after the last tab), and its scroll area covers the empty space between the last tab and `+` as the topmost region, which swallows a press although it captures none, so a region the app registers under it never sees the press | `L: crates/lune-ui-core/src/widgets/tab_strip.rs:400` (`new_rect` at `rect.right() - NEW_MARGIN - NEW_SIZE`), `crates/lune-ui-core/src/ui/pointer.rs:37-46` (`topmost` takes the highest region whatever its sense; `senses_capture` is checked on that one only). 2026-11-08 | `shell::draw`: a primary press in the card header with `Painter.hover` `None` (the scroll area senses no hover) or on the app's own header region is an empty press and asks for a window drag (`shell::tests::the_empty_strip_drags_the_window_and_a_tab_does_not`). A double press there does not maximize | `TabStripResponse` reporting a press on empty strip space, or the scroll area registering no region when it has no bars |
 
-## Windows section (CI evidence only)
+## Windows section
 
-The VM GUI run is **pending M10** (roadmap P15, "does it start on WARP and on which adapter", and
-P20, "luneui-rs's first Windows run"): claude-vm-win was unreachable on 2026-11-08, so step 9 was
-deferred by the user. What exists:
+### The run on claude-vm-win (M10 step 8, 2026-11-09)
+
+`luneterm.exe` from CI run 42504143753 (the artifact `luneterm-windows-x64`, 14,582,784 bytes, built
+from `3fa8cdb`), started in the interactive session through `Win+R` with `LUNETERM_CONFIG_DIR` set
+to a scratch folder and stderr to a file, driven over SSH and VNC (vncdotool, 1920x1080). Windows 11
+Pro 10.0.26200, no 3D GPU, no `pwsh`: the shell was Windows PowerShell 5.1 (`powershell.exe`). The
+files this run made on the VM (`lt-run`, `%APPDATA%\Luneterm`) were removed afterwards.
+
+What was seen, item by item:
+
+| Item | Result |
+|---|---|
+| Starts on WARP | **Yes.** stderr: `gpu Microsoft Basic Render Driver (Dx12); shell powershell.exe; grid 125x33`. First frame drawn, window shown, no `glass:` error. |
+| Typing | **Yes.** ASCII, an e-acute typed by keysym, Backspace, Enter, Up (history), Esc (clears the line), Ctrl+C (interrupted `Start-Sleep 100` within 3 s). PSReadLine colours drew. |
+| Shell | Windows PowerShell 5.1 under the integration: the prompt wrapper kept `PS C:\Users\claude>`; the profile and PSReadLine ran. |
+| Shell integration (PowerShell) | **Yes.** `shell-integration\pwsh` was written under the config dir; the live directory reached `workspace.json` (`C:\Windows` after `cd`); while `Start-Sleep 40` ran the outline animated (pixels changed along the card's top, bottom and left edges between two captures 3 s apart, none in the body); the close-confirm dialog appeared for a running command (D7: only the 133 marks say it runs) and did not for an idle one. |
+| Tabs | **Yes.** `Ctrl+Shift+T`; the `+` button (new tab in the active tab's live directory, `C:\Windows`); `Alt+1`; the close glyph on an idle tab (no dialog); the tab context menu (Close, Close Others, Close All, Rename, Duplicate Tab, Copy Working Directory); Rename (typed in the toolkit's field, saved to `workspace.json`, shown in the title band). `Alt+2` to `Alt+9` were not each tried. |
+| Close-confirm | **Yes.** `Ctrl+Shift+W` and the caption close button both asked while a command ran (Cancel kept the tab); with idle tabs the caption close exits and leaves no process. |
+| Selection and copy | **Yes.** A drag selected a line (highlight drawn); `Ctrl+Shift+C` then `Ctrl+Shift+V` pasted it at the prompt: the OS clipboard works through the toolkit. |
+| Link click | **Yes.** With Shift held: underline and hand cursor over a printed URL; Shift+click opened it in Edge through `ShellExecuteW` (the page loaded, the address bar showed the exact URL). Edge was not running before and was closed after. |
+| Settings | **Yes.** `Ctrl+,` opens the page. Color theme to Dracula and Font size +2 reached every open tab and were saved (`palette` and `font_size` in `settings.json`, read by key). Glass style cycled Default, Mica, Mica Alt, Off, Default live with no error. |
+| Resize | **Yes.** Maximise (the ConPTY reported 208x46), restore (111x28), a drag of the right edge (the window grew). |
+| Workspace restore | **Yes.** Closed and started again: two tabs, the first in `C:\Windows`, the second in `C:\Users\claude`, the active tab and the renamed title back. |
+| Default config directory | **Yes.** Without `LUNETERM_CONFIG_DIR` the app used `%APPDATA%\Luneterm`. Assumption A3: `icacls` shows the folder inherits SYSTEM, Administrators and the user only (no Users or Everyone entry). That is one VM account, not a general proof. |
+| Caption buttons | **Yes.** Maximise, restore and close worked (close went through close-confirm); minimise is drawn, not clicked. |
+| ConPTY input (ledger 10) | The keys above arrived and PSReadLine read them. Not re-measured: the byte table of `docs/conpty-input.md` stands (CI). Not tried: 4-byte UTF-8 (VNC cannot type U+1F600), Ctrl+Z, Ctrl+Space. |
+| IME | **Not run.** No input method is installed on the VM. |
+| Idle CPU, outline cost (ledger 16) | **Not measured** here (the step 9 hands-on item, `scripts/cpu-sample.sh`). |
+| Presented frame against the offscreen dump (P19) | **Not closed.** `WindowSurface` has no `COPY_SRC`, so the only source is a VNC capture of the client area. The live layout matches `shell::Layout` (card 10 px in, strip at 34, caption buttons 46 px each), but the content differs from every dump scene (a live shell, another tab title, no OS material on WARP), so no pixel comparison with a tolerance was made. An opt-in `COPY_SRC` would be a toolkit change (D23). |
+
+Instrument notes for the next run: `key super-r` did not open Run, while `keydown super`, `key r`,
+`keyup super` did. TightVNC drops Shift for a lowercase keysym: `key ctrl-shift-t` reached the shell
+as Ctrl+T (the terminal printed `^T`), while `keydown ctrl keydown shift key T` opened a tab. That
+was the instrument, not the app. A `click 1` must follow a `move` in the same call. The first
+capture of a connection can be black; a second one after a move is real.
+
+Findings:
+
+- **CI on windows-latest failed on 13 tests of this milestone's code** (the first CI run of M10's
+  steps 1 to 7, `3fa8cdb`): selection tests expecting `\n` (a copy breaks lines with CR LF on
+  Windows, by design), workspace and shell-integration tests using `/a`-style paths (not absolute on
+  Windows), the integration scripts checked out with CRLF (autocrlf), and `bash -n` over a Windows
+  path. All test portability, fixed in `0a39c61` (the tests, and `.gitattributes` pinning LF on the
+  scripts). No app behaviour changed.
+- No toolkit gap was found in this run: the window, the surface, the clipboard, the drawn caption,
+  the edge resize and `material::apply` worked on Windows. The two limits are the VM's (no 3D
+  hardware, so no glass to look at) and the missing readback (P19).
+
+### Earlier: CI evidence (M9)
 
 - **Run 42474728954** (22b0e71, M9 step 7), all four jobs green: the app and the toolkit build on
   `x86_64-pc-windows-msvc` with the git pin and `--locked`. `dll_search_gpu` on windows-latest: the
@@ -69,9 +115,7 @@ deferred by the user. What exists:
   ConPTY and the engine) and E7 (exit code 3, the child dies within 2 s of the session dropping)
   passed; E6k key latency median 20 ms; E8 drew the real session to a PNG and it matched the
   reference replay at 1040 x 660. The Windows `luneterm.exe` size is the same 13,858,304 bytes.
-- **Not seen on Windows:** any window (acquire and present on DX12 over DirectComposition, resize,
-  minimise, the drawn caption buttons, drag, edge resize, acrylic or Mica), the adapter name, IME
-  with a real input method, and the DLL hardening against a GUI process started from Explorer.
+- At the time not seen: any window, the adapter name, IME. The window and the adapter were seen on 2026-11-09 (above); the app also started from `Win+R` in the interactive session, so the DLL hardening did not break the GPU start there.
 
 ## What worked (P20, so far)
 
