@@ -50,5 +50,6 @@ Tab switch: 0.25 s sine ease-in-out crossfade.
 
 - Blur radius and noise texture: Lunegit uses Avalonia's acrylic defaults. Read Avalonia's
   implementation and match it; verify with side-by-side screenshots on all three OSes.
-- Linux: no glass (decided 2026-10-29). Opaque dark theme: `BackdropKind::Opaque` with the
-  inactive-window solid colours.
+- Linux: no glass (decided 2026-10-29). Opaque dark theme: `Material::Opaque` on the window and
+  `Theme::with_acrylic(AcrylicLevel::Opaque)` for the toolkit's layers (plan M10 step 6, P22; the
+  toolkit's glass does not depend on the window's active state, D262).
