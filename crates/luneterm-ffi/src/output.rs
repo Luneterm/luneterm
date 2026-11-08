@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use lune_vt::{
     CellColor, ColorIndex, ColorRequest, CommandMarkKind, CursorStyle, Damage, HostEvent, Modes,
-    MouseEncoding, MouseTracking, ProgressState, UnderlineStyle, Viewport, ViewportCell,
+    MouseEncoding, MouseTracking, ProgressState, Terminal, UnderlineStyle, Viewport, ViewportCell,
     ViewportCursor, WindowReportKind,
 };
 
@@ -183,17 +183,46 @@ fn convert_cell(
     })
 }
 
-/// Refills `slot` from `viewport` and returns the struct pointing into it. `limit` is as for
-/// [`convert_cell`]. On error the slot's contents are unspecified.
+/// Refills `slot` from `term`'s screen and returns the struct pointing into it. `limit` is as
+/// for [`convert_cell`]. On error the slot's contents are unspecified.
+///
+/// The cells are converted row by row as the engine produces them
+/// ([`Terminal::viewport_with_rows`]), so the only full-screen copy is the slot itself: a
+/// whole owned `Viewport` (a `String` per cell) would cost about 70 bytes per cell on top, which
+/// is 0.5 GiB more at the 4096 x 2048 cap.
 fn flatten_viewport(
-    viewport: &Viewport,
+    term: &Terminal,
     slot: &mut ViewportSlot,
     limit: usize,
 ) -> Result<LunetermViewport, i32> {
+    // The slot is cleared and reserved before the walk; a failed row leaves the rest unread.
+    slot.cells.clear();
+    slot.text.clear();
+    slot.links.clear();
+    slot.link_data.clear();
+    slot.cells.reserve(term.cols().saturating_mul(term.rows()));
+    let mut failure = None;
+    let viewport = term.viewport_with_rows(|row| {
+        if failure.is_some() {
+            return;
+        }
+        for cell in row {
+            match convert_cell(cell, &mut slot.text, limit) {
+                Ok(converted) => slot.cells.push(converted),
+                Err(code) => {
+                    failure = Some(code);
+                    return;
+                }
+            }
+        }
+    });
+    if let Some(code) = failure {
+        return Err(code);
+    }
     let Viewport {
         cols,
         rows,
-        cells,
+        cells: _,
         cursor,
         viewport_top,
         base_y,
@@ -202,7 +231,7 @@ fn flatten_viewport(
         title,
         alt_screen,
         links,
-    } = viewport;
+    } = &viewport;
     let ViewportCursor {
         x,
         y,
@@ -215,17 +244,6 @@ fn flatten_viewport(
     let cursor_x = u32::try_from(x).map_err(|_| LUNETERM_ERR_TOO_LARGE)?;
     let cursor_y = u32::try_from(y).map_err(|_| LUNETERM_ERR_TOO_LARGE)?;
 
-    slot.cells.clear();
-    slot.text.clear();
-    slot.links.clear();
-    slot.link_data.clear();
-    slot.cells.reserve(cols.saturating_mul(*rows));
-    for row in cells {
-        for cell in row {
-            let converted = convert_cell(cell, &mut slot.text, limit)?;
-            slot.cells.push(converted);
-        }
-    }
     // The ABI promises `cell_count == cols * rows`; a snapshot that breaks it is an engine bug,
     // and a host indexing past the array is worse than a poisoned handle (a caught panic).
     assert_eq!(
@@ -499,8 +517,7 @@ unsafe fn viewport_with_limit(
     // SAFETY: forwarded from the caller's contract on `engine`.
     let result = unsafe {
         with_engine(engine, |inner| {
-            let snapshot = inner.term.viewport();
-            flatten_viewport(&snapshot, &mut inner.viewport, limit)
+            flatten_viewport(&inner.term, &mut inner.viewport, limit)
         })
     };
     match result {
@@ -1717,12 +1734,11 @@ mod tests {
     fn text_offsets_that_overflow_uint32_fail_closed_with_the_out_param_zeroed() {
         let mut term = Terminal::new([OptionValue::Cols(10), OptionValue::Rows(2)]);
         term.write("abcdef".as_bytes());
-        let snapshot = term.viewport();
         let mut slot = ViewportSlot::default();
         // Offsets 0..=5: a limit of 5 fits, a limit of 4 does not (the sixth cell's offset is 5).
-        assert!(flatten_viewport(&snapshot, &mut slot, 5).is_ok());
+        assert!(flatten_viewport(&term, &mut slot, 5).is_ok());
         assert_eq!(
-            flatten_viewport(&snapshot, &mut slot, 4).map(|_| ()),
+            flatten_viewport(&term, &mut slot, 4).map(|_| ()),
             Err(LUNETERM_ERR_TOO_LARGE)
         );
         // A cell text longer than the limit.
@@ -1730,9 +1746,9 @@ mod tests {
         term.write(format!("e{}", "\u{301}".repeat(5)).as_bytes());
         let snapshot = term.viewport();
         assert_eq!(snapshot.cells[0][0].text.len(), 11);
-        assert!(flatten_viewport(&snapshot, &mut slot, 11).is_ok());
+        assert!(flatten_viewport(&term, &mut slot, 11).is_ok());
         assert_eq!(
-            flatten_viewport(&snapshot, &mut slot, 10).map(|_| ()),
+            flatten_viewport(&term, &mut slot, 10).map(|_| ()),
             Err(LUNETERM_ERR_TOO_LARGE)
         );
         // Through the export body: garbage in the out-param is zeroed, the handle stays usable.

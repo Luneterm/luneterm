@@ -362,15 +362,25 @@ impl Terminal {
 
     /// A snapshot of the screen.
     pub fn viewport(&self) -> Viewport {
+        let mut cells = Vec::new();
+        let mut snapshot = self.viewport_with_rows(|row| cells.push(row.to_vec()));
+        snapshot.cells = cells;
+        snapshot
+    }
+
+    /// [`Terminal::viewport`] without keeping the cells: `on_row` sees each viewport row in
+    /// order (`rows` calls of `cols` cells each, from one reused buffer) and the returned
+    /// [`Viewport`] has an empty `cells`, everything else as [`Terminal::viewport`]. For a host
+    /// that converts the cells itself and would otherwise hold a second copy of the screen.
+    pub fn viewport_with_rows(&self, mut on_row: impl FnMut(&[ViewportCell])) -> Viewport {
         let input_handler = self.core.input_handler();
         let services = input_handler.services();
         let (cols, rows) = (services.buffer.cols, services.buffer.rows);
         let buffer = services.buffer.buffer();
 
-        let mut cells = Vec::with_capacity(rows);
         let mut links = BTreeMap::new();
+        let mut row = Vec::with_capacity(cols);
         for y in 0..rows {
-            let mut row = Vec::with_capacity(cols);
             self.read_row(y, &mut row);
             for cell in &row {
                 if cell.link_id != 0 && !links.contains_key(&cell.link_id) {
@@ -379,7 +389,7 @@ impl Terminal {
                     }
                 }
             }
-            cells.push(row);
+            on_row(&row);
         }
 
         let cursor_line = buffer.ybase.saturating_add(buffer.y);
@@ -401,7 +411,7 @@ impl Terminal {
         Viewport {
             cols,
             rows,
-            cells,
+            cells: Vec::new(),
             cursor,
             viewport_top: buffer.ydisp,
             base_y: buffer.ybase,

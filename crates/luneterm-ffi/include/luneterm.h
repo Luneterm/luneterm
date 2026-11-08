@@ -235,7 +235,9 @@ typedef struct LunetermViewport {
     uint64_t viewport_top; /* first buffer line shown */
     uint64_t base_y;       /* first line of the bottom page */
     uint64_t total_lines;  /* lines in the active buffer, scrollback included */
-    uint32_t cursor_x;     /* equals cols while a wrap is pending */
+    uint32_t cursor_x;     /* 0..=cols+1: cols while a wrap is pending, cols+1 after a zero-width
+                              character printed there (as @xterm/headless 6.0.0); not clamped, so
+                              clamp before indexing cells */
     uint32_t cursor_y;     /* viewport row */
     uint8_t cursor_visible;
     uint8_t cursor_style; /* LUNETERM_CURSOR_* */
