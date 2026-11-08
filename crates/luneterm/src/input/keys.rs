@@ -348,7 +348,7 @@ pub fn route_key(k: &KeyInput, ctx: &RouteCtx<'_>) -> KeyRoute {
         ctx.shortcuts
             .matching(&toolkit_key(&k.logical), toolkit_mods(k.mods), &ctx.keymap)
     {
-        if cmd == AppCommand::Paste && k.repeat {
+        if cmd.once_per_press() && k.repeat {
             return KeyRoute::Ignore;
         }
         return KeyRoute::Shortcut(cmd);
@@ -543,9 +543,12 @@ mod tests {
                 press(ch("A"), KeyCode::KeyA, Some("A"), ALT | SHIFT),
                 chr('a', '\0', 'a', or(S, A), true),
             ),
-            ("Alt+1", press(ch("1"), KeyCode::Digit1, Some("1"), ALT), {
-                chr('1', '!', '\0', A, true)
-            }),
+            // D13: Alt+1..9 select a tab (it was meta+digit before the tabs).
+            (
+                "Alt+1",
+                press(ch("1"), KeyCode::Digit1, Some("1"), ALT),
+                KeyRoute::Shortcut(AppCommand::SelectTab(0)),
+            ),
             // Ctrl+Alt+letter on a US layout is a chord (R:59).
             (
                 "Ctrl+Alt+a US",

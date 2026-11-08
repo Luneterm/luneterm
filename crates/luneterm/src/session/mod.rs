@@ -285,6 +285,12 @@ impl Session {
         }
     }
 
+    /// Signals shutdown without waiting or consuming: the threads stop and the child is killed
+    /// in the background. Idempotent; [`Session::close`] after it only waits.
+    pub fn begin_close(&self) {
+        self.signal_shutdown();
+    }
+
     fn signal_shutdown(&self) {
         self.shared.shutdown();
         self.out.shutdown();
