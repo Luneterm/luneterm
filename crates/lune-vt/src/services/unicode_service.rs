@@ -7,8 +7,9 @@
 //!    [`UnicodeChange`] that upstream fires, exactly when upstream fires it. The `activeVersion`
 //!    setter is that method; the `throw` is [`UnicodeError`].
 //!  - `UnicodeCharWidth` (`0 | 1 | 2`) and `UnicodeCharProperties` (a JS number) are `u32`.
-//!  - Providers are trait objects ([`UnicodeVersionProvider`]). The trait requires `Send + Sync`
-//!    so a terminal owning the service can move between threads.
+//!  - Providers are trait objects ([`UnicodeVersionProvider`]). The trait requires `Send + Sync`;
+//!    together with the `Send` bound on every handler and logger box, a `Terminal` owning the
+//!    service is `Send` (asserted in `headless/terminal.rs`).
 //!  - `versions` follows `Object.keys` order on upstream's `Object.create(null)` map: keys that
 //!    are canonical array indices ("6", "11") first in ascending numeric order, then the other
 //!    keys in registration order. Registering an existing version replaces its provider in place.

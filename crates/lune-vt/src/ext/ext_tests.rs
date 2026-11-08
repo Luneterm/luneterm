@@ -13,8 +13,7 @@
 
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::engine::HostEvent;
@@ -375,19 +374,19 @@ fn sixty_five_unknown_osc_in_one_write_queue_64_and_the_counter_resets_at_the_dr
 
 #[test]
 fn unknown_osc_logs_ident_and_length_never_the_payload() {
-    struct Capture(Rc<RefCell<Vec<String>>>);
+    struct Capture(Arc<Mutex<Vec<String>>>);
     impl Logger for Capture {
         fn log(&self, _level: LogLevel, message: &str) {
-            self.0.borrow_mut().push(message.to_owned());
+            self.0.lock().unwrap().push(message.to_owned());
         }
     }
     let mut t = Terminal::new([OptionValue::LogLevel(LogLevel::Debug)]);
     t.install_standard_extensions(&StandardExtensions::default())
         .unwrap();
-    let messages = Rc::new(RefCell::new(Vec::new()));
-    t.set_logger(Some(Box::new(Capture(Rc::clone(&messages)))));
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    t.set_logger(Some(Box::new(Capture(Arc::clone(&messages)))));
     t.write_str("\x1b]777;c2VjcmV0\x07");
-    let messages = messages.borrow();
+    let messages = messages.lock().unwrap();
     assert!(
         messages
             .iter()

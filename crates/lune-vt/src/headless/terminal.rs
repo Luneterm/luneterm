@@ -71,6 +71,13 @@ pub struct Terminal {
     core: CoreTerminal,
 }
 
+// A terminal can move between threads (M8 D1/D2): every handler, logger and mouse-encoder box it
+// owns is `Send`. This fails to compile when a future field breaks that.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<Terminal>();
+};
+
 impl Terminal {
     /// A terminal over `options` (defaults for the rest; a value that fails validation is
     /// dropped). `Cols`/`Rows` set the size.
@@ -259,7 +266,7 @@ impl Terminal {
     }
 
     /// Where log messages go; `None` (the default) discards them.
-    pub fn set_logger(&mut self, logger: Option<Box<dyn Logger>>) {
+    pub fn set_logger(&mut self, logger: Option<Box<dyn Logger + Send>>) {
         self.core
             .input_handler_mut()
             .services
@@ -276,7 +283,7 @@ impl Terminal {
     pub fn register_esc_handler(
         &mut self,
         id: FunctionIdentifier,
-        callback: impl FnMut(&mut InputHandler) -> bool + 'static,
+        callback: impl FnMut(&mut InputHandler) -> bool + Send + 'static,
     ) -> Result<HandlerId, IdentifierError> {
         self.core.register_esc_handler(id, callback)
     }
@@ -285,7 +292,7 @@ impl Terminal {
     pub fn register_dcs_handler(
         &mut self,
         id: FunctionIdentifier,
-        callback: impl FnMut(&mut InputHandler, &str, &Params) -> bool + 'static,
+        callback: impl FnMut(&mut InputHandler, &str, &Params) -> bool + Send + 'static,
     ) -> Result<HandlerId, IdentifierError> {
         self.core.register_dcs_handler(id, callback)
     }
@@ -295,7 +302,7 @@ impl Terminal {
     pub fn register_csi_handler(
         &mut self,
         id: FunctionIdentifier,
-        callback: impl FnMut(&mut InputHandler, &Params) -> bool + 'static,
+        callback: impl FnMut(&mut InputHandler, &Params) -> bool + Send + 'static,
     ) -> Result<HandlerId, IdentifierError> {
         self.core.register_csi_handler(id, callback)
     }
@@ -304,7 +311,7 @@ impl Terminal {
     pub fn register_osc_handler(
         &mut self,
         ident: i32,
-        callback: impl FnMut(&mut InputHandler, &str) -> bool + 'static,
+        callback: impl FnMut(&mut InputHandler, &str) -> bool + Send + 'static,
     ) -> HandlerId {
         self.core.register_osc_handler(ident, callback)
     }

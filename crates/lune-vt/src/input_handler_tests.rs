@@ -32,8 +32,7 @@
 
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::buffer::attribute_data::ExtendedAttrs;
@@ -646,16 +645,16 @@ fn should_parse_big_chunks_in_smaller_subchunks() {
     // max single chunk size is hardcoded as 131072
     let mut t = upstream_handler();
     t.resize(10, 10);
-    let calls = Rc::new(RefCell::new(Vec::new()));
-    let recorder = Rc::clone(&calls);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&calls);
     t.parser
-        .set_print_handler(move |_, data| recorder.borrow_mut().push(data.len()));
+        .set_print_handler(move |_, data| recorder.lock().unwrap().push(data.len()));
     t.parse_str("12345");
     t.parse_str(&"a".repeat(10000));
     t.parse_str(&"a".repeat(200_000));
     t.parse_str(&"a".repeat(300_000));
     assert_eq!(
-        *calls.borrow(),
+        *calls.lock().unwrap(),
         [
             5,
             10000,
@@ -1152,15 +1151,18 @@ fn backspace_with_reverse_wraparound_lifts_the_soft_wrap() {
 #[test]
 fn register_csi_handler_guards_t_by_the_window_options() {
     let mut t = test_handler(10, 3, []);
-    let calls = Rc::new(RefCell::new(Vec::new()));
-    let seen = Rc::clone(&calls);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&calls);
     InputHandler::register_csi_handler(&mut t.parser, FunctionIdentifier::new('t'), move |_, p| {
-        seen.borrow_mut().push(p.get(0));
+        seen.lock().unwrap().push(p.get(0));
         true
     })
     .unwrap();
     t.parse_str("\x1b[18t\x1b[8t");
-    assert!(calls.borrow().is_empty(), "all window options are off");
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "all window options are off"
+    );
     t.handler
         .services
         .options
@@ -1170,21 +1172,21 @@ fn register_csi_handler_guards_t_by_the_window_options() {
         }))
         .unwrap();
     t.parse_str("\x1b[18t\x1b[8t");
-    assert_eq!(*calls.borrow(), [Some(18)]);
+    assert_eq!(*calls.lock().unwrap(), [Some(18)]);
     // other identifiers are not guarded
-    let other = Rc::new(RefCell::new(0));
-    let count = Rc::clone(&other);
+    let other = Arc::new(Mutex::new(0));
+    let count = Arc::clone(&other);
     InputHandler::register_csi_handler(
         &mut t.parser,
         FunctionIdentifier::with_intermediates(" ", 't'),
         move |_, _| {
-            *count.borrow_mut() += 1;
+            *count.lock().unwrap() += 1;
             true
         },
     )
     .unwrap();
     t.parse_str("\x1b[8 t");
-    assert_eq!(*other.borrow(), 1);
+    assert_eq!(*other.lock().unwrap(), 1);
 }
 
 #[test]
@@ -1230,24 +1232,24 @@ fn fallbacks_log_unknown_sequences() {
     use crate::services::log_service::Logger;
     use crate::services::options_service::LogLevel;
 
-    struct Capture(Rc<RefCell<Vec<String>>>);
+    struct Capture(Arc<Mutex<Vec<String>>>);
     impl Logger for Capture {
         fn log(&self, _level: LogLevel, message: &str) {
-            self.0.borrow_mut().push(message.to_string());
+            self.0.lock().unwrap().push(message.to_string());
         }
     }
     let mut t = test_handler(10, 3, [OptionValue::LogLevel(LogLevel::Debug)]);
     t.handler.services.log.set_level(LogLevel::Debug);
-    let messages = Rc::new(RefCell::new(Vec::new()));
+    let messages = Arc::new(Mutex::new(Vec::new()));
     t.handler
         .services
         .log
-        .set_logger(Some(Box::new(Capture(Rc::clone(&messages)))));
+        .set_logger(Some(Box::new(Capture(Arc::clone(&messages)))));
     t.parse_str("\x1b[1;2y\x1b(z\x01\x1b]777;hi\x07\x1bP1$zab\x1b\\ok");
     // an unhandled OSC and DCS log their identifier and payload length, never the payload
     // (user decision 2026-11-01)
     t.parse_str("\x1b]52;c;c2VjcmV0\x07\x1bP1$zsecret\x1b\\");
-    let messages = messages.borrow();
+    let messages = messages.lock().unwrap();
     let fallback = |m: &&String| m.starts_with("Unknown OSC") || m.starts_with("Unknown DCS");
     assert!(
         messages
@@ -4935,13 +4937,13 @@ fn sgr_writes_nothing_but_the_current_attributes() {
 fn unknown_sgr_values_are_logged_and_ignored() {
     use crate::services::log_service::Logger;
     use crate::services::options_service::LogLevel;
-    struct Sink(Rc<RefCell<Vec<String>>>);
+    struct Sink(Arc<Mutex<Vec<String>>>);
     impl Logger for Sink {
         fn log(&self, _level: LogLevel, message: &str) {
-            self.0.borrow_mut().push(message.to_owned());
+            self.0.lock().unwrap().push(message.to_owned());
         }
     }
-    let messages = Rc::new(RefCell::new(Vec::new()));
+    let messages = Arc::new(Mutex::new(Vec::new()));
     let mut t = upstream_handler();
     t.handler
         .services
@@ -4950,7 +4952,7 @@ fn unknown_sgr_values_are_logged_and_ignored() {
     t.handler.services.log.set_level(LogLevel::Debug);
     t.parse_str("\x1b[10;56;60;108;200m");
     assert_eq!(t.attr(), AttributeData::default());
-    let logged = messages.borrow().join("|");
+    let logged = messages.lock().unwrap().join("|");
     for n in [10, 56, 60, 108, 200] {
         assert!(
             logged.contains(&format!("Unknown SGR attribute: {n}.")),
@@ -6731,23 +6733,23 @@ fn utf8_and_urxvt_mouse_encodings_only_log() {
     use crate::services::log_service::Logger;
     use crate::services::options_service::LogLevel;
 
-    struct Capture(Rc<RefCell<Vec<String>>>);
+    struct Capture(Arc<Mutex<Vec<String>>>);
     impl Logger for Capture {
         fn log(&self, _level: LogLevel, message: &str) {
-            self.0.borrow_mut().push(message.to_string());
+            self.0.lock().unwrap().push(message.to_string());
         }
     }
     let mut t = test_handler(10, 4, [OptionValue::LogLevel(LogLevel::Debug)]);
-    let messages = Rc::new(RefCell::new(Vec::new()));
+    let messages = Arc::new(Mutex::new(Vec::new()));
     t.handler
         .services
         .log
-        .set_logger(Some(Box::new(Capture(Rc::clone(&messages)))));
+        .set_logger(Some(Box::new(Capture(Arc::clone(&messages)))));
     t.parse_str("\x1b[?1006h");
     let before = state_without_stacks(&t);
     t.parse_str("\x1b[?1005h\x1b[?1015h\x1b[?1005l\x1b[?1015l");
     assert_eq!(state_without_stacks(&t), before);
-    let messages = messages.borrow();
+    let messages = messages.lock().unwrap();
     for expected in [
         "DECSET 1005 not supported (see #2507)",
         "DECSET 1015 not supported (see #2507)",

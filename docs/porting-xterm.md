@@ -57,6 +57,13 @@ and the runners: `crates/lune-vt-conformance/FORMAT.md`.
   is not ported; handlers are synchronous and return `bool` (the engine's `write` is synchronous).
   Upstream's async tests are recorded as "replaced: no async handlers" in the test file's header;
   their sync-ordering cases stay.
+- **Handler, logger and mouse-encoder boxes are `Send` (M8 D1/D2).** Every boxed handler alias
+  (`parser/types.rs`), `Box<dyn DcsHandler/OscHandler>`, `Box<dyn Logger>` and the
+  `CoreMouseEncoding`/`restrict` boxes carry `+ Send`, and so do the `impl Fn*` parameters that
+  feed them, so a `Terminal` can move between threads (the C ABI hands it to arbitrary host
+  threads). Signature only: no behaviour changed in any ported file. `Sync` is not required. A
+  compile-time assertion in `headless/terminal.rs` keeps `Terminal: Send`; tests capture state
+  with `Arc<Mutex<_>>`/atomics, not `Rc`.
 - **`throw` becomes `Result::Err`, never a panic (D5).** `IdentifierError` for `_identifier`,
   `ParamsError` for `Params`. `StringToUtf32` (UTF-16 input) is "replaced: Rust input is bytes";
   a `&str` goes through `Utf8ToUtf32`.

@@ -1053,7 +1053,7 @@ impl InputHandler {
     pub fn register_csi_handler(
         parser: &mut EscapeSequenceParser<InputHandler>,
         id: FunctionIdentifier,
-        mut callback: impl FnMut(&mut InputHandler, &Params) -> bool + 'static,
+        mut callback: impl FnMut(&mut InputHandler, &Params) -> bool + Send + 'static,
     ) -> Result<HandlerId, IdentifierError> {
         if id.final_byte == 't' && id.prefix.is_none() && id.intermediates.is_empty() {
             return parser.register_csi_handler(id, move |h, params| {
@@ -1073,7 +1073,7 @@ impl InputHandler {
     pub fn register_dcs_handler(
         parser: &mut EscapeSequenceParser<InputHandler>,
         id: FunctionIdentifier,
-        callback: impl FnMut(&mut InputHandler, &str, &Params) -> bool + 'static,
+        callback: impl FnMut(&mut InputHandler, &str, &Params) -> bool + Send + 'static,
     ) -> Result<HandlerId, IdentifierError> {
         parser.register_dcs_handler(id, DcsStringHandler::new(callback))
     }
@@ -1082,7 +1082,7 @@ impl InputHandler {
     pub fn register_esc_handler(
         parser: &mut EscapeSequenceParser<InputHandler>,
         id: FunctionIdentifier,
-        callback: impl FnMut(&mut InputHandler) -> bool + 'static,
+        callback: impl FnMut(&mut InputHandler) -> bool + Send + 'static,
     ) -> Result<HandlerId, IdentifierError> {
         parser.register_esc_handler(id, callback)
     }
@@ -1091,7 +1091,7 @@ impl InputHandler {
     pub fn register_osc_handler(
         parser: &mut EscapeSequenceParser<InputHandler>,
         ident: i32,
-        callback: impl FnMut(&mut InputHandler, &str) -> bool + 'static,
+        callback: impl FnMut(&mut InputHandler, &str) -> bool + Send + 'static,
     ) -> HandlerId {
         parser.register_osc_handler(ident, OscStringHandler::new(callback))
     }
