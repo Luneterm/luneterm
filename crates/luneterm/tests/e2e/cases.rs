@@ -708,16 +708,19 @@ fn e5_sync() -> CaseResult {
     // SYNC_PAUSE_BEFORE_SET after GO).
     let none = [go, pause, set];
     let timed_out = time_to_show(&none, "AAAA", Duration::from_secs(5), false)?;
+    // The set's time is estimated as GO seen + the child's pause, and GO is seen a little after
+    // it was written, so the estimate runs late: the floor allows 50 ms of that. The ceiling is
+    // the contract's 1.4 s (measured on macOS: 1007-1022 ms).
     let after_set = timed_out.saturating_sub(Duration::from_millis(SYNC_PAUSE_BEFORE_SET));
-    ensure(
-        after_set >= Duration::from_millis(950) && after_set <= Duration::from_millis(1700),
-        || {
-            format!(
-                "with no reset the screen showed {} ms after the set (wanted 1000 to 1400)",
-                ms(after_set)
-            )
-        },
-    )?;
+    let (lo, hi) = (Duration::from_millis(950), Duration::from_millis(1400));
+    ensure(after_set >= lo && after_set <= hi, || {
+        format!(
+            "with no reset the screen showed {} ms after the set (wanted {} to {})",
+            ms(after_set),
+            ms(lo),
+            ms(hi)
+        )
+    })?;
     ok(format!(
         "with reset {} ms after GO; without {} ms after the set",
         ms(with_reset),
