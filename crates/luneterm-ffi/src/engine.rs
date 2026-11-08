@@ -135,7 +135,7 @@ impl Settings {
         {
             return Err(LUNETERM_ERR_INVALID_ARGUMENT);
         }
-        Ok(Inner { term })
+        Ok(Inner::new(term))
     }
 }
 
@@ -417,6 +417,11 @@ mod tests {
 
     use super::*;
     use crate::guard::{LUNETERM_ERR_NULL_POINTER, lock_for_test};
+    use crate::{
+        LunetermDamage, LunetermEvents, LunetermModes, LunetermViewport,
+        luneterm_engine_drain_events, luneterm_engine_modes, luneterm_engine_take_damage,
+        luneterm_engine_viewport,
+    };
 
     fn config(cols: u32, rows: u32) -> LunetermConfig {
         LunetermConfig {
@@ -487,6 +492,22 @@ mod tests {
     /// Every handle export on `engine`, with valid other arguments.
     fn every_handle_export(engine: *mut LunetermEngine) -> Vec<(&'static str, i32)> {
         let (mut cols, mut rows, mut more) = (7u32, 7u32, 7u8);
+        let mut viewport = LunetermViewport {
+            cols: 7,
+            ..LunetermViewport::EMPTY
+        };
+        let mut events = LunetermEvents {
+            count: 7,
+            ..LunetermEvents::EMPTY
+        };
+        let mut damage = LunetermDamage {
+            first_row: 7,
+            ..LunetermDamage::default()
+        };
+        let mut modes = LunetermModes {
+            wraparound: 7,
+            ..LunetermModes::default()
+        };
         // SAFETY: the handle is whatever the test passes (NULL, misaligned or live); every other
         // pointer is a live local.
         #[cfg_attr(not(feature = "panic-probe"), allow(unused_mut))]
@@ -507,11 +528,32 @@ mod tests {
                     "reset_keyboard_protocol",
                     luneterm_engine_reset_keyboard_protocol(engine),
                 ),
+                ("viewport", luneterm_engine_viewport(engine, &mut viewport)),
+                (
+                    "drain_events",
+                    luneterm_engine_drain_events(engine, &mut events),
+                ),
+                (
+                    "take_damage",
+                    luneterm_engine_take_damage(engine, &mut damage),
+                ),
+                ("modes", luneterm_engine_modes(engine, &mut modes)),
             ]
         };
         let failed = codes.iter().all(|(_, code)| *code != LUNETERM_OK);
         if failed {
             assert_eq!((cols, rows, more), (0, 0, 0), "out-params zeroed on error");
+            assert_eq!(
+                (
+                    viewport.cols,
+                    events.count,
+                    damage.first_row,
+                    modes.wraparound
+                ),
+                (0, 0, 0, 0),
+                "output structs zeroed on error"
+            );
+            assert!(viewport.cells.is_null() && events.events.is_null());
         }
         #[cfg(feature = "panic-probe")]
         if engine.is_null() || !engine.is_aligned() {
@@ -949,7 +991,8 @@ mod tests {
         for (name, code) in every_handle_export(engine) {
             assert_eq!(code, LUNETERM_ERR_POISONED, "{name}");
         }
-        // SAFETY: a live handle. The viewport export (step 3) goes through this same guard.
+        // SAFETY: a live handle. Every export goes through this same guard (and the loop above
+        // already covered viewport, drain_events, take_damage and modes).
         let guarded = unsafe { with_engine(engine, |_| Ok(())) };
         assert_eq!(guarded, Err(LUNETERM_ERR_POISONED));
         // SAFETY: a live handle.
