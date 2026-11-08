@@ -4,16 +4,15 @@
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use super::*;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
-type Captured = Rc<RefCell<Vec<(LogLevel, String)>>>;
+type Captured = Arc<Mutex<Vec<(LogLevel, String)>>>;
 
 struct Capture(Captured);
 
 impl Logger for Capture {
     fn log(&self, level: LogLevel, message: &str) {
-        self.0.borrow_mut().push((level, message.to_string()));
+        self.0.lock().unwrap().push((level, message.to_string()));
     }
 }
 
@@ -43,7 +42,8 @@ fn emit_all(log: &LogService) {
 
 fn seen(captured: &Captured) -> Vec<String> {
     captured
-        .borrow()
+        .lock()
+        .unwrap()
         .iter()
         .map(|(_, message)| message.clone())
         .collect()
@@ -71,7 +71,7 @@ fn logger_receives_the_level_and_an_unprefixed_message() {
     let (log, captured) = service(LogLevel::Trace);
     log.warn(format_args!("x {} y", 5));
     assert_eq!(
-        captured.borrow().as_slice(),
+        captured.lock().unwrap().as_slice(),
         &[(LogLevel::Warn, "x 5 y".to_string())]
     );
 }
@@ -81,7 +81,7 @@ fn arguments_below_the_level_are_never_formatted() {
     let (log, captured) = service(LogLevel::Info);
     log.trace(format_args!("{}", Boom));
     log.debug(format_args!("{}", Boom));
-    assert!(captured.borrow().is_empty());
+    assert!(captured.lock().unwrap().is_empty());
     let (off, _) = service(LogLevel::Off);
     off.error(format_args!("{}", Boom));
 }
@@ -96,7 +96,7 @@ fn no_sink_discards_without_formatting() {
 fn set_level_and_set_logger() {
     let (mut log, captured) = service(LogLevel::Error);
     log.info(format_args!("a"));
-    assert!(captured.borrow().is_empty());
+    assert!(captured.lock().unwrap().is_empty());
     log.set_level(LogLevel::Info);
     assert_eq!(log.level(), LogLevel::Info);
     log.info(format_args!("b"));

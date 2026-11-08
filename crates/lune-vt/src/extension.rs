@@ -38,8 +38,7 @@ mod tests {
     use super::*;
     use crate::parser::osc_parser::OscStringHandler;
     use crate::parser::types::{FunctionIdentifier, OscFallbackAction};
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
     struct TestHost {
@@ -52,7 +51,7 @@ mod tests {
         }
     }
 
-    type Log = Rc<RefCell<Vec<String>>>;
+    type Log = Arc<Mutex<Vec<String>>>;
 
     /// Registers one OSC handler (ident 7) that logs `<tag>:<payload>` and returns `result`.
     struct OscLogger {
@@ -71,11 +70,11 @@ mod tests {
             &self,
             parser: &mut EscapeSequenceParser<TestHost>,
         ) -> Result<(), IdentifierError> {
-            let (tag, result, log) = (self.tag, self.result, Rc::clone(&self.log));
+            let (tag, result, log) = (self.tag, self.result, Arc::clone(&self.log));
             parser.register_osc_handler(
                 self.ident,
                 OscStringHandler::new(move |_, payload| {
-                    log.borrow_mut().push(format!("{tag}:{payload}"));
+                    log.lock().unwrap().push(format!("{tag}:{payload}"));
                     result
                 }),
             );
@@ -106,7 +105,7 @@ mod tests {
             tag,
             ident,
             result,
-            log: Rc::clone(log),
+            log: Arc::clone(log),
         }
     }
 
@@ -120,19 +119,19 @@ mod tests {
 
     #[test]
     fn newest_handler_wins_and_stops_dispatch() {
-        let log: Log = Rc::default();
+        let log: Log = Arc::default();
         let mut parser = EscapeSequenceParser::<TestHost>::new();
         let mut host = TestHost::default();
         logger("old", 7, true, &log).register(&mut parser).unwrap();
         logger("new", 7, true, &log).register(&mut parser).unwrap();
 
         parser.parse(&mut host, &osc(7, "file:///tmp"));
-        assert_eq!(*log.borrow(), ["new:file:///tmp"]);
+        assert_eq!(*log.lock().unwrap(), ["new:file:///tmp"]);
     }
 
     #[test]
     fn declining_handler_falls_through_to_older() {
-        let log: Log = Rc::default();
+        let log: Log = Arc::default();
         let mut parser = EscapeSequenceParser::<TestHost>::new();
         let mut host = TestHost::default();
         logger("old", 52, true, &log).register(&mut parser).unwrap();
@@ -141,33 +140,34 @@ mod tests {
             .unwrap();
 
         parser.parse(&mut host, &osc(52, "c;?"));
-        assert_eq!(*log.borrow(), ["new:c;?", "old:c;?"]);
+        assert_eq!(*log.lock().unwrap(), ["new:c;?", "old:c;?"]);
     }
 
     #[test]
     fn unhandled_ident_reports_to_the_fallback() {
-        let log: Log = Rc::default();
+        let log: Log = Arc::default();
         let mut parser = EscapeSequenceParser::<TestHost>::new();
         let mut host = TestHost::default();
         logger("seven", 7, true, &log)
             .register(&mut parser)
             .unwrap();
-        let fallback_log = Rc::clone(&log);
+        let fallback_log = Arc::clone(&log);
         parser.set_osc_handler_fallback(move |_, ident, action| {
             if let OscFallbackAction::End(success) = action {
                 fallback_log
-                    .borrow_mut()
+                    .lock()
+                    .unwrap()
                     .push(format!("end:{ident}:{success}"));
             }
         });
 
         parser.parse(&mut host, &osc(1337, "x"));
-        assert_eq!(*log.borrow(), ["end:1337:true"]);
+        assert_eq!(*log.lock().unwrap(), ["end:1337:true"]);
     }
 
     #[test]
     fn registration_errors_are_returned_and_extensions_are_object_safe() {
-        let log: Log = Rc::default();
+        let log: Log = Arc::default();
         let mut parser = EscapeSequenceParser::<TestHost>::new();
         let extensions: Vec<Box<dyn Extension<TestHost>>> = vec![
             Box::new(logger("ok", 7, true, &log)),

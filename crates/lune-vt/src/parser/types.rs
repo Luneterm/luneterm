@@ -206,29 +206,29 @@ impl std::error::Error for IdentifierError {}
 // `C` and is passed in per call.
 
 /// `PrintHandlerType` (`data, start, end` as one slice).
-pub(crate) type PrintFn<C> = Box<dyn FnMut(&mut C, &[u32])>;
+pub(crate) type PrintFn<C> = Box<dyn FnMut(&mut C, &[u32]) + Send>;
 /// `ExecuteHandlerType` (upstream's `boolean` return is never read by the parser).
-pub(crate) type ExecuteFn<C> = Box<dyn FnMut(&mut C)>;
+pub(crate) type ExecuteFn<C> = Box<dyn FnMut(&mut C) + Send>;
 /// `ExecuteFallbackHandlerType`.
-pub(crate) type ExecuteFallbackFn<C> = Box<dyn FnMut(&mut C, u32)>;
+pub(crate) type ExecuteFallbackFn<C> = Box<dyn FnMut(&mut C, u32) + Send>;
 /// `CsiHandlerType`.
-pub(crate) type CsiFn<C> = Box<dyn FnMut(&mut C, &Params) -> bool>;
+pub(crate) type CsiFn<C> = Box<dyn FnMut(&mut C, &Params) -> bool + Send>;
 /// `CsiFallbackHandlerType`.
-pub(crate) type CsiFallbackFn<C> = Box<dyn FnMut(&mut C, u32, &Params)>;
+pub(crate) type CsiFallbackFn<C> = Box<dyn FnMut(&mut C, u32, &Params) + Send>;
 /// `EscHandlerType`.
-pub(crate) type EscFn<C> = Box<dyn FnMut(&mut C) -> bool>;
+pub(crate) type EscFn<C> = Box<dyn FnMut(&mut C) -> bool + Send>;
 /// `EscFallbackHandlerType`.
-pub(crate) type EscFallbackFn<C> = Box<dyn FnMut(&mut C, u32)>;
+pub(crate) type EscFallbackFn<C> = Box<dyn FnMut(&mut C, u32) + Send>;
 /// `OscFallbackHandlerType`.
-pub(crate) type OscFallbackFn<C> = Box<dyn FnMut(&mut C, i32, OscFallbackAction<'_>)>;
+pub(crate) type OscFallbackFn<C> = Box<dyn FnMut(&mut C, i32, OscFallbackAction<'_>) + Send>;
 /// `DcsFallbackHandlerType`.
-pub(crate) type DcsFallbackFn<C> = Box<dyn FnMut(&mut C, u32, DcsFallbackAction<'_>)>;
+pub(crate) type DcsFallbackFn<C> = Box<dyn FnMut(&mut C, u32, DcsFallbackAction<'_>) + Send>;
 /// Callback of `OscStringHandler` (upstream `OscHandler` constructor argument).
-pub(crate) type OscStringFn<C> = Box<dyn FnMut(&mut C, &str) -> bool>;
+pub(crate) type OscStringFn<C> = Box<dyn FnMut(&mut C, &str) -> bool + Send>;
 /// Callback of `DcsStringHandler` (upstream `DcsHandler` constructor argument).
-pub(crate) type DcsStringFn<C> = Box<dyn FnMut(&mut C, &str, &Params) -> bool>;
+pub(crate) type DcsStringFn<C> = Box<dyn FnMut(&mut C, &str, &Params) -> bool + Send>;
 /// Error handler: returns `abort`.
-pub(crate) type ErrorFn<C> = Box<dyn FnMut(&mut C, &ParsingState<'_>) -> bool>;
+pub(crate) type ErrorFn<C> = Box<dyn FnMut(&mut C, &ParsingState<'_>) -> bool + Send>;
 
 /// Remove the entry `id` from `list` (upstream's disposable: `splice(indexOf(handler), 1)`).
 /// Returns whether it was there.

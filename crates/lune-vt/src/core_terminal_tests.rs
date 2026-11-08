@@ -4,8 +4,7 @@
 
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::services::options_service::LogLevel;
@@ -85,8 +84,8 @@ fn a_link_whose_line_is_trimmed_is_gone_after_write() {
 #[test]
 fn re_registering_the_same_link_after_its_line_is_trimmed_in_the_same_write_gets_a_new_id() {
     let mut t = core(10, 3, [OptionValue::Scrollback(2)]);
-    let ids = Rc::new(RefCell::new(Vec::new()));
-    let sink = Rc::clone(&ids);
+    let ids = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&ids);
     // stands in for the OSC 8 handler: forward, then register (input_handler.rs module notes)
     t.register_osc_handler(9999, move |h, _| {
         h.forward_disposed_markers();
@@ -94,29 +93,32 @@ fn re_registering_the_same_link_after_its_line_is_trimmed_in_the_same_write_gets
         let id = services
             .osc_link
             .register_link(&mut services.buffer, link(Some("x"), "https://a"));
-        sink.borrow_mut().push(id);
+        sink.lock().unwrap().push(id);
         true
     });
 
     // without trimming in between the link is reused
     t.write(b"\x1b]9999;\x07\n\x1b]9999;\x07");
-    assert_eq!(ids.borrow()[0], ids.borrow()[1]);
+    {
+        let ids = ids.lock().unwrap();
+        assert_eq!(ids[0], ids[1]);
+    }
 
     // trimmed in the same write: upstream freed the link, so the same id;uri is a new link
     let mut t = core(10, 3, [OptionValue::Scrollback(2)]);
-    let ids = Rc::new(RefCell::new(Vec::new()));
-    let sink = Rc::clone(&ids);
+    let ids = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&ids);
     t.register_osc_handler(9999, move |h, _| {
         h.forward_disposed_markers();
         let services = &mut h.services;
         let id = services
             .osc_link
             .register_link(&mut services.buffer, link(Some("x"), "https://a"));
-        sink.borrow_mut().push(id);
+        sink.lock().unwrap().push(id);
         true
     });
     t.write(b"\x1b]9999;\x07\n\n\n\n\n\x1b]9999;\x07");
-    let ids = ids.borrow();
+    let ids = ids.lock().unwrap();
     assert_ne!(ids[0], ids[1]);
     assert_eq!(link_count(&t), 1);
 }
@@ -434,22 +436,22 @@ fn user_input_scrolls_to_the_bottom_and_becomes_a_response() {
 #[test]
 fn a_registered_csi_t_handler_runs_only_for_allowed_window_options() {
     let mut t = core(10, 3, []);
-    let calls = Rc::new(RefCell::new(Vec::new()));
-    let sink = Rc::clone(&calls);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&calls);
     t.register_csi_handler(FunctionIdentifier::new('t'), move |_, params| {
-        sink.borrow_mut().push(params.get(0));
+        sink.lock().unwrap().push(params.get(0));
         true
     })
     .unwrap();
     t.write(b"\x1b[18t");
-    assert!(calls.borrow().is_empty());
+    assert!(calls.lock().unwrap().is_empty());
     t.set_option(OptionValue::WindowOptions(WindowOptions {
         get_win_size_chars: true,
         ..WindowOptions::default()
     }))
     .unwrap();
     t.write(b"\x1b[18t\x1b[14t");
-    assert_eq!(*calls.borrow(), [Some(18)]);
+    assert_eq!(*calls.lock().unwrap(), [Some(18)]);
 }
 
 #[test]

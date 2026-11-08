@@ -16,8 +16,7 @@
 
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use super::osc52::{MAX_BASE64_CHARS, MAX_DECODED_BYTES, Osc52Outcome, Osc52Result, parse_osc52};
 use super::*;
@@ -472,11 +471,11 @@ fn engine_output_is_chunk_invariant() {
 
 // --- logging ----------------------------------------------------------------------------------
 
-struct Capture(Rc<RefCell<Vec<(LogLevel, String)>>>);
+struct Capture(Arc<Mutex<Vec<(LogLevel, String)>>>);
 
 impl Logger for Capture {
     fn log(&self, level: LogLevel, message: &str) {
-        self.0.borrow_mut().push((level, message.to_owned()));
+        self.0.lock().unwrap().push((level, message.to_owned()));
     }
 }
 
@@ -488,8 +487,8 @@ fn logs_carry_the_outcome_and_length_never_the_payload() {
         ..StandardExtensions::default()
     })
     .unwrap();
-    let messages = Rc::new(RefCell::new(Vec::new()));
-    t.set_logger(Some(Box::new(Capture(Rc::clone(&messages)))));
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    t.set_logger(Some(Box::new(Capture(Arc::clone(&messages)))));
     let secret = "hunter2-clipboard-secret";
     let encoded = b64(secret.as_bytes());
     t.write(&osc(&format!("c;{encoded}")));
@@ -500,7 +499,7 @@ fn logs_carry_the_outcome_and_length_never_the_payload() {
     huge.extend(std::iter::repeat_n(b'A', MAX_BASE64_CHARS + 8));
     huge.push(7);
     t.write(&huge);
-    let messages = messages.borrow();
+    let messages = messages.lock().unwrap();
     for (_, message) in messages.iter() {
         assert!(!message.contains(secret), "plain payload logged");
         assert!(!message.contains(&encoded), "encoded payload logged");

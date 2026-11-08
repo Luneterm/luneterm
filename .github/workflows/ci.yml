@@ -21,6 +21,11 @@ jobs:
         run: scripts/check-lib-boundaries.sh
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # M8 D8: header == exported symbols (nm vs the clang AST), shipping and panic-probe builds,
+      # plus the C smoke test. Needs clang and nm; macOS has both. Windows checks the DLL builds
+      # (job windows-exe) and the Rust tests; Linux runs the C smoke test through cargo test.
+      - if: runner.os == 'macOS'
+        run: scripts/check-ffi.sh
       # M3 D10: lune-pty flake detector, 5 consecutive runs; stops at the first failure.
       - name: lune-pty soak (5x)
         shell: bash
@@ -43,6 +48,12 @@ jobs:
       # M3 step 0 (P7/P8): portable-pty size cost = spawn example minus the luneterm placeholder.
       - run: cargo build --release -p lune-pty --example spawn
       - run: cargo build --release -p luneterm
+      # M8 D4: the C ABI library is built only with the ffi-release profile (unwinding).
+      - run: cargo build -p luneterm-ffi --profile ffi-release
+      - shell: pwsh
+        run: |
+          $dll = (Get-Item target/ffi-release/luneterm_ffi.dll).Length
+          "luneterm_ffi.dll=$dll"
       - shell: pwsh
         run: |
           $spawn = (Get-Item target/release/examples/spawn.exe).Length

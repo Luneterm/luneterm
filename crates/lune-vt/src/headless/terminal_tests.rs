@@ -24,8 +24,7 @@
 
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::buffer::attribute_data::AttributeData;
@@ -736,6 +735,19 @@ fn a_missing_line_renders_blank() {
 }
 
 #[test]
+fn viewport_with_rows_streams_the_same_rows_and_keeps_the_rest() {
+    let mut t = term([OptionValue::Cols(4), OptionValue::Rows(3)]);
+    t.write_str("l0\r\nl1\x1b]8;;http://x\x07\x1b]0;ti\x07");
+    let full = t.viewport();
+    let mut rows = Vec::new();
+    let mut rest = t.viewport_with_rows(|row| rows.push(row.to_vec()));
+    assert!(rest.cells.is_empty());
+    assert_eq!(rows, full.cells);
+    rest.cells = rows;
+    assert_eq!(rest, full);
+}
+
+#[test]
 fn viewport_cursor_visibility_style_and_blink() {
     let mut t = term([OptionValue::Cols(5), OptionValue::Rows(2)]);
     t.write_str("ab");
@@ -951,16 +963,16 @@ fn lunegit_read_viewport() {
 
 #[test]
 fn engine_is_usable_as_a_trait_object() {
-    let calls = Rc::new(RefCell::new(0));
+    let calls = Arc::new(Mutex::new(0));
     let mut t = engine(10, 3);
-    let sink = Rc::clone(&calls);
+    let sink = Arc::clone(&calls);
     t.register_osc_handler(7, move |_, _| {
-        *sink.borrow_mut() += 1;
+        *sink.lock().unwrap() += 1;
         true
     });
     let mut boxed: Box<dyn VtEngine> = Box::new(t);
     boxed.write(b"\x1b]7;file:///tmp\x07");
-    assert_eq!(*calls.borrow(), 1);
+    assert_eq!(*calls.lock().unwrap(), 1);
 }
 
 // --- step 7: the handlers through the public face -----------------------------------------
@@ -1154,20 +1166,20 @@ fn trace_logging_never_carries_output_or_input_payloads() {
     use crate::services::log_service::Logger;
     use crate::services::options_service::LogLevel;
 
-    struct Capture(Rc<RefCell<Vec<String>>>);
+    struct Capture(Arc<Mutex<Vec<String>>>);
     impl Logger for Capture {
         fn log(&self, _level: LogLevel, message: &str) {
-            self.0.borrow_mut().push(message.to_string());
+            self.0.lock().unwrap().push(message.to_string());
         }
     }
     let mut t = sized(80, 24);
-    let messages = Rc::new(RefCell::new(Vec::new()));
-    t.set_logger(Some(Box::new(Capture(Rc::clone(&messages)))));
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    t.set_logger(Some(Box::new(Capture(Arc::clone(&messages)))));
     t.set_option(OptionValue::LogLevel(LogLevel::Trace))
         .unwrap();
     t.write(b"\x1b]52;c;U0VDUkVUX0NMSVA=\x07\x1bP1$zsecret-dcs\x1b\\echoed-secret");
     t.input("hunter2-password\r", true);
-    let messages = messages.borrow();
+    let messages = messages.lock().unwrap();
     assert!(!messages.is_empty(), "the sink saw the log lines");
     for secret in ["U0VDUkVUX0NMSVA", "secret-dcs", "echoed-secret", "hunter2"] {
         assert!(
@@ -1302,15 +1314,15 @@ fn paste_queues_no_host_event_and_never_logs_the_text() {
     use crate::services::log_service::Logger;
     use crate::services::options_service::LogLevel;
 
-    struct Capture(Rc<RefCell<Vec<String>>>);
+    struct Capture(Arc<Mutex<Vec<String>>>);
     impl Logger for Capture {
         fn log(&self, _level: LogLevel, message: &str) {
-            self.0.borrow_mut().push(message.to_string());
+            self.0.lock().unwrap().push(message.to_string());
         }
     }
     let mut t = sized(80, 24);
-    let messages = Rc::new(RefCell::new(Vec::new()));
-    t.set_logger(Some(Box::new(Capture(Rc::clone(&messages)))));
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    t.set_logger(Some(Box::new(Capture(Arc::clone(&messages)))));
     t.set_option(OptionValue::LogLevel(LogLevel::Trace))
         .unwrap();
     t.write_str("\x1b[?2004h");
@@ -1318,7 +1330,7 @@ fn paste_queues_no_host_event_and_never_logs_the_text() {
     let text = "pasted-secret-token";
     assert!(t.paste(text).is_some());
     assert!(t.drain_events().is_empty());
-    let messages = messages.borrow();
+    let messages = messages.lock().unwrap();
     assert!(
         messages.iter().any(|m| m.contains("sending data")),
         "the sink saw the send"
@@ -1327,4 +1339,25 @@ fn paste_queues_no_host_event_and_never_logs_the_text() {
         messages.iter().all(|m| !m.contains("pasted-secret")),
         "paste text reached the log"
     );
+}
+
+#[test]
+fn a_terminal_moves_to_another_thread_and_keeps_working() {
+    // M8 D1/D2: every handler, logger and mouse-encoder box is `Send`; the compile-time
+    // assertion in `terminal.rs` guards the type, this runs one across a thread boundary.
+    let mut t = Terminal::new([OptionValue::Cols(10), OptionValue::Rows(3)]);
+    t.write_str("ab");
+    let t = std::thread::spawn(move || {
+        let mut t = t;
+        t.write_str("cd");
+        t
+    })
+    .join()
+    .unwrap();
+    assert_eq!(t.cols(), 10);
+    let row: String = t.viewport().cells[0]
+        .iter()
+        .map(|c| c.text.as_str())
+        .collect();
+    assert_eq!(row, "abcd");
 }
