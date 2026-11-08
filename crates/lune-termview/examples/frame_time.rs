@@ -103,9 +103,9 @@ fn main() {
             }
         };
 
-    // System fonts plus the spike's RobotoMono, loaded by path.
+    // The committed RobotoMono subset (it holds every glyph the grid uses), loaded by path.
     let font_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../spikes/glass-ui/assets/RobotoMonoNerdFontMono-Regular.ttf");
+        .join("tests/fonts/RobotoMonoNerdFontMono-Regular.subset.ttf");
     let mut fs = FontSystem::new();
     let ids = fs
         .db_mut()

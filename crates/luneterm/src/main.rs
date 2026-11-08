@@ -1,10 +1,7 @@
-//! Luneterm app: window, event loop and session wiring. Placeholder until the engine port and the
-//! glass window spike land.
+//! Luneterm: a standalone glass terminal. The app is `luneterm::app`; this is its entry point.
 
-fn main() {
-    println!(
-        "luneterm {} (xterm.js {} port)",
-        env!("CARGO_PKG_VERSION"),
-        lune_vt::XTERM_JS_TAG
-    );
+#![forbid(unsafe_code)]
+
+fn main() -> std::process::ExitCode {
+    luneterm::app::run()
 }

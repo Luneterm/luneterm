@@ -5,8 +5,8 @@
 | xterm.js 6.0.0 (`f447274`) | `lune-vt` is a port of its `src/common` | MIT — `licenses/xterm.js-LICENSE` |
 | XTerm.NET 1.0.14 (Tom Laird-McConnell), via Lunegit | `crates/lune-vt/src/input/legacy_key_encoder.rs` is a port of Lunegit's `XtermVtInputEncoder.GenerateKeyInput` / `GenerateCharInput`, which Lunegit's own header calls a faithful port of XTerm.NET 1.0.14's `KeyboardInputGenerator` | MIT — `licenses/XTerm.NET-LICENSE` |
 | Avalonia 12.1.2 acrylic noise texture and colour formulas | `crates/lune-ui/assets/acrylic-noise.png`, `crates/lune-ui/src/acrylic.rs` | MIT — `licenses/avalonia-LICENSE` |
-| RobotoMono Nerd Font Mono | bundled terminal font (spike) | Apache 2.0 — `spikes/glass-ui/assets/RobotoMonoNerdFont.LICENSE.txt` |
-| RznSans | bundled UI font (spike) | OFL 1.1 — `spikes/glass-ui/assets/RznSans.OFL.txt` |
+| RobotoMono Nerd Font Mono | bundled terminal font (app, spike) | Apache 2.0 — `crates/luneterm/assets/RobotoMonoNerdFont.LICENSE.txt` |
+| RznSans | bundled UI font (app, spike) | OFL 1.1 — `crates/luneterm/assets/RznSans.OFL.txt` |
 
 Lunegit itself has no entry: the other Lunegit-derived code in `lune-vt` (the
 protocol-aware key encoder, the kitty keyboard / modifyOtherKeys / XTVERSION / VS16 / OSC 52 /
