@@ -99,7 +99,11 @@ uint32_t luneterm_abi_version(void);
 /* ---- Caps --------------------------------------------------------------------------------- */
 
 /* Host-supplied sizes over a cap are rejected (LUNETERM_ERR_INVALID_ARGUMENT), never clamped.
- * Below 2 columns or 1 row they are clamped to 2 x 1, as the engine does. */
+ * Below 2 columns or 1 row they are clamped to 2 x 1, as the engine does.
+ * The caps do NOT keep memory small: a buffer holds cols x (rows + scrollback) cells of at least
+ * 12 bytes, so the caps allow 4096 x (2048 + 100000) = 417,988,608 cells: about 4.7 GiB at 12 bytes
+ * per cell, 9.7 GiB at 25 (derived, not measured), which a child fills by printing ~420 MB of long
+ * lines. Pass smaller sizes if that is too much; the library does not lower them. */
 #define LUNETERM_MAX_COLS 4096u
 #define LUNETERM_MAX_ROWS 2048u
 #define LUNETERM_MAX_SCROLLBACK 100000u
@@ -149,7 +153,8 @@ int32_t luneterm_engine_write(LunetermEngine* engine, const uint8_t* data, size_
 /* Resizes the grid (caps as above; over a cap changes nothing). */
 int32_t luneterm_engine_resize(LunetermEngine* engine, uint32_t cols, uint32_t rows);
 
-/* The current grid size. */
+/* The current grid size. `cols` and `rows` must be two distinct pointers: aliasing them is
+ * undefined behaviour. */
 int32_t luneterm_engine_size(LunetermEngine* engine, uint32_t* cols, uint32_t* rows);
 
 /* Scrolls the viewport by delta lines (negative = up), or to the top / the bottom. */
@@ -259,7 +264,6 @@ int32_t luneterm_engine_viewport(LunetermEngine* engine, LunetermViewport* out);
 #define LUNETERM_EVENT_TITLE_CHANGED 3u /* no data: read the title from the viewport */
 #define LUNETERM_EVENT_COLOR 4u /* offset/len index LunetermEvents.colors */
 #define LUNETERM_EVENT_FOCUS_REPORT_REQUESTED 5u
-/* Reserved and never emitted through this ABI: the engine's window operations stay off. */
 /* value: 0 window size in pixels, 1 cell size in pixels. The engine's window options are off and
  * this ABI has no way to turn them on, so ABI 1 never emits this event. */
 #define LUNETERM_EVENT_WINDOW_REPORT 6u
