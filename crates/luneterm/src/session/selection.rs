@@ -23,7 +23,7 @@
 //!    `:158-162`); both are kept and are driven from the engine, a horizontal-only resize keeps the
 //!    selection as upstream does;
 //!  - the copied text is bounded ([`MAX_COPY_BYTES`]) and its line break is the platform's;
-//!  - no link-under-cursor rule yet (step 4), no select-all, no Alt-click cursor move.
+//!  - no link-under-cursor rule yet (step 4), no Alt-click cursor move.
 
 use std::time::Duration;
 
@@ -642,6 +642,8 @@ pub enum SelectCmd {
     /// The button was released.
     End,
     Clear,
+    /// Select everything: the whole buffer, scrollback included (`selectAll`).
+    All,
 }
 
 /// The selection as the UI draws it: buffer coordinates, `start` before `end`, `end`'s column
@@ -854,7 +856,7 @@ impl Selection {
     /// trimmed (or inserted or deleted) above the anchor, the alternate buffer entered or left.
     /// What changed shows in [`Selection::view`]; the engine compares it around the call.
     pub fn sync(&mut self, term: &mut Terminal) {
-        if self.model.selection_start.is_none() {
+        if self.model.selection_start.is_none() && !self.model.is_select_all_active {
             return;
         }
         // Clears on a buffer switch (`_handleBufferActivate`).
@@ -907,7 +909,7 @@ impl Selection {
 
     /// User input clears the selection (`SelectionService.ts:139-143`).
     pub fn user_input(&mut self, term: &mut Terminal) {
-        if self.model.selection_start.is_some() {
+        if self.model.selection_start.is_some() || self.model.is_select_all_active {
             self.clear(term);
         }
     }
@@ -943,6 +945,13 @@ impl Selection {
                 self.next_drag = None;
             }
             SelectCmd::Clear => self.clear(term),
+            SelectCmd::All => {
+                // `selectAll`: the model computes its start and end from the buffer.
+                self.clear(term);
+                self.model.is_select_all_active = true;
+                self.mode = SelectionMode::Normal;
+                self.on_alt = term.buffers().is_alt_active();
+            }
         }
         self.follow_anchor(term);
     }
@@ -977,6 +986,8 @@ impl Selection {
             separators: &separators,
         };
         self.on_alt = term.buffers().is_alt_active();
+        // Any new press replaces a select-all.
+        self.model.is_select_all_active = false;
         match clicks {
             1 => {
                 // `_handleSingleClick`

@@ -233,6 +233,8 @@ pub struct Tab {
     pub started: Instant,
     pub foreground: ForegroundState,
     pub command: CommandState,
+    /// An OSC 9;4 progress report is active (any state but "removed").
+    pub progress_active: bool,
     /// The focus the session was last told (focus reports, mode 1004).
     pub focused: bool,
 }
@@ -267,6 +269,7 @@ impl Tab {
             started: Instant::now(),
             foreground: ForegroundState::default(),
             command: CommandState::default(),
+            progress_active: false,
             focused: false,
         }
     }
@@ -307,6 +310,19 @@ impl Tab {
     /// a command runs. A tab with no session never asks.
     pub fn needs_confirm(&self) -> bool {
         asks_on_close(self.session.is_some(), self.foreground, self.command)
+    }
+
+    /// Whether the running-command outline should show for this tab: the gate of
+    /// `outline::should_show` over what the tab last published. `animate_full_screen` is the
+    /// setting that lets it run in full-screen and interactive programs.
+    pub fn busy(&self, animate_full_screen: bool) -> bool {
+        crate::outline::should_show(
+            self.progress_active,
+            self.command.running,
+            self.alt_screen,
+            animate_full_screen,
+            self.command.interactive,
+        )
     }
 
     /// The link under cell (`row`, `col`) of the mirror, if any.
@@ -368,6 +384,11 @@ impl Tab {
         }
         if let Some(f) = update.foreground {
             self.foreground = f;
+        }
+        if let Some(progress) = &update.progress {
+            let active = crate::outline::progress_active(progress);
+            fx.chrome |= active != self.progress_active;
+            self.progress_active = active;
         }
         if let Some(c) = update.command {
             self.command = c;
@@ -665,6 +686,32 @@ mod tests {
         let long = named(&"x".repeat(500)).expect("name");
         assert_eq!(long.chars().count(), 80);
         assert_eq!(named("a\u{202e}b\nc").as_deref(), Some("abc"));
+    }
+
+    /// The tab's gate is `outline::should_show` over its own state; the full-screen setting is the
+    /// opt-in that bypasses the alternate-screen and interactive suppression.
+    #[test]
+    fn a_tab_is_busy_per_the_gate_and_the_full_screen_setting() {
+        let mut t = Tab::empty(TermTheme::lunegit_one_dark());
+        assert!(!t.busy(false) && !t.busy(true), "nothing runs");
+        t.command = CommandState {
+            running: true,
+            interactive: false,
+        };
+        assert!(t.busy(false));
+        // A full-screen program: static unless the setting is on.
+        t.alt_screen = true;
+        assert!(!t.busy(false));
+        assert!(t.busy(true));
+        t.alt_screen = false;
+        t.command.interactive = true;
+        assert!(!t.busy(false));
+        assert!(t.busy(true));
+        // Progress is an independent trigger.
+        t.command.running = false;
+        assert!(!t.busy(true));
+        t.progress_active = true;
+        assert!(t.busy(false));
     }
 
     #[test]

@@ -1211,6 +1211,10 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
             preedit: None,
             clipboard_write: None,
             clipboard_read: false,
+            page: None,
+            menu: None,
+            busy: None,
+            tab_menu_extra: &[],
         };
         r.draw(&input, content, &view, size)?;
         r.gpu.end_frame(&mut r.text);

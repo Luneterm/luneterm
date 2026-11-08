@@ -27,6 +27,8 @@ pub enum AppCommand {
     PrevTab,
     /// The tab at this 0-based place (1..=9 on the keyboard).
     SelectTab(usize),
+    /// Open the settings page (D13: Cmd+, on macOS, Ctrl+, elsewhere); leaves it when it is open.
+    Settings,
 }
 
 impl AppCommand {
@@ -35,7 +37,11 @@ impl AppCommand {
     pub fn once_per_press(self) -> bool {
         matches!(
             self,
-            AppCommand::Paste | AppCommand::Copy | AppCommand::NewTab | AppCommand::CloseTab
+            AppCommand::Paste
+                | AppCommand::Copy
+                | AppCommand::NewTab
+                | AppCommand::CloseTab
+                | AppCommand::Settings
         )
     }
 }
@@ -73,6 +79,14 @@ impl AppShortcuts {
             (shift(NamedKey::Home), AppCommand::Scroll(Scroll::Top)),
             (shift(NamedKey::End), AppCommand::Scroll(Scroll::Bottom)),
         ];
+        entries.push((
+            if macos {
+                ch(",").logo()
+            } else {
+                ch(",").ctrl()
+            },
+            AppCommand::Settings,
+        ));
         if macos {
             entries.push((ch("t").logo(), AppCommand::NewTab));
             entries.push((ch("w").logo(), AppCommand::CloseTab));
@@ -111,6 +125,11 @@ impl AppShortcuts {
                 .cloned()
                 .collect(),
         }
+    }
+
+    /// Whether some chord is bound to `cmd`.
+    pub fn binds(&self, cmd: AppCommand) -> bool {
+        self.entries.iter().any(|(_, c)| *c == cmd)
     }
 
     /// The command of the first chord that matches a press of `key` with `held` modifiers.
@@ -305,5 +324,30 @@ mod tests {
             "the rest is kept"
         );
         assert!(AppCommand::Copy.once_per_press());
+    }
+
+    #[test]
+    fn settings_is_cmd_comma_on_macos_and_ctrl_comma_elsewhere() {
+        let mac = AppShortcuts::standard(true);
+        let pc = AppShortcuts::standard(false);
+        let logo = Modifiers { logo: true, ..NONE };
+        let ctrl = Modifiers {
+            control: true,
+            ..NONE
+        };
+        assert_eq!(
+            mac.matching(&ch(","), logo, &Keymap::MAC),
+            Some(AppCommand::Settings)
+        );
+        assert_eq!(mac.matching(&ch(","), ctrl, &Keymap::MAC), None);
+        assert_eq!(
+            pc.matching(&ch(","), ctrl, &Keymap::PC),
+            Some(AppCommand::Settings)
+        );
+        assert_eq!(pc.matching(&ch(","), logo, &Keymap::PC), None);
+        assert_eq!(pc.matching(&ch(","), NONE, &Keymap::PC), None);
+        assert!(AppCommand::Settings.once_per_press());
+        assert!(mac.binds(AppCommand::Settings) && pc.binds(AppCommand::Settings));
+        assert!(!pc.without_copy().binds(AppCommand::Copy));
     }
 }

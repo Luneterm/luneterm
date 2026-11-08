@@ -18,11 +18,14 @@ use lune_ui::strings::{DisplayFormat, StringTable};
 use lune_ui::text::{Spec, Style, TextCache};
 use lune_ui::theme::{AcrylicLevel, Theme};
 use lune_ui::ui::{FrameConfig, Ui, UiStore};
+use lune_ui::widgets::menu::{MenuOptions, MenuPlace, MenuResponse, MenuRow};
+use lune_ui::widgets::tab_strip::BusyCue;
 use lune_ui::widgets::toast::Toasts;
 
 use crate::fonts;
 use crate::session::Geometry;
 use crate::settings::Settings;
+use crate::settings_page::{self, PageOut, PageView};
 use crate::shell::{
     self, Chrome, GridPlacement, Layout, Modal, ModalOut, ScrollView, ShellView, StripTab,
 };
@@ -69,6 +72,22 @@ pub struct Content<'a> {
     pub clipboard_write: Option<String>,
     /// Ask the OS for the clipboard's text (a paste; the answer comes in a later frame's input).
     pub clipboard_read: bool,
+    /// The settings page, covering the card; `None` shows the terminal.
+    pub page: Option<PageView<'a>>,
+    /// An open menu, drawn over everything but the dialog.
+    pub menu: Option<MenuDraw<'a>>,
+    /// The cue the active tab's outline runs, `None` when it is not busy or the setting is off.
+    pub busy: Option<BusyCue>,
+    /// The rows after the toolkit's four on a tab's context menu.
+    pub tab_menu_extra: &'a [&'a str],
+}
+
+/// A menu to draw this frame.
+#[derive(Debug)]
+pub struct MenuDraw<'a> {
+    pub rows: Vec<MenuRow<'a>>,
+    pub place: MenuPlace,
+    pub name: &'a str,
 }
 
 impl std::fmt::Debug for Content<'_> {
@@ -137,6 +156,12 @@ pub struct Drawn {
     pub tab_events: Vec<lune_ui::widgets::tab_strip::TabEvent>,
     /// The dialog's answer; `None` while none is shown.
     pub modal: Option<ModalOut>,
+    /// The settings page's request; `None` while it is not shown.
+    pub page: Option<PageOut>,
+    /// What the open menu reported; `None` while none is shown.
+    pub menu: Option<MenuResponse>,
+    /// The `⋯` button was pressed: its rect.
+    pub overflow: Option<Rect>,
     /// The grid size the frame was laid out for.
     pub cols: usize,
     pub rows: usize,
@@ -185,7 +210,7 @@ impl Renderer {
             frame,
             term,
             store: UiStore::default(),
-            strings: StringTable::default(),
+            strings: crate::strings::english(),
             shortcuts: Shortcuts::default(),
             theme: theme(glass),
             tier: settings.tier(),
@@ -199,6 +224,39 @@ impl Renderer {
     /// frame dumps call it between scenes so one scene cannot leak into the next.
     pub fn reset_ui(&mut self) {
         self.store = UiStore::default();
+    }
+
+    /// Whether OS glass is behind the window: the glass theme, or the opaque one (P22).
+    pub fn set_glass(&mut self, glass: bool) {
+        self.theme = theme(glass);
+    }
+
+    /// The menu and dialog blur of the setting.
+    pub fn set_blur(&mut self, sigma: f32) {
+        self.blur_sigma = sigma;
+    }
+
+    /// The motion tier of the setting.
+    pub fn set_tier(&mut self, tier: MotionTier) {
+        self.tier = tier;
+    }
+
+    /// New terminal fonts (the setting's family and size). The caller marks every grid dirty and
+    /// sends the new geometry to every session.
+    pub fn set_fonts(&mut self, settings: &Settings) {
+        let fonts = fonts::term_fonts(&mut self.text, settings);
+        self.font_size = fonts.size;
+        self.term.set_fonts(fonts);
+    }
+
+    /// The app's string table (the page, the menus and the toolkit's own texts).
+    pub fn strings(&self) -> &StringTable {
+        &self.strings
+    }
+
+    /// The toolkit theme in force.
+    pub fn theme(&self) -> &Theme {
+        &self.theme
     }
 
     /// New terminal colours (a colour set or restore by the child). The caller marks the grid
@@ -273,8 +331,29 @@ impl Renderer {
             active_tab: content.active_tab,
             modal: content.modal.take(),
             toasts: content.toasts.take(),
+            page_open: content.page.is_some(),
+            busy: content.busy,
+            menu_extra: content.tab_menu_extra,
+            overflow_name: self.strings.tr("menu.more"),
         };
         let shell_out = shell::draw(&mut ui, view);
+        let mut page_out = None;
+        if let Some(page) = content.page.take() {
+            page_out = Some(settings_page::draw(
+                &mut ui,
+                &self.strings,
+                page,
+                layout.card,
+            ));
+        }
+        let menu_resp = content.menu.take().map(|m| {
+            let options = MenuOptions {
+                place: m.place,
+                anchor_id: None,
+                name: m.name,
+            };
+            ui.menu_with("app-menu", &m.rows, &options)
+        });
         if content.hover_link != 0 {
             ui.set_cursor(lune_ui::input::CursorIcon::Pointer);
         }
@@ -282,12 +361,17 @@ impl Renderer {
         let cursor = content.cursor;
         let cols = content.grid.cols();
         // With a dialog open the keyboard and the IME are the toolkit's.
-        let cell = (content.ime && cols > 0 && !modal_open).then(|| {
+        let cell = (content.ime && cols > 0 && !modal_open && page_out.is_none()).then(|| {
             placed
                 .grid_layout()
                 .cell_rect(cursor.row, cursor.col.min(cols - 1), 1)
         });
-        ui.set_ime_area(if modal_open { shell_out.ime_area } else { cell });
+        let page_ime = page_out.as_ref().and_then(|p: &PageOut| p.ime_area);
+        ui.set_ime_area(if modal_open {
+            shell_out.ime_area
+        } else {
+            page_ime.or(cell)
+        });
         if let (Some(cell), Some(text)) = (cell, content.preedit.filter(|t| !t.is_empty())) {
             let (fg, bg) = (self.term_theme.foreground, self.term_theme.background);
             let line = placed.cell_h_logical();
@@ -353,6 +437,9 @@ impl Renderer {
             output,
             tab_events,
             modal,
+            page: page_out,
+            menu: menu_resp,
+            overflow: shell_out.overflow,
             cols: placement.cols,
             rows: placement.rows,
         })
