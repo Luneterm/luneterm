@@ -26,8 +26,12 @@ use lune_pty::{Pty, PtySize};
 use lune_vt::services::options_service::WindowsPty;
 use lune_vt::{TerminalKeyEvent, TerminalMouseEvent};
 
+pub use crate::outline::CommandState;
 pub use host::HostPalette;
-pub use update::{Exit, MARKS_CAP, Update, UpdateModes, apply_update};
+pub use update::{
+    Exit, ForegroundState, LINK_URIS_CAP, MARKS_CAP, MAX_LINK_URI, Update, UpdateModes,
+    apply_update,
+};
 
 use engine::{EngineCore, RealClock, build_terminal};
 use threads::{Shared, Stats, WriteQueue, engine_loop, reader_loop, writer_loop};
@@ -104,6 +108,8 @@ pub enum Command {
     Resize(Geometry),
     /// The OSC 52 engine gate.
     SetClipboardWrite(bool),
+    /// Scrollback lines, capped at [`MAX_SCROLLBACK`] (a setting changed live).
+    SetScrollback(u32),
 }
 
 impl fmt::Debug for Command {
@@ -119,6 +125,7 @@ impl fmt::Debug for Command {
             Command::Scroll(s) => write!(f, "Scroll({s:?})"),
             Command::Resize(g) => write!(f, "Resize({g:?})"),
             Command::SetClipboardWrite(b) => write!(f, "SetClipboardWrite({b})"),
+            Command::SetScrollback(n) => write!(f, "SetScrollback({n})"),
         }
     }
 }

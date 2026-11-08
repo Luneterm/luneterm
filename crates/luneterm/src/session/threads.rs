@@ -420,7 +420,7 @@ pub(crate) fn engine_loop(mut core: EngineCore, shared: Arc<Shared>, waker: Box<
                 {
                     break;
                 }
-                inbox = match core.next_deadline(now, ui_ready, visible, unpublished) {
+                inbox = match core.next_wake(now, ui_ready, visible, unpublished) {
                     Some(at) => {
                         shared
                             .inbox_cv
