@@ -22,6 +22,10 @@ jobs:
       # M9 D18: every package comes from this repo, crates.io or the pinned luneui-rs rev.
       - if: runner.os == 'Linux'
         run: scripts/check-deps.sh
+      # M10 D11: licenses/THIRD_PARTY_CRATES.txt is what `cargo metadata --locked` says ships
+      # (four targets), with every package's text; fails on a stale, incomplete or unknown-id bundle.
+      - if: runner.os == 'Linux'
+        run: python3 scripts/gen-licenses.py --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       # M8 D8: header == exported symbols (nm vs the clang AST), shipping and panic-probe builds,
@@ -64,9 +68,16 @@ jobs:
           $app = (Get-Item target/release/luneterm.exe).Length
           $glass = (Get-Item target/release/glass-ui.exe).Length
           "luneterm.exe=$app glass-ui.exe=$glass spawn.exe=$spawn"
+      # The exe and the licences it must travel with (M10 step 10): luneterm.exe stays at the
+      # artifact's root, licenses/ beside it.
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/luneterm.exe dist/luneterm.exe
+          Copy-Item -Recurse licenses dist/licenses
       - uses: actions/upload-artifact@v4
         with:
           name: luneterm-windows-x64
-          path: target/release/luneterm.exe
+          path: dist
           retention-days: 7
           if-no-files-found: error
