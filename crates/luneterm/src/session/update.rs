@@ -13,7 +13,7 @@ use lune_vt::{
 
 use crate::outline::CommandState;
 
-use super::HostPalette;
+use super::{CopyResult, HostPalette, SelectionView};
 
 /// The modes the UI routes input by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -85,6 +85,10 @@ pub struct Update {
     /// this session carried, at most [`LINK_URIS_CAP`]; a uri over [`MAX_LINK_URI`] bytes is
     /// never carried (that id stays unopenable). Untrusted text: check before use.
     pub link_uris: Vec<(u32, String)>,
+    /// The selection, only when it changed: `Some(None)` is "nothing selected now".
+    pub selection: Option<Option<SelectionView>>,
+    /// The text a `Command::CopySelection` asked for (or why there is none); never in a `Debug`.
+    pub selection_text: Option<CopyResult>,
     pub exited: Option<Exit>,
 }
 
@@ -113,6 +117,8 @@ impl fmt::Debug for Update {
             .field("foreground", &self.foreground)
             .field("command", &self.command)
             .field("link_uris", &self.link_uris.len())
+            .field("selection", &self.selection)
+            .field("selection_text", &self.selection_text)
             .field("exited", &self.exited)
             .finish_non_exhaustive()
     }

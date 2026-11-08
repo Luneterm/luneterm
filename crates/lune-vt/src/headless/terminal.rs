@@ -195,6 +195,17 @@ impl Terminal {
         Some(buffer.add_marker(y))
     }
 
+    /// Disposes a marker made by [`Terminal::add_marker`] (upstream `IMarker.dispose()`); an
+    /// unknown or already disposed id is ignored. `add_marker` only makes markers on the normal
+    /// buffer, so only that buffer is asked.
+    // LUNETERM: `Terminal` has no counterpart of `IMarker.dispose()` in this API; the host's
+    // selection (plan M10 step 3) re-anchors its trim marker on every click and must free the old
+    // one, or the marker set would grow with every click.
+    pub fn dispose_marker(&mut self, id: MarkerId) {
+        let buffers = &mut self.core.input_handler_mut().services.buffer.buffers;
+        buffers.normal_mut().dispose_marker(id);
+    }
+
     pub fn options(&self) -> &TerminalOptions {
         self.core.options()
     }

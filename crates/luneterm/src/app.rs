@@ -29,7 +29,7 @@ use winit::keyboard::ModifiersState;
 use winit::window::{UserAttentionType, Window, WindowId};
 
 use lune_pty::PortablePtyBackend;
-use lune_termview::{Cell, Cursor, CursorShape, Grid, TermTheme};
+use lune_termview::{Cell, Cursor, CursorShape, Grid, SelectionRange, TermTheme};
 use lune_ui::clipboard::Clipboard;
 use lune_ui::gpu::{self, Gpu};
 use lune_ui::input::{
@@ -38,6 +38,7 @@ use lune_ui::input::{
 use lune_ui::material::{self, Material};
 use lune_ui::surface::{Acquired, WindowSurface};
 use lune_ui::widgets::tab_strip::TabEvent;
+use lune_ui::widgets::toast::{ToastKind, ToastSpec, Toasts};
 use lune_ui::window::glass_attributes;
 use lune_vt::{CursorStyle, MouseEncoding, MouseTracking, TerminalMouseButton, ViewportCursor};
 
@@ -45,12 +46,15 @@ use crate::cwd;
 use crate::dump;
 use crate::fonts;
 use crate::input::{
-    AppCommand, AppShortcuts, KeyRoute, MouseCtx, MouseState, PointerEvent, RouteCtx, WheelAction,
-    WheelCtx, WheelState, key_input, mouse_to_terminal, pointer_event, route_key, terminal_mods,
-    wheel, wheel_delta, wheel_report,
+    AppCommand, AppShortcuts, ClickCounter, KeyRoute, MouseCtx, MouseState, PointerEvent, RouteCtx,
+    WheelAction, WheelCtx, WheelState, key_input, mouse_to_terminal, pointer_event, route_key,
+    selection_position, selection_scroll, terminal_mods, wheel, wheel_delta, wheel_report,
 };
 use crate::render::{Content, Placed, Renderer};
-use crate::session::{Command, HostPalette, Scroll, Session, SessionConfig, UpdateModes};
+use crate::session::{
+    Command, CopyResult, HostPalette, MAX_COPY_BYTES, Scroll, SelectCmd, Session, SessionConfig,
+    UpdateModes, view_range,
+};
 use crate::settings::Settings;
 use crate::shell::{self, HOST, Modal, ModalOut, ScrollView, StripTab, ThumbDrag};
 use crate::spawn::{self, SpawnFailure};
@@ -346,12 +350,18 @@ struct App {
     /// An OSC 52 write waiting for the next frame.
     clipboard_write: Option<String>,
     shortcuts: AppShortcuts,
+    /// The table asked when a Copy chord finds nothing selected: it has no Copy.
+    shortcuts_no_copy: AppShortcuts,
     mods: ModifiersState,
     /// The pointer in logical px, `None` outside the window.
     pointer: Option<(f32, f32)>,
     mouse: MouseState,
     /// A mouse press went to the program: so do its moves and its release.
     mouse_captured: bool,
+    /// A press started a selection and the button is still down: moves drag it.
+    selecting: bool,
+    clicks: ClickCounter,
+    toasts: Toasts,
     wheel: WheelState,
     thumb_drag: Option<ThumbDrag>,
     bell: BellLimiter,
@@ -382,10 +392,14 @@ impl App {
             paste: PasteState::default(),
             clipboard_write: None,
             shortcuts: AppShortcuts::standard(cfg!(target_os = "macos")),
+            shortcuts_no_copy: AppShortcuts::standard(cfg!(target_os = "macos")).without_copy(),
             mods: ModifiersState::empty(),
             pointer: None,
             mouse: MouseState::default(),
             mouse_captured: false,
+            selecting: false,
+            clicks: ClickCounter::default(),
+            toasts: Toasts::default(),
             wheel: WheelState::default(),
             thumb_drag: None,
             bell: BellLimiter::default(),
@@ -480,6 +494,12 @@ impl App {
         self.tabs
             .active_item()
             .map_or_else(UpdateModes::default, |t| t.modes)
+    }
+
+    fn has_selection(&self) -> bool {
+        self.tabs
+            .active_item()
+            .is_some_and(|t| t.selection.is_some())
     }
 
     fn has_session(&self) -> bool {
@@ -599,6 +619,8 @@ impl App {
         }
         self.preedit = None;
         self.mouse_captured = false;
+        self.selecting = false;
+        self.clicks.reset();
         self.thumb_drag = None;
         self.mouse = MouseState::default();
         self.wheel = WheelState::default();
@@ -719,6 +741,12 @@ impl App {
                     self.request_redraw();
                 }
             }
+            AppCommand::Copy => {
+                // The table has this chord only while something is selected (`on_key`).
+                if self.has_selection() {
+                    self.send(Command::CopySelection);
+                }
+            }
             AppCommand::Scroll(scroll) => self.send(Command::Scroll(scroll)),
             AppCommand::NewTab => self.new_tab_request(),
             AppCommand::CloseTab => {
@@ -796,6 +824,24 @@ impl App {
             {
                 self.clipboard_write = Some(text);
                 worth_a_frame = true;
+            }
+            match fx.copy {
+                Some(CopyResult::Text(text)) => {
+                    self.clipboard_write = Some(text);
+                    worth_a_frame = true;
+                }
+                Some(CopyResult::TooLarge) => {
+                    let mib = MAX_COPY_BYTES >> 20;
+                    self.toasts.push(
+                        ToastSpec::new(
+                            ToastKind::Warning,
+                            format!("The selection is over {mib} MiB and was not copied."),
+                        ),
+                        self.start.elapsed(),
+                    );
+                    worth_a_frame = true;
+                }
+                None => {}
             }
             if fx.exited {
                 exited.push(id);
@@ -949,6 +995,14 @@ impl App {
             return;
         };
         let cursor = tab.cursor;
+        let ranges: Vec<SelectionRange> = tab
+            .selection
+            .zip(tab.scroll)
+            .and_then(|(view, scroll)| {
+                view_range(&view, scroll.viewport_top, tab.grid.rows(), tab.grid.cols())
+            })
+            .into_iter()
+            .collect();
         let next_blink = self.blink.tick(
             Instant::now(),
             input.focused && cursor.blink && cursor.visible,
@@ -960,6 +1014,8 @@ impl App {
             modal,
             maximized: win.window.is_maximized(),
             grid: &mut tab.grid,
+            selection: &ranges,
+            toasts: Some(&mut self.toasts),
             cursor,
             blink_on: self.blink.on(),
             scroll: tab.scroll,
@@ -1036,15 +1092,21 @@ impl App {
     /// (unless a dialog is open: then the toolkit takes the keyboard, see `window_event`).
     fn on_key(&mut self, event: &KeyEvent, synthetic: bool, event_loop: &ActiveEventLoop) {
         let input = key_input(event, self.mods, synthetic);
-        let route = {
+        let route_with = |shortcuts: &AppShortcuts| {
             let ctx = RouteCtx {
                 macos: cfg!(target_os = "macos"),
                 option_as_meta: self.settings.option_as_meta,
                 keymap: keymap(),
-                shortcuts: &self.shortcuts,
+                shortcuts,
             };
             route_key(&input, &ctx)
         };
+        let mut route = route_with(&self.shortcuts);
+        // A Copy chord with nothing selected is no copy: the key goes where it would have gone
+        // without the shortcut (the terminal's Ctrl+Shift+C; nothing for Cmd+C), as in M9.
+        if route == KeyRoute::Shortcut(AppCommand::Copy) && !self.has_selection() {
+            route = route_with(&self.shortcuts_no_copy);
+        }
         let live = self.has_session();
         match route {
             // Tab shortcuts work on a tab whose shell never started too: it can be closed.
@@ -1132,6 +1194,10 @@ impl App {
             return;
         }
         let Some(placed) = self.placed else { return };
+        if self.selecting {
+            self.drag_selection(pos);
+            return;
+        }
         if let Some(drag) = &mut self.thumb_drag {
             let scroll = self.tabs.active_item().and_then(|t| t.scroll);
             if let Some(scroll) = scroll {
@@ -1170,12 +1236,23 @@ impl App {
             return;
         };
         match ev {
-            PointerEvent::Down(_) => {
-                if self.tracking() && self.over_body(pos) && self.report(ev, pos) {
+            PointerEvent::Down(button) => {
+                let reported = self.tracking() && self.over_body(pos) && self.report(ev, pos);
+                if reported {
                     self.mouse_captured = true;
+                } else if button == TerminalMouseButton::Left
+                    && self.over_body(pos)
+                    && self.has_session()
+                {
+                    // The program does not take the press (tracking off, or Shift held): the
+                    // selection does.
+                    self.start_selection(pos);
                 }
             }
-            PointerEvent::Up(_) => {
+            PointerEvent::Up(button) => {
+                if button == TerminalMouseButton::Left && std::mem::take(&mut self.selecting) {
+                    self.send(Command::Select(SelectCmd::End));
+                }
                 // Always through the mapping, which also ends a Shift bypass; sent only when the
                 // press went to the program.
                 let captured = std::mem::take(&mut self.mouse_captured);
@@ -1189,6 +1266,35 @@ impl App {
             }
             PointerEvent::Move => {}
         }
+    }
+
+    /// A press the app keeps: a click of a series at the cell edge nearest the pointer. Shift
+    /// extends the selection (incremental click) when the program is not taking the mouse; with
+    /// it taking the mouse, Shift only forces a new selection. Alt makes a column selection.
+    fn start_selection(&mut self, pos: (f32, f32)) {
+        let Some(ctx) = self.mouse_ctx() else { return };
+        let cell = selection_position(&ctx, pos);
+        let clicks = self.clicks.press(self.start.elapsed(), pos);
+        let extend = self.mods.shift_key() && self.modes().mouse_tracking == MouseTracking::None;
+        let column = self.mods.alt_key();
+        let top = self.scroll_view().map_or(0, |s| s.viewport_top);
+        self.send(Command::Select(SelectCmd::Start {
+            cell,
+            top,
+            clicks,
+            extend,
+            column,
+        }));
+        self.selecting = true;
+    }
+
+    /// The pointer moved with the selecting button down.
+    fn drag_selection(&mut self, pos: (f32, f32)) {
+        let Some(ctx) = self.mouse_ctx() else { return };
+        let cell = selection_position(&ctx, pos);
+        let scroll = selection_scroll(&ctx, pos);
+        let top = self.scroll_view().map_or(0, |s| s.viewport_top);
+        self.send(Command::Select(SelectCmd::Drag { cell, top, scroll }));
     }
 
     fn on_wheel(&mut self, delta: MouseScrollDelta) {
@@ -1353,6 +1459,9 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 if !focused {
                     self.thumb_drag = None;
+                    if std::mem::take(&mut self.selecting) {
+                        self.send(Command::Select(SelectCmd::End));
+                    }
                 }
             }
             WindowEvent::Resized(size) => {

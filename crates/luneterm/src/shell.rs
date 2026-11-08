@@ -21,6 +21,7 @@ use lune_ui::widgets::dialog::{Cancel, Dialog, DialogGlass, DialogOptions};
 use lune_ui::widgets::field::FieldOptions;
 use lune_ui::widgets::scrollbar::{self, ThumbGeometry, thumb_geometry};
 use lune_ui::widgets::tab_strip::{self, Tab as StripItem, TabEvent, TabKey, TabStripOptions};
+use lune_ui::widgets::toast::Toasts;
 use lune_ui::window::{ResizeEdge, edge_at};
 
 /// The title band's height.
@@ -264,6 +265,8 @@ pub struct ShellView<'a> {
     pub tabs: &'a [StripTab<'a>],
     pub active_tab: Option<u64>,
     pub modal: Option<Modal<'a>>,
+    /// The app's toasts, drawn last, over the dialog.
+    pub toasts: Option<&'a mut Toasts>,
 }
 
 /// What the dialog of a frame asked.
@@ -488,6 +491,9 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         }
         None => (None, None),
     };
+    if let Some(toasts) = view.toasts {
+        ui.toasts("toasts", toasts);
+    }
     ShellOut {
         body: layout.body,
         commands,
@@ -810,6 +816,7 @@ mod tests {
             tabs,
             active_tab: tabs.first().map(|t| t.id),
             modal: None,
+            toasts: None,
         };
         let mut ui = Ui::begin(store, &input, config, text);
         let out = draw(&mut ui, view);

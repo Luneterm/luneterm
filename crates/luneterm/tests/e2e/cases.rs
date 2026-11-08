@@ -23,8 +23,8 @@ use lune_vt::{
 use luneterm::app::cursor_of;
 use luneterm::render::{Content, Renderer};
 use luneterm::session::{
-    Command, Exit, Geometry, HostPalette, Session, SessionConfig, SessionStats, UpdateModes,
-    apply_update,
+    Command, CopyResult, Exit, Geometry, HostPalette, SelectCmd, Session, SessionConfig,
+    SessionStats, UpdateModes, apply_update,
 };
 use luneterm::settings::Settings;
 use luneterm::shell::HOST;
@@ -103,6 +103,11 @@ pub(crate) const CASES: &[Case] = &[
         id: "E10",
         name: "tabs are isolated",
         run: e10_tabs,
+    },
+    Case {
+        id: "E11",
+        name: "selection and copy",
+        run: e11_copy,
     },
 ];
 
@@ -248,6 +253,8 @@ struct Seen {
     exited: Option<Exit>,
     modes: UpdateModes,
     cursor: ViewportCursor,
+    /// What `CopySelection` answered, in order.
+    copied: Vec<CopyResult>,
 }
 
 /// A running session and the UI side of it: the wake-up, the mirrored grid, what was seen.
@@ -281,6 +288,7 @@ impl Rig {
                 exited: None,
                 modes: UpdateModes::default(),
                 cursor: ViewportCursor::default(),
+                copied: Vec::new(),
             },
         })
     }
@@ -316,6 +324,9 @@ impl Rig {
         }
         self.seen.modes = update.modes;
         self.seen.cursor = update.cursor;
+        if let Some(copied) = update.selection_text {
+            self.seen.copied.push(copied);
+        }
         true
     }
 
@@ -1179,6 +1190,8 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
             modal: None,
             maximized: false,
             grid,
+            selection: &[],
+            toasts: None,
             cursor: cursor_of(cursor, COLS),
             blink_on: true,
             scroll: None,
@@ -1405,4 +1418,81 @@ fn e10_tabs() -> CaseResult {
         ms(worst),
         stats.inbox_high_water >> 10
     ))
+}
+
+// ------------------------------------------------------------------------------- E11
+
+fn click(rig: &Rig, row: usize, col: usize, clicks: u8) {
+    rig.send(Command::Select(SelectCmd::Start {
+        cell: (row, col),
+        top: 0,
+        clicks,
+        extend: false,
+        column: false,
+    }));
+}
+
+/// Asks for a copy and waits for its answer; the text.
+fn copy_text(rig: &mut Rig) -> Result<String, String> {
+    let before = rig.seen.copied.len();
+    rig.send(Command::CopySelection);
+    rig.wait("the copy's answer", WAIT, |r| r.seen.copied.len() > before)?;
+    match rig.seen.copied.last() {
+        Some(CopyResult::Text(t)) => Ok(t.clone()),
+        other => Err(format!("copy answered {other:?}")),
+    }
+}
+
+/// Selection and copy over a real PTY child: a word, a line, a drag across lines, a wrapped line
+/// copied without its soft break, and a copy with nothing selected answering nothing.
+fn e11_copy() -> CaseResult {
+    if let Some(s) = unix_only() {
+        return s;
+    }
+    let long = "0123456789".repeat(10); // 100 chars: wraps at 80 columns
+    let script = format!(r#"printf 'hello world\r\nsecond line\r\n%s\r\n' '{long}'; read l"#);
+    let pty = spawn_pty(Path::new("/bin/sh"), &strs(&["-c", &script]))?;
+    let mut rig = Rig::start(pty, config(true))?;
+    rig.wait("the printed lines", WAIT, |r| r.contains("789"))?;
+
+    // Nothing selected: a copy answers nothing.
+    rig.send(Command::CopySelection);
+    rig.pump_for(Duration::from_millis(300));
+    ensure(rig.seen.copied.is_empty(), || {
+        format!("a copy with no selection answered {:?}", rig.seen.copied)
+    })?;
+
+    // A double click selects the word under it.
+    click(&rig, 0, 7, 2);
+    let word = copy_text(&mut rig)?;
+    ensure(word == "world", || format!("double click copied {word:?}"))?;
+
+    // A triple click selects the line.
+    click(&rig, 1, 3, 3);
+    let line = copy_text(&mut rig)?;
+    ensure(line == "second line", || {
+        format!("triple click copied {line:?}")
+    })?;
+
+    // A drag across two lines.
+    click(&rig, 0, 6, 1);
+    rig.send(Command::Select(SelectCmd::Drag {
+        cell: (1, 6),
+        top: 0,
+        scroll: 0,
+    }));
+    rig.send(Command::Select(SelectCmd::End));
+    let drag = copy_text(&mut rig)?;
+    ensure(drag == "world\nsecond", || {
+        format!("a drag copied {drag:?}")
+    })?;
+
+    // The wrapped line comes whole, with no break where it wrapped.
+    click(&rig, 2, 5, 3);
+    let wrapped = copy_text(&mut rig)?;
+    ensure(wrapped == long, || {
+        format!("a wrapped line copied {} chars: {wrapped:?}", wrapped.len())
+    })?;
+    ensure(rig.close(), || "close timed out".to_owned())?;
+    ok("word, line, drag and wrapped line copied from a real shell; no selection answers nothing")
 }

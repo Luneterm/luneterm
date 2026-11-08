@@ -1873,3 +1873,140 @@ fn session_start_names_its_threads_and_fails_cleanly() {
     assert!(Session::start(pty, cfg, w).is_err());
     assert!(probe.dropped.load(Ordering::SeqCst));
 }
+
+// ---------------------------------------------------------------- selection (plan M10 step 3)
+
+fn select(cmd: SelectCmd) -> Command {
+    Command::Select(cmd)
+}
+
+fn press(row: usize, col: usize, clicks: u8) -> Command {
+    select(SelectCmd::Start {
+        cell: (row, col),
+        top: 0,
+        clicks,
+        extend: false,
+        column: false,
+    })
+}
+
+fn selection_rig() -> Rig {
+    let mut rig = Rig::new(&config(20, 5));
+    rig.feed(b"hello world\r\nsecond line")
+        .expect("first update");
+    rig
+}
+
+#[test]
+fn selection_is_published_only_when_it_changes() {
+    let mut rig = selection_rig();
+    // A double click selects a word and publishes it.
+    let u = rig.command(press(0, 7, 2)).expect("an update");
+    let view = u.selection.expect("changed").expect("selected");
+    assert_eq!((view.start, view.end), ((6, 0), (11, 0)), "world");
+    assert!(!view.column);
+    // Nothing happens: nothing is published, and a repeat of the same click does not republish.
+    assert!(rig.idle().is_none());
+    assert!(rig.command(press(0, 7, 2)).is_none());
+    // A click elsewhere replaces it; a plain click selects nothing, which is published once.
+    let u = rig.command(press(1, 3, 1)).expect("an update");
+    assert_eq!(u.selection, Some(None));
+    assert!(rig.command(select(SelectCmd::End)).is_none());
+}
+
+#[test]
+fn selection_copy_answers_in_the_next_update_and_only_with_a_selection() {
+    let mut rig = selection_rig();
+    // No selection: nothing to publish.
+    assert!(rig.command(Command::CopySelection).is_none());
+    rig.command(press(0, 0, 3)).expect("update");
+    let u = rig.command(Command::CopySelection).expect("an update");
+    assert_eq!(
+        u.selection_text,
+        Some(CopyResult::Text("hello world".to_owned()))
+    );
+    assert!(u.selection.is_none(), "the selection did not change");
+    // Debug never shows the text (I16).
+    assert!(!format!("{u:?}").contains("hello"));
+    assert!(rig.idle().is_none());
+}
+
+#[test]
+fn selection_clears_on_typing_pasting_and_a_vertical_resize_but_not_on_output() {
+    let mut rig = selection_rig();
+    rig.command(press(0, 0, 3)).expect("update");
+    // The program prints more: the selection stays.
+    let u = rig.feed(b"\r\nmore").expect("update");
+    assert!(u.selection.is_none());
+    // A key that produces input clears it.
+    let u = rig.command(Command::Text("x".into())).expect("update");
+    assert_eq!(u.selection, Some(None));
+    rig.command(press(0, 0, 3)).expect("update");
+    let u = rig.command(Command::Paste("p".into())).expect("update");
+    assert_eq!(u.selection, Some(None));
+    // A horizontal resize keeps it (upstream), a vertical one clears it.
+    rig.command(press(0, 0, 3)).expect("update");
+    let u = rig
+        .command(Command::Resize(geometry(30, 5)))
+        .expect("update");
+    assert!(u.selection.is_none(), "columns only: kept");
+    let u = rig
+        .command(Command::Resize(geometry(30, 6)))
+        .expect("update");
+    assert_eq!(u.selection, Some(None));
+}
+
+#[test]
+fn selection_clears_when_its_anchor_line_is_trimmed() {
+    let mut cfg = config(10, 3);
+    cfg.scrollback = 4;
+    let mut rig = Rig::new(&cfg);
+    rig.feed(b"l0\r\nl1\r\nl2").expect("update");
+    rig.command(press(1, 0, 3)).expect("selected l1");
+    // Output that trims one line moves the selection up with its text.
+    let u = rig.feed(b"\r\nl3\r\nl4\r\nl5\r\nl6\r\nl7").expect("update");
+    let moved = u.selection.expect("changed").expect("still selected");
+    assert!(moved.start.1 < 1, "{moved:?}");
+    // Output that trims the anchor away clears it.
+    let u = rig.feed(b"\r\nl8\r\nl9\r\nl10\r\nl11").expect("update");
+    assert_eq!(u.selection, Some(None));
+}
+
+#[test]
+fn selection_drag_scroll_runs_on_the_engines_clock() {
+    let mut rig = Rig::new(&config(20, 3));
+    rig.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh")
+        .expect("update");
+    let top = rig.core.terminal.viewport_state().viewport_top;
+    // A plain click selects nothing yet, so nothing is published.
+    assert!(
+        rig.command(select(SelectCmd::Start {
+            cell: (2, 0),
+            top,
+            clicks: 1,
+            extend: false,
+            column: false,
+        }))
+        .is_none()
+    );
+    // The pointer is held above the viewport: the engine wakes for the scroll step by itself.
+    rig.command(select(SelectCmd::Drag {
+        cell: (0, 3),
+        top,
+        scroll: -1,
+    }));
+    let now = rig.clock.now();
+    assert!(
+        rig.core.next_wake(now, true, true, false).is_some(),
+        "a deadline for the drag scroll"
+    );
+    assert!(rig.idle().is_none() || rig.core.terminal.viewport_state().viewport_top == top);
+    rig.clock.advance(Duration::from_millis(60));
+    let u = rig.idle().expect("the drag scrolled");
+    assert_eq!(u.viewport_top, top - 1);
+    assert!(u.full);
+    // A release stops it.
+    rig.command(select(SelectCmd::End));
+    rig.clock.advance(Duration::from_millis(200));
+    assert!(rig.idle().is_none());
+}

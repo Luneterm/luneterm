@@ -262,6 +262,13 @@ XTVERSION name `ExtensionError::InvalidXtversion` (nothing is registered then).
 - Send paste text only through `Terminal::paste` / `paste_bytes`; never write clipboard text to the
   PTY directly. **Done:** `Command::Paste` is the only path from the clipboard to the PTY
   (`session/engine.rs` runs `Terminal::paste`; e2e E3 checks the bytes).
+- Selection (M10 step 3): the model and the word, line and wrapped-line rules are a port of
+  xterm.js's `SelectionModel` and `SelectionService` in `crates/luneterm/src/session/selection.rs`,
+  on the engine thread (the UI never holds a `Terminal`). The UI sends `Command::Select` with
+  viewport cells and `Command::CopySelection`; an Update carries `selection` (buffer coordinates,
+  only when it changed) and `selection_text` (at most 32 MiB, else `CopyResult::TooLarge` and a
+  toast). A marker on the anchor line follows trim (`Terminal::dispose_marker` frees it); a
+  vertical resize, a buffer switch and typing clear the selection.
 - Own the clipboard setting: `StandardExtensions::clipboard_write` and `set_clipboard_write`
   (default `false`). `ClipboardWrite` arrives only while it is on; the host decides what to do
   with the text (no query is ever answered). **Done:** `Settings.osc_clipboard` (default on, as

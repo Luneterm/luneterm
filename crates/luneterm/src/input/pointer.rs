@@ -7,9 +7,13 @@
 //! on the alt screen, or with no scrollback, with mouse tracking off, the wheel types an arrow
 //! instead of doing nothing, as xterm.js does, so `less` and `man` scroll.
 
+use std::time::Duration;
+
 use lune_termview::GridLayout;
 use lune_vt::{TerminalModifiers, TerminalMouseButton, TerminalMouseEvent, TerminalMouseEventType};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
+
+use crate::session::{drag_scroll_amount, edge_of};
 
 /// Wheel reports sent for one event at most (Lunegit `MaxWheelReportsPerEvent`).
 pub const MAX_WHEEL_REPORTS: u32 = 32;
@@ -64,6 +68,68 @@ pub struct MouseState {
     held: Option<TerminalMouseButton>,
     /// A press with Shift held belongs to the app (selection, D7): so does its release.
     bypassed: bool,
+}
+
+/// Presses within this long and this far (logical px) of the last one count as one click more
+/// (xterm.js reads the browser's `detail`; this is the OS's double-click time and slop, roughly).
+pub const MULTI_CLICK_TIME: Duration = Duration::from_millis(500);
+pub const MULTI_CLICK_SLOP: f32 = 4.0;
+
+/// Counts the presses of one click series: 1, 2, 3, then 1 again (xterm.js acts on 1 to 3 only).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ClickCounter {
+    last: Option<(Duration, (f32, f32), u8)>,
+}
+
+impl ClickCounter {
+    /// A primary press at `pos` at time `now` (any monotonic clock): which click of the series.
+    pub fn press(&mut self, now: Duration, pos: (f32, f32)) -> u8 {
+        let count = match self.last {
+            Some((at, last, n))
+                if now.saturating_sub(at) <= MULTI_CLICK_TIME
+                    && (pos.0 - last.0).abs() <= MULTI_CLICK_SLOP
+                    && (pos.1 - last.1).abs() <= MULTI_CLICK_SLOP =>
+            {
+                n % 3 + 1
+            }
+            _ => 1,
+        };
+        self.last = Some((now, pos, count));
+        count
+    }
+
+    /// Forgets the series (a tab switch, a focus change).
+    pub fn reset(&mut self) {
+        self.last = None;
+    }
+}
+
+/// The selection's position for a pointer at `pos` (logical px): the row, and the cell *edge*
+/// nearest the pointer, 0 to the grid's width (the selection ends before the cell on the right
+/// of its end edge).
+pub fn selection_position(ctx: &MouseCtx, pos: (f32, f32)) -> (usize, usize) {
+    let (row, _) = ctx.layout.cell_at_clamped(pos, ctx.cols, ctx.rows);
+    let scale = ctx.layout.metrics.scale;
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let cell_w = ctx.layout.metrics.cell_w as f32 / scale;
+    (row, edge_of(pos.0 - ctx.layout.origin.0, cell_w, ctx.cols))
+}
+
+/// The drag scroll step for a pointer at `pos`: 0 inside the grid's rows, else lines per step
+/// toward the side it is out on.
+pub fn selection_scroll(ctx: &MouseCtx, pos: (f32, f32)) -> i32 {
+    let m = &ctx.layout.metrics;
+    let scale = if m.scale.is_finite() && m.scale > 0.0 {
+        m.scale
+    } else {
+        1.0
+    };
+    let height = ctx.rows as f32 * m.cell_h as f32 / scale;
+    drag_scroll_amount(pos.1 - ctx.layout.origin.1, height)
 }
 
 /// The cell and the pixel (physical, relative to the grid origin) under a logical position, both
@@ -718,5 +784,51 @@ mod tests {
         assert_eq!(e.modifiers, TerminalModifiers::CONTROL);
         let d = wheel_report(&ctx, (63.0, 99.0), false, NONE);
         assert_eq!(parts(d), cell(5, 3, B::WheelDown, K::WheelDown));
+    }
+
+    #[test]
+    fn clicks_in_a_series_count_to_three_then_start_over() {
+        let ms = Duration::from_millis;
+        let mut c = ClickCounter::default();
+        let at = (100.0, 100.0);
+        assert_eq!(c.press(ms(0), at), 1);
+        assert_eq!(c.press(ms(200), at), 2);
+        assert_eq!(c.press(ms(400), (102.0, 99.0)), 3, "within the slop");
+        assert_eq!(c.press(ms(600), at), 1, "after three it starts over");
+        // Too slow, or too far: a new series.
+        assert_eq!(c.press(ms(1200), at), 1, "600 ms after the last");
+        assert_eq!(c.press(ms(1300), (110.0, 100.0)), 1, "10 px away");
+        assert_eq!(c.press(ms(1400), (110.0, 100.0)), 2);
+        c.reset();
+        assert_eq!(c.press(ms(1450), (110.0, 100.0)), 1);
+    }
+
+    #[test]
+    fn a_selection_position_is_a_row_and_the_nearest_cell_edge() {
+        let ctx = ctx_at(1.0); // cells 8 x 17, the grid at (20, 44)
+        // x 20..24 is the left half of column 0: edge 0; 24.1 is closer to column 1's edge.
+        assert_eq!(selection_position(&ctx, (20.0, 44.0)), (0, 0));
+        assert_eq!(selection_position(&ctx, (23.9, 44.0)), (0, 0));
+        assert_eq!(selection_position(&ctx, (24.1, 61.0)), (1, 1));
+        // Beyond the right end: the grid's width; left of the grid: 0; below it: the last row.
+        assert_eq!(selection_position(&ctx, (5000.0, 44.0)), (0, 100));
+        assert_eq!(selection_position(&ctx, (0.0, 44.0)), (0, 0));
+        assert_eq!(selection_position(&ctx, (30.0, 5000.0)).0, 29);
+        // At 2x the same logical position gives the same edge.
+        let two = ctx_at(2.0);
+        assert_eq!(
+            selection_position(&two, (24.1, 61.0)),
+            selection_position(&ctx, (24.1, 61.0))
+        );
+    }
+
+    #[test]
+    fn the_drag_scroll_follows_the_pointer_out_of_the_rows() {
+        let ctx = ctx_at(1.0); // 30 rows of 17 px from y 44: 510 px
+        assert_eq!(selection_scroll(&ctx, (30.0, 44.0)), 0);
+        assert_eq!(selection_scroll(&ctx, (30.0, 44.0 + 510.0)), 0);
+        assert!(selection_scroll(&ctx, (30.0, 40.0)) < 0);
+        assert!(selection_scroll(&ctx, (30.0, 44.0 + 520.0)) > 0);
+        assert_eq!(selection_scroll(&ctx, (30.0, 44.0 + 510.0 + 500.0)), 15);
     }
 }
