@@ -12,6 +12,10 @@ lune-vt.workspace = true
 lune-pty.workspace = true
 lune-ui.workspace = true
 lune-termview.workspace = true
+# Versions as the toolkit's lock resolves them (winit 0.30, wgpu 30); the facade re-exports neither.
+winit = "0.30"
+wgpu = "30"
+pollster = "0.4"
 
 [lints]
 workspace = true

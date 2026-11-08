@@ -1,6 +1,13 @@
-//! Luneterm app library: the session core (and, from M9 step 4, the app shell), so the app's
-//! logic is testable and M10 builds on it (plan M9 D19).
+//! Luneterm app library: the session core and the app shell, so the app's logic is testable and
+//! M10 builds on it (plan M9 D19).
 
 #![forbid(unsafe_code)]
 
+pub mod app;
+pub mod demo;
+pub mod dump;
+pub mod fonts;
+pub mod render;
 pub mod session;
+pub mod settings;
+pub mod shell;

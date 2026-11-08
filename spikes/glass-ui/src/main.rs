@@ -102,10 +102,13 @@ impl ApplicationHandler for App {
         let text = TextCache::new(
             window.scale_factor() as f32,
             &[
-                include_bytes!("../assets/RobotoMonoNerdFontMono-Regular.ttf").as_slice(),
-                include_bytes!("../assets/RobotoMonoNerdFontMono-Bold.ttf"),
-                include_bytes!("../assets/RznSans-Regular.ttf"),
-                include_bytes!("../assets/RznSans-Medium.ttf"),
+                include_bytes!(
+                    "../../../crates/luneterm/assets/RobotoMonoNerdFontMono-Regular.ttf"
+                )
+                .as_slice(),
+                include_bytes!("../../../crates/luneterm/assets/RobotoMonoNerdFontMono-Bold.ttf"),
+                include_bytes!("../../../crates/luneterm/assets/RznSans-Regular.ttf"),
+                include_bytes!("../../../crates/luneterm/assets/RznSans-Medium.ttf"),
             ],
             theme::UI_FONT,
             theme::MONO_FONT,
