@@ -12,8 +12,8 @@
 
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::*;
 use crate::engine::HostEvent;
@@ -519,13 +519,13 @@ fn handler_return_values_match_driver_js() {
     ];
     for (sequence, consumed) in cases {
         let mut term = Terminal::new([OptionValue::Cols(40), OptionValue::Rows(4)]);
-        let fell_through = Rc::new(Cell::new(0u32));
+        let fell_through = Arc::new(AtomicU32::new(0));
         for (prefix, final_byte) in identifiers {
-            let seen = Rc::clone(&fell_through);
+            let seen = Arc::clone(&fell_through);
             term.register_csi_handler(
                 FunctionIdentifier::with_prefix(prefix, final_byte),
                 move |_, _| {
-                    seen.set(seen.get() + 1);
+                    seen.fetch_add(1, Ordering::SeqCst);
                     true
                 },
             )
@@ -535,7 +535,7 @@ fn handler_return_values_match_driver_js() {
             .unwrap();
         term.write_str(&format!("{ESC}{sequence}"));
         assert_eq!(
-            fell_through.get(),
+            fell_through.load(Ordering::SeqCst),
             u32::from(!consumed),
             "{sequence:?}: consumed by the extension: {consumed}"
         );
@@ -545,12 +545,12 @@ fn handler_return_values_match_driver_js() {
 #[test]
 fn decstr_handler_returns_false_so_older_handlers_run() {
     let mut term = Terminal::new([]);
-    let seen = Rc::new(Cell::new(0u32));
-    let seen_in = Rc::clone(&seen);
+    let seen = Arc::new(AtomicU32::new(0));
+    let seen_in = Arc::clone(&seen);
     term.register_csi_handler(
         FunctionIdentifier::with_intermediates("!", 'p'),
         move |_, _| {
-            seen_in.set(seen_in.get() + 1);
+            seen_in.fetch_add(1, Ordering::SeqCst);
             false
         },
     )
@@ -558,7 +558,7 @@ fn decstr_handler_returns_false_so_older_handlers_run() {
     term.install_standard_extensions(&StandardExtensions::default())
         .unwrap();
     term.write_str(&format!("{ESC}[!p"));
-    assert_eq!(seen.get(), 1);
+    assert_eq!(seen.load(Ordering::SeqCst), 1);
 }
 
 #[test]
