@@ -1195,24 +1195,27 @@ fn session_threaded_no_deadlock_and_writer_caps() {
 /// Update is taken exactly once, in order, and waker calls equal Updates published.
 #[test]
 fn session_threaded_publish_and_wake() {
-    let (pty, probe, tx) = FakePty::scripted(Gate::Open);
+    let (pty, _probe, tx) = FakePty::scripted(Gate::Open);
     let (w, woken) = waker();
     let session = Arc::new(Session::start(pty, config(40, 5), w).expect("start"));
     let seqs = Arc::new(Mutex::new(Vec::new()));
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+    // Paced by Updates taken, at most 16 messages ahead. Pacing by bytes read let the reader
+    // run ahead to a full inbox of 2-byte chunks (one `write` each), so each Update covered
+    // ~10 KB of parsing and 10,000 cycles needed most of the 60 s deadline (one timeout in
+    // five debug runs).
     let producer = {
-        let stop = Arc::clone(&stop);
-        let probe = Arc::clone(&probe);
+        let (stop, seqs) = (Arc::clone(&stop), Arc::clone(&seqs));
         thread::spawn(move || {
-            let mut sent = 0u64;
+            let mut sent = 0usize;
             while !stop.load(Ordering::SeqCst) {
-                if sent.saturating_sub(probe.output_read.load(Ordering::SeqCst)) > 4096 {
+                if sent > lock(&seqs).len() + 16 {
                     thread::yield_now();
                     continue;
                 }
                 let _ = tx.send(Script::Data(b"x\r".to_vec()));
-                sent += 2;
+                sent += 1;
             }
             // tx dropped: EOF.
         })
