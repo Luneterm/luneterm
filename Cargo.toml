@@ -34,6 +34,13 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# The shipping build of the C ABI library: `cargo build -p luneterm-ffi --profile ffi-release`.
+# Release, but unwinding, so `catch_unwind` can keep a panic from crossing into the host (program
+# D18, M8 D4); profiles cannot be set per package. luneterm-ffi refuses `panic = "abort"`.
+[profile.ffi-release]
+inherits = "release"
+panic = "unwind"
+
 # Size experiments only (`cargo build --profile min-size`); measure throughput before adopting.
 [profile.min-size]
 inherits = "release"
