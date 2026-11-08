@@ -260,7 +260,9 @@ int32_t luneterm_engine_viewport(LunetermEngine* engine, LunetermViewport* out);
 #define LUNETERM_EVENT_COLOR 4u /* offset/len index LunetermEvents.colors */
 #define LUNETERM_EVENT_FOCUS_REPORT_REQUESTED 5u
 /* Reserved and never emitted through this ABI: the engine's window operations stay off. */
-#define LUNETERM_EVENT_WINDOW_REPORT 6u /* value: 0 window size in pixels, 1 cell size in pixels */
+/* value: 0 window size in pixels, 1 cell size in pixels. The engine's window options are off and
+ * this ABI has no way to turn them on, so ABI 1 never emits this event. */
+#define LUNETERM_EVENT_WINDOW_REPORT 6u
 #define LUNETERM_EVENT_A11Y_TEXT 7u /* data (only with screen-reader mode, which this ABI never enables) */
 #define LUNETERM_EVENT_A11Y_TAB 8u  /* value: cells, saturated to INT32_MAX (same) */
 #define LUNETERM_EVENT_UNKNOWN_OSC 9u /* value: ident; len: payload length; no data */

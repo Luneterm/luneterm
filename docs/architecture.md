@@ -14,7 +14,7 @@ crates/
                   OS materials, window helpers, Lunegit dark theme. See "lune-ui modules".
   lune-termview   Engine-agnostic cell grid renderer: glyph atlas, instanced quads, GPU-drawn inside
                   a lune-ui frame. Depends on lune-ui. See "lune-termview".
-  luneterm-ffi    C ABI over lune-vt for Lunegit.
+  luneterm-ffi    C ABI over lune-vt for Lunegit (header `include/luneterm.h`). See "luneterm-ffi (C ABI)".
   luneterm        The app: window, event loop, sessions, settings.
 spikes/glass-ui   Reference consumer of lune-ui (mock terminal, settings, menus) and the pixel gate.
 tools/xterm-oracle  Real xterm.js 6.0.0, used to generate differential-test expectations.
@@ -670,6 +670,89 @@ the Windows CSI `H` heuristic handler is registered once, which changes the orde
 extension's own CSI `H` handler (D6); `reset` frees the OSC links of the replaced buffers (Q9);
 IL, DL, SU, SD, CHT, CBT and REP loops are bounded.
 
+## luneterm-ffi (C ABI)
+
+`crates/luneterm-ffi` exports a C ABI over `lune_vt::Terminal` that mirrors Lunegit's `IVtEngine`
+(M8; ABI version 1). The contract is the hand-written header `crates/luneterm-ffi/include/luneterm.h`
+(types, constants, ownership and threading rules in comments); this section is the design behind it.
+The Lunegit-side swap (P/Invoke, deleting the V8 host) is not part of M8.
+
+- **Handle and guard.** `LunetermEngine*` is an opaque `Box<Mutex<Inner>>` (`Inner` = the
+  `Terminal` plus the output slots). Every export, in this order: zeroes its out-parameters, validates
+  its other pointers (NULL, alignment, length above `PTRDIFF_MAX`, enums and bools decoded by range
+  check, never transmuted), then takes a shared reference to the handle, `try_lock`s it and runs the
+  body inside `catch_unwind`; the results are written to the out-parameters only after the body
+  returned `Ok`. A rejected argument never touches the engine and never poisons the handle. No
+  `unsafe impl Send/Sync` exists: `Terminal: Send` (asserted at compile time in
+  `headless/terminal.rs`) is what makes the handle sound to move between threads.
+- **Status codes.** `int32_t`, 0 = `LUNETERM_OK`, errors negative: `ERR_NULL_POINTER` -1,
+  `ERR_INVALID_ARGUMENT` -2, `ERR_INVALID_UTF8` -3, `ERR_TOO_LARGE` -4 (a viewport text pool beyond
+  `uint32_t` offsets), `ERR_PANIC` -5, `ERR_POISONED` -6, `ERR_BUSY` -7.
+- **Slots.** The viewport, the drained events and the encoder output (key, char, mouse, focus,
+  paste) each have one engine-owned slot. A pointer into a slot stays valid and unchanged until the
+  next call that fills *that* slot, or `luneterm_engine_free`; every other call (write, resize,
+  scroll, the other getters) leaves it alone. Slots give back capacity beyond `2 x need + a floor`
+  after a fill. An empty array or string is a NULL pointer. **Outputs are untrusted and not
+  NUL-terminated**: strings are pointer + length in bytes and may contain NUL; titles, link uris,
+  cell text and event payloads come from the child process.
+- **Viewport.** `luneterm_engine_viewport` converts the screen row by row
+  (`Terminal::viewport_with_rows`, which `Terminal::viewport` is built on) straight into the slot, so
+  no second full-screen copy exists. `cursor_x` is `0..=cols + 1` (`cols` while a wrap is pending,
+  `cols + 1` after a zero-width character is printed there, as @xterm/headless 6.0.0 does); it is not
+  clamped, so a host indexing the cells clamps first.
+- **Threading.** A handle may be used from any thread (that is how Lunegit's gated engine calls
+  arrive), one call at a time. A call made while another is running on the same handle returns
+  `ERR_BUSY` without waiting; the host serializes. Freeing a handle another thread may still call is
+  a host bug (`free` on a busy handle is `ERR_BUSY` and frees nothing).
+- **Panics.** A panic is caught, the call returns `ERR_PANIC` and the handle is poisoned (its state
+  may break engine invariants): every later call except `luneterm_engine_free` returns
+  `ERR_POISONED`. The payload is dropped, never formatted, and the library installs no panic hook.
+  The catch needs unwinding, so the shipping library is built only with
+  `cargo build -p luneterm-ffi --profile ffi-release` (inherits `release`, `panic = "unwind"`;
+  profiles cannot be set per package). The crate has `#[cfg(panic = "abort")] compile_error!`, so
+  `cargo build --release` of it fails by design (and so does `cargo build --release --workspace`).
+  The feature `panic-probe` adds an export `luneterm_test_panic`, which the C smoke test uses to
+  prove `catch_unwind` works in the shipping profile.
+- **Caps (D5).** `LUNETERM_MAX_COLS` 4096, `LUNETERM_MAX_ROWS` 2048, `LUNETERM_MAX_SCROLLBACK`
+  100000. A size over a cap (at `luneterm_engine_new` or `_resize`) is `ERR_INVALID_ARGUMENT` and
+  changes nothing; below 2 x 1 it is clamped, as the engine does. The caps bound memory: measured on
+  macOS arm64 with `cargo run --profile ffi-release -p luneterm-ffi --example cap_memory` (peak RSS,
+  `getrusage`): 4096 x 2048 with scrollback 0 and every cell filled is 202 MiB (25 bytes per cell,
+  15.6 for letter + combining mark), and one `luneterm_engine_viewport` call raises the peak to
+  439 MiB (slot 224 MiB = 28 bytes per cell, plus the text pool). The security ledger's REP chain
+  construction (`rep-scroll-bottom-chain-memory`, premise "K is bounded by the display") is bounded by
+  the column cap; the example's case (b) at 4096 columns peaks at 5.8 MiB, which was not validated
+  against the ledger's own 77 MB figure (a stated limit, see notes of M8 step 6).
+- **ABI version policy.** `luneterm_abi_version()` returns `ABI_VERSION` (1, `LUNETERM_ABI_VERSION`
+  in the header); a host refuses a library whose value differs. It is bumped on any change to an
+  existing export's signature or meaning, a struct layout, a constant's value, or a removal. Adding an
+  export does not bump it (the host resolves symbols at load time). M8 defines ABI 1 in full; the
+  stub's only export is unchanged.
+- **Construction (D9).** `luneterm_engine_new(const LunetermConfig*, LunetermEngine**)` always
+  installs the standard extensions. An all-zero config is the safe default: 2 x 1, no scrollback,
+  Unicode 6, XTVERSION unanswered, clipboard writes off. The XTVERSION name is passed as bytes
+  (1 to 64 bytes of 0x20..=0x7E, else `ERR_INVALID_ARGUMENT` / `ERR_INVALID_UTF8`; length 0 = not
+  answered), never truncated. No logger is installed, so payloads are never logged. Window
+  operations stay off and the ABI has no switch for them: `LUNETERM_EVENT_WINDOW_REPORT` exists in the
+  header but ABI 1 never emits it (assumed decision Q27).
+- **Checks.** `scripts/check-ffi.sh` (macOS only; needs clang, nm, python3) builds the shipping
+  library and the `panic-probe` build, compares the function declarations read from clang's AST dump
+  with the library's exported symbols both ways, and runs the C smoke test; it fails closed on a
+  missing tool or an empty list. Layout is asserted in Rust and in the header (`_Static_assert`).
+  `cargo test -p luneterm-ffi` also runs `tests/c_smoke.rs` (C smoke test with `$CC`/`cc`; Linux runs it
+  with gcc) and `tests/ffi_fuzz.rs` (seeded: random and hostile writes, resizes at and over the caps,
+  encoders with bad enums, NULL and misaligned pointers; `LUNETERM_FFI_FUZZ_SEEDS`, default 60;
+  `LUNETERM_FFI_FUZZ_SEED=<n>` replays one). **Windows has no header or export check**: CI builds the
+  ffi-release DLL and runs the Rust-side tests only.
+
+**What the C host still owns** (the same duties as the Rust host, "Host duties M9 inherits from M7"
+above): drain events after every write (`luneterm_engine_drain_events`, `luneterm_engine_take_damage`);
+answer reports (DA, DSR, colour requests, `RESPONSE` payloads go back to the PTY); write every
+encoder result to the PTY and send paste text only through `luneterm_engine_paste`; call
+`luneterm_engine_idle` while it reports more work; own the clipboard setting
+(`luneterm_engine_set_clipboard_write`) and call `luneterm_engine_reset_keyboard_protocol` when the
+foreground process changes; serialize calls per handle.
+
 ## Extension points
 
 | Point | Mechanism | Example |
@@ -679,13 +762,14 @@ IL, DL, SU, SD, CHT, CBT and REP loops are bounded.
 | OS glass | `lune_ui::material::Material` applied by `lune_ui::material::apply` (the `lune_ui::Backdrop` trait documents the capability levels) | macOS vibrancy / Liquid Glass, Windows acrylic/Mica, KDE blur |
 | Theme | `lune_ui::theme::Theme` value handed to the `Painter` | `lunegit_dark::THEME` |
 | Paint | `lune_termview::Pass` ordered passes: cell backgrounds, text (mask then colour), decorations, cursor, selection, link hover | new overlay = new pass at its z-position |
-| Host embedding | `luneterm-ffi` C ABI, versioned by `luneterm_abi_version()` | Lunegit P/Invoke |
+| Host embedding | `luneterm-ffi` C ABI (`include/luneterm.h`, "luneterm-ffi (C ABI)"), versioned by `luneterm_abi_version()`; a new export is added without a version bump | Lunegit P/Invoke |
 
 ## Split points
 
 Where the repo can be cut later (nothing is split yet):
 
-- `lune-vt` can move to a library repo once the FFI, its second consumer, has settled its API. It
+- `lune-vt` can move to a library repo once the FFI (ABI 1, M8), its second consumer, has settled
+  its API in use by Lunegit. It
   takes `tools/xterm-oracle`, the goldens and the conformance harness with it.
 - `lune-ui` moves to its own project, `~/Projects/luneui-rs` (decided 2026-11-03; extraction in
   progress there). `lune-termview` stays in Luneterm (luneui-rs D8). Where `lune-pty` goes is undecided.
@@ -704,7 +788,7 @@ examples may); every manifest inherits the licence. It runs locally and on the L
 
 ## Threading
 
-One engine per session, owned by that session (not `Sync`). PTY reading happens on a dedicated thread;
+One engine per session, owned by that session (`Send` since M8, so a session may move it to a worker thread or hand it across the C ABI; not `Sync`). PTY reading happens on a dedicated thread;
 bytes are handed to the session, which writes them into its engine and marks dirty rows. The renderer
 paints on vsync from the dirty state and honours synchronized output (mode 2026), which Lunegit parses
 but does not use for painting.
