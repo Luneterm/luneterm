@@ -1128,6 +1128,7 @@ name = "luneterm"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "libc",
  "lune-pty",
  "lune-termview",
  "lune-ui 0.2.0",

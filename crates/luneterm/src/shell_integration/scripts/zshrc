@@ -1,0 +1,68 @@
+# Source: Lunegit's TerminalShellIntegrator.cs (integration version 5), identity changed to Luneterm.
+# Luneterm shell integration — do not edit. Sources the user's real ~/.zshrc, installs an OSC 7
+# cwd emitter as a precmd hook, then restores ZDOTDIR so .zlogin and child shells use the user's
+# own config.
+# Undo /etc/zshrc's HISTFILE clobber. On macOS (and some Linux distros) /etc/zshrc UNCONDITIONALLY
+# runs `HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history` AFTER Luneterm's .zshenv but BEFORE this file, while
+# ZDOTDIR still points at Luneterm's integration dir — redirecting history into the shadow dir. This
+# file is the last rc file (runs after /etc/zshrc), so re-point HISTFILE at the user's real history
+# location, but ONLY when it currently points inside Luneterm's ZDOTDIR, so a HISTFILE the user set
+# deliberately (here or in their ~/.zshrc, sourced just below) always wins. The target equals what
+# /etc/zshrc would have produced with the correct (user) ZDOTDIR.
+if [[ $HISTFILE == "$ZDOTDIR"/* ]]; then
+	HISTFILE=$LUNETERM_USER_ZDOTDIR/.zsh_history
+fi
+
+if [[ -f $LUNETERM_USER_ZDOTDIR/.zshrc ]]; then
+	_luneterm_zdotdir=$ZDOTDIR
+	ZDOTDIR=$LUNETERM_USER_ZDOTDIR
+	. "$LUNETERM_USER_ZDOTDIR/.zshrc"
+	LUNETERM_USER_ZDOTDIR=$ZDOTDIR
+	ZDOTDIR=$_luneterm_zdotdir
+	unset _luneterm_zdotdir
+fi
+
+# Percent-encode $PWD byte-by-byte (LC_ALL=C so multibyte/UTF-8 encodes per byte), keeping only
+# RFC 3986 unreserved chars + '/'. This is spec-compliant OSC 7 (what fish/VS Code/iTerm2 emit)
+# and is the inverse of the scanner's percent-decode, so a dir name containing a literal '%' or
+# spaces/unicode round-trips exactly. Mirrors the well-known vte.sh encoder.
+_luneterm_osc7() {
+	local LC_ALL=C
+	local str=$PWD safe
+	printf '\033]7;file://%s' "${HOST:-}"
+	while [ -n "$str" ]; do
+		safe=${str%%[!a-zA-Z0-9._~/-]*}
+		printf '%s' "$safe"
+		str=${str#"$safe"}
+		if [ -n "$str" ]; then
+			printf '%%%02X' "'$str"
+			str=${str#?}
+		fi
+	done
+	printf '\033\\'
+}
+autoload -Uz add-zsh-hook 2>/dev/null
+if typeset -f add-zsh-hook >/dev/null 2>&1; then
+	add-zsh-hook precmd _luneterm_osc7
+	_luneterm_osc7
+fi
+
+# ── OSC 133 command markers ──
+# Tell Luneterm when a command starts (C) and ends (D) so the terminal card's outline can show "busy";
+# A marks prompt start and doubles as a safety net that clears "busy" if a D is ever missed.
+# Deliberately NO exit code on D: the error/warning tint comes from OSC 9;4, and $? here would be the
+# previous precmd hook's status, not the command's — this hook is registered after the user's .zshrc
+# is sourced, so it runs LAST in precmd_functions.
+# add-zsh-hook is additive, so the user's own precmd/preexec hooks are untouched.
+_luneterm_osc133_precmd() {
+	printf '\033]133;D\033\\\033]133;A\033\\'
+}
+_luneterm_osc133_preexec() {
+	printf '\033]133;C\033\\'
+}
+if typeset -f add-zsh-hook >/dev/null 2>&1; then
+	add-zsh-hook precmd _luneterm_osc133_precmd
+	add-zsh-hook preexec _luneterm_osc133_preexec
+fi
+
+ZDOTDIR=$LUNETERM_USER_ZDOTDIR

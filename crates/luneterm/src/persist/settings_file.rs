@@ -27,7 +27,7 @@ pub struct SettingsDoc {
 }
 
 /// The names this build writes, in the order it writes them.
-const KEYS: [&str; 17] = [
+const KEYS: [&str; 18] = [
     "glass",
     "menu_blur",
     "motion",
@@ -42,6 +42,7 @@ const KEYS: [&str; 17] = [
     "shell",
     "shell_args",
     "report_iterm2",
+    "shell_integration",
     "confirm_close",
     "osc_clipboard",
     "option_as_meta",
@@ -108,6 +109,7 @@ pub fn parse_settings(bytes: &[u8]) -> Result<SettingsDoc, Reject> {
     text(members, "shell", &mut s.shell);
     text(members, "shell_args", &mut s.shell_args);
     flag(members, "report_iterm2", &mut s.report_iterm2);
+    flag(members, "shell_integration", &mut s.shell_integration);
     flag(members, "confirm_close", &mut s.confirm_close);
     flag(members, "osc_clipboard", &mut s.osc_clipboard);
     flag(members, "option_as_meta", &mut s.option_as_meta);
@@ -145,6 +147,7 @@ pub fn render_settings(doc: &SettingsDoc) -> Result<String, WriteError> {
         ("shell".into(), Json::Str(s.shell)),
         ("shell_args".into(), Json::Str(s.shell_args)),
         ("report_iterm2".into(), Json::Bool(s.report_iterm2)),
+        ("shell_integration".into(), Json::Bool(s.shell_integration)),
         ("confirm_close".into(), Json::Bool(s.confirm_close)),
         ("osc_clipboard".into(), Json::Bool(s.osc_clipboard)),
         ("option_as_meta".into(), Json::Bool(s.option_as_meta)),
@@ -173,6 +176,7 @@ mod tests {
             shell: "/bin/zsh".into(),
             shell_args: "-l -x".into(),
             report_iterm2: true,
+            shell_integration: false,
             confirm_close: false,
             osc_clipboard: false,
             option_as_meta: true,

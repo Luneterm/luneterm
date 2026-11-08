@@ -1,0 +1,10 @@
+# Source: Lunegit's TerminalShellIntegrator.cs (integration version 5), identity changed to Luneterm.
+# Luneterm shell integration — do not edit. Sources the user's real ~/.zprofile.
+if [[ -f $LUNETERM_USER_ZDOTDIR/.zprofile ]]; then
+	_luneterm_zdotdir=$ZDOTDIR
+	ZDOTDIR=$LUNETERM_USER_ZDOTDIR
+	. "$LUNETERM_USER_ZDOTDIR/.zprofile"
+	LUNETERM_USER_ZDOTDIR=$ZDOTDIR
+	ZDOTDIR=$_luneterm_zdotdir
+	unset _luneterm_zdotdir
+fi

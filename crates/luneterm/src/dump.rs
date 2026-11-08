@@ -22,6 +22,7 @@ use lune_ui::input::{Event, Modifiers, PointerButton, RawInput, ScrollDelta};
 use lune_ui::paint::Rect;
 use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
+use lune_ui::widgets::tone::Tone;
 
 use crate::app::failure_grid;
 use crate::demo::{demo_cursor, demo_grid};
@@ -450,6 +451,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         .map(|(i, title)| StripTab {
             id: i as u64 + 1,
             title,
+            progress: None,
         })
         .collect();
     let active = scene.active.min(strip.len().saturating_sub(1));
@@ -558,6 +560,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
                 name: strings.tr(m.name_key()),
             }),
             busy: None,
+            busy_tone: Tone::Neutral,
             tab_menu_extra: &extra,
         };
         r.draw(&input, content, &view, size)?;

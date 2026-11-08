@@ -20,6 +20,7 @@ pub mod session;
 pub mod settings;
 pub mod settings_page;
 pub mod shell;
+pub mod shell_integration;
 pub mod spawn;
 pub mod strings;
 pub mod tabs;

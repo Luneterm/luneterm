@@ -21,6 +21,7 @@ use lune_ui::ui::{FrameConfig, Ui, UiStore};
 use lune_ui::widgets::menu::{MenuOptions, MenuPlace, MenuResponse, MenuRow};
 use lune_ui::widgets::tab_strip::BusyCue;
 use lune_ui::widgets::toast::Toasts;
+use lune_ui::widgets::tone::Tone;
 
 use crate::fonts;
 use crate::session::Geometry;
@@ -78,6 +79,8 @@ pub struct Content<'a> {
     pub menu: Option<MenuDraw<'a>>,
     /// The cue the active tab's outline runs, `None` when it is not busy or the setting is off.
     pub busy: Option<BusyCue>,
+    /// The outline's colour while it runs.
+    pub busy_tone: Tone,
     /// The rows after the toolkit's four on a tab's context menu.
     pub tab_menu_extra: &'a [&'a str],
 }
@@ -333,6 +336,7 @@ impl Renderer {
             toasts: content.toasts.take(),
             page_open: content.page.is_some(),
             busy: content.busy,
+            busy_tone: content.busy_tone,
             menu_extra: content.tab_menu_extra,
             overflow_name: self.strings.tr("menu.more"),
         };

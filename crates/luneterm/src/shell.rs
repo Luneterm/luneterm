@@ -26,6 +26,7 @@ use lune_ui::widgets::tab_strip::{
     self, BusyCue, Tab as StripItem, TabEvent, TabKey, TabStripOptions,
 };
 use lune_ui::widgets::toast::Toasts;
+use lune_ui::widgets::tone::Tone;
 use lune_ui::window::{ResizeEdge, edge_at};
 
 /// The title band's height.
@@ -247,6 +248,8 @@ impl ThumbDrag {
 pub struct StripTab<'a> {
     pub id: u64,
     pub title: &'a str,
+    /// An OSC 9;4 report is active in this tab: its title shines in the tone.
+    pub progress: Option<Tone>,
 }
 
 /// The dialog the frame shows over everything, if any. The text is the app's state: the dialog
@@ -286,6 +289,9 @@ pub struct ShellView<'a> {
     /// The cue the active tab's outline runs, `None` when nothing runs (plan M10 step 6: the
     /// settings decide the cue, the tab decides whether it is busy).
     pub busy: Option<BusyCue>,
+    /// The outline's colour while it runs: the active tab's progress tone (error, warning), else
+    /// neutral.
+    pub busy_tone: Tone,
     /// The rows after the toolkit's four on a tab's context menu.
     pub menu_extra: &'a [&'a str],
     /// The accessible name of the `⋯` button.
@@ -476,14 +482,14 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
                 key: TabKey(t.id),
                 title: t.title,
                 closable: true,
-                progress: None,
+                progress: t.progress,
             })
             .collect();
         let opts = TabStripOptions {
             active: view.active_tab.map(TabKey),
             panel_focused: view.focused && !modal_open,
             busy: view.busy,
-            busy_tone: lune_ui::widgets::tone::Tone::Neutral,
+            busy_tone: view.busy_tone,
             card: layout.card,
             menu_extra: view.menu_extra,
             name: "Terminal sessions",
@@ -819,10 +825,12 @@ mod tests {
     const TAB_A: StripTab<'static> = StripTab {
         id: 1,
         title: "zsh",
+        progress: None,
     };
     const TAB_B: StripTab<'static> = StripTab {
         id: 2,
         title: "cargo build",
+        progress: None,
     };
 
     fn frame_with(
@@ -862,6 +870,7 @@ mod tests {
             toasts: None,
             page_open: false,
             busy: None,
+            busy_tone: Tone::Neutral,
             menu_extra: &[],
             overflow_name: "More",
         };
