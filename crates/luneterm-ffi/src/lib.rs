@@ -12,6 +12,11 @@
 //!   that fills the same slot, or `luneterm_engine_free` (see the `output` module docs);
 //! - [`ABI_VERSION`] is bumped on any breaking change.
 //!
+//! The contract lives in the header, `include/luneterm.h` (types, constants, ownership and
+//! threading rules), and in `docs/architecture.md` ("luneterm-ffi (C ABI)"). `viewport.cursor_x`
+//! is `0..=cols + 1` and is not clamped. The cap-memory example needs
+//! `cargo run --profile ffi-release -p luneterm-ffi --example cap_memory`.
+//!
 //! 64-bit targets only (D6).
 
 #[cfg(panic = "abort")]

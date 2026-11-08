@@ -735,6 +735,19 @@ fn a_missing_line_renders_blank() {
 }
 
 #[test]
+fn viewport_with_rows_streams_the_same_rows_and_keeps_the_rest() {
+    let mut t = term([OptionValue::Cols(4), OptionValue::Rows(3)]);
+    t.write_str("l0\r\nl1\x1b]8;;http://x\x07\x1b]0;ti\x07");
+    let full = t.viewport();
+    let mut rows = Vec::new();
+    let mut rest = t.viewport_with_rows(|row| rows.push(row.to_vec()));
+    assert!(rest.cells.is_empty());
+    assert_eq!(rows, full.cells);
+    rest.cells = rows;
+    assert_eq!(rest, full);
+}
+
+#[test]
 fn viewport_cursor_visibility_style_and_blink() {
     let mut t = term([OptionValue::Cols(5), OptionValue::Rows(2)]);
     t.write_str("ab");

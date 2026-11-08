@@ -179,7 +179,9 @@ pub struct LunetermViewport {
     pub base_y: u64,
     /// Lines in the active buffer, scrollback included.
     pub total_lines: u64,
-    /// Cursor column; equals `cols` while a wrap is pending.
+    /// Cursor column, `0..=cols + 1`: `cols` while a wrap is pending, `cols + 1` after a
+    /// zero-width character (such as U+0301) printed there, as @xterm/headless 6.0.0 does. Not
+    /// clamped: a host indexing `cells` with it must clamp first.
     pub cursor_x: u32,
     /// Cursor viewport row.
     pub cursor_y: u32,
