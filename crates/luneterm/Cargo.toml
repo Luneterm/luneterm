@@ -27,3 +27,8 @@ workspace = true
 [[test]]
 name = "dll_search_gpu"
 harness = false
+
+# The end-to-end harness: real PTY children, re-run as the child (tests/e2e/child.rs).
+[[test]]
+name = "e2e"
+harness = false
