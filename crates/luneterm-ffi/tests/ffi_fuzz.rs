@@ -133,8 +133,8 @@ fn csi(rng: &mut Rng) -> String {
             out.push(if rng.chance(15) { ':' } else { ';' });
         }
         match rng.below(10) {
-            0 => out.push_str(*rng.pick(&EXTREME)),
-            1..=2 => out.push_str(*rng.pick(&DEC_MODES)),
+            0 => out.push_str(rng.pick::<&str>(&EXTREME)),
+            1..=2 => out.push_str(rng.pick::<&str>(&DEC_MODES)),
             3..=4 => out.push_str(&rng.below(110).to_string()),
             _ => out.push_str(&rng.below(30).to_string()),
         }
