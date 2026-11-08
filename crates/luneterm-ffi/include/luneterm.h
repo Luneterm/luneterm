@@ -51,6 +51,12 @@
  *   (NULL, 0) is a valid empty byte range; (NULL, n > 0) is LUNETERM_ERR_NULL_POINTER; a length
  *   above PTRDIFF_MAX is LUNETERM_ERR_INVALID_ARGUMENT. Enums are plain integers, range-checked.
  *   Booleans are uint8_t: nonzero is true.
+ *
+ * Aliasing
+ *   No two pointer arguments of one call may overlap: an input and an out-parameter (the text
+ *   and out of luneterm_engine_paste, the event and out of luneterm_engine_key_event and
+ *   luneterm_engine_mouse_event, the config and out of luneterm_engine_new) and the out-parameters
+ *   among themselves (the cols and rows of luneterm_engine_size). Overlap is undefined behaviour.
  */
 #ifndef LUNETERM_H
 #define LUNETERM_H

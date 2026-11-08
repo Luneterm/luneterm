@@ -19,8 +19,11 @@ jobs:
       - run: cargo fmt --all -- --check
       - if: runner.os == 'Linux'
         run: scripts/check-lib-boundaries.sh
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      # M9 D18: every package comes from this repo, crates.io or the pinned luneui-rs rev.
+      - if: runner.os == 'Linux'
+        run: scripts/check-deps.sh
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
       # M8 D8: header == exported symbols (nm vs the clang AST), shipping and panic-probe builds,
       # plus the C smoke test. Needs clang and nm; macOS has both. Windows checks the DLL builds
       # (job windows-exe) and the Rust tests; Linux runs the C smoke test through cargo test.
@@ -32,24 +35,25 @@ jobs:
         run: |
           for i in 1 2 3 4 5; do
             echo "lune-pty soak run $i"
-            cargo test -p lune-pty || exit 1
+            cargo test -p lune-pty --locked || exit 1
           done
       # cargo test captures stdout; --nocapture puts the P6 adapter / P4 emoji probe lines in the log.
-      - run: cargo test -p lune-termview --test probe -- --nocapture
+      - run: cargo test -p lune-termview --locked --test probe -- --nocapture
 
-  # Windows build for testing on real hardware. M9 adds luneterm.exe here.
+  # Windows build for testing on real hardware: the app, luneterm.exe (M9).
   windows-exe:
     if: github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       # rust-toolchain.toml pins the toolchain; rustup installs it on first cargo call.
-      - run: cargo build --release -p glass-ui
-      # M3 step 0 (P7/P8): portable-pty size cost = spawn example minus the luneterm placeholder.
-      - run: cargo build --release -p lune-pty --example spawn
-      - run: cargo build --release -p luneterm
+      - run: cargo build --release --locked -p glass-ui
+      # M3 step 0 (P7/P8): the spawn example's size, for the portable-pty cost record.
+      - run: cargo build --release --locked -p lune-pty --example spawn
+      # M9 step 7: the app. GUI subsystem in release; the artifact below is this file.
+      - run: cargo build --release --locked -p luneterm
       # M8 D4: the C ABI library is built only with the ffi-release profile (unwinding).
-      - run: cargo build -p luneterm-ffi --profile ffi-release
+      - run: cargo build --locked -p luneterm-ffi --profile ffi-release
       - shell: pwsh
         run: |
           $dll = (Get-Item target/ffi-release/luneterm_ffi.dll).Length
@@ -57,11 +61,12 @@ jobs:
       - shell: pwsh
         run: |
           $spawn = (Get-Item target/release/examples/spawn.exe).Length
-          $base = (Get-Item target/release/luneterm.exe).Length
-          "spawn.exe=$spawn luneterm.exe=$base delta=$($spawn - $base)"
+          $app = (Get-Item target/release/luneterm.exe).Length
+          $glass = (Get-Item target/release/glass-ui.exe).Length
+          "luneterm.exe=$app glass-ui.exe=$glass spawn.exe=$spawn"
       - uses: actions/upload-artifact@v4
         with:
-          name: glass-ui-windows-x64
-          path: target/release/glass-ui.exe
+          name: luneterm-windows-x64
+          path: target/release/luneterm.exe
           retention-days: 7
           if-no-files-found: error

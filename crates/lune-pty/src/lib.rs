@@ -24,6 +24,36 @@ mod windows;
 
 pub use portable::PortablePtyBackend;
 
+/// Restricts the process-wide DLL search to the application directory, System32 and directories
+/// added with `AddDllDirectory`, once and permanently (Windows; `Ok(())` elsewhere). A host calls
+/// it first thing in `main`, before any library that loads a DLL by bare name creates its
+/// objects (the GPU stack loads `dxcompiler.dll` that way), so a copy planted in the current
+/// directory or on `PATH` is never found. The first spawn calls it too; the result of the one
+/// call is kept. Fails closed: on `Err` the host must not go on to load libraries.
+pub fn restrict_dll_search() -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        windows::ensure_dll_search_restricted()
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(())
+    }
+}
+
+/// The Windows build number to tell the VT engine's reflow heuristics (the OS build, as ConPTY
+/// versions follow it); `None` off Windows or if the OS does not answer.
+pub fn conpty_build() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        windows::os_build()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// Terminal size in cells (and optionally pixels, for apps that query it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PtySize {
@@ -64,7 +94,8 @@ pub struct PtyWriter {
 }
 
 impl PtyWriter {
-    pub(crate) fn new(writer: Box<dyn io::Write + Send>) -> Self {
+    /// Wraps `writer` as the input side of a PTY. For backends outside this crate and for tests.
+    pub fn new(writer: Box<dyn io::Write + Send>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(writer)),
         }
@@ -120,4 +151,26 @@ pub trait Pty: Send {
 /// Creates PTYs. One implementation per platform strategy; selected at startup.
 pub trait PtyBackend {
     fn spawn(&self, options: &SpawnOptions, size: PtySize) -> io::Result<Box<dyn Pty>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dll_search_restriction_succeeds_and_repeats() {
+        assert!(restrict_dll_search().is_ok());
+        assert!(restrict_dll_search().is_ok());
+    }
+
+    #[test]
+    fn the_conpty_build_is_a_windows_build_number_on_windows_only() {
+        let build = conpty_build();
+        if cfg!(windows) {
+            // Windows 10 1809, the first with ConPTY, is build 17763.
+            assert!(build.is_some_and(|b| b >= 17763), "{build:?}");
+        } else {
+            assert_eq!(build, None);
+        }
+    }
 }

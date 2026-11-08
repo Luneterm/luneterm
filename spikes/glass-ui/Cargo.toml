@@ -8,15 +8,11 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-lune-ui.workspace = true
-lune-termview.workspace = true
+lune-ui = { path = "../../crates/lune-ui" }
 winit = "0.30"
 wgpu = "30"
 pollster = "0.4"
 png = "0.18"
-# Mock cluster widths for the termview demo only (not engine widths, D13).
-unicode-segmentation = "1.13"
-unicode-width = "0.2"
 
 [lints]
 workspace = true

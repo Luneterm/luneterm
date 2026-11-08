@@ -13,7 +13,6 @@ mod mock;
 mod overlays;
 mod settings_view;
 mod state;
-mod term_grid;
 mod terminal_view;
 mod theme;
 mod widgets;
@@ -26,7 +25,6 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
-use lune_ui::custom::CustomDraw;
 use lune_ui::frame::{FrameParams, FrameRenderer};
 use lune_ui::gpu::{self, Gpu};
 use lune_ui::lunegit_dark;
@@ -34,7 +32,6 @@ use lune_ui::paint::{Painter, Rect};
 use lune_ui::text::TextCache;
 use lune_ui::window::{self, DoubleClick, edge_at};
 use state::{Effect, Hit, MenuKind, Modal, Page, Popup, State};
-use term_grid::TermState;
 
 /// Luneium context-menu glass: blur 30px, saturate 1.8, then acrylic on top.
 const BACKDROP_SATURATION: f32 = 1.8;
@@ -44,8 +41,6 @@ struct Renderer {
     text: TextCache,
     frame: FrameRenderer,
     dumped: bool,
-    /// Termview demo (`GLASS_UI_TERMVIEW=1`, read once at startup); `None` = glyphon body.
-    term: Option<TermState>,
 }
 
 struct App {
@@ -107,10 +102,13 @@ impl ApplicationHandler for App {
         let text = TextCache::new(
             window.scale_factor() as f32,
             &[
-                include_bytes!("../assets/RobotoMonoNerdFontMono-Regular.ttf").as_slice(),
-                include_bytes!("../assets/RobotoMonoNerdFontMono-Bold.ttf"),
-                include_bytes!("../assets/RznSans-Regular.ttf"),
-                include_bytes!("../assets/RznSans-Medium.ttf"),
+                include_bytes!(
+                    "../../../crates/luneterm/assets/RobotoMonoNerdFontMono-Regular.ttf"
+                )
+                .as_slice(),
+                include_bytes!("../../../crates/luneterm/assets/RobotoMonoNerdFontMono-Bold.ttf"),
+                include_bytes!("../../../crates/luneterm/assets/RznSans-Regular.ttf"),
+                include_bytes!("../../../crates/luneterm/assets/RznSans-Medium.ttf"),
             ],
             theme::UI_FONT,
             theme::MONO_FONT,
@@ -126,14 +124,11 @@ impl ApplicationHandler for App {
             });
         }
         let frame = FrameRenderer::new(&gpu);
-        let term = termview_enabled()
-            .then(|| TermState::new(&gpu.device, gpu.config.format, &self.state.settings));
         let mut renderer = Renderer {
             gpu,
             text,
             frame,
             dumped: false,
-            term,
         };
         // Scripted offscreen frames (`GLASS_UI_DUMP_FRAMES=<dir>`): render, write, exit.
         // winit still drains events after `exit()`; `window_event` and `about_to_wait`
@@ -352,11 +347,6 @@ fn dump_dir() -> Option<std::path::PathBuf> {
         .map(Into::into)
 }
 
-/// `GLASS_UI_TERMVIEW=1`: draw the terminal body with `lune-termview` instead of glyphon text.
-fn termview_enabled() -> bool {
-    std::env::var_os("GLASS_UI_TERMVIEW").is_some_and(|v| !v.is_empty() && v != "0")
-}
-
 /// Draws one frame into the window's surface.
 fn render(r: &mut Renderer, st: &mut State, s: f32) -> Result<(), String> {
     st.now = std::time::Instant::now();
@@ -383,7 +373,7 @@ fn draw_frame(
     let win = Rect::new(0.0, 0.0, size.0 as f32 / s, size.1 as f32 / s);
     r.text.set_scale(s);
     let mut p = Painter::new(s, win, &mut r.text, st.hover, lunegit_dark::THEME);
-    terminal_view::draw(&mut p, st, r.term.as_mut());
+    terminal_view::draw(&mut p, st);
     settings_view::draw(&mut p, st);
     overlays::draw_popup(&mut p, st);
     overlays::draw_modal(&mut p, st);
@@ -402,24 +392,8 @@ fn draw_frame(
         blur_sigma: st.settings.menu_blur.sigma(),
         saturation: BACKDROP_SATURATION,
     };
-    match r.term.as_mut() {
-        Some(term) => {
-            term.update(&mut r.text, st, s);
-            let mut customs: [&mut dyn CustomDraw; 1] = [&mut term.view];
-            r.frame.draw_with(
-                &r.gpu,
-                &mut r.text,
-                layers,
-                backdrop,
-                target,
-                params,
-                &mut customs,
-            )?;
-        }
-        None => r
-            .frame
-            .draw(&r.gpu, &mut r.text, layers, backdrop, target, params)?,
-    }
+    r.frame
+        .draw(&r.gpu, &mut r.text, layers, backdrop, target, params)?;
     // Debug: GLASS_UI_DUMP=<dir> writes the scene and blurred textures once a menu is fully open.
     if backdrop.is_some_and(|b| b.alpha >= 0.999)
         && let Some(dir) = std::env::var_os("GLASS_UI_DUMP")

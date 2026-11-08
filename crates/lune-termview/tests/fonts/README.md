@@ -7,7 +7,8 @@ unaffected. Each licence sits beside the fonts: `RobotoMonoNerdFont.LICENSE.txt`
 
 Tool: fontTools 4.58.0 (`pyftsubset`). Re-running a command reproduces the committed file
 byte for byte (checked for the Regular subset). `$LF` is Lunegit's
-`src/Lunegit.Desktop/Assets/Fonts`; `$SP` is `spikes/glass-ui/assets` in this repo.
+`src/Lunegit.Desktop/Assets/Fonts`; `$SP` holds the full RobotoMono Nerd Font Mono files (the app's bundled copy, see
+`THIRD_PARTY_NOTICES.md`).
 
 ```bash
 RU="U+0020-007E,U+00A0-00FF,U+0300-036F,U+2500-259F,U+E0A0-E0A3,U+E0B0-E0B3,U+F000-F02F"
