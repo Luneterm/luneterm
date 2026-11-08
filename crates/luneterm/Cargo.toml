@@ -16,6 +16,8 @@ lune-termview.workspace = true
 winit = "0.30"
 wgpu = "30"
 pollster = "0.4"
+# The platform config directory for settings.json and workspace.json (plan M10 D17).
+dirs = "6"
 
 # `ShellExecuteW` to open a link (links/open.rs, D4): the one Windows API the app calls itself.
 [target.'cfg(windows)'.dependencies]

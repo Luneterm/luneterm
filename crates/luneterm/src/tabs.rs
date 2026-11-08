@@ -192,6 +192,8 @@ pub struct Effects {
     pub exited: bool,
     /// The session palette changed: the terminal theme is new.
     pub palette: bool,
+    /// The shell reported another directory (the workspace has something new to save).
+    pub cwd: bool,
     /// Something the strip or the title band shows may have changed (title, command, exit).
     pub chrome: bool,
 }
@@ -225,6 +227,10 @@ pub struct Tab {
     pub sent_geometry: Option<Geometry>,
     /// The last directory the shell reported (OSC 7), unchecked: untrusted text.
     pub cwd: Option<String>,
+    /// The directory the tab was started in (saved with the workspace).
+    pub launch_dir: Option<String>,
+    /// When the tab was made: a child that exits within moments of it failed to start.
+    pub started: Instant,
     pub foreground: ForegroundState,
     pub command: CommandState,
     /// The focus the session was last told (focus reports, mode 1004).
@@ -257,6 +263,8 @@ impl Tab {
             theme,
             sent_geometry: None,
             cwd: None,
+            launch_dir: None,
+            started: Instant::now(),
             foreground: ForegroundState::default(),
             command: CommandState::default(),
             focused: false,
@@ -355,6 +363,7 @@ impl Tab {
             fx.chrome = true;
         }
         if let Some(raw) = update.cwd {
+            fx.cwd = self.cwd.as_deref() != Some(raw.as_str());
             self.cwd = Some(raw);
         }
         if let Some(f) = update.foreground {

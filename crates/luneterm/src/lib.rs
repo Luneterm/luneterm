@@ -12,6 +12,7 @@ pub mod fonts;
 pub mod input;
 pub mod links;
 pub mod outline;
+pub mod persist;
 pub mod render;
 pub mod session;
 pub mod settings;

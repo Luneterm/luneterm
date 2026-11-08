@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -51,6 +51,9 @@ use crate::input::{
     selection_position, selection_scroll, terminal_mods, wheel, wheel_delta, wheel_report,
 };
 use crate::links::{self, open::OpenError};
+use crate::persist::{
+    Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, snapshot,
+};
 use crate::render::{Content, Placed, Renderer};
 use crate::session::{
     Command, CopyResult, HostPalette, MAX_COPY_BYTES, Scroll, SelectCmd, Session, SessionConfig,
@@ -226,8 +229,30 @@ fn run_window() -> ExitCode {
         }
     };
     event_loop.set_control_flow(ControlFlow::Wait);
-    let settings = Settings::default().clamped();
-    let mut app = App::new(settings, event_loop.create_proxy());
+    // The config directory: the platform's, or the one `LUNETERM_CONFIG_DIR` names (this is the
+    // only place the variable is read; tests and trial runs use it to leave the real one alone).
+    let dir = std::env::var_os("LUNETERM_CONFIG_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(Store::default_dir);
+    let (persist, start) = match dir {
+        Some(dir) => Persist::load(Store::new(dir)),
+        None => (
+            Persist::none(),
+            Startup {
+                settings: Settings::default(),
+                workspace: None,
+                notices: Vec::new(),
+            },
+        ),
+    };
+    let mut app = App::new(
+        start.settings.clamped(),
+        event_loop.create_proxy(),
+        persist,
+        start.workspace,
+        start.notices,
+    );
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop: {e}");
         return ExitCode::from(1);
@@ -312,6 +337,11 @@ enum ModalState {
     },
 }
 
+/// The workspace is written at most this often while it changes (and once more at exit).
+const WORKSPACE_DEBOUNCE: Duration = Duration::from_secs(1);
+/// How long the start waits for the saved directories to be checked (off the UI thread).
+const RESTORE_CHECK_WAIT: Duration = Duration::from_millis(500);
+
 /// How far (logical px) the pointer may move with a link pressed before it is a drag.
 const LINK_DRAG_SLOP: f32 = 4.0;
 
@@ -351,6 +381,17 @@ struct App {
     /// A new tab waiting for the check of the directory it should start in.
     pending_new: Option<CwdCheck>,
     modal: Option<ModalState>,
+    persist: Persist,
+    /// The tabs of the last run, restored when the window exists.
+    startup_workspace: Option<Workspace>,
+    /// What the files had wrong, shown once the first frame can show it.
+    startup_notices: Vec<String>,
+    guard: SaveGuard,
+    /// The tabs changed since the workspace was last written.
+    ws_dirty: bool,
+    ws_last_write: Instant,
+    /// The last tabs are closing as the app leaves: what was saved stands.
+    ws_frozen: bool,
     /// The OS window's title as last set.
     window_title: String,
     /// The last frame's placement: the pointer maps through it.
@@ -389,8 +430,21 @@ struct App {
 }
 
 impl App {
-    fn new(settings: Settings, proxy: EventLoopProxy<UserEvent>) -> App {
+    fn new(
+        settings: Settings,
+        proxy: EventLoopProxy<UserEvent>,
+        persist: Persist,
+        startup_workspace: Option<Workspace>,
+        startup_notices: Vec<String>,
+    ) -> App {
         App {
+            persist,
+            startup_workspace,
+            startup_notices,
+            guard: SaveGuard::new(),
+            ws_dirty: false,
+            ws_last_write: Instant::now(),
+            ws_frozen: false,
             settings,
             glass: false,
             win: None,
@@ -592,13 +646,17 @@ impl App {
         });
         match check {
             Some(check) => self.pending_new = Some(check),
-            None => self.open_tab(None),
+            None => {
+                self.open_tab(None, None);
+                self.workspace_changed(true);
+            }
         }
     }
 
     /// Spawns a shell and adds its tab, active, at the window's grid size. On failure the tab's
     /// grid tells why (D12) and it can be closed.
-    fn open_tab(&mut self, dir: Option<PathBuf>) {
+    /// `restored` is the saved tab this one comes back as: its launch directory and its name.
+    fn open_tab(&mut self, dir: Option<PathBuf>, restored: Option<&TabState>) {
         let (Some(win), Some(stack)) = (&self.win, &mut self.stack) else {
             return;
         };
@@ -610,6 +668,22 @@ impl App {
 
         let mut tab = Tab::empty(Self::base_theme());
         tab.focused = self.focused;
+        tab.launch_dir = match restored {
+            Some(saved) => saved.working_directory.clone(),
+            None => dir
+                .as_deref()
+                .and_then(Path::to_str)
+                .map(str::to_owned)
+                .or_else(|| {
+                    (!self.settings.default_cwd.is_empty())
+                        .then(|| self.settings.default_cwd.clone())
+                }),
+        };
+        // Started in `dir`: that is where the shell is until it says otherwise.
+        tab.cwd = dir.as_deref().and_then(Path::to_str).map(str::to_owned);
+        if let Some(title) = restored.and_then(|r| r.manual_title.as_deref()) {
+            tab.rename(title);
+        }
         match spawn::launch_in(
             &PortablePtyBackend,
             &self.settings,
@@ -666,9 +740,104 @@ impl App {
                 }
             }
         }
+        let failed = tab.failure.is_some();
         let before = self.tabs.active();
-        self.tabs.push(tab);
+        let id = self.tabs.push(tab);
+        if failed {
+            // Ledger 12: while this tab shows its failure the workspace is not written.
+            self.guard.spawn_failed(id);
+        }
         self.active_changed(before);
+    }
+
+    /// The tabs of the last run come back: each starts in its live directory, else the one it was
+    /// started in, else the default (the directories are checked on a thread of their own, since a
+    /// check stats the disk), with the name the user gave it. With nothing to restore, one tab.
+    fn start_tabs(&mut self) {
+        let Some(workspace) = self.startup_workspace.take() else {
+            self.open_tab(None, None);
+            return;
+        };
+        let saved = workspace.tabs.clone();
+        let (tx, rx) = mpsc::channel();
+        let checked = saved.clone();
+        let spawned = thread::Builder::new()
+            .name("luneterm-restore".into())
+            .spawn(move || {
+                let _ = tx.send(restore_dirs(&checked, &|p| cwd::validated(p)));
+            });
+        let dirs = spawned
+            .ok()
+            .and_then(|_| rx.recv_timeout(RESTORE_CHECK_WAIT).ok())
+            .unwrap_or_else(|| vec![None; saved.len()]);
+        for (state, dir) in saved.iter().zip(dirs) {
+            self.open_tab(dir, Some(state));
+        }
+        let before = self.tabs.active();
+        self.tabs.activate_index(workspace.active);
+        self.active_changed(before);
+        // What was restored is what the file says: nothing to write yet.
+        self.ws_dirty = false;
+    }
+
+    /// The tabs changed. `user`: the user did it (not a shell dying, not a directory report).
+    fn workspace_changed(&mut self, user: bool) {
+        if self.ws_frozen {
+            return;
+        }
+        if user {
+            self.guard.user_acted();
+            self.persist.arm_workspace();
+        }
+        self.ws_dirty = true;
+    }
+
+    /// Writes the workspace when it changed, at most once a [`WORKSPACE_DEBOUNCE`] (always when
+    /// `force`). Ledger 12: nothing goes out while the guard says a tab failed.
+    fn flush_workspace(&mut self, force: bool) {
+        if self.ws_frozen || !self.ws_dirty {
+            return;
+        }
+        let now = Instant::now();
+        if !force && now.saturating_duration_since(self.ws_last_write) < WORKSPACE_DEBOUNCE {
+            return;
+        }
+        self.ws_dirty = false;
+        self.ws_last_write = now;
+        let infos: Vec<TabInfo> = self
+            .tabs
+            .iter()
+            .map(|(_, t)| TabInfo {
+                started: t.session.is_some(),
+                launch_dir: t.launch_dir.clone(),
+                live_dir: t
+                    .cwd
+                    .as_deref()
+                    .filter(|c| cwd::syntax(c).is_some())
+                    .map(str::to_owned),
+                title: t.manual_name().map(str::to_owned),
+            })
+            .collect();
+        let active = self
+            .tabs
+            .active()
+            .and_then(|a| self.tabs.index_of(a))
+            .unwrap_or(0);
+        if let Some(ws) = snapshot(
+            &infos,
+            active,
+            &self.guard,
+            self.persist.workspace_unknown(),
+        ) {
+            self.persist.save_workspace(&ws);
+        }
+    }
+
+    /// The last tabs are about to close with the app: write what is open now and stop writing, so
+    /// closing them does not save an empty list (the next start brings them back).
+    fn freeze_workspace(&mut self) {
+        self.flush_workspace(true);
+        self.ws_frozen = true;
     }
 
     /// The active tab changed from `before`: what belonged to the old tab's pointer and keyboard
@@ -723,7 +892,7 @@ impl App {
             self.tabs.get(id).is_some_and(Tab::needs_confirm)
         });
         match plan {
-            ClosePlan::Now(ids) => self.close_tabs(&ids, event_loop),
+            ClosePlan::Now(ids) => self.close_tabs(&ids, event_loop, true),
             ClosePlan::Ask { ids, n } => {
                 self.modal = Some(ModalState::Confirm {
                     ids,
@@ -736,12 +905,18 @@ impl App {
     }
 
     /// Closes `ids` now. The last tab closing exits the app.
-    fn close_tabs(&mut self, ids: &[TabId], event_loop: &ActiveEventLoop) {
+    fn close_tabs(&mut self, ids: &[TabId], event_loop: &ActiveEventLoop, user: bool) {
         let before = self.tabs.active();
+        if ids.len() >= self.tabs.len() && self.tabs.ids().iter().all(|id| ids.contains(id)) {
+            self.freeze_workspace();
+        }
         for id in ids {
             let Some(tab) = self.tabs.close(*id) else {
                 continue;
             };
+            if user {
+                self.guard.tab_closed(*id);
+            }
             if let Some(session) = tab.session {
                 if self.tabs.is_empty() {
                     // The app is leaving: `shutdown` closes it with a wait.
@@ -755,6 +930,7 @@ impl App {
             event_loop.exit();
             return;
         }
+        self.workspace_changed(user);
         self.active_changed(before);
         self.request_redraw();
     }
@@ -766,10 +942,14 @@ impl App {
             TabEvent::Activate(key) => {
                 self.tabs.activate(key.0);
                 self.active_changed(before);
+                self.workspace_changed(true);
             }
             TabEvent::Close(key) => self.request_close(vec![key.0], event_loop),
             TabEvent::New => self.new_tab_request(),
-            TabEvent::Reorder { from, to } => self.tabs.reorder(from, to),
+            TabEvent::Reorder { from, to } => {
+                self.tabs.reorder(from, to);
+                self.workspace_changed(true);
+            }
             TabEvent::CloseOthers(key) => {
                 let ids = self
                     .tabs
@@ -823,6 +1003,9 @@ impl App {
                 self.tabs.activate_index(i);
             }
         }
+        if self.tabs.active() != before {
+            self.workspace_changed(true);
+        }
         self.active_changed(before);
     }
 
@@ -836,14 +1019,15 @@ impl App {
             match modal {
                 Some(ModalState::Confirm { ids, dont_ask, .. }) => {
                     if dont_ask {
-                        // In memory until the settings file (step 5).
                         self.settings.confirm_close = false;
+                        self.persist.save_settings(&self.settings);
                     }
-                    self.close_tabs(&ids, event_loop);
+                    self.close_tabs(&ids, event_loop, true);
                 }
                 Some(ModalState::Rename { id, text, .. }) => {
                     if let Some(tab) = self.tabs.get_mut(id) {
                         tab.rename(&text);
+                        self.workspace_changed(true);
                     }
                 }
                 None => {}
@@ -906,19 +1090,29 @@ impl App {
                 }
                 None => {}
             }
+            if fx.cwd {
+                self.workspace_changed(false);
+            }
             if fx.exited {
                 exited.push(id);
             }
         }
         if !exited.is_empty() {
             // The child is gone: its tab closes, the others stay (the last one takes the app).
-            self.close_tabs(&exited, event_loop);
+            for id in &exited {
+                if let Some(tab) = self.tabs.get(*id) {
+                    // A child that dies at its start is a failed start, not a decision.
+                    self.guard.child_exited(*id, tab.started.elapsed());
+                }
+            }
+            self.close_tabs(&exited, event_loop, false);
             worth_a_frame = true;
         }
         let done = self.pending_new.as_ref().map(|c| c.poll(Instant::now()));
         if let Some(CwdState::Done(dir)) = done {
             self.pending_new = None;
-            self.open_tab(dir);
+            self.open_tab(dir, None);
+            self.workspace_changed(true);
             worth_a_frame = true;
         }
         // A dialog about a tab that is gone has nothing to act on.
@@ -941,9 +1135,17 @@ impl App {
 
     /// When a waiting new tab gives up on its directory check.
     fn pending_flow(&self) -> ControlFlow {
-        self.pending_new
+        let check = self
+            .pending_new
             .as_ref()
-            .map_or(ControlFlow::Wait, |c| ControlFlow::WaitUntil(c.deadline()))
+            .map_or(ControlFlow::Wait, |c| ControlFlow::WaitUntil(c.deadline()));
+        // The workspace write waits for its debounce.
+        let write = if self.ws_dirty && !self.ws_frozen {
+            ControlFlow::WaitUntil(self.ws_last_write + WORKSPACE_DEBOUNCE)
+        } else {
+            ControlFlow::Wait
+        };
+        merge_flow(check, write)
     }
 
     // ----------------------------------------------------------------------------- the frame
@@ -961,6 +1163,7 @@ impl App {
             return;
         }
         self.pump(event_loop);
+        self.flush_workspace(false);
         if event_loop.exiting() || self.tabs.is_empty() {
             return;
         }
@@ -1471,7 +1674,12 @@ impl ApplicationHandler<UserEvent> for App {
             window,
         });
         self.stack = Some(stack);
-        self.open_tab(None);
+        self.start_tabs();
+        let now = self.start.elapsed();
+        for notice in std::mem::take(&mut self.startup_notices) {
+            self.toasts
+                .push(ToastSpec::new(ToastKind::Warning, notice), now);
+        }
         // The first frame is drawn here, not on a redraw event a hidden window may never get;
         // the window is shown right after it.
         self.redraw(event_loop);
@@ -1507,7 +1715,12 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(win) = &self.win {
             win.window.set_visible(false);
         }
+        self.flush_workspace(true);
         self.shutdown();
+        // The last writes: a disk that hangs does not hang the exit for long.
+        if !self.persist.flush(Duration::from_secs(2)) {
+            eprintln!("luneterm: the config files were not all written in time");
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
