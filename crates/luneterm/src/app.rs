@@ -499,8 +499,7 @@ impl App {
             scrollback: self.settings.scrollback as usize,
             xtversion: spawn::xtversion(),
             clipboard_write: self.settings.osc_clipboard,
-            // The ConPTY build comes with the Windows host duties (step 7).
-            windows_pty: None,
+            windows_pty: spawn::windows_pty(),
             palette: HostPalette::from_theme(&self.theme),
             focused: self.focused,
         };
