@@ -10,26 +10,43 @@ crates/
                   parser-trace and screen runners for lune-vt. See "lune-vt parser".
   lune-pty        Pty / PtyBackend traits; PortablePtyBackend (portable-pty 0.9.0: ConPTY on Windows,
                   openpty on Unix) with raw-mode and foreground-process queries. See "lune-pty".
-  lune-ui         App-agnostic glass UI toolkit: painter, widgets, menus and dialogs, blur, text,
-                  OS materials, window helpers, Lunegit dark theme. See "lune-ui modules".
+  lune-ui         The glass UI toolkit. For luneterm and lune-termview this is the luneui-rs facade
+                  (0.2.0), a git dependency pinned at one rev in the root `Cargo.toml` (and in
+                  `scripts/check-deps.sh`). The in-tree 0.1.0 in this directory serves only
+                  `spikes/glass-ui` until M10 retires both. See "lune-ui (toolkit)".
   lune-termview   Engine-agnostic cell grid renderer: glyph atlas, instanced quads, GPU-drawn inside
                   a lune-ui frame. Depends on lune-ui. See "lune-termview".
   luneterm-ffi    C ABI over lune-vt for Lunegit (header `include/luneterm.h`). See "luneterm-ffi (C ABI)".
-  luneterm        The app: window, event loop, sessions, settings.
-spikes/glass-ui   Reference consumer of lune-ui (mock terminal, settings, menus) and the pixel gate.
+  luneterm        The app (lib + bin): window, frame loop, one session per terminal, input routing,
+                  spawn, settings. See "luneterm app".
+spikes/glass-ui   Reference consumer of the in-tree lune-ui (mock terminal, settings, menus) and its pixel gate.
 tools/xterm-oracle  Real xterm.js 6.0.0, used to generate differential-test expectations.
-scripts/          Dev scripts (xterm.js reference, Linux check, library boundary check).
+scripts/          Dev scripts (xterm.js reference, Linux check, library boundary check, dependency
+                  source check).
 docs/             Decisions, porting guide, styling spec, bug ledger.
 ```
 
 ## Dependency direction
 
-`luneterm` → `lune-termview` → `lune-ui`; `luneterm` → `lune-vt`, `lune-pty`;
-`luneterm-ffi` → `lune-vt`; `glass-ui` → `lune-ui`. The engine depends on nothing, so it can be
-tested, fuzzed and embedded on its own. No `lune-*` crate depends on an app crate (`luneterm*`,
-`glass-ui`).
+`luneterm` → `lune-termview` → `lune-ui` (luneui-rs, git rev); `luneterm` → `lune-ui` (luneui-rs),
+`lune-vt`, `lune-pty`; `luneterm-ffi` → `lune-vt`; `glass-ui` → the in-tree `lune-ui` 0.1.0. The
+engine depends on nothing, so it can be tested, fuzzed and embedded on its own. No `lune-*` crate
+depends on an app crate (`luneterm*`, `glass-ui`). Two packages named `lune-ui` are in the lock
+until M10, so a bare `cargo ... -p lune-ui` is ambiguous: use `-p lune-ui@0.1.0` or `@0.2.0`.
+`scripts/check-deps.sh` reads `cargo metadata --locked` and fails on any package outside the
+workspace, crates.io and that one luneui-rs rev (`[patch]`, source replacement and branch or tag
+pins included); CI runs it and builds with `--locked`.
 
-## lune-ui modules
+## lune-ui (toolkit)
+
+The app and `lune-termview` use **luneui-rs** (`~/Projects/luneui-rs`, `lune-ui` 0.2.0: `core`,
+`wgpu`, `winit`, `platform` crates behind one facade): its module map and component catalogue are in
+that repo's `docs/architecture.md` and `docs/components/INDEX.md`. What Luneterm found while being
+its first real consumer, and the two components it owes evidence for, is in
+`docs/luneui-rs-handoff.md`. Luneterm never patches the toolkit (roadmap D23): a gap is recorded
+there and worked around app-side.
+
+**In-tree `crates/lune-ui` (0.1.0, spike only)** keeps the M1 module split below until M10 retires it with the spike:
 
 | Module | Holds |
 |---|---|
@@ -45,14 +62,14 @@ tested, fuzzed and embedded on its own. No `lune-*` crate depends on an app crat
 | `material` | `Material` and `apply(window, Material)`: OS backdrop per platform in `#[cfg]` submodules (the only `unsafe` is `material/macos.rs`) |
 | `window` | Glass window attributes, `edge_at`, `DoubleClick`, `caption_buttons` |
 
-The app owns the winit event loop. lune-ui never starts a loop or reads the clock or the
+The app owns the winit event loop. The toolkit never starts a loop or reads the clock or the
 environment: the app passes time, sizes, fonts, theme and hit values in, which keeps frames
 deterministic.
 
 ## lune-termview
 
-Draws a cell grid inside a lune-ui frame. It knows nothing about the VT engine: the producer (the
-engine from M5, the mock adapter in `spikes/glass-ui/src/term_grid.rs` until then) fills the grid.
+Draws a cell grid inside a lune-ui frame. It knows nothing about the VT engine: the producer fills
+the grid (in the app, `session::apply_update` from the engine thread's Updates; see "luneterm app").
 
 - **Model** (`model`): `Grid` of `Cell` (text, `Color` = default / palette / RGB, `Attrs`,
   underline style and colour, link id) with per-row dirty flags. A wide character is a width-2
@@ -91,6 +108,9 @@ engine from M5, the mock adapter in `spikes/glass-ui/src/term_grid.rs` until the
 - **GPU buffers:** one persistent instance buffer per kind (backgrounds, mask glyphs, colour
   glyphs, decorations) with a fixed slot per row; only dirty rows are rewritten. Overlays are
   rebuilt each frame. An atlas reset or growth rebuilds every row (the UVs moved).
+- **Line height:** `natural_line_height(fs, family, size)` is the one place the app asks for the
+  font's natural line height (the same "W" shaping read as `cell_metrics`), so cell height comes from
+  the font, not from a constant (M9 D16).
 - **No clock, no environment:** blink phase and time come from the app; rule 4 of
   `scripts/check-lib-boundaries.sh` covers `crates/lune-termview/src`.
 - **Tests:** CPU unit tests, offscreen GPU golden PNGs (`crates/lune-termview/tests/golden.rs`,
@@ -114,7 +134,9 @@ engine from M5, the mock adapter in `spikes/glass-ui/src/term_grid.rs` until the
 `Pty` / `PtyBackend` (`crates/lune-pty/src/lib.rs`) and the one backend, `PortablePtyBackend`
 (`portable.rs`; `unix.rs` and `windows.rs` hold the platform parts). `Pty` has `read`, `write_all`,
 `resize`, `try_exit_code` and `kill`, plus `take_reader()`, `writer()` (a cloneable `PtyWriter`),
-`process_id()`, `raw_mode()` and `foreground_process()`.
+`process_id()`, `raw_mode()` and `foreground_process()`. `PtyWriter::new` is public (M9 D20: a
+backend outside this crate, and the session's fake PTY, build one), as are `restrict_dll_search()`
+and `conpty_build()` (D17, below).
 
 - **Validation fails closed:** `columns` and `rows` must be 1..=32767, `cwd` an existing directory,
   and `args` need a `program`.
@@ -133,17 +155,35 @@ Obligations on the host:
 
 - **DSR.** ConPTY asks for the cursor position (`ESC[6n`) at startup and may stall until the
   answer is written back. The VT engine answers every `ESC[6n` (a `HostEvent::Response`, which the
-  M9 session writes to the PTY); `lune-pty` does not, since
-  a second answer would be injected input. Tests and the ConPTY harness answer it in their reader.
+  session writes to the PTY: done, `crates/luneterm/src/session/engine.rs` pushes every `Response` to the
+  writer thread); `lune-pty` does not, since a second answer would be injected input. Tests and the
+  ConPTY harness answer it in their reader.
 - **Unix EOF** arrives only after every holder of the slave closes it, so a background job can
   delay it past the shell's exit.
 
 **DLL search hardening (decision D4, Windows).** portable-pty loads `conpty.dll` by bare name. The
 first spawn therefore calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` once
 (`windows.rs`), and spawn fails if the call fails. The effect is process-wide and permanent: later
-bare-name `LoadLibrary` calls skip the current directory and `PATH`. For M9: check whether wgpu's
-DX12 backend loads `dxcompiler.dll` (or anything else) by bare name from `PATH`; it is unverified
-whether it does. `crates/lune-pty/tests/dll_search.rs` proves the plant is not loaded after a spawn.
+bare-name `LoadLibrary` calls skip the current directory and `PATH`.
+`crates/lune-pty/tests/dll_search.rs` proves the plant is not loaded after a spawn.
+
+**Verified in M9 (wgpu 30, Windows): the GPU stack needed the same hardening, earlier.** wgpu's
+`Dx12Compiler` defaults to `Auto` (wgpu-types 30.0.1 `backend.rs`), which tries `dxcompiler.dll` by
+bare name through `libloading::Library::new` (wgpu-hal 30.0.1 `dx12/instance.rs`,
+`shader_compilation.rs`) and falls back to FXC `d3dcompiler_47.dll`; `wgpu::Instance::new`
+initializes each backend eagerly (wgpu-core `instance.rs`), so the load happens inside
+`gpu::instance(..)`, which runs before the first PTY spawn. With the default search order a
+`dxcompiler.dll` in the current directory or on `PATH` would be loaded into the process. luneui-rs
+sets no compiler (`lune-ui-wgpu/src/gpu.rs:201-204`, `platform/windows.rs` sets only the swapchain
+kind), so the app cannot choose FXC either (see `docs/luneui-rs-handoff.md`). **Fix (D17):**
+`lune_pty::restrict_dll_search()` is public and `luneterm`'s `main` calls it first, before the event
+loop or any GPU object, and exits 1 if it fails. Proof: `crates/luneterm/tests/dll_search_gpu.rs`
+(Windows, `harness = false`) re-runs itself as three children with `version.dll` planted as
+`dxcompiler.dll`: the control (no hardening, cwd = the plant's directory) loads the plant, so the
+instrument sees a plant at all; the hardened children, in the plant's directory and with it on
+`PATH`, get NULL for the bare-name load and for `GetModuleHandleW` after `gpu::instance(None)` and
+`Gpu::new`. CI run 42474728954 (windows-latest, the step 7 commit): control loaded the plant, both
+hardened children loaded NULL, with the GPU initialized.
 
 **Executable resolution (finding S1, Windows).** portable-pty passes the program to
 `CreateProcessW` as `lpApplicationName`, which completes a relative name with the host's current
@@ -212,23 +252,34 @@ XTVERSION name `ExtensionError::InvalidXtversion` (nothing is registered then).
 - **Reset hook:** `Terminal::reset_keyboard_protocol()` (ledger row 11).
 - **Runtime gate:** `Terminal::set_clipboard_write(bool)` / `clipboard_write()` (OSC 52).
 
-**Host duties M9 inherits from M7** (in addition to the list above):
+**Host duties M9 inherits from M7** (in addition to the list above; paths under `crates/luneterm/src`):
 - Write every encoder result to the PTY (`PtyWriter`), after mapping the toolkit's events to
   `TerminalKeyEvent`, `TerminalModifiers` and `TerminalMouseEvent`. Mouse positions are zero-based
-  cells; pixel `x`, `y` matter only under `CSI ? 1016 h`.
+  cells; pixel `x`, `y` matter only under `CSI ? 1016 h`. **Done:** the app maps winit's `KeyEvent`
+  itself (`input/keys.rs`, not the toolkit's coarser `Key`, D4/D5), mouse and wheel in
+  `input/pointer.rs`; the engine thread encodes (`session/engine.rs`) and the writer thread writes
+  (`session/threads.rs`); `UpdateModes.mouse_encoding` carries `?1016` to the app.
 - Send paste text only through `Terminal::paste` / `paste_bytes`; never write clipboard text to the
-  PTY directly.
+  PTY directly. **Done:** `Command::Paste` is the only path from the clipboard to the PTY
+  (`session/engine.rs` runs `Terminal::paste`; e2e E3 checks the bytes).
 - Own the clipboard setting: `StandardExtensions::clipboard_write` and `set_clipboard_write`
   (default `false`). `ClipboardWrite` arrives only while it is on; the host decides what to do
-  with the text (no query is ever answered).
+  with the text (no query is ever answered). **Done:** `Settings.osc_clipboard` (default on, as
+  Lunegit) feeds the engine gate at start and `Command::SetClipboardWrite`, and the app writes the
+  clipboard only while the setting is on (D8; e2e E4).
 - Pass `StandardExtensions::xtversion` (the terminal's name; `lune-vt` has none) and choose `vs16`.
+  **Done:** `Luneterm(<version>)` (`spawn::xtversion`), `vs16: true` (`session/engine.rs`
+  `build_terminal`).
 - Route `CwdChanged` (new-tab directory), `Progress` and `CommandMark` / `SyncUpdateInCommand` to
   the UI; validate a cwd before using it (the engine only guarantees no control characters, at most
-  4096 bytes and a non-empty text).
-- Call `reset_keyboard_protocol()` when the foreground process changes (M11 wires it).
+  4096 bytes and a non-empty text). **Partly:** the session puts all four in the `Update`
+  (`session/update.rs`, marks capped at 64 per Update), unvalidated; nothing in the app consumes
+  them yet. M10 (tabs, new-tab directory, run indicators) validates and uses them.
+- Call `reset_keyboard_protocol()` when the foreground process changes (M10 wires it).
 - Not done in `lune-vt`: win32-input-mode, kitty flags 2, 8 and 16, mouse wheel to arrow keys in the
-  alternate screen (the browser layer's job in xterm.js), OSC 133 options beyond the mark letter
-  and `D`'s exit code.
+  alternate screen (the browser layer's job in xterm.js; **done by the app**, D7: one arrow per
+  wheel event by DECCKM, `Command::WheelArrows`), OSC 133 options beyond the mark letter and `D`'s
+  exit code.
 
 **Errors and limits.** Upstream `throw`s are `Result::Err` (`IdentifierError`, `ParamsError`).
 The parser never panics on any input: clippy denies indexing, `unwrap`, `expect` and `panic` in
@@ -646,16 +697,25 @@ each link call, so no link outlives its last marker; `scrollback`, `tab_stop_wid
 `Terminal::reset`) resets every service; user input scrolls to the bottom; the Windows wrapping
 heuristics run while they are enabled.
 
-**What the host (M9's session) still owns.**
+**What the host (M9's session) still owns.** All done in `crates/luneterm/src/session/`, M9 steps 3 to 8:
 - Drain after every write (`drain_events`, `take_damage`): the queues hold one write's output.
+  **Done:** `engine.rs` `run_slice` drains after every sub-write (the 1 MiB BEL case, about 48 MiB of
+  queued events, is why: events per drain stay at most 64 KiB + 16, tested in T3).
 - Write every `Response` to the PTY (`lune-pty`'s `PtyWriter`), and answer `Color` reports,
-  `FocusReportRequested` and `WindowReport` from its theme, focus state and cell metrics.
+  `FocusReportRequested` and `WindowReport` from its theme, focus state and cell metrics. **Done:**
+  responses queue to the writer thread (`threads.rs`, capped at 64 KiB pending); colour reports, sets
+  and restores follow xterm.js against a per-session palette, focus per `send_focus`, window
+  reports in xterm.js's format (`host.rs`, D9; window operations stay off, so those are never
+  emitted in M9).
 - Call `Terminal::idle()` while it returns `true` when nothing else is happening (the
-  replacement of `IdleTaskQueue`: the buffer's deferred memory cleanup after a shrink).
+  replacement of `IdleTaskQueue`: the buffer's deferred memory cleanup after a shrink). **Done:**
+  `engine.rs` `tick`, after the slice.
 - Flow control: feed bounded chunks from the reader thread and decide when to stop reading. The
-  engine's `write` has no watermark or time slicing (`WriteBuffer` is replaced, D3).
+  engine's `write` has no watermark or time slicing (`WriteBuffer` is replaced, D3). **Done:** the
+  inbox and the time-sliced writes, "luneterm app".
 - Choose the Unicode version (`unicode_mut()`; V11 is registered and V6 stays active at
-  construction) and install a `Logger` if it wants logs (default: discarded).
+  construction) and install a `Logger` if it wants logs (default: discarded). **Done:** Unicode 11
+  with VS16 (`vs16: true`), no logger.
 
 **Errors and limits.** Upstream `throw`s are `Result::Err` or, inside a handler, a handler that
 stops with its upstream return value. The ported non-test code of `input_handler.rs`,
@@ -732,8 +792,9 @@ The Lunegit-side swap (P/Invoke, deleting the V8 host) is not part of M8.
   439 MiB (slot 224 MiB = 28 bytes per cell, plus the text pool). The viewport call adds only that
   slot and pool, on top of whatever the buffer already holds. The security ledger's REP chain
   construction (`rep-scroll-bottom-chain-memory`, premise "K is bounded by the display") is bounded by
-  the column cap; the example's case (b) at 4096 columns peaks at 5.8 MiB, which was not validated
-  against the ledger's own 77 MB figure (a stated limit, see notes of M8 step 6). Time is bounded by
+  the column cap; the example's case (b) at 4096 columns peaks at 5.8 MiB. The ledger's 77 MB figure is settled by
+  the M8 security review round 10: that construction (normal buffer, Windows mode) is unreachable
+  through ABI 1, and at the caps the REP chain adds at most 0.2 MiB over the screen fill. Time is bounded by
   the column cap too: at 4096 columns narrowed to 5, an odd-width REP over rows of strings costs up
   to ~1.13 ms per input byte (41 ms for the first pair); this is user-accepted (Q28) and recorded
   in the security ledger.
@@ -769,13 +830,174 @@ encoder result to the PTY and send paste text only through `luneterm_engine_past
 (`luneterm_engine_set_clipboard_write`) and call `luneterm_engine_reset_keyboard_protocol` when the
 foreground process changes; serialize calls per handle.
 
+## luneterm app
+
+`crates/luneterm` is lib + bin (`#![forbid(unsafe_code)]`; the Windows calls live in `lune-pty`). The
+bin is `luneterm::app::run()` after `lune_pty::restrict_dll_search()`. One session per terminal and
+no global state, so M10's tabs multiply sessions without a rewrite. Modules:
+
+| Module | Holds |
+|---|---|
+| `app` | winit event loop (user event = session wake), window, frame loop, session wiring, bell, exit |
+| `shell` | Layout (34 px title band, card radius 8, margins 10, body padding 10), the Windows chrome (caption buttons, drag, double-press maximize, edge resize), scrollbar thumb geometry and drag |
+| `render` | `Renderer`: one `Ui`, `TermView`, `FrameRenderer` and `TextCache`, shared by the window and by dump mode |
+| `session` | The three-thread session below, `Update`, `apply_update`, the fake PTY and the protocol tests |
+| `input` | `keys` (winit `KeyEvent` to `KeyRoute`), `shortcuts`, `pointer` (mouse, wheel) |
+| `spawn` | Shell candidates, cwd, environment, `WindowsPty` |
+| `title`, `settings`, `fonts`, `dump`, `demo` | Title sanitizer; the settings model (Lunegit's `TerminalSettings` defaults, in memory only, no file and no UI until M10); the four bundled faces plus system fonts; `LUNETERM_DUMP_FRAMES`; the dump mode's placeholder grid |
+
+**Threads (D1).** Each session runs three: `luneterm-reader` blocks on the PTY and fills the inbox;
+`luneterm-engine` owns the `Terminal` and the `Box<dyn Pty>`; `luneterm-writer` owns one `PtyWriter`
+clone and does every PTY write. The UI thread never calls a `Terminal` or `Pty` method and takes
+only locks held for one queue operation (inbox, mailbox, write queue), never across a `Terminal`
+call, PTY I/O or the waker. Why a third thread: if the engine wrote the child's input itself, a
+child blocked writing output while we block writing its input (a big paste into a program that
+echoes it, typing during `cat`) would deadlock; the engine pushes to the write queue and goes on
+parsing. Why the engine is off the UI thread: one `write` cannot be interrupted and one REP is one
+unit of up to 2^20 code points (see "lune-vt buffer"), so a locked or inline engine would put
+milliseconds on a frame. The UI sends `Command`s (key, text, paste, mouse, wheel arrows, focus,
+scroll, resize, clipboard gate) and takes `Update`s.
+
+**Flow control and bounds (D2).**
+
+| What | Value |
+|---|---|
+| PTY read | 64 KiB; the reader waits while 1 MiB is queued, so backpressure reaches the child through the kernel buffer and nothing is dropped |
+| Engine slice | 4 ms of engine time, or until a command is pending (the write in flight finishes first) |
+| Sub-write size | starts at 16 KiB, bounds 256 B to 64 KiB; halves after a write over 2 ms, doubles after one under 0.5 ms |
+| Events | drained, with damage, after every write (at most 64 KiB + 16 events per drain in the tests) |
+| Update | at most one outstanding; the next is built only after the UI took the last; hidden window: at most one per 100 ms |
+| Writer queues | 64 KiB pending responses (the excess is dropped and counted), 1 MiB pending typed input, 2 pastes; a paste is written in 64 KiB pieces |
+| Caps | cols 2..=4096, rows 1..=2048, scrollback at most 100,000 (clamped, not rejected: the app computes the size itself) |
+| Exit | the output ends, then the exit status is polled every 20 ms for at most 1 s; `Session::close` joins the engine and writer so the `Pty` drop kills the child; the app waits at most 500 ms |
+
+**Publish protocol (ledger 6).** Engine: `ui_ready = false`, `wake_pending.swap(true)`, store the
+Update in the mailbox, call the waker only if the swap saw `false`. UI `take_update`: clear
+`wake_pending`, take the Update, then set `ui_ready = true`. The engine publishes only when
+`ui_ready`, which the UI sets only after clearing the flag, so every Update has exactly one wake and
+none is lost. The waker is an `EventLoopProxy` clone sending `UserEvent::Wake`; the loop requests a
+redraw when visible and applies the Update without drawing when occluded. The result is vsync
+pacing by construction: an Update is built at most once per frame the UI actually consumes, so a
+flood costs one grid mirror per frame, not one per read. An `Update` carries the changed viewport
+rows (`take_damage`, whole-viewport when the engine says `full`, a scroll, or lines are missing at
+scrollback 0), cursor, scroll state from `Terminal::viewport_state()` (O(1), D3), title only when it
+changed (`Arc<str>`), bells, the last OSC 52 write, palette changes, cwd, progress and marks.
+`apply_update` writes rows into the termview `Grid`, so the renderer rebuilds only dirty rows.
+
+**Mode 2026 (D10, ledger 14).** While the mode is set the engine publishes nothing, until the mode
+is reset or 1000 ms after it was first seen (xterm.js `RenderService.ts`). Unlike xterm.js the
+session does not clear the engine's mode on timeout, because that needs bytes injected into the
+engine's input, which can land inside a PTY sequence. **Deviation:** after a timeout DECRQM 2026
+still reports "set" until the program resets the mode.
+
+**Input routing (D4 to D7).** The terminal owns the keyboard unless the app has opened a toolkit
+text input or overlay (none in M9; M10 sets the flag). Ownership is app state, not
+`FrameOutput.focused`, so a click on a caption button cannot steal typing. A terminal-owned key goes
+to the app's shortcut table (matched at event time with `Chord::matches`: paste, and Shift+PageUp,
+PageDown, Home and End for scrollback), then to the router. It is never fed to the toolkit's
+Translator, because `Ui::begin` would move focus on Tab (and dismiss an open overlay on Escape). Pointer, wheel, focus, resize, scale
+and modifier changes always reach the Translator.
+- **Keys (D5)** are a port of Lunegit's `TerminalKeyRouter` with three deviations: on macOS the
+  window sets `OptionAsAlt::Both` with Option-as-Meta (otherwise winit feeds Option+key to the
+  dead-key IME before the router sees it); on Windows and Linux Ctrl+Alt+letter whose text is a
+  printable character other than the letter is AltGr text and goes as text; `NamedKey::Process`,
+  dead keys, synthetic presses and releases are dropped (no kitty release reporting).
+- **IME (D6).** While the terminal owns the keyboard the app sets the IME area to the cursor cell
+  each frame. The preedit is drawn by the app over the cursor span (theme background rect, mono
+  text, underline, at most 256 characters, above the grid); a commit goes to the PTY as typed
+  text; `Disabled` clears the preedit.
+- **Mouse and wheel (D7).** Reporting through `Terminal::mouse_event` when tracking is on and Shift
+  is not held; moves only on a cell change (a pixel change under `?1016`). Wheel with tracking: one
+  report per notch, at most 32 per event. Normal buffer without tracking: local scroll, 3 lines per
+  notch, pixel deltas divided by cell height with the remainder kept. Alternate screen (or
+  scrollback 0) without tracking: one arrow per event by DECCKM, as xterm.js does (Lunegit does
+  nothing there, which leaves `less` and `man` unscrollable; deviation, reversible).
+  The scrollbar thumb is drawn at accent alpha 0.55 whenever scrollback exists and is dragged with
+  `ThumbDrag`.
+
+**Clipboard (D8, ledger 19).** OSC 52 is gated twice: the engine gate (`osc_clipboard`, default on
+as Lunegit) and the app gate (`ui.clipboard_write` runs only while the setting is on); the last
+write wins, and no read or query path exists. Paste is Cmd+V on macOS, Ctrl+Shift+V elsewhere: it
+pushes `ClipboardRequest::Read`, `Event::ClipboardText` arrives on a later frame, and the text goes
+out as `Command::Paste`, which the engine thread runs through `Terminal::paste`: the only path from
+the clipboard to the PTY. Sanitizing is not done on the UI thread (O(32 MiB) on a frame).
+
+**Host answers (D9).** Colour reports, sets and restores follow xterm.js (`CoreBrowserTerminal.ts`)
+against a per-session palette; focus is reported per `send_focus`; XTVERSION is
+`Luneterm(<version>)`; Unicode 11 with VS16; `WindowsPty { Conpty, build }` on Windows (the ConPTY
+build comes from `RtlGetVersion`, `lune_pty::conpty_build()`). Window reports are answered in
+xterm.js's format, but window options stay at the xterm.js and Lunegit defaults (all off), so in M9
+they are never emitted; tools that want pixel sizes read `TIOCGWINSZ`, which the PTY size fills.
+
+**Spawn (D11, D12).** Shell: the setting if set, else the Unix login shell (`program: None`, as
+Lunegit's `$SHELL -l`); on Windows `pwsh.exe`, then `powershell.exe`, then `%ComSpec%`. A candidate
+that is not found moves on to the next; any other error stops. cwd: the setting if it is an existing
+directory, else home. Environment: Lunegit's overlay with `TERM_PROGRAM=Luneterm` (iTerm2 spoofing
+behind the setting), and when none of `LC_ALL`, `LC_CTYPE`, `LANG` is set (an empty value counts as
+unset) `LC_CTYPE=UTF-8` on macOS or `C.UTF-8` on Linux, because a Finder-launched shell would
+otherwise run in the C locale. When the child exits the window closes and the app quits; if no
+candidate spawns the grid shows "Failed to start terminal" with the error kind and stays open.
+
+**Title and bell (D13, D14).** The engine keeps titles up to 10 MB; the app scans at most 4,096
+characters, drops Unicode Cc and the bidi controls (U+061C, U+200E, U+200F, U+202A to U+202E,
+U+2066 to U+2069), trims, caps at 80 characters, and uses "Luneterm" when empty; the result goes to
+the window title and the title band (a 10 MB title takes under 10 ms in the test). A bell asks for
+user attention (`Informational`) only while the window is unfocused, at most every 2 s.
+
+**Fonts and look (D15, D16).** The four bundled faces live in `crates/luneterm/assets` (RobotoMono
+Nerd Font Mono Regular and Bold until M10's RznMono gate, RznSans Regular and Medium, with their
+licences). luneui-rs's `TextCache` loads no system fonts, so the app loads them once at start
+(`fonts::text_cache`, 59 to 64 ms on the Apple M1 Pro) for emoji and CJK fallback. Cell
+height is `ceil(natural_line_height)`: 17 px at scale 1 and 34 at scale 2 for the bundled face at
+13 px. At 1040 x 660 the body is 1000 x 596 at (20, 44), a 125 x 35 grid. Glass: `Material::Vibrancy`
+for the default Lunegit style; Windows draws its own caption buttons.
+
+**Windows (D17).** `main` hardens the DLL search before any winit or wgpu object ("lune-pty", above),
+the release build uses the GUI subsystem (`windows_subsystem = "windows"`), and CI uploads
+`luneterm.exe` as `luneterm-windows-x64`.
+
+**Measured (M9).** Apple M1 Pro unless noted; debug builds parse at roughly 6 MB/s, so the timing
+bounds are 5x the debug median, not a product claim.
+- *Protocol latency* (debug, send 2 B then take the Update): p50 27 to 43 us, p99 under 100 us.
+- *Mirror:* `session_mirror_differential` (an Update-applied `Grid` equals `viewport()` after every
+  Update; chunking, commands, resize parity, hidden publishes, the fake clock past 2026 timeouts,
+  scrollback 0/5/50/1000): 20,000 seeds pass in release (191 s); seed 2985 found the scrollback-0
+  lines-missing state and is pinned.
+- *Floods* (E6, 256 MiB of plain text, debug, three pacers): 37 to 40 s each, RSS growth +8, +0, +0
+  MiB, inbox high water 1024 KiB, reader waits 258; 16 MiB of BEL 4.1 s; 4 MiB of `ESC[6n` 0.8 to 2.0 s
+  with the response queue at its 65,536-byte cap (292k to 366k dropped). Every bound of the table
+  held.
+- *Keys during a flood* (E6k, 20 keys typed behind the 1 MiB inbox): macOS debug median 254 to 261
+  ms, p95 260 to 274 ms (the debug engine drains 1 MiB in about 250 ms); Linux Docker median 366 ms;
+  Windows CI (16 MiB floods) median 20 ms, p95 20 ms.
+- *Mode 2026* (E5): nothing published before the reset, one Update after (406 to 409 ms from GO
+  with the child's pauses); without a reset the first Update comes 1007 to 1022 ms after the set.
+- *Memory with scrollback* (this Mac, release, a real session on `awk` output, 200 x 50, the
+  session plus its UI grid, no window or GPU; RSS by `ps -o rss=`, which read a 64 MiB allocation
+  as +64 MiB first): scrollback 5,000 adds 16.0 MiB (plain) / 15.8 MiB (a colour change every 5
+  cells), scrollback 100,000 adds 272.3 / 271.9 MiB, about 14 bytes per cell of the 20.0 M cells
+  (`docs/lunegit-bug-ledger.md` row 7). The process idles at 113 MB in a debug build with a window
+  (GPU, fonts and atlas included).
+- *Frame time and the headless render:* `lune-termview`'s `frame_time` is unchanged (the table under
+  "lune-termview"); the E8 PNG of a real session is byte-identical to a reference replay on macOS
+  and on Windows CI (1040 x 660).
+- *Binary:* macOS arm64 release 11,495,056 bytes, the Windows exe 13,858,304 (STATE.md has the table
+  and the fonts' share).
+- *Windows CI* (run 42477613074 at b535456): the e2e harness ran 10 cases with 0 failures; E2 to E5
+  and E9 need a Unix tty (`stty`) and skip there; the GPU initialized on the runner.
+
+**Not in M9, for M10:** tabs and the tab strip, selection and copy, a settings file and UI, wiring
+`reset_keyboard_protocol()` and the consumers of cwd, progress and marks, a GUI run on Windows (the
+VM run of roadmap P15 and P20 is pending M10), and real IME typing (verified only by the hands-on
+run).
+
 ## Extension points
 
 | Point | Mechanism | Example |
 |---|---|---|
 | Escape-sequence behaviour | `lune_vt::Extension<C>` (`Terminal::add_extension`) registers handlers on the `EscapeSequenceParser<C>` itself (newest-first, like xterm.js `register*Handler`); there is no separate registry | kitty keyboard, XTVERSION, OSC 7 cwd, OSC 9;4 progress (all shipped in `lune-vt/src/ext/`, installed together by `Terminal::install_standard_extensions`; a new one is a new file there, registered by `StandardSet`) |
 | PTY strategy | `lune_pty::PtyBackend` | portable-pty backend; later a session-daemon backend |
-| OS glass | `lune_ui::material::Material` applied by `lune_ui::material::apply` (the `lune_ui::Backdrop` trait documents the capability levels) | macOS vibrancy / Liquid Glass, Windows acrylic/Mica, KDE blur |
+| OS glass | `lune_ui::material::Material` applied by `lune_ui::material::apply` (luneui-rs `platform.material`; its `Backdrop` trait documents the capability levels) | macOS vibrancy / Liquid Glass, Windows acrylic/Mica, KDE blur |
 | Theme | `lune_ui::theme::Theme` value handed to the `Painter` | `lunegit_dark::THEME` |
 | Paint | `lune_termview::Pass` ordered passes: cell backgrounds, text (mask then colour), decorations, cursor, selection, link hover | new overlay = new pass at its z-position |
 | Host embedding | `luneterm-ffi` C ABI (`include/luneterm.h`, "luneterm-ffi (C ABI)"), versioned by `luneterm_abi_version()`; a new export is added without a version bump | Lunegit P/Invoke |
@@ -787,8 +1009,13 @@ Where the repo can be cut later (nothing is split yet):
 - `lune-vt` can move to a library repo once the FFI (ABI 1, M8), its second consumer, has settled
   its API in use by Lunegit. It
   takes `tools/xterm-oracle`, the goldens and the conformance harness with it.
-- `lune-ui` moves to its own project, `~/Projects/luneui-rs` (decided 2026-11-03; extraction in
-  progress there). `lune-termview` stays in Luneterm (luneui-rs D8). Where `lune-pty` goes is undecided.
+- `lune-ui` moved to its own project, `~/Projects/luneui-rs` (decided 2026-11-03). Luneterm
+  consumes it as a git dependency pinned at one rev (M9, roadmap D22; the app and `lune-termview`
+  use it). The in-tree `crates/lune-ui` 0.1.0 stays only for `spikes/glass-ui` until M10 retires
+  both; a toolkit bump edits the rev in the root `Cargo.toml` and in
+  `scripts/check-deps.sh` in one reviewed change. `lune-termview` stays in Luneterm (luneui-rs D8).
+  `luneterm` is lib + bin so M10's tabs build on the same `session`, `input` and `shell` modules.
+  Where `lune-pty` goes is undecided.
 
 Invariants that keep a split cheap:
 
@@ -804,10 +1031,10 @@ examples may); every manifest inherits the licence. It runs locally and on the L
 
 ## Threading
 
-One engine per session, owned by that session (`Send` since M8, so a session may move it to a worker thread or hand it across the C ABI; not `Sync`). PTY reading happens on a dedicated thread;
-bytes are handed to the session, which writes them into its engine and marks dirty rows. The renderer
-paints on vsync from the dirty state and honours synchronized output (mode 2026), which Lunegit parses
-but does not use for painting.
+One engine per session, owned by that session (`Send` since M8, so a session may move it to a worker thread or hand it across the C ABI; not `Sync`). In the app (M9) the engine lives on its own thread
+with a reader and a writer thread beside it ("luneterm app"); the renderer paints on vsync from the
+dirty rows of the Updates the UI takes, and honours synchronized output (mode 2026), which Lunegit
+parses but does not use for painting.
 
 PTY threads (`lune-pty`):
 
