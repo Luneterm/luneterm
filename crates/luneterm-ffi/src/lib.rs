@@ -22,6 +22,7 @@ compile_error!("luneterm-ffi supports 64-bit targets only (ABI 1 layout, M8 D6)"
 
 mod engine;
 mod guard;
+mod output;
 mod types;
 
 pub use engine::*;
@@ -30,6 +31,7 @@ pub use guard::{
     LUNETERM_ERR_NULL_POINTER, LUNETERM_ERR_PANIC, LUNETERM_ERR_POISONED, LUNETERM_ERR_TOO_LARGE,
     LUNETERM_OK, LunetermEngine,
 };
+pub use output::*;
 pub use types::*;
 
 /// Incremented on every breaking change to the exported functions.

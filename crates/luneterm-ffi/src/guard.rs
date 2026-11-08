@@ -16,6 +16,8 @@ use std::sync::{Mutex, TryLockError};
 
 use lune_vt::Terminal;
 
+use crate::output::{EventsSlot, ViewportSlot};
+
 /// Success.
 pub const LUNETERM_OK: i32 = 0;
 /// A required pointer (the handle, an out-param, or input data with a nonzero length) is NULL.
@@ -34,10 +36,24 @@ pub const LUNETERM_ERR_POISONED: i32 = -6;
 /// Another call is in progress on this handle (the host must serialize calls per handle).
 pub const LUNETERM_ERR_BUSY: i32 = -7;
 
-/// What a handle owns. Steps 3 and 4 add the output slots (viewport, events, input bytes).
+/// What a handle owns: the engine and its output slots (D3). Step 4 adds the input-bytes slot.
 #[derive(Debug)]
 pub(crate) struct Inner {
     pub(crate) term: Terminal,
+    /// Filled by `luneterm_engine_viewport` only.
+    pub(crate) viewport: ViewportSlot,
+    /// Filled by `luneterm_engine_drain_events` only.
+    pub(crate) events: EventsSlot,
+}
+
+impl Inner {
+    pub(crate) fn new(term: Terminal) -> Inner {
+        Inner {
+            term,
+            viewport: ViewportSlot::default(),
+            events: EventsSlot::default(),
+        }
+    }
 }
 
 // The handle is shared across host threads (`Mutex<Inner>: Sync` needs `Inner: Send`). Proven by
