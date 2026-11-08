@@ -15,7 +15,7 @@ use lune_ui::scene::LayerId;
 use lune_ui::text::{Spec, Style};
 use lune_ui::ui::{Sense, Ui};
 use lune_ui::widgets::caption::{CaptionButton, CaptionOptions};
-use lune_ui::widgets::scrollbar::{self, thumb_geometry};
+use lune_ui::widgets::scrollbar::{self, ThumbGeometry, thumb_geometry};
 use lune_ui::window::{ResizeEdge, edge_at};
 
 /// The title band's height.
@@ -136,9 +136,9 @@ pub struct ScrollView {
     pub total_lines: usize,
 }
 
-/// The thumb's rect in the body: `None` while there is no scrollback (`base_y == 0`) or the
-/// numbers do not make a bar. `cell_h` is one line in logical px.
-pub fn scroll_thumb(body: Rect, cell_h: f32, scroll: ScrollView) -> Option<Rect> {
+/// The scrollbar of the body: `None` while there is no scrollback (`base_y == 0`) or the numbers
+/// do not make a bar. `cell_h` is one line in logical px.
+pub fn scroll_geometry(body: Rect, cell_h: f32, scroll: ScrollView) -> Option<ThumbGeometry> {
     if scroll.base_y == 0 {
         return None;
     }
@@ -150,7 +150,56 @@ pub fn scroll_thumb(body: Rect, cell_h: f32, scroll: ScrollView) -> Option<Rect>
         scroll.total_lines as f64 * line,
         false,
     )
-    .map(|g| g.thumb)
+}
+
+/// The thumb's rect in the body, see [`scroll_geometry`].
+pub fn scroll_thumb(body: Rect, cell_h: f32, scroll: ScrollView) -> Option<Rect> {
+    scroll_geometry(body, cell_h, scroll).map(|g| g.thumb)
+}
+
+/// How far outside the 6 px thumb a press still grabs it (the track is 9 px wide).
+const THUMB_GRAB: f32 = 3.0;
+
+/// Whether a press at `pos` (logical px) grabs the thumb.
+pub fn thumb_hit(body: Rect, cell_h: f32, scroll: ScrollView, pos: (f32, f32)) -> bool {
+    scroll_thumb(body, cell_h, scroll).is_some_and(|t| t.inset(-THUMB_GRAB, 0.0).contains(pos))
+}
+
+/// A drag of the scrollbar thumb: pointer movement becomes whole lines to scroll, the rest of a
+/// line carried to the next move.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThumbDrag {
+    last_y: f32,
+    rest: f64,
+}
+
+impl ThumbDrag {
+    /// A drag that started with the pointer at `y` (logical px).
+    pub fn start(y: f32) -> ThumbDrag {
+        ThumbDrag {
+            last_y: y,
+            rest: 0.0,
+        }
+    }
+
+    /// The pointer is now at `y`. Returns the lines to scroll, positive toward newer output, using
+    /// the thumb's current geometry (a bar that vanished gives 0).
+    pub fn moved(&mut self, y: f32, body: Rect, cell_h: f32, scroll: ScrollView) -> i64 {
+        let dy = f64::from(y - self.last_y);
+        self.last_y = y;
+        let line = f64::from(cell_h);
+        let Some(g) = scroll_geometry(body, cell_h, scroll) else {
+            return 0;
+        };
+        if !(line.is_finite() && line > 0.0 && dy.is_finite()) {
+            return 0;
+        }
+        let lines = self.rest + g.offset_delta(dy) / line;
+        let whole = lines.trunc();
+        self.rest = lines - whole;
+        // The offset range is finite, so this is far inside i64.
+        whole as i64
+    }
 }
 
 /// What the shell draws a frame from.
@@ -390,6 +439,62 @@ mod tests {
         let t = scroll_thumb(body, 17.0, top).expect("thumb");
         assert!((t.y - body.y).abs() < 1.0, "{t:?}");
         assert!(t.h >= scrollbar::MIN_LENGTH);
+    }
+
+    #[test]
+    fn dragging_the_thumb_scrolls_in_whole_lines_and_carries_the_rest() {
+        let body = Rect::new(20.0, 44.0, 1000.0, 595.0);
+        let scroll = ScrollView {
+            viewport_top: 100,
+            base_y: 465,
+            total_lines: 500,
+        };
+        let g = scroll_geometry(body, 17.0, scroll).expect("bar");
+        // A full travel is the whole range: base_y lines.
+        let mut drag = ThumbDrag::start(100.0);
+        let all = drag.moved(100.0 + g.travel as f32, body, 17.0, scroll);
+        assert!((all - 465).abs() <= 1, "{all}");
+        // Up is negative; small moves add up without losing the remainder.
+        let mut drag = ThumbDrag::start(300.0);
+        assert!(drag.moved(290.0, body, 17.0, scroll) < 0);
+        let mut drag = ThumbDrag::start(300.0);
+        let per_px = 465.0 / g.travel;
+        let mut total = 0;
+        for i in 1..=200 {
+            total += drag.moved(300.0 + i as f32 * 0.1, body, 17.0, scroll);
+        }
+        let want = (20.0 * per_px).floor() as i64;
+        assert!(
+            (total - want).abs() <= 1,
+            "total {total}, want about {want}"
+        );
+        // No bar, no scroll.
+        let none = ScrollView {
+            base_y: 0,
+            ..scroll
+        };
+        assert_eq!(ThumbDrag::start(0.0).moved(50.0, body, 17.0, none), 0);
+    }
+
+    #[test]
+    fn a_press_grabs_the_thumb_a_little_outside_its_6_px() {
+        let body = Rect::new(20.0, 44.0, 1000.0, 595.0);
+        let scroll = ScrollView {
+            viewport_top: 0,
+            base_y: 465,
+            total_lines: 500,
+        };
+        let t = scroll_thumb(body, 17.0, scroll).expect("thumb");
+        let mid = t.y + t.h / 2.0;
+        assert!(thumb_hit(body, 17.0, scroll, (t.x + 1.0, mid)));
+        assert!(thumb_hit(body, 17.0, scroll, (t.x - 2.0, mid)));
+        assert!(!thumb_hit(body, 17.0, scroll, (t.x - 10.0, mid)));
+        assert!(!thumb_hit(body, 17.0, scroll, (t.x + 1.0, t.y + t.h + 5.0)));
+        let none = ScrollView {
+            base_y: 0,
+            ..scroll
+        };
+        assert!(!thumb_hit(body, 17.0, none, (t.x + 1.0, mid)));
     }
 
     #[test]
