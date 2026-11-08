@@ -418,9 +418,11 @@ mod tests {
     use super::*;
     use crate::guard::{LUNETERM_ERR_NULL_POINTER, lock_for_test};
     use crate::{
-        LunetermDamage, LunetermEvents, LunetermModes, LunetermViewport,
-        luneterm_engine_drain_events, luneterm_engine_modes, luneterm_engine_take_damage,
-        luneterm_engine_viewport,
+        LunetermBytes, LunetermDamage, LunetermEvents, LunetermKeyEvent, LunetermModes,
+        LunetermMouseEvent, LunetermViewport, luneterm_engine_char_input,
+        luneterm_engine_drain_events, luneterm_engine_focus_event, luneterm_engine_key_event,
+        luneterm_engine_key_input, luneterm_engine_modes, luneterm_engine_mouse_event,
+        luneterm_engine_paste, luneterm_engine_take_damage, luneterm_engine_viewport,
     };
 
     fn config(cols: u32, rows: u32) -> LunetermConfig {
@@ -508,6 +510,12 @@ mod tests {
             wraparound: 7,
             ..LunetermModes::default()
         };
+        let mut bytes = LunetermBytes {
+            len: 7,
+            ..LunetermBytes::EMPTY
+        };
+        let key = LunetermKeyEvent::default();
+        let mouse = LunetermMouseEvent::default();
         // SAFETY: the handle is whatever the test passes (NULL, misaligned or live); every other
         // pointer is a live local.
         #[cfg_attr(not(feature = "panic-probe"), allow(unused_mut))]
@@ -538,6 +546,30 @@ mod tests {
                     luneterm_engine_take_damage(engine, &mut damage),
                 ),
                 ("modes", luneterm_engine_modes(engine, &mut modes)),
+                (
+                    "key_event",
+                    luneterm_engine_key_event(engine, &key, &mut bytes),
+                ),
+                (
+                    "key_input",
+                    luneterm_engine_key_input(engine, 0, 0, &mut bytes),
+                ),
+                (
+                    "char_input",
+                    luneterm_engine_char_input(engine, 97, 0, &mut bytes),
+                ),
+                (
+                    "mouse_event",
+                    luneterm_engine_mouse_event(engine, &mouse, &mut bytes),
+                ),
+                (
+                    "focus_event",
+                    luneterm_engine_focus_event(engine, 1, &mut bytes),
+                ),
+                (
+                    "paste",
+                    luneterm_engine_paste(engine, b"x".as_ptr(), 1, &mut bytes),
+                ),
             ]
         };
         let failed = codes.iter().all(|(_, code)| *code != LUNETERM_OK);
@@ -554,6 +586,8 @@ mod tests {
                 "output structs zeroed on error"
             );
             assert!(viewport.cells.is_null() && events.events.is_null());
+            assert_eq!(bytes.len, 0, "input bytes zeroed on error");
+            assert!(bytes.ptr.is_null());
         }
         #[cfg(feature = "panic-probe")]
         if engine.is_null() || !engine.is_aligned() {

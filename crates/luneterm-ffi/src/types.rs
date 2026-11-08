@@ -417,6 +417,84 @@ pub struct LunetermModes {
     pub modify_other_keys: u8,
 }
 
+// ---- Input ---------------------------------------------------------------------------------
+
+/// Bytes the engine hands out (an encoder result). `ptr` points into the handle's input slot and
+/// stays valid until the next encoder call on that handle (or `luneterm_engine_free`); it is NULL
+/// when `len == 0`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct LunetermBytes {
+    /// The bytes to write to the PTY.
+    pub ptr: *const u8,
+    /// Number of bytes; 0 = nothing to send.
+    pub len: u64,
+}
+
+impl LunetermBytes {
+    /// NULL/0: what an out-param holds after an error and when there is nothing to send.
+    pub(crate) const EMPTY: LunetermBytes = LunetermBytes {
+        ptr: std::ptr::null(),
+        len: 0,
+    };
+}
+
+/// Modifier bit (`uint8_t modifiers`): Shift.
+pub const LUNETERM_MOD_SHIFT: u8 = 1;
+/// Modifier bit: Alt.
+pub const LUNETERM_MOD_ALT: u8 = 2;
+/// Modifier bit: Control.
+pub const LUNETERM_MOD_CONTROL: u8 = 4;
+
+/// One keystroke for `luneterm_engine_key_event`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LunetermKeyEvent {
+    /// Lunegit's `TerminalKey` ordinal, 0..=27; anything else is refused: Enter 0, Tab 1,
+    /// Backspace 2, Escape 3, Space 4, Up 5, Down 6, Right 7, Left 8, Home 9, End 10, PageUp 11,
+    /// PageDown 12, Insert 13, Delete 14, F1 15 ... F12 26, Character 27.
+    pub key: u32,
+    /// For `Character`: the unshifted base character (a Unicode scalar value, else nothing is
+    /// sent), or the keypad character when `is_keypad`.
+    pub codepoint: u32,
+    /// What the key produces with Shift; 0 = unknown.
+    pub shifted_codepoint: u32,
+    /// The key's character on the US-QWERTY layout; 0 = unknown.
+    pub base_layout_codepoint: u32,
+    /// `LUNETERM_MOD_*` bits; unknown bits are kept and ignored.
+    pub modifiers: u8,
+    /// Nonzero when the key is on the numeric keypad.
+    pub is_keypad: u8,
+    /// Nonzero when Alt acts as Meta.
+    pub alt_is_meta: u8,
+    /// Ignored.
+    pub reserved: u8,
+}
+
+/// One pointer event for `luneterm_engine_mouse_event`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LunetermMouseEvent {
+    /// Lunegit's `TerminalMouseButton` ordinal, 0..=5, anything else is refused: None 0, Left 1,
+    /// Middle 2, Right 3, WheelUp 4, WheelDown 5.
+    pub button: u32,
+    /// Lunegit's `TerminalMouseEventType` ordinal, 0..=5, anything else is refused: Down 0, Up 1,
+    /// Move 2, Drag 3, WheelUp 4, WheelDown 5.
+    pub kind: u32,
+    /// Zero-based column.
+    pub col: i32,
+    /// Zero-based row.
+    pub row: i32,
+    /// Pixel x (SGR pixels only).
+    pub x: i32,
+    /// Pixel y (SGR pixels only).
+    pub y: i32,
+    /// `LUNETERM_MOD_*` bits; unknown bits are kept and ignored.
+    pub modifiers: u8,
+    /// Ignored.
+    pub reserved: [u8; 3],
+}
+
 #[cfg(test)]
 mod output_layout {
     use super::*;
@@ -458,6 +536,14 @@ mod output_layout {
         });
         layout!(LunetermDamage, 12, 4, {
             has_rows: 0, full: 1, cursor_moved: 2, scrolled: 3, first_row: 4, last_row: 8,
+        });
+        layout!(LunetermBytes, 16, 8, { ptr: 0, len: 8 });
+        layout!(LunetermKeyEvent, 20, 4, {
+            key: 0, codepoint: 4, shifted_codepoint: 8, base_layout_codepoint: 12, modifiers: 16,
+            is_keypad: 17, alt_is_meta: 18, reserved: 19,
+        });
+        layout!(LunetermMouseEvent, 28, 4, {
+            button: 0, kind: 4, col: 8, row: 12, x: 16, y: 20, modifiers: 24, reserved: 25,
         });
         layout!(LunetermModes, 14, 1, {
             application_cursor_keys: 0, application_keypad: 1, bracketed_paste: 2, insert: 3,

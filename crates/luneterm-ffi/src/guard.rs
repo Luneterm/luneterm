@@ -36,7 +36,7 @@ pub const LUNETERM_ERR_POISONED: i32 = -6;
 /// Another call is in progress on this handle (the host must serialize calls per handle).
 pub const LUNETERM_ERR_BUSY: i32 = -7;
 
-/// What a handle owns: the engine and its output slots (D3). Step 4 adds the input-bytes slot.
+/// What a handle owns: the engine and its output slots (D3).
 #[derive(Debug)]
 pub(crate) struct Inner {
     pub(crate) term: Terminal,
@@ -44,6 +44,8 @@ pub(crate) struct Inner {
     pub(crate) viewport: ViewportSlot,
     /// Filled by `luneterm_engine_drain_events` only.
     pub(crate) events: EventsSlot,
+    /// Replaced by every encoder call (key, char, mouse, focus, paste) only.
+    pub(crate) input: Vec<u8>,
 }
 
 impl Inner {
@@ -52,6 +54,7 @@ impl Inner {
             term,
             viewport: ViewportSlot::default(),
             events: EventsSlot::default(),
+            input: Vec::new(),
         }
     }
 }
