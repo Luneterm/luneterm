@@ -128,6 +128,9 @@ pub struct Settings {
     pub shell: String,
     pub shell_args: String,
     pub report_iterm2: bool,
+    /// Install the shell-integration scripts and start the shell through them (OSC 7 and OSC 133
+    /// marks). Off: the shell starts exactly as without them.
+    pub shell_integration: bool,
     pub confirm_close: bool,
     pub osc_clipboard: bool,
     pub option_as_meta: bool,
@@ -150,6 +153,7 @@ impl Default for Settings {
             shell: String::new(),
             shell_args: String::new(),
             report_iterm2: false,
+            shell_integration: true,
             confirm_close: true,
             osc_clipboard: true,
             option_as_meta: false,
@@ -254,6 +258,7 @@ impl Settings {
             shell,
             shell_args,
             report_iterm2,
+            shell_integration,
             confirm_close,
             osc_clipboard,
             option_as_meta,
@@ -281,6 +286,10 @@ impl Settings {
             (
                 SettingId::ReportIterm2,
                 *report_iterm2 != other.report_iterm2,
+            ),
+            (
+                SettingId::ShellIntegration,
+                *shell_integration != other.shell_integration,
             ),
             (
                 SettingId::ConfirmClose,
@@ -319,6 +328,7 @@ pub enum SettingId {
     Shell,
     ShellArgs,
     ReportIterm2,
+    ShellIntegration,
     ConfirmClose,
     OscClipboard,
     OptionAsMeta,
@@ -326,7 +336,7 @@ pub enum SettingId {
 
 impl SettingId {
     /// Every setting, in the order of the [`Settings`] fields.
-    pub const ALL: [SettingId; 17] = [
+    pub const ALL: [SettingId; 18] = [
         SettingId::Glass,
         SettingId::MenuBlur,
         SettingId::Motion,
@@ -341,6 +351,7 @@ impl SettingId {
         SettingId::Shell,
         SettingId::ShellArgs,
         SettingId::ReportIterm2,
+        SettingId::ShellIntegration,
         SettingId::ConfirmClose,
         SettingId::OscClipboard,
         SettingId::OptionAsMeta,
@@ -364,7 +375,8 @@ impl SettingId {
             SettingId::DefaultCwd
             | SettingId::Shell
             | SettingId::ShellArgs
-            | SettingId::ReportIterm2 => Effect::NextSpawn,
+            | SettingId::ReportIterm2
+            | SettingId::ShellIntegration => Effect::NextSpawn,
         }
     }
 }
@@ -548,6 +560,7 @@ mod tests {
             (S::Shell, E::NextSpawn),
             (S::ShellArgs, E::NextSpawn),
             (S::ReportIterm2, E::NextSpawn),
+            (S::ShellIntegration, E::NextSpawn),
             (S::ConfirmClose, E::ConfirmClose),
             (S::OscClipboard, E::OscClipboard),
             (S::OptionAsMeta, E::OptionAsMeta),
@@ -563,7 +576,7 @@ mod tests {
     #[test]
     fn changing_one_field_changes_exactly_its_id() {
         let d = Settings::default();
-        let cases: [(SettingId, Settings); 17] = [
+        let cases: [(SettingId, Settings); 18] = [
             (
                 SettingId::Glass,
                 Settings {
@@ -659,6 +672,13 @@ mod tests {
                 SettingId::ReportIterm2,
                 Settings {
                     report_iterm2: true,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::ShellIntegration,
+                Settings {
+                    shell_integration: false,
                     ..d.clone()
                 },
             ),

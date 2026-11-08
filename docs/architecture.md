@@ -856,7 +856,8 @@ no global state, so M10's tabs multiply sessions without a rewrite. Modules:
 | `session` | The three-thread session below, `Update`, `apply_update`, the fake PTY and the protocol tests |
 | `input` | `keys` (winit `KeyEvent` to `KeyRoute`), `shortcuts`, `pointer` (mouse, wheel) |
 | `spawn` | Shell candidates, cwd, environment, `WindowsPty` |
-| `title`, `settings`, `fonts`, `dump`, `demo` | Title sanitizer; the settings model (Lunegit's `TerminalSettings` defaults, in memory only, no file and no UI until M10); the four bundled faces plus system fonts; `LUNETERM_DUMP_FRAMES`; the dump mode's placeholder grid |
+| `shell_integration` | The scripts the user's shell sources (OSC 7, OSC 133), their checked install under the config directory, and what they add to a spawn (see "Shell integration" above) |
+| `title`, `settings`, `fonts`, `dump`, `demo` | Title sanitizer; the settings model (Lunegit's `TerminalSettings` defaults; `settings.json` through `persist`, the page in `settings_page`); the four bundled faces plus system fonts; `LUNETERM_DUMP_FRAMES`; the dump mode's placeholder grid |
 
 **Threads (D1).** Each session runs three: `luneterm-reader` blocks on the PTY and fills the inbox;
 `luneterm-engine` owns the `Terminal` and the `Box<dyn Pty>`; `luneterm-writer` owns one `PtyWriter`
@@ -951,6 +952,22 @@ behind the setting), and when none of `LC_ALL`, `LC_CTYPE`, `LANG` is set (an em
 unset) `LC_CTYPE=UTF-8` on macOS or `C.UTF-8` on Linux, because a Finder-launched shell would
 otherwise run in the C locale. When the child exits the window closes and the app quits; if no
 candidate spawns the grid shows "Failed to start terminal" with the error kind and stays open.
+
+**Shell integration (M10 step 7, D12).** With the `shell_integration` setting on (the default) and a
+config directory, `spawn::launch_with` writes `<config dir>/shell-integration` (scripts ported from
+Lunegit's `TerminalShellIntegrator`, text constant) and starts a zsh, bash or PowerShell through them,
+so the shell reports its directory (OSC 7, OSC 9;9) and command marks (OSC 133). This changes the
+spawn, so the paragraph above holds only with it off or for any other shell: zsh gets `ZDOTDIR`
+(ours) and `LUNETERM_USER_ZDOTDIR` (the user's) added to the environment; a bash with no arguments or
+`-l` runs as `bash --rcfile <ours> -i` (for the login shell, with `$SHELL` as the program, since
+arguments need one); PowerShell with no arguments gets `-NoExit -Command <read our script>` (the
+script's path single-quoted, every quote doubled). On Unix the directory, its three subdirectories
+and each script are `lstat`-checked before use (real, owned by the effective user, no group or other
+write); a failed check, or any error, skips integration for that spawn and the shell starts as
+without it. The directory is created 0700 and the scripts 0600, written through a temporary name and
+renamed. On Windows the directory is under `%APPDATA%`, whose user-only default ACL is assumed
+(plan assumption A3), and only PowerShell is integrated. `shell_integration = false` leaves the
+environment and argv exactly as before (a test pins it).
 
 **Title and bell (D13, D14).** The engine keeps titles up to 10 MB; the app scans at most 4,096
 characters, drops Unicode Cc and the bidi controls (U+061C, U+200E, U+200F, U+202A to U+202E,

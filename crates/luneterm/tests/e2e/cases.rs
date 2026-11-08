@@ -17,8 +17,8 @@ use lune_ui::gpu::{self, Gpu};
 use lune_ui::input::RawInput;
 use lune_vt::services::options_service::OptionValue;
 use lune_vt::{
-    CellColor, StandardExtensions, Terminal, UnderlineStyle as VtUnderline, Viewport, ViewportCell,
-    ViewportCursor,
+    CellColor, CommandMarkKind, StandardExtensions, Terminal, UnderlineStyle as VtUnderline,
+    Viewport, ViewportCell, ViewportCursor,
 };
 use luneterm::app::cursor_of;
 use luneterm::links::{LinkKind, UriTable, scan_row};
@@ -114,6 +114,11 @@ pub(crate) const CASES: &[Case] = &[
         id: "E12",
         name: "links",
         run: e12_links,
+    },
+    Case {
+        id: "E13",
+        name: "shell integration",
+        run: e13_shell_integration,
     },
 ];
 
@@ -263,6 +268,10 @@ struct Seen {
     copied: Vec<CopyResult>,
     /// The OSC 8 ids and URIs the Updates carried.
     link_uris: Vec<(u32, String)>,
+    /// The directories the shell reported (OSC 7 or OSC 9;9), in order.
+    cwds: Vec<String>,
+    /// The OSC 133 marks the Updates carried, in order.
+    marks: Vec<CommandMarkKind>,
 }
 
 /// A running session and the UI side of it: the wake-up, the mirrored grid, what was seen.
@@ -298,6 +307,8 @@ impl Rig {
                 cursor: ViewportCursor::default(),
                 copied: Vec::new(),
                 link_uris: Vec::new(),
+                cwds: Vec::new(),
+                marks: Vec::new(),
             },
         })
     }
@@ -337,6 +348,8 @@ impl Rig {
             self.seen.copied.push(copied);
         }
         self.seen.link_uris.extend(update.link_uris);
+        self.seen.cwds.extend(update.cwd);
+        self.seen.marks.extend(update.marks.iter().map(|m| m.kind));
         true
     }
 
@@ -1214,6 +1227,7 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
             page: None,
             menu: None,
             busy: None,
+            busy_tone: lune_ui::widgets::tone::Tone::Neutral,
             tab_menu_extra: &[],
         };
         r.draw(&input, content, &view, size)?;
@@ -1567,4 +1581,133 @@ fn e12_links() -> CaseResult {
     })?;
     ensure(rig.close(), || "close timed out".to_owned())?;
     ok("an OSC 8 link and a bare URL found on a real session's rows; file: and userinfo refused")
+}
+
+// ------------------------------------------------------------------------------- E13
+
+/// A directory this run creates (it must not exist): the user's real home and config directory
+/// are never touched.
+fn scratch_dir(tag: &str) -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir().join(format!("luneterm-e13-{}-{tag}", std::process::id()));
+    ensure(!dir.exists(), || {
+        format!("{} already exists", dir.display())
+    })?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create scratch: {:?}", e.kind()))?;
+    // The shell reports the real path (macOS's temp dir is behind a symlink).
+    std::fs::canonicalize(&dir).map_err(|e| format!("canonicalize: {:?}", e.kind()))
+}
+
+/// The path of `name` on `PATH`, or `None`.
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
+}
+
+/// One real shell started through the integration, with a scratch home (so none of the user's own
+/// rc files, history or config is read or written), a scratch config directory for the scripts,
+/// and a scratch working directory. It must report its directory and the command marks.
+fn shell_reports(shell: &Path, name: &str) -> Result<String, String> {
+    let home = scratch_dir(&format!("{name}-home"))?;
+    let cfg = scratch_dir(&format!("{name}-cfg"))?;
+    let sub = home.join("sub");
+    std::fs::create_dir(&sub).map_err(|e| format!("create sub: {:?}", e.kind()))?;
+    // A minimal rc file: a short prompt and no history, nothing else.
+    let rc = if name == "zsh" { ".zshrc" } else { ".bashrc" };
+    let text = if name == "zsh" {
+        "PROMPT='%# '\nunsetopt BEEP\n"
+    } else {
+        "PS1='$ '\n"
+    };
+    std::fs::write(home.join(rc), text).map_err(|e| format!("write rc: {:?}", e.kind()))?;
+
+    let settings = Settings {
+        shell: shell.display().to_string(),
+        ..Settings::default()
+    };
+    let home_text = home.display().to_string();
+    let mut env = spawn::env(&settings, &|k| std::env::var(k).ok());
+    env.push(("HOME".to_owned(), home_text.clone()));
+    let var = |k: &str| match k {
+        "HOME" => luneterm::shell_integration::Var::Set(home_text.clone()),
+        _ => luneterm::shell_integration::Var::Unset,
+    };
+    let mut install = || luneterm::shell_integration::install(&cfg).ok();
+    let list = spawn::spawn_list(
+        &settings,
+        spawn::Os::HOST,
+        &env,
+        Some(&home),
+        &var,
+        &mut install,
+    );
+    ensure(
+        list.len() == 1 && (list[0].env.len() > env.len() || !list[0].args.is_empty()),
+        || format!("{name}: integration did not change the spawn"),
+    )?;
+    let (pty, _) = spawn::first_spawned(&list, |o| {
+        lune_pty::PortablePtyBackend::new().spawn(o, pty_size())
+    })
+    .map_err(|f| format!("{name}: spawn {:?}", f.kind))?;
+    let mut rig = Rig::start(pty, config(true))?;
+    let wanted = home.display().to_string();
+    // The first prompt: the directory, then D and A.
+    rig.wait(&format!("{name}'s first directory report"), WAIT, |r| {
+        r.seen.cwds.last().is_some_and(|c| c == &wanted)
+            && r.seen.marks.contains(&CommandMarkKind::PromptStart)
+    })?;
+    // A command: C at its start, D and A at its end, the directory after a cd.
+    rig.type_text("echo integrated-ok\r");
+    rig.wait(&format!("{name}'s output mark"), WAIT, |r| {
+        r.seen.marks.contains(&CommandMarkKind::OutputStart) && r.contains("integrated-ok")
+    })?;
+    rig.type_text("cd sub\r");
+    let want_sub = sub.display().to_string();
+    rig.wait(&format!("{name}'s directory after cd"), WAIT, |r| {
+        r.seen.cwds.last().is_some_and(|c| c == &want_sub)
+    })?;
+    let kinds = rig.seen.marks.clone();
+    for k in [
+        CommandMarkKind::OutputStart,
+        CommandMarkKind::CommandFinished,
+        CommandMarkKind::PromptStart,
+    ] {
+        ensure(kinds.contains(&k), || {
+            format!("{name}: no {k:?} mark in {kinds:?}")
+        })?;
+    }
+    ensure(rig.close(), || format!("{name}: close timed out"))?;
+    // Only our own scratch directories are removed.
+    for d in [home, cfg] {
+        std::fs::remove_dir_all(&d).map_err(|e| format!("remove scratch: {:?}", e.kind()))?;
+    }
+    Ok(format!(
+        "{name}: cwd and C/D/A marks seen ({} marks)",
+        kinds.len()
+    ))
+}
+
+/// A real zsh and a real bash, started through the integration scripts, report the directory
+/// (OSC 7) and the command marks (OSC 133) the app reads; skipped, with the reason printed, for a
+/// shell that is not installed.
+fn e13_shell_integration() -> CaseResult {
+    if let Some(s) = unix_only() {
+        return s;
+    }
+    let mut done = Vec::new();
+    let mut absent = Vec::new();
+    for name in ["zsh", "bash"] {
+        match find_on_path(name) {
+            Some(path) => done.push(shell_reports(&path, name)?),
+            None => absent.push(name),
+        }
+    }
+    if done.is_empty() {
+        return skipped(format!("no zsh or bash on PATH ({absent:?})"));
+    }
+    if !absent.is_empty() {
+        eprintln!("E13: not run, shell absent: {absent:?}");
+    }
+    ok(done.join("; "))
 }

@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 use lune_termview::{Cursor, Grid, TermTheme};
 use lune_ui::input::Event;
+use lune_ui::widgets::tone::Tone;
+use lune_vt::ProgressState;
 
 use crate::app::{cursor_of, theme_with_palette};
 use crate::cwd;
@@ -234,7 +236,7 @@ pub struct Tab {
     pub foreground: ForegroundState,
     pub command: CommandState,
     /// An OSC 9;4 progress report is active (any state but "removed").
-    pub progress_active: bool,
+    pub progress_state: ProgressState,
     /// The focus the session was last told (focus reports, mode 1004).
     pub focused: bool,
 }
@@ -269,7 +271,7 @@ impl Tab {
             started: Instant::now(),
             foreground: ForegroundState::default(),
             command: CommandState::default(),
-            progress_active: false,
+            progress_state: ProgressState::None,
             focused: false,
         }
     }
@@ -312,12 +314,24 @@ impl Tab {
         asks_on_close(self.session.is_some(), self.foreground, self.command)
     }
 
+    /// The tone an active OSC 9;4 report gives the tab (its title shines in it, and the outline
+    /// takes it): an error is red, a warning amber, normal and indeterminate neutral. `None`
+    /// when no report is active.
+    pub fn progress_tone(&self) -> Option<Tone> {
+        match self.progress_state {
+            ProgressState::None => None,
+            ProgressState::Normal | ProgressState::Indeterminate => Some(Tone::Neutral),
+            ProgressState::Error => Some(Tone::Err),
+            ProgressState::Warning => Some(Tone::Warn),
+        }
+    }
+
     /// Whether the running-command outline should show for this tab: the gate of
     /// `outline::should_show` over what the tab last published. `animate_full_screen` is the
     /// setting that lets it run in full-screen and interactive programs.
     pub fn busy(&self, animate_full_screen: bool) -> bool {
         crate::outline::should_show(
-            self.progress_active,
+            self.progress_state != ProgressState::None,
             self.command.running,
             self.alt_screen,
             animate_full_screen,
@@ -386,9 +400,13 @@ impl Tab {
             self.foreground = f;
         }
         if let Some(progress) = &update.progress {
-            let active = crate::outline::progress_active(progress);
-            fx.chrome |= active != self.progress_active;
-            self.progress_active = active;
+            let state = if crate::outline::progress_active(progress) {
+                progress.state
+            } else {
+                ProgressState::None
+            };
+            fx.chrome |= state != self.progress_state;
+            self.progress_state = state;
         }
         if let Some(c) = update.command {
             self.command = c;
@@ -710,8 +728,26 @@ mod tests {
         // Progress is an independent trigger.
         t.command.running = false;
         assert!(!t.busy(true));
-        t.progress_active = true;
+        t.progress_state = ProgressState::Normal;
         assert!(t.busy(false));
+    }
+
+    /// The tone an OSC 9;4 report gives the tab's title and the outline.
+    #[test]
+    fn a_progress_report_tints_the_tab_by_its_state() {
+        let mut t = Tab::empty(TermTheme::lunegit_one_dark());
+        assert_eq!(t.progress_tone(), None);
+        for (state, want) in [
+            (ProgressState::Normal, Some(Tone::Neutral)),
+            (ProgressState::Indeterminate, Some(Tone::Neutral)),
+            (ProgressState::Error, Some(Tone::Err)),
+            (ProgressState::Warning, Some(Tone::Warn)),
+            (ProgressState::None, None),
+        ] {
+            t.progress_state = state;
+            assert_eq!(t.progress_tone(), want, "{state:?}");
+            assert_eq!(t.busy(false), want.is_some(), "{state:?}");
+        }
     }
 
     #[test]

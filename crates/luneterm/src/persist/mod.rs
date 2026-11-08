@@ -264,7 +264,7 @@ fn temp_name(target: &str, attempt: u32) -> String {
     format!(".{target}.{}.{nanos}.{n}.{attempt}.tmp", std::process::id())
 }
 
-fn create_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn create_dir(dir: &Path) -> io::Result<()> {
     let mut builder = DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]

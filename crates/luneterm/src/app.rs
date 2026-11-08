@@ -41,6 +41,7 @@ use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
 use lune_ui::widgets::tab_strip::TabEvent;
 use lune_ui::widgets::toast::{ToastKind, ToastSpec, Toasts};
+use lune_ui::widgets::tone::Tone;
 use lune_ui::window::glass_attributes;
 use lune_vt::{CursorStyle, MouseEncoding, MouseTracking, TerminalMouseButton, ViewportCursor};
 
@@ -240,6 +241,7 @@ fn run_window() -> ExitCode {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .or_else(Store::default_dir);
+    let config_dir = dir.clone();
     let (persist, start) = match dir {
         Some(dir) => Persist::load(Store::new(dir)),
         None => (
@@ -257,6 +259,7 @@ fn run_window() -> ExitCode {
         persist,
         start.workspace,
         start.notices,
+        config_dir,
     );
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop: {e}");
@@ -405,6 +408,8 @@ struct App {
     /// The settings changed and the file has not been written; when they last changed.
     settings_dirty: Option<Instant>,
     persist: Persist,
+    /// The app's config directory: where the shell-integration scripts live (D12).
+    config_dir: Option<PathBuf>,
     /// The tabs of the last run, restored when the window exists.
     startup_workspace: Option<Workspace>,
     /// What the files had wrong, shown once the first frame can show it.
@@ -459,8 +464,10 @@ impl App {
         persist: Persist,
         startup_workspace: Option<Workspace>,
         startup_notices: Vec<String>,
+        config_dir: Option<PathBuf>,
     ) -> App {
         App {
+            config_dir,
             persist,
             startup_workspace,
             startup_notices,
@@ -947,11 +954,12 @@ impl App {
         if let Some(title) = restored.and_then(|r| r.manual_title.as_deref()) {
             tab.rename(title);
         }
-        match spawn::launch_in(
+        match spawn::launch_with(
             &PortablePtyBackend,
             &self.settings,
             geometry.pty_size(),
             dir.as_deref(),
+            self.config_dir.as_deref(),
         ) {
             Err(failure) => {
                 eprintln!(
@@ -1500,14 +1508,18 @@ impl App {
         }
 
         // The strip's tabs and the window's title, from the tabs as they are now.
-        let titles: Vec<(TabId, String)> = self
+        let titles: Vec<(TabId, String, Option<Tone>)> = self
             .tabs
             .iter()
-            .map(|(id, t)| (id, t.strip_title().to_owned()))
+            .map(|(id, t)| (id, t.strip_title().to_owned(), t.progress_tone()))
             .collect();
         let strip: Vec<StripTab<'_>> = titles
             .iter()
-            .map(|(id, title)| StripTab { id: *id, title })
+            .map(|(id, title, progress)| StripTab {
+                id: *id,
+                title,
+                progress: *progress,
+            })
             .collect();
         let active_tab = self.tabs.active();
         let label = self
@@ -1541,13 +1553,11 @@ impl App {
             .map(|(_, m)| stack.renderer.strings().tr(m.name_key()).to_owned());
         let extra = menus::tab_extra(stack.renderer.strings());
         let extra: [&str; 2] = [extra[0].as_str(), extra[1].as_str()];
-        let (busy, outline_cue) = {
+        let (busy, outline_cue, busy_tone) = {
             let cue = self.settings.busy_cue();
-            let busy = self
-                .tabs
-                .active_item()
-                .is_some_and(|t| t.busy(self.settings.outline_full_screen));
-            (busy, cue)
+            let active = self.tabs.active_item();
+            let busy = active.is_some_and(|t| t.busy(self.settings.outline_full_screen));
+            (busy, cue, active.and_then(Tab::progress_tone))
         };
         let mut edited = self.settings.clone();
         let Some(tab) = self.tabs.active_item_mut() else {
@@ -1596,6 +1606,7 @@ impl App {
                 name: menu_name.as_deref().unwrap_or(""),
             }),
             busy: busy.then_some(outline_cue).flatten(),
+            busy_tone: busy_tone.unwrap_or_default(),
             tab_menu_extra: &extra,
         };
         let drawn = match stack.renderer.draw(&input, content, &view, size) {
