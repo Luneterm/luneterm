@@ -37,6 +37,10 @@ pub const TERM_SLOT: usize = 0;
 pub const STRIP_HEIGHT: f32 = tab_strip::HEIGHT;
 /// The strip stops this far short of the card's right edge: the room of the `⋯` menu (step 6).
 pub const STRIP_RESERVE: f32 = 40.0;
+/// The dialog card's fill. The toolkit's `frost` composites the fill over the scrim, so the window
+/// layer's own token would come out brighter than the spike's replacing layer; this is the value
+/// that matches the spike's dialog (director, step 2). Step 13 re-checks it on the dark preset.
+pub const DIALOG_FILL: [u8; 4] = [16, 16, 16, 235];
 /// The header's darker band, punched out by the tab outline (luneui-rs D131: the gallery's value;
 /// the header layer is a material of the app's preset, so the app passes it).
 pub const HEADER_TINT: [u8; 4] = [0x00, 0x00, 0x00, 0x24];
@@ -495,10 +499,10 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
 
 /// The close-confirm or rename dialog (Lunegit's copy, `en.json`; layout as the spike's).
 fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
-    // The window layer's glass under the card and no blur of the scrim, so the terminal stays
-    // readable behind the dialog (director verdict, step 2 batch 1). Step 6's dialogs use the same.
+    // The card's own fill over an unblurred scrim, so the terminal stays readable behind the
+    // dialog (director verdict, step 2 batch 1). Step 6's dialogs use the same.
     let glass = DialogGlass {
-        fill: ui.theme().glass.window.premultiplied(),
+        fill: premul(DIALOG_FILL),
         noise: true,
     };
     let options = DialogOptions {
