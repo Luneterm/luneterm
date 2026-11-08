@@ -531,6 +531,7 @@ impl EngineCore {
         let m = self.terminal.modes();
         UpdateModes {
             mouse_tracking: m.mouse_tracking,
+            mouse_encoding: m.mouse_encoding,
             application_cursor_keys: m.application_cursor_keys,
             bracketed_paste: m.bracketed_paste,
             synchronized_output: m.synchronized_output,

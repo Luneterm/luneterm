@@ -613,6 +613,17 @@ fn session_step_adapts_between_256_and_64k() {
     assert_eq!(rig.core.step(), STEP_MAX);
 }
 
+#[test]
+fn session_mouse_encoding_follows_1006_and_1016() {
+    use lune_vt::MouseEncoding as Enc;
+    let mut rig = rig_published();
+    let enc = |u: Option<Update>| u.expect("an update").modes.mouse_encoding;
+    assert_eq!(enc(rig.feed(b"a")), Enc::Default);
+    assert_eq!(enc(rig.feed(b"\x1b[?1006h")), Enc::Sgr);
+    assert_eq!(enc(rig.feed(b"\x1b[?1016h")), Enc::SgrPixels);
+    assert_eq!(enc(rig.feed(b"\x1b[?1016l")), Enc::Default);
+}
+
 // ---------------------------------------------------------------- T6 2026 (I6, D10)
 
 fn rig_published() -> Rig {

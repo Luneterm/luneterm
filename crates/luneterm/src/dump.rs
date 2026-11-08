@@ -116,6 +116,10 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<(), String
             blink_on: true,
             scroll: scene.scroll,
             chrome: HOST,
+            ime: false,
+            preedit: None,
+            clipboard_write: None,
+            clipboard_read: false,
         };
         r.draw(&input, content, &view, size)?;
         r.gpu.end_frame(&mut r.text);

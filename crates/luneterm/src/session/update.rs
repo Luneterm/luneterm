@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use lune_termview::{Attrs, Cell, Color, Grid, UnderlineStyle};
 use lune_vt::{
-    CellColor, CommandMark, MouseTracking, Progress, UnderlineStyle as VtUnderline, ViewportCell,
-    ViewportCursor,
+    CellColor, CommandMark, MouseEncoding, MouseTracking, Progress, UnderlineStyle as VtUnderline,
+    ViewportCell, ViewportCursor,
 };
 
 use super::HostPalette;
@@ -16,6 +16,8 @@ use super::HostPalette;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct UpdateModes {
     pub mouse_tracking: MouseTracking,
+    /// The report encoding; `SgrPixels` (`?1016`) makes a move inside one cell news.
+    pub mouse_encoding: MouseEncoding,
     pub application_cursor_keys: bool,
     pub bracketed_paste: bool,
     pub synchronized_output: bool,

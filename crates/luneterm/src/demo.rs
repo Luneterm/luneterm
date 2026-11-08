@@ -1,5 +1,6 @@
-//! The placeholder body of M9 step 4: a static grid that shows the renderer working before the
-//! session is wired in (step 6 replaces it). Frame dumps draw it too.
+//! A static demo screen for frame dumps (`LUNETERM_DUMP_FRAMES`): prompt text, the 16 colours,
+//! bold, underline, a wide CJK pair and an emoji. The window no longer draws it (M9 step 6 wired
+//! the session in); the dump scenes still do.
 
 use lune_termview::{Attrs, Cell, Color, Cursor, CursorShape, Grid, UnderlineStyle};
 
