@@ -86,3 +86,15 @@ deferred by the user. What exists:
 - The clipboard (`ClipboardRequest::Read` answered on a later frame, `ui.clipboard_write`) and IME
   (`set_ime_area`, `Event::Ime`) APIs worked as documented in the code paths the unit tests reach;
   real typing and the OS clipboard are for the hands-on run.
+
+## Gaps seen in M10 step 6 (settings page and menus)
+
+- **Tab context menu rows.** The strip's own menu takes `menu_extra` rows as plain text: no glyph
+  and no separator before them, unlike `Ui::menu_with`'s rows. The app's `⋯` menu and the
+  terminal's menu have both; the tab's menu looks plainer next to them.
+- **Tab tooltip under an open context menu.** The strip's hover tooltip for the tab under the
+  pointer can stay visible beside the tab's context menu while it is open (`menu-tab` dump). The app
+  has no lever on it.
+- **Settings page scroll bar and banner.** The page's scroll thumb sits at the viewport's right edge
+  (the app keeps its groups 12 px clear of it); the restart banner is a full-width bar over the
+  content's last rows rather than docked outside the scroll area.
