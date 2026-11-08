@@ -23,7 +23,7 @@ pub use model::{
     ViewState,
 };
 pub use render::TermView;
-pub use text::{Shaped, ShapedGlyph, Shaper, TermFonts, cell_metrics};
+pub use text::{Shaped, ShapedGlyph, Shaper, TermFonts, cell_metrics, natural_line_height};
 pub use theme::{Resolved, TermTheme, resolve};
 
 /// Paint passes inside the grid, back to front (plan decision D9).

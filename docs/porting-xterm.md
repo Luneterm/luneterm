@@ -64,6 +64,14 @@ and the runners: `crates/lune-vt-conformance/FORMAT.md`.
   threads). Signature only: no behaviour changed in any ported file. `Sync` is not required. A
   compile-time assertion in `headless/terminal.rs` keeps `Terminal: Send`; tests capture state
   with `Arc<Mutex<_>>`/atomics, not `Rc`.
+- **`Terminal::viewport_state` (M9 D3).** An O(1) read of everything in a `Viewport` except its
+  cells and links (size, cursor, `ydisp`, `ybase`, line count, title as a shared `Arc<str>`, alt
+  screen), in a `// LUNETERM:` block in `headless/terminal.rs`; upstream has no single accessor.
+  A host that draws from dirty rows reads it every frame instead of calling `viewport()`, which
+  allocates every cell. `viewport()` and `viewport_with_rows` take their non-cell fields from it,
+  so there is one code path; `engine_fuzz` checks it after every operation and the
+  `viewport_state_*` tests cover a scrolled-back viewport, the alt screen, a hidden cursor,
+  DECSCUSR style and blink, and a title. No ported behaviour changed.
 - **`throw` becomes `Result::Err`, never a panic (D5).** `IdentifierError` for `_identifier`,
   `ParamsError` for `Params`. `StringToUtf32` (UTF-16 input) is "replaced: Rust input is bytes";
   a `&str` goes through `Utf8ToUtf32`.

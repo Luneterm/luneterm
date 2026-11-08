@@ -64,7 +64,8 @@ pub struct PtyWriter {
 }
 
 impl PtyWriter {
-    pub(crate) fn new(writer: Box<dyn io::Write + Send>) -> Self {
+    /// Wraps `writer` as the input side of a PTY. For backends outside this crate and for tests.
+    pub fn new(writer: Box<dyn io::Write + Send>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(writer)),
         }
