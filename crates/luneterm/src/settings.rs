@@ -1,9 +1,11 @@
 //! The settings model. It mirrors Lunegit's `TerminalSettings` and keeps its shipped defaults; it
 //! is the spike's `Settings` (`spikes/glass-ui/src/state.rs`) without the spike's UI plumbing and
-//! without serde (a settings file is M10's). M9 reads only what a running session needs.
+//! without serde (the file reader and writer are `persist`'s). Every field has a [`SettingId`] and
+//! an [`Effect`] (plan M10 step 6): what changing it does, live or at the next spawn.
 
 use lune_ui::material::Material;
 use lune_ui::motion::MotionTier;
+use lune_ui::widgets::tab_strip::BusyCue;
 
 use crate::session::MAX_SCROLLBACK;
 
@@ -156,7 +158,7 @@ impl Default for Settings {
 }
 
 /// Text a setting may hold: at most `max` bytes and no control character.
-fn text_ok(s: &str, max: usize) -> bool {
+pub fn text_ok(s: &str, max: usize) -> bool {
     s.len() <= max && !s.chars().any(char::is_control)
 }
 
@@ -222,6 +224,188 @@ impl Settings {
             Motion::None => None,
         }
     }
+
+    /// The toolkit's outline cue for the running-command outline, `None` while the setting (or
+    /// the motion level) keeps the outline static.
+    pub fn busy_cue(&self) -> Option<BusyCue> {
+        self.effective_outline().map(|o| match o {
+            OutlineAnim::Sweep => BusyCue::Sweep,
+            OutlineAnim::Comet => BusyCue::Comet,
+            OutlineAnim::Breath => BusyCue::Breath,
+        })
+    }
+
+    /// The fields that differ between `self` and `other`, in the order of [`SettingId::ALL`].
+    /// The destructuring is exhaustive: a field added to [`Settings`] without an id does not
+    /// compile.
+    pub fn changed(&self, other: &Settings) -> Vec<SettingId> {
+        let Settings {
+            glass,
+            menu_blur,
+            motion,
+            font,
+            font_size,
+            palette,
+            animate_outline,
+            outline,
+            outline_full_screen,
+            scrollback,
+            default_cwd,
+            shell,
+            shell_args,
+            report_iterm2,
+            confirm_close,
+            osc_clipboard,
+            option_as_meta,
+        } = self;
+        let flags = [
+            (SettingId::Glass, *glass != other.glass),
+            (SettingId::MenuBlur, *menu_blur != other.menu_blur),
+            (SettingId::Motion, *motion != other.motion),
+            (SettingId::Font, *font != other.font),
+            (SettingId::FontSize, *font_size != other.font_size),
+            (SettingId::Palette, *palette != other.palette),
+            (
+                SettingId::AnimateOutline,
+                *animate_outline != other.animate_outline,
+            ),
+            (SettingId::Outline, *outline != other.outline),
+            (
+                SettingId::OutlineFullScreen,
+                *outline_full_screen != other.outline_full_screen,
+            ),
+            (SettingId::Scrollback, *scrollback != other.scrollback),
+            (SettingId::DefaultCwd, *default_cwd != other.default_cwd),
+            (SettingId::Shell, *shell != other.shell),
+            (SettingId::ShellArgs, *shell_args != other.shell_args),
+            (
+                SettingId::ReportIterm2,
+                *report_iterm2 != other.report_iterm2,
+            ),
+            (
+                SettingId::ConfirmClose,
+                *confirm_close != other.confirm_close,
+            ),
+            (
+                SettingId::OscClipboard,
+                *osc_clipboard != other.osc_clipboard,
+            ),
+            (
+                SettingId::OptionAsMeta,
+                *option_as_meta != other.option_as_meta,
+            ),
+        ];
+        flags
+            .into_iter()
+            .filter_map(|(id, differs)| differs.then_some(id))
+            .collect()
+    }
+}
+
+/// One setting of the page: a [`Settings`] field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SettingId {
+    Glass,
+    MenuBlur,
+    Motion,
+    Font,
+    FontSize,
+    Palette,
+    AnimateOutline,
+    Outline,
+    OutlineFullScreen,
+    Scrollback,
+    DefaultCwd,
+    Shell,
+    ShellArgs,
+    ReportIterm2,
+    ConfirmClose,
+    OscClipboard,
+    OptionAsMeta,
+}
+
+impl SettingId {
+    /// Every setting, in the order of the [`Settings`] fields.
+    pub const ALL: [SettingId; 17] = [
+        SettingId::Glass,
+        SettingId::MenuBlur,
+        SettingId::Motion,
+        SettingId::Font,
+        SettingId::FontSize,
+        SettingId::Palette,
+        SettingId::AnimateOutline,
+        SettingId::Outline,
+        SettingId::OutlineFullScreen,
+        SettingId::Scrollback,
+        SettingId::DefaultCwd,
+        SettingId::Shell,
+        SettingId::ShellArgs,
+        SettingId::ReportIterm2,
+        SettingId::ConfirmClose,
+        SettingId::OscClipboard,
+        SettingId::OptionAsMeta,
+    ];
+
+    /// What changing this setting does (plan M10 step 6's table).
+    pub fn effect(self) -> Effect {
+        match self {
+            SettingId::Glass => Effect::Glass,
+            SettingId::MenuBlur => Effect::MenuBlur,
+            SettingId::Motion => Effect::Motion,
+            SettingId::Font | SettingId::FontSize => Effect::Font,
+            SettingId::Palette => Effect::Palette,
+            SettingId::AnimateOutline | SettingId::Outline | SettingId::OutlineFullScreen => {
+                Effect::Outline
+            }
+            SettingId::Scrollback => Effect::Scrollback,
+            SettingId::OscClipboard => Effect::OscClipboard,
+            SettingId::OptionAsMeta => Effect::OptionAsMeta,
+            SettingId::ConfirmClose => Effect::ConfirmClose,
+            SettingId::DefaultCwd
+            | SettingId::Shell
+            | SettingId::ShellArgs
+            | SettingId::ReportIterm2 => Effect::NextSpawn,
+        }
+    }
+}
+
+/// What the app does when a setting changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Effect {
+    /// `material::apply` on the window, and the glass theme (or the opaque one).
+    Glass,
+    /// The renderer's menu and dialog blur.
+    MenuBlur,
+    /// The renderer's motion tier.
+    Motion,
+    /// The renderer's terminal fonts, and the geometry sent again to every tab.
+    Font,
+    /// Every tab's colours (`Command::SetTheme`); a colour the child set itself stays.
+    Palette,
+    /// Read each frame: the outline gate and the strip's `BusyCue`.
+    Outline,
+    /// `Command::SetScrollback` to every tab.
+    Scrollback,
+    /// `Command::SetClipboardWrite` to every tab.
+    OscClipboard,
+    /// `set_option_as_alt` on the window (macOS), and the key router's flag.
+    OptionAsMeta,
+    /// Read when a tab closes (`plan_close`).
+    ConfirmClose,
+    /// Tabs opened from now on; the page says so (its restart notice).
+    NextSpawn,
+}
+
+/// The effects `old` to `new` has, each once, in the order of the changed settings.
+pub fn effects(old: &Settings, new: &Settings) -> Vec<Effect> {
+    let mut out = Vec::new();
+    for id in old.changed(new) {
+        let e = id.effect();
+        if !out.contains(&e) {
+            out.push(e);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -342,5 +526,221 @@ mod tests {
         }
         .clamped();
         assert_eq!(empty.palette, DEFAULT_PALETTE);
+    }
+
+    /// The step 6 table, one literal row per setting (not derived from `effect`).
+    #[test]
+    fn every_setting_has_the_effect_the_table_gives_it() {
+        use Effect as E;
+        use SettingId as S;
+        let table = [
+            (S::Glass, E::Glass),
+            (S::MenuBlur, E::MenuBlur),
+            (S::Motion, E::Motion),
+            (S::Font, E::Font),
+            (S::FontSize, E::Font),
+            (S::Palette, E::Palette),
+            (S::AnimateOutline, E::Outline),
+            (S::Outline, E::Outline),
+            (S::OutlineFullScreen, E::Outline),
+            (S::Scrollback, E::Scrollback),
+            (S::DefaultCwd, E::NextSpawn),
+            (S::Shell, E::NextSpawn),
+            (S::ShellArgs, E::NextSpawn),
+            (S::ReportIterm2, E::NextSpawn),
+            (S::ConfirmClose, E::ConfirmClose),
+            (S::OscClipboard, E::OscClipboard),
+            (S::OptionAsMeta, E::OptionAsMeta),
+        ];
+        assert_eq!(table.len(), SettingId::ALL.len());
+        for (id, want) in table {
+            assert_eq!(id.effect(), want, "{id:?}");
+            assert!(SettingId::ALL.contains(&id));
+        }
+    }
+
+    /// Each field, changed alone, is exactly one id: no field is dead and no two share an id.
+    #[test]
+    fn changing_one_field_changes_exactly_its_id() {
+        let d = Settings::default();
+        let cases: [(SettingId, Settings); 17] = [
+            (
+                SettingId::Glass,
+                Settings {
+                    glass: GlassStyle::Off,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::MenuBlur,
+                Settings {
+                    menu_blur: BlurLevel::High,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::Motion,
+                Settings {
+                    motion: Motion::None,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::Font,
+                Settings {
+                    font: "x".into(),
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::FontSize,
+                Settings {
+                    font_size: 20,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::Palette,
+                Settings {
+                    palette: "Nord".into(),
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::AnimateOutline,
+                Settings {
+                    animate_outline: false,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::Outline,
+                Settings {
+                    outline: OutlineAnim::Comet,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::OutlineFullScreen,
+                Settings {
+                    outline_full_screen: true,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::Scrollback,
+                Settings {
+                    scrollback: 1,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::DefaultCwd,
+                Settings {
+                    default_cwd: "/".into(),
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::Shell,
+                Settings {
+                    shell: "sh".into(),
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::ShellArgs,
+                Settings {
+                    shell_args: "-l".into(),
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::ReportIterm2,
+                Settings {
+                    report_iterm2: true,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::ConfirmClose,
+                Settings {
+                    confirm_close: false,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::OscClipboard,
+                Settings {
+                    osc_clipboard: false,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::OptionAsMeta,
+                Settings {
+                    option_as_meta: true,
+                    ..d.clone()
+                },
+            ),
+        ];
+        let mut seen = Vec::new();
+        for (id, changed) in cases {
+            assert_eq!(d.changed(&changed), vec![id], "{id:?}");
+            assert_eq!(effects(&d, &changed), vec![id.effect()]);
+            seen.push(id);
+        }
+        assert_eq!(seen, SettingId::ALL);
+        assert!(effects(&d, &d).is_empty());
+        // Two fields with one effect give it once; two effects give both, in field order.
+        let both = Settings {
+            font_size: 9,
+            font: "y".into(),
+            ..d.clone()
+        };
+        assert_eq!(effects(&d, &both), vec![Effect::Font]);
+        let two = Settings {
+            shell: "sh".into(),
+            scrollback: 3,
+            ..d
+        };
+        assert_eq!(
+            effects(&Settings::default(), &two),
+            vec![Effect::Scrollback, Effect::NextSpawn]
+        );
+    }
+
+    #[test]
+    fn the_outline_settings_pick_the_busy_cue() {
+        use lune_ui::widgets::tab_strip::BusyCue;
+        let with = |animate_outline, outline, motion| Settings {
+            animate_outline,
+            outline,
+            motion,
+            ..Settings::default()
+        };
+        let full = Motion::Full;
+        assert_eq!(
+            with(true, OutlineAnim::Sweep, full).busy_cue(),
+            Some(BusyCue::Sweep)
+        );
+        assert_eq!(
+            with(true, OutlineAnim::Comet, full).busy_cue(),
+            Some(BusyCue::Comet)
+        );
+        assert_eq!(
+            with(true, OutlineAnim::Breath, full).busy_cue(),
+            Some(BusyCue::Breath)
+        );
+        // Off wins; Reduced forces the breath; None keeps it static.
+        assert_eq!(with(false, OutlineAnim::Comet, full).busy_cue(), None);
+        assert_eq!(
+            with(true, OutlineAnim::Comet, Motion::Reduced).busy_cue(),
+            Some(BusyCue::Breath)
+        );
+        assert_eq!(
+            with(true, OutlineAnim::Comet, Motion::None).busy_cue(),
+            None
+        );
     }
 }

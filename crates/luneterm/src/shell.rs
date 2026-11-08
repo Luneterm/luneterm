@@ -10,17 +10,21 @@
 use lune_termview::{CellMetrics, GridLayout};
 use lune_ui::chrome::CARD_RADIUS;
 use lune_ui::color::{premul, with_alpha};
+use lune_ui::icon;
 use lune_ui::input::{CursorIcon, Event, PointerButton, WindowCommand};
 use lune_ui::layout::Axis;
 use lune_ui::paint::Rect;
 use lune_ui::scene::LayerId;
 use lune_ui::text::{Spec, Style};
 use lune_ui::ui::{Sense, Ui};
+use lune_ui::widgets::button::IconButton;
 use lune_ui::widgets::caption::{CaptionButton, CaptionOptions};
 use lune_ui::widgets::dialog::{Cancel, Dialog, DialogGlass, DialogOptions};
 use lune_ui::widgets::field::FieldOptions;
 use lune_ui::widgets::scrollbar::{self, ThumbGeometry, thumb_geometry};
-use lune_ui::widgets::tab_strip::{self, Tab as StripItem, TabEvent, TabKey, TabStripOptions};
+use lune_ui::widgets::tab_strip::{
+    self, BusyCue, Tab as StripItem, TabEvent, TabKey, TabStripOptions,
+};
 use lune_ui::widgets::toast::Toasts;
 use lune_ui::window::{ResizeEdge, edge_at};
 
@@ -36,8 +40,10 @@ pub const THUMB_ALPHA: f32 = 0.55;
 pub const TERM_SLOT: usize = 0;
 /// The strip's height: the toolkit's.
 pub const STRIP_HEIGHT: f32 = tab_strip::HEIGHT;
-/// The strip stops this far short of the card's right edge: the room of the `⋯` menu (step 6).
+/// The strip stops this far short of the card's right edge: the room of the `⋯` button.
 pub const STRIP_RESERVE: f32 = 40.0;
+/// The `⋯` button: 24 px square, 32 px from the card's right edge and 4 px under its top.
+pub const OVERFLOW_SIZE: f32 = 24.0;
 /// The dialog card's fill. The toolkit's `frost` composites the fill over the scrim, so the window
 /// layer's own token would come out brighter than the spike's replacing layer; this is the value
 /// that matches the spike's dialog (director, step 2). Step 13 re-checks it on the dark preset.
@@ -91,6 +97,8 @@ pub struct Layout {
     pub card: Rect,
     /// The tab strip, at the card's top (its right end stays free, see [`STRIP_RESERVE`]).
     pub strip: Rect,
+    /// The `⋯` button in the strip's reserved right end.
+    pub overflow: Rect,
     pub body: Rect,
 }
 
@@ -120,6 +128,12 @@ impl Layout {
             band: Rect::new(window.x, window.y, window.w, TITLE_BAND.min(window.h)),
             card,
             strip,
+            overflow: Rect::new(
+                card.right() - 32.0,
+                card.y + 4.0,
+                OVERFLOW_SIZE,
+                OVERFLOW_SIZE,
+            ),
             body,
         }
     }
@@ -267,6 +281,15 @@ pub struct ShellView<'a> {
     pub modal: Option<Modal<'a>>,
     /// The app's toasts, drawn last, over the dialog.
     pub toasts: Option<&'a mut Toasts>,
+    /// The settings page covers the card: no terminal, no thumb, no strip and no `⋯`.
+    pub page_open: bool,
+    /// The cue the active tab's outline runs, `None` when nothing runs (plan M10 step 6: the
+    /// settings decide the cue, the tab decides whether it is busy).
+    pub busy: Option<BusyCue>,
+    /// The rows after the toolkit's four on a tab's context menu.
+    pub menu_extra: &'a [&'a str],
+    /// The accessible name of the `⋯` button.
+    pub overflow_name: &'a str,
 }
 
 /// What the dialog of a frame asked.
@@ -289,6 +312,8 @@ pub struct ShellOut {
     pub modal: Option<ModalOut>,
     /// Where the dialog's text field edits, for the IME; `None` without one.
     pub ime_area: Option<Rect>,
+    /// The `⋯` button was pressed: its rect, to anchor the app menu to.
+    pub overflow: Option<Rect>,
 }
 
 /// The cursor for resizing from `edge`.
@@ -384,13 +409,15 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         p.text_centered(&spec, Rect::new(0.0, 0.0, win.w, TITLE_BAND - 2.0));
         p.set_clip(None);
 
-        p.custom(TERM_SLOT, layout.body);
-        if let Some(thumb) = view
-            .scroll
-            .and_then(|s| scroll_thumb(layout.body, view.cell_h, s))
-        {
-            let color = premul(with_alpha(theme.accent, THUMB_ALPHA));
-            p.fill_over(thumb, scrollbar::RADIUS, color);
+        if !view.page_open {
+            p.custom(TERM_SLOT, layout.body);
+            if let Some(thumb) = view
+                .scroll
+                .and_then(|s| scroll_thumb(layout.body, view.cell_h, s))
+            {
+                let color = premul(with_alpha(theme.accent, THUMB_ALPHA));
+                p.fill_over(thumb, scrollbar::RADIUS, color);
+            }
         }
     }
 
@@ -433,55 +460,69 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         STRIP_HEIGHT.min(layout.card.h),
     );
     let header_id = ui.id("strip-drag");
-    let drag = ui.interact(header_id, header, Sense::CLICK);
-    if drag.press_started && pressed_edge.is_none() {
-        commands.push(band_command(drag.press_count, view.chrome));
-    }
+    let mut tab_events = Vec::new();
+    let mut overflow = None;
+    if !view.page_open {
+        let drag = ui.interact(header_id, header, Sense::CLICK);
+        if drag.press_started && pressed_edge.is_none() {
+            commands.push(band_command(drag.press_count, view.chrome));
+        }
 
-    let modal_open = view.modal.is_some();
-    let tabs: Vec<StripItem<'_>> = view
-        .tabs
-        .iter()
-        .map(|t| StripItem {
-            key: TabKey(t.id),
-            title: t.title,
-            closable: true,
-            progress: None,
-        })
-        .collect();
-    let opts = TabStripOptions {
-        active: view.active_tab.map(TabKey),
-        panel_focused: view.focused && !modal_open,
-        busy: None,
-        busy_tone: lune_ui::widgets::tone::Tone::Neutral,
-        card: layout.card,
-        menu_extra: &[],
-        name: "Terminal sessions",
-        header_tint: Some(HEADER_TINT),
-    };
-    let tab_events = ui.tab_strip("strip", layout.strip, &tabs, &opts).events;
+        let modal_open = view.modal.is_some();
+        let tabs: Vec<StripItem<'_>> = view
+            .tabs
+            .iter()
+            .map(|t| StripItem {
+                key: TabKey(t.id),
+                title: t.title,
+                closable: true,
+                progress: None,
+            })
+            .collect();
+        let opts = TabStripOptions {
+            active: view.active_tab.map(TabKey),
+            panel_focused: view.focused && !modal_open,
+            busy: view.busy,
+            busy_tone: lune_ui::widgets::tone::Tone::Neutral,
+            card: layout.card,
+            menu_extra: view.menu_extra,
+            name: "Terminal sessions",
+            header_tint: Some(HEADER_TINT),
+        };
+        tab_events = ui.tab_strip("strip", layout.strip, &tabs, &opts).events;
 
-    // The strip's scroll area covers the empty space between the last tab and the + button, and
-    // the topmost region takes a press even though it captures none, so the header region above
-    // never sees a press there (a toolkit gap, D23: the strip has no "empty press" of its own).
-    // The scroll area senses no hover, so over it the toolkit's hovered widget is `None`; over a
-    // tab, a close glyph, the + button, a menu or a dialog it is that widget. A primary press in
-    // the header with nothing hovered is a press on empty space.
-    let hovered = ui.painter().hover;
-    let empty_press = (hovered.is_none() || hovered == Some(header_id))
-        && ui.input().events.iter().any(|e| {
-            matches!(
-                e,
-                Event::PointerButton {
-                    pos,
-                    button: PointerButton::Primary,
-                    pressed: true,
-                    ..
-                } if header.contains(*pos)
-            )
-        });
-    if empty_press && !drag.press_started && pressed_edge.is_none() {
-        commands.push(band_command(1, view.chrome));
+        // The strip's scroll area covers the empty space between the last tab and the + button, and
+        // the topmost region takes a press even though it captures none, so the header region above
+        // never sees a press there (a toolkit gap, D23: the strip has no "empty press" of its own).
+        // The scroll area senses no hover, so over it the toolkit's hovered widget is `None`; over a
+        // tab, a close glyph, the + button, a menu or a dialog it is that widget. A primary press in
+        // the header with nothing hovered is a press on empty space.
+        let hovered = ui.painter().hover;
+        let empty_press = (hovered.is_none() || hovered == Some(header_id))
+            && ui.input().events.iter().any(|e| {
+                matches!(
+                    e,
+                    Event::PointerButton {
+                        pos,
+                        button: PointerButton::Primary,
+                        pressed: true,
+                        ..
+                    } if header.contains(*pos)
+                )
+            });
+        if empty_press && !drag.press_started && pressed_edge.is_none() {
+            commands.push(band_command(1, view.chrome));
+        }
+        let more = IconButton {
+            glyph: icon::ELLIPSIS,
+            glyph_size: 16.0,
+            color: None,
+            radius: theme.item_radius,
+            name: view.overflow_name,
+        };
+        if ui.icon_button("overflow", layout.overflow, &more).clicked {
+            overflow = Some(layout.overflow);
+        }
     }
 
     let (modal, ime_area) = match view.modal {
@@ -500,6 +541,7 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         tab_events,
         modal,
         ime_area,
+        overflow,
     }
 }
 
@@ -612,6 +654,7 @@ mod tests {
         assert_eq!(l.band, Rect::new(0.0, 0.0, 1040.0, 34.0));
         assert_eq!(l.card, Rect::new(10.0, 34.0, 1020.0, 616.0));
         assert_eq!(l.strip, Rect::new(10.0, 34.0, 980.0, 32.0));
+        assert_eq!(l.overflow, Rect::new(998.0, 38.0, 24.0, 24.0));
         assert_eq!(l.body, Rect::new(20.0, 76.0, 1000.0, 564.0));
 
         // Scale 1: an 8 x 17 cell; scale 2: 16 x 34 (the same cell in logical px).
@@ -817,6 +860,10 @@ mod tests {
             active_tab: tabs.first().map(|t| t.id),
             modal: None,
             toasts: None,
+            page_open: false,
+            busy: None,
+            menu_extra: &[],
+            overflow_name: "More",
         };
         let mut ui = Ui::begin(store, &input, config, text);
         let out = draw(&mut ui, view);
@@ -975,10 +1022,23 @@ mod tests {
         let out = go(vec![button(empty, true)]);
         assert_eq!(out.commands, vec![WindowCommand::DragMove]);
         go(vec![button(empty, false)]);
-        // The reserved right end drags too.
-        let out = go(vec![button((1015.0, 50.0), true)]);
+        // The reserved right end drags too, beside the `⋯` button (998..1022).
+        let out = go(vec![button((1026.0, 50.0), true)]);
         assert_eq!(out.commands, vec![WindowCommand::DragMove]);
-        go(vec![button((1015.0, 50.0), false)]);
+        go(vec![button((1026.0, 50.0), false)]);
+        // A press on the `⋯` button is the button's: it drags nothing, and the release asks for
+        // the app menu at the button's rect.
+        let more = (1010.0, 50.0);
+        go(vec![Event::PointerMoved { pos: more }]);
+        go(vec![]);
+        let out = go(vec![button(more, true)]);
+        assert!(out.commands.is_empty(), "{:?}", out.commands);
+        let out = go(vec![button(more, false)]);
+        assert_eq!(
+            out.overflow,
+            Some(Layout::new(Rect::new(0.0, 0.0, 1040.0, 660.0)).overflow)
+        );
+        go(vec![Event::PointerMoved { pos: (700.0, 50.0) }]);
         // A press on the second tab activates it; it must not also drag the window.
         let on_tab = (150.0, 50.0);
         go(vec![Event::PointerMoved { pos: on_tab }]);

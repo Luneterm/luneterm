@@ -120,6 +120,11 @@ pub enum Command {
     Select(SelectCmd),
     /// Copy the selected text: the answer is `Update.selection_text`.
     CopySelection,
+    /// A new theme (a setting changed live): the colours the child has not set itself follow it,
+    /// the ones it set (OSC 4/10/11/12) stay, and a later restore returns to the new theme.
+    SetTheme(Box<HostPalette>),
+    /// Clears the scrollback and the screen, keeping the prompt line (xterm.js `clear()`).
+    ClearBuffer,
 }
 
 impl fmt::Debug for Command {
@@ -138,6 +143,8 @@ impl fmt::Debug for Command {
             Command::SetScrollback(n) => write!(f, "SetScrollback({n})"),
             Command::Select(c) => write!(f, "Select({c:?})"),
             Command::CopySelection => f.write_str("CopySelection"),
+            Command::SetTheme(_) => f.write_str("SetTheme"),
+            Command::ClearBuffer => f.write_str("ClearBuffer"),
         }
     }
 }

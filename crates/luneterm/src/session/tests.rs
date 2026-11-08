@@ -2010,3 +2010,95 @@ fn selection_drag_scroll_runs_on_the_engines_clock() {
     rig.clock.advance(Duration::from_millis(200));
     assert!(rig.idle().is_none());
 }
+
+// ---------------------------------------------------------------- step 6: live theme, select all, clear
+
+fn palette_with(ansi1: [u8; 3]) -> HostPalette {
+    let mut p = HostPalette::from_theme(&TermTheme::lunegit_one_dark());
+    p.ansi[1] = ansi1;
+    p.foreground = [1, 2, 3];
+    p
+}
+
+#[test]
+fn session_set_theme_replaces_the_colours_the_child_did_not_set_and_keeps_the_ones_it_did() {
+    let mut rig = rig_published();
+    // The child sets colour 2; colour 1 and the foreground are still the theme's.
+    rig.feed(b"\x1b]4;2;rgb:12/34/56\x1b\\");
+    let u = rig
+        .command(Command::SetTheme(Box::new(palette_with([9, 9, 9]))))
+        .expect("update");
+    let live = u.palette.expect("the palette changed");
+    assert!(u.full);
+    assert_eq!(live.ansi[1], [9, 9, 9], "followed the new theme");
+    assert_eq!(live.foreground, [1, 2, 3]);
+    assert_eq!(
+        live.ansi[2],
+        [0x12, 0x34, 0x56],
+        "the child's own colour stays"
+    );
+    // A colour report answers from the live palette.
+    rig.feed(b"\x1b]4;1;?\x1b\\");
+    assert_eq!(rig.written_bytes(), b"\x1b]4;1;rgb:0909/0909/0909\x1b\\");
+    // Restoring colour 2 returns to the NEW theme's value, not the old one.
+    rig.feed(b"\x1b]104;2\x1b\\");
+    rig.feed(b"\x1b]4;2;?\x1b\\");
+    assert_eq!(rig.written_bytes(), b"\x1b]4;2;rgb:9898/c3c3/7979\x1b\\");
+    // The same theme again changes nothing and publishes nothing.
+    assert!(
+        rig.command(Command::SetTheme(Box::new(palette_with([9, 9, 9]))))
+            .is_none()
+    );
+    assert_eq!(format!("{:?}", Command::ClearBuffer), "ClearBuffer");
+}
+
+#[test]
+fn session_select_all_selects_the_whole_buffer_and_typing_clears_it() {
+    let mut rig = selection_rig();
+    let u = rig.command(select(SelectCmd::All)).expect("update");
+    let view = u.selection.expect("changed").expect("selected");
+    assert_eq!(view.start, (0, 0));
+    assert_eq!(view.end, (20, 4), "the last column of the last row");
+    rig.command(Command::CopySelection);
+    let u = rig.idle().or_else(|| rig.command(Command::CopySelection));
+    let text = match u.and_then(|u| u.selection_text) {
+        Some(CopyResult::Text(t)) => t,
+        other => panic!("{other:?}"),
+    };
+    assert!(text.starts_with("hello world"), "{} bytes", text.len());
+    assert!(text.contains("second line"));
+    // A press replaces it, even a double click.
+    let u = rig.command(press(0, 7, 2)).expect("update");
+    let view = u.selection.expect("changed").expect("selected");
+    assert_eq!((view.start, view.end), ((6, 0), (11, 0)));
+    // Select all, then input clears it.
+    rig.command(select(SelectCmd::All)).expect("update");
+    let u = rig.command(Command::Text("x".into())).expect("update");
+    assert_eq!(u.selection, Some(None));
+}
+
+#[test]
+fn session_clear_buffer_keeps_the_prompt_line_and_drops_the_rest_and_the_selection() {
+    let mut rig = Rig::new(&config(20, 3));
+    rig.feed(b"one\r\ntwo\r\nthree\r\nfour\r\nprompt$ ")
+        .expect("update");
+    rig.command(select(SelectCmd::All)).expect("update");
+    let u = rig.command(Command::ClearBuffer).expect("update");
+    assert!(u.full);
+    assert_eq!(u.selection, Some(None), "the selection went with the text");
+    assert_eq!(u.base_y, 0, "no scrollback left");
+    let row0: String = u
+        .rows_changed
+        .iter()
+        .find(|(y, _)| *y == 0)
+        .map(|(_, cells)| {
+            cells
+                .iter()
+                .map(|c| c.text().chars().next().unwrap_or(' '))
+                .collect()
+        })
+        .expect("row 0");
+    assert!(row0.starts_with("prompt$"), "{row0:?}");
+    assert_eq!(rig.core.terminal.buffers().active().ybase, 0);
+    assert_eq!(rig.core.terminal.buffers().active().y, 0);
+}

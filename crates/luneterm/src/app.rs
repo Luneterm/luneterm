@@ -37,6 +37,8 @@ use lune_ui::input::{
 };
 use lune_ui::material::{self, Material};
 use lune_ui::surface::{Acquired, WindowSurface};
+use lune_ui::widgets::menu::MenuPlace;
+use lune_ui::widgets::popover::{PlaceAlign, Side};
 use lune_ui::widgets::tab_strip::TabEvent;
 use lune_ui::widgets::toast::{ToastKind, ToastSpec, Toasts};
 use lune_ui::window::glass_attributes;
@@ -51,15 +53,18 @@ use crate::input::{
     selection_position, selection_scroll, terminal_mods, wheel, wheel_delta, wheel_report,
 };
 use crate::links::{self, open::OpenError};
+use crate::menus::{self, MenuAction, MenuKind, MenuModel};
+use crate::palettes;
 use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, snapshot,
 };
-use crate::render::{Content, Placed, Renderer};
+use crate::render::{Content, MenuDraw, Placed, Renderer};
 use crate::session::{
     Command, CopyResult, HostPalette, MAX_COPY_BYTES, Scroll, SelectCmd, Session, SessionConfig,
     UpdateModes, view_range,
 };
-use crate::settings::Settings;
+use crate::settings::{Effect, Settings, effects};
+use crate::settings_page::{PageState, PageView, Section};
 use crate::shell::{self, HOST, Modal, ModalOut, ScrollView, StripTab, ThumbDrag};
 use crate::spawn::{self, SpawnFailure};
 use crate::tabs::{
@@ -337,6 +342,16 @@ enum ModalState {
     },
 }
 
+/// A menu that is open: which, and where.
+#[derive(Debug, Clone, Copy)]
+struct OpenMenu {
+    kind: MenuKind,
+    place: MenuPlace,
+}
+
+/// The settings file is written this long after the last change (typing in a field changes it
+/// with every key).
+const SETTINGS_DEBOUNCE: Duration = Duration::from_millis(400);
 /// The workspace is written at most this often while it changes (and once more at exit).
 const WORKSPACE_DEBOUNCE: Duration = Duration::from_secs(1);
 /// How long the start waits for the saved directories to be checked (off the UI thread).
@@ -381,6 +396,14 @@ struct App {
     /// A new tab waiting for the check of the directory it should start in.
     pending_new: Option<CwdCheck>,
     modal: Option<ModalState>,
+    /// The settings page, covering the card while it is open.
+    page: Option<PageState>,
+    /// The page's notice banner: a shell, directory or identity setting changed.
+    restart_notice: bool,
+    /// An open menu: the `⋯` app menu or the terminal's context menu.
+    menu: Option<OpenMenu>,
+    /// The settings changed and the file has not been written; when they last changed.
+    settings_dirty: Option<Instant>,
     persist: Persist,
     /// The tabs of the last run, restored when the window exists.
     startup_workspace: Option<Workspace>,
@@ -454,6 +477,10 @@ impl App {
             leaving: Vec::new(),
             pending_new: None,
             modal: None,
+            page: None,
+            restart_notice: false,
+            menu: None,
+            settings_dirty: None,
             window_title: DEFAULT_TITLE.to_owned(),
             placed: None,
             preedit: None,
@@ -504,8 +531,8 @@ impl App {
     }
 
     /// The terminal colours the window starts with and a new tab starts from.
-    fn base_theme() -> TermTheme {
-        TermTheme::lunegit_one_dark()
+    fn base_theme(&self) -> TermTheme {
+        palettes::theme_of(&self.settings.palette)
     }
 
     /// Rebuilds the GPU stack after the device was lost; every row is drawn again.
@@ -517,7 +544,7 @@ impl App {
         let theme = self
             .tabs
             .active_item()
-            .map_or_else(Self::base_theme, |t| t.theme.clone());
+            .map_or_else(|| self.base_theme(), |t| t.theme.clone());
         match Stack::build(event_loop, &window, &self.settings, self.glass, &theme) {
             Ok(stack) => {
                 self.stack = Some(stack);
@@ -574,7 +601,7 @@ impl App {
     fn cell_under_pointer(&self) -> Option<(usize, usize)> {
         let pos = self.pointer?;
         let ctx = self.mouse_ctx()?;
-        if self.modal.is_some() || !self.over_body(pos) {
+        if self.overlay_open() || !self.over_body(pos) {
             return None;
         }
         ctx.layout.cell_at(pos, ctx.cols, ctx.rows)
@@ -622,6 +649,242 @@ impl App {
         self.tabs.active_item().is_some_and(|t| t.session.is_some())
     }
 
+    // ------------------------------------------------------------------- settings, menus, page
+
+    /// Whether the keyboard and the pointer belong to the toolkit: a dialog, the settings page
+    /// or an open menu is over the terminal.
+    fn overlay_open(&self) -> bool {
+        self.modal.is_some() || self.page.is_some() || self.menu.is_some()
+    }
+
+    /// Opens the settings page on `section` (the app menu's `About` opens the About section).
+    fn open_page(&mut self, section: Section) {
+        self.menu = None;
+        self.restart_notice = false;
+        self.page = Some(PageState::new(section, &self.settings));
+        self.pointer_left_terminal();
+        self.request_redraw();
+    }
+
+    /// Leaves the settings page; the notice goes with it.
+    fn close_page(&mut self) {
+        if self.page.take().is_some() {
+            self.restart_notice = false;
+            self.flush_settings(true);
+            if let Some(tab) = self.tabs.active_item_mut() {
+                tab.grid.mark_all_dirty();
+            }
+            self.request_redraw();
+        }
+    }
+
+    /// What belonged to the terminal's pointer is dropped when something covers it.
+    fn pointer_left_terminal(&mut self) {
+        self.pending_link = None;
+        self.thumb_drag = None;
+        self.mouse_captured = false;
+        if std::mem::take(&mut self.selecting) {
+            self.send(Command::Select(SelectCmd::End));
+        }
+    }
+
+    /// The settings were changed (by the page): applies what each change does, queues the save.
+    fn apply_settings(&mut self, new: Settings) {
+        let new = new.clamped();
+        if new == self.settings {
+            return;
+        }
+        let old = std::mem::replace(&mut self.settings, new);
+        self.settings_dirty = Some(Instant::now());
+        for effect in effects(&old, &self.settings) {
+            self.apply_effect(effect);
+        }
+        self.request_redraw();
+    }
+
+    /// One effect of a changed setting (plan M10 step 6's table).
+    fn apply_effect(&mut self, effect: Effect) {
+        match effect {
+            Effect::Glass => {
+                if let Some(win) = &self.win {
+                    self.glass = apply_material(&win.window, &self.settings);
+                }
+                if let Some(stack) = &mut self.stack {
+                    stack.renderer.set_glass(self.glass);
+                }
+            }
+            Effect::MenuBlur => {
+                if let Some(stack) = &mut self.stack {
+                    stack.renderer.set_blur(self.settings.menu_blur.sigma());
+                }
+            }
+            Effect::Motion => {
+                if let Some(stack) = &mut self.stack {
+                    stack.renderer.set_tier(self.settings.tier());
+                }
+            }
+            Effect::Font => self.apply_font(),
+            Effect::Palette => self.apply_palette(),
+            Effect::Scrollback => {
+                let lines = self.settings.scrollback;
+                self.send_all(|| Command::SetScrollback(lines));
+            }
+            Effect::OscClipboard => {
+                let on = self.settings.osc_clipboard;
+                self.send_all(|| Command::SetClipboardWrite(on));
+            }
+            Effect::OptionAsMeta =>
+            {
+                #[cfg(target_os = "macos")]
+                if let Some(win) = &self.win {
+                    use winit::platform::macos::WindowExtMacOS;
+                    win.window.set_option_as_alt(crate::input::option_as_alt(
+                        self.settings.option_as_meta,
+                    ));
+                }
+            }
+            // Read each frame (the strip's cue) and when a tab closes.
+            Effect::Outline | Effect::ConfirmClose => {}
+            Effect::NextSpawn => self.restart_notice = self.page.is_some(),
+        }
+    }
+
+    /// `make()` to every tab that has a session.
+    fn send_all(&self, make: impl Fn() -> Command) {
+        for (_, tab) in self.tabs.iter() {
+            if let Some(session) = &tab.session {
+                session.send(make());
+            }
+        }
+    }
+
+    /// New fonts: the renderer takes them, and every tab hears the new cell size and grid.
+    fn apply_font(&mut self) {
+        let (Some(win), Some(stack)) = (&self.win, &mut self.stack) else {
+            return;
+        };
+        stack.renderer.set_fonts(&self.settings);
+        let scale = win.window.scale_factor() as f32;
+        let size = win.window.inner_size();
+        let logical = (size.width as f32 / scale, size.height as f32 / scale);
+        let geometry = stack.renderer.place(logical, scale).geometry();
+        for (_, tab) in self.tabs.iter_mut() {
+            tab.grid.mark_all_dirty();
+            if geometry.cols > 0
+                && geometry.rows > 0
+                && let Some(session) = &tab.session
+            {
+                session.send(Command::Resize(geometry));
+                tab.sent_geometry = Some(geometry);
+            }
+        }
+    }
+
+    /// A new palette: every tab's colours at once. A colour a child set itself stays (the
+    /// session keeps it); the tab's own mirror follows in the session's next Update.
+    fn apply_palette(&mut self) {
+        let theme = palettes::theme_of(&self.settings.palette);
+        let host = HostPalette::from_theme(&theme);
+        let active = self.tabs.active();
+        for (id, tab) in self.tabs.iter_mut() {
+            match &tab.session {
+                Some(session) => session.send(Command::SetTheme(Box::new(host.clone()))),
+                None => {
+                    tab.theme = theme.clone();
+                    tab.grid.mark_all_dirty();
+                    if Some(id) == active
+                        && let Some(stack) = &mut self.stack
+                    {
+                        stack.renderer.set_term_theme(theme.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Writes the settings when they changed, a [`SETTINGS_DEBOUNCE`] after the last change
+    /// (always when `force`).
+    fn flush_settings(&mut self, force: bool) {
+        let Some(since) = self.settings_dirty else {
+            return;
+        };
+        if force || since.elapsed() >= SETTINGS_DEBOUNCE {
+            self.settings_dirty = None;
+            self.persist.save_settings(&self.settings);
+        }
+    }
+
+    /// A menu row was picked.
+    fn run_menu_action(&mut self, action: MenuAction, event_loop: &ActiveEventLoop) {
+        match action {
+            MenuAction::NewTab => self.new_tab_request(),
+            MenuAction::Close => {
+                if let Some(id) = self.tabs.active() {
+                    self.request_close(vec![id], event_loop);
+                }
+            }
+            MenuAction::CloseOthers => {
+                if let Some(keep) = self.tabs.active() {
+                    let ids = self
+                        .tabs
+                        .ids()
+                        .into_iter()
+                        .filter(|id| *id != keep)
+                        .collect();
+                    self.request_close(ids, event_loop);
+                }
+            }
+            MenuAction::CloseAll => self.request_close(self.tabs.ids(), event_loop),
+            MenuAction::Rename => {
+                if let Some(id) = self.tabs.active() {
+                    self.open_rename(id);
+                }
+            }
+            // A duplicate starts where the source tab is now (a new tab already does).
+            MenuAction::Duplicate => self.new_tab_request(),
+            MenuAction::CopyCwd => self.copy_cwd(),
+            MenuAction::Settings => self.open_page(Section::Appearance),
+            MenuAction::About => self.open_page(Section::About),
+            MenuAction::Copy => {
+                if self.has_selection() {
+                    self.send(Command::CopySelection);
+                }
+            }
+            MenuAction::Paste => {
+                if let Some(id) = self.tabs.active().filter(|_| self.has_session()) {
+                    self.paste.request(id);
+                }
+            }
+            MenuAction::SelectAll => self.send(Command::Select(SelectCmd::All)),
+            MenuAction::Clear => self.send(Command::ClearBuffer),
+        }
+        self.request_redraw();
+    }
+
+    fn open_rename(&mut self, id: TabId) {
+        if let Some(tab) = self.tabs.get(id) {
+            self.modal = Some(ModalState::Rename {
+                id,
+                text: tab.strip_title().to_owned(),
+                frames: 0,
+            });
+        }
+    }
+
+    /// Puts the active tab's working directory on the clipboard when the shell has reported one
+    /// that is a plain absolute path (the text is the shell's: nothing else is copied).
+    fn copy_cwd(&mut self) {
+        let raw = self
+            .tabs
+            .active_item()
+            .and_then(|t| t.cwd.as_deref())
+            .filter(|raw| cwd::syntax(raw).is_some())
+            .map(str::to_owned);
+        if let Some(raw) = raw {
+            self.clipboard_write = Some(raw);
+        }
+    }
+
     // ------------------------------------------------------------------------------- the tabs
 
     /// A new tab was asked for: in the active tab's directory when the shell reported one that
@@ -666,7 +929,7 @@ impl App {
         let geometry = stack.renderer.place(logical, scale).geometry();
         let adapter = stack.renderer.gpu.adapter.get_info();
 
-        let mut tab = Tab::empty(Self::base_theme());
+        let mut tab = Tab::empty(palettes::theme_of(&self.settings.palette));
         tab.focused = self.focused;
         tab.launch_dir = match restored {
             Some(saved) => saved.working_directory.clone(),
@@ -960,16 +1223,15 @@ impl App {
                 self.request_close(ids, event_loop);
             }
             TabEvent::CloseAll => self.request_close(self.tabs.ids(), event_loop),
-            TabEvent::Rename(key) => {
-                if let Some(tab) = self.tabs.get(key.0) {
-                    self.modal = Some(ModalState::Rename {
-                        id: key.0,
-                        text: tab.strip_title().to_owned(),
-                        frames: 0,
-                    });
+            TabEvent::Rename(key) => self.open_rename(key.0),
+            TabEvent::MenuExtra(key, i) => {
+                // The extra rows act on the tab the menu was opened on.
+                if let Some(action) = menus::tab_extra_action(i) {
+                    self.tabs.activate(key.0);
+                    self.active_changed(before);
+                    self.run_menu_action(action, event_loop);
                 }
             }
-            TabEvent::MenuExtra(..) => {}
         }
         self.request_redraw();
     }
@@ -1001,6 +1263,13 @@ impl App {
             AppCommand::PrevTab => self.tabs.activate_step(-1),
             AppCommand::SelectTab(i) => {
                 self.tabs.activate_index(i);
+            }
+            AppCommand::Settings => {
+                if self.page.is_some() {
+                    self.close_page();
+                } else {
+                    self.open_page(Section::Appearance);
+                }
             }
         }
         if self.tabs.active() != before {
@@ -1145,7 +1414,10 @@ impl App {
         } else {
             ControlFlow::Wait
         };
-        merge_flow(check, write)
+        let settings = self.settings_dirty.map_or(ControlFlow::Wait, |t| {
+            ControlFlow::WaitUntil(t + SETTINGS_DEBOUNCE)
+        });
+        merge_flow(merge_flow(check, write), settings)
     }
 
     // ----------------------------------------------------------------------------- the frame
@@ -1164,6 +1436,7 @@ impl App {
         }
         self.pump(event_loop);
         self.flush_workspace(false);
+        self.flush_settings(false);
         if event_loop.exiting() || self.tabs.is_empty() {
             return;
         }
@@ -1259,6 +1532,24 @@ impl App {
             None => None,
         };
 
+        let macos = cfg!(target_os = "macos");
+        let menu_model = self
+            .menu
+            .map(|m| (m, MenuModel::new(m.kind, stack.renderer.strings(), macos)));
+        let menu_name = menu_model
+            .as_ref()
+            .map(|(_, m)| stack.renderer.strings().tr(m.name_key()).to_owned());
+        let extra = menus::tab_extra(stack.renderer.strings());
+        let extra: [&str; 2] = [extra[0].as_str(), extra[1].as_str()];
+        let (busy, outline_cue) = {
+            let cue = self.settings.busy_cue();
+            let busy = self
+                .tabs
+                .active_item()
+                .is_some_and(|t| t.busy(self.settings.outline_full_screen));
+            (busy, cue)
+        };
+        let mut edited = self.settings.clone();
         let Some(tab) = self.tabs.active_item_mut() else {
             return;
         };
@@ -1293,6 +1584,19 @@ impl App {
             preedit: self.preedit.as_deref(),
             clipboard_write: self.clipboard_write.take(),
             clipboard_read: self.paste.take_read(),
+            page: self.page.as_mut().map(|state| PageView {
+                state,
+                settings: &mut edited,
+                restart: self.restart_notice,
+                focused: input.focused,
+            }),
+            menu: menu_model.as_ref().map(|(m, model)| MenuDraw {
+                rows: model.rows(),
+                place: m.place,
+                name: menu_name.as_deref().unwrap_or(""),
+            }),
+            busy: busy.then_some(outline_cue).flatten(),
+            tab_menu_extra: &extra,
         };
         let drawn = match stack.renderer.draw(&input, content, &view, size) {
             Ok(d) => d,
@@ -1303,6 +1607,7 @@ impl App {
         };
         let mut out = drawn.output;
         let (tab_events, modal_out) = (drawn.tab_events, drawn.modal);
+        let (page_out, menu_out, overflow) = (drawn.page, drawn.menu, drawn.overflow);
         // Closing the window is closing every tab: it asks like they do.
         let close_asked = out
             .commands
@@ -1333,7 +1638,40 @@ impl App {
             win.window.request_redraw();
         }
 
-        // What the frame asked of the tabs and the dialog, now that the frame is out.
+        // What the frame asked of the page, the menu, the tabs and the dialog, now that the
+        // frame is out.
+        if edited != self.settings {
+            self.apply_settings(edited);
+        }
+        if let Some(out) = page_out {
+            if out.back {
+                self.close_page();
+            } else if out.restart_action {
+                self.close_page();
+                self.new_tab_request();
+            }
+        }
+        if let Some(r) = menu_out {
+            let action = r.picked.and_then(|i| menu_model.as_ref()?.1.action_at(i));
+            if r.picked.is_some() || r.dismissed {
+                self.menu = None;
+            }
+            if let Some(action) = action {
+                self.run_menu_action(action, event_loop);
+            }
+        }
+        if let Some(rect) = overflow {
+            self.menu = Some(OpenMenu {
+                kind: MenuKind::App,
+                place: MenuPlace::Anchor {
+                    rect,
+                    side: Side::Bottom,
+                    align: PlaceAlign::End,
+                    gap: 4.0,
+                },
+            });
+            self.request_redraw();
+        }
         if let Some(out) = modal_out {
             self.resolve_modal(out, event_loop);
         } else {
@@ -1390,6 +1728,30 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// A key while the settings page is open. Returns whether the app took it (Escape with no
+    /// list open, or the settings chord): the page closes and the toolkit never sees it.
+    fn page_key(&mut self, event: &KeyEvent, synthetic: bool) -> bool {
+        let input = key_input(event, self.mods, synthetic);
+        if !input.pressed || input.repeat {
+            return false;
+        }
+        let list_open = self.page.as_ref().is_some_and(|p| p.combo.is_some());
+        let escape =
+            input.logical == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
+        let ctx = RouteCtx {
+            macos: cfg!(target_os = "macos"),
+            option_as_meta: self.settings.option_as_meta,
+            keymap: keymap(),
+            shortcuts: &self.shortcuts,
+        };
+        let chord = route_key(&input, &ctx) == KeyRoute::Shortcut(AppCommand::Settings);
+        if (escape && !list_open) || chord {
+            self.close_page();
+            return true;
+        }
+        false
     }
 
     /// Typing shows the cursor: the blink starts over.
@@ -1459,7 +1821,7 @@ impl App {
 
     fn on_cursor_moved(&mut self, pos: (f32, f32)) {
         self.pointer = Some(pos);
-        if self.modal.is_some() {
+        if self.overlay_open() {
             return;
         }
         let Some(placed) = self.placed else { return };
@@ -1495,7 +1857,7 @@ impl App {
     }
 
     fn on_mouse_button(&mut self, state: ElementState, button: MouseButton) {
-        if self.modal.is_some() {
+        if self.overlay_open() {
             return;
         }
         let (Some(pos), Some(placed)) = (self.pointer, self.placed) else {
@@ -1516,6 +1878,22 @@ impl App {
         let Some(ev) = pointer_event(state, button) else {
             return;
         };
+        // The terminal's context menu: a secondary press the program does not take (it takes the
+        // mouse unless Shift forces the app's own handling).
+        if ev == PointerEvent::Down(TerminalMouseButton::Right)
+            && self.over_body(pos)
+            && self.has_session()
+            && (!self.tracking() || self.mods.shift_key())
+        {
+            self.menu = Some(OpenMenu {
+                kind: MenuKind::Terminal {
+                    selection: self.has_selection(),
+                },
+                place: MenuPlace::At(pos),
+            });
+            self.request_redraw();
+            return;
+        }
         // A press on a link with the link modifier held is the link's, not the program's and not
         // a selection's, until it is seen whether the pointer moves.
         if ev == PointerEvent::Down(TerminalMouseButton::Left)
@@ -1598,7 +1976,7 @@ impl App {
     }
 
     fn on_wheel(&mut self, delta: MouseScrollDelta) {
-        if self.modal.is_some() {
+        if self.overlay_open() {
             return;
         }
         let (Some(pos), Some(placed)) = (self.pointer, self.placed) else {
@@ -1659,7 +2037,7 @@ impl ApplicationHandler<UserEvent> for App {
             &window,
             &self.settings,
             self.glass,
-            &Self::base_theme(),
+            &self.base_theme(),
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -1716,6 +2094,7 @@ impl ApplicationHandler<UserEvent> for App {
             win.window.set_visible(false);
         }
         self.flush_workspace(true);
+        self.flush_settings(true);
         self.shutdown();
         // The last writes: a disk that hangs does not hang the exit for long.
         if !self.persist.flush(Duration::from_secs(2)) {
@@ -1753,11 +2132,22 @@ impl ApplicationHandler<UserEvent> for App {
                 event,
                 is_synthetic,
                 ..
-            } if self.modal.is_none() => {
+            } if !self.overlay_open() => {
                 self.on_key(event, *is_synthetic, event_loop);
                 return;
             }
-            WindowEvent::Ime(ime) if self.modal.is_none() => {
+            // The page's own keys: Escape and the settings chord leave it; the rest is the
+            // toolkit's (fields, lists, Tab).
+            WindowEvent::KeyboardInput {
+                event: key,
+                is_synthetic,
+                ..
+            } if self.page.is_some() && self.modal.is_none() && self.menu.is_none() => {
+                if self.page_key(key, *is_synthetic) {
+                    return;
+                }
+            }
+            WindowEvent::Ime(ime) if !self.overlay_open() => {
                 self.on_ime(ime);
                 return;
             }

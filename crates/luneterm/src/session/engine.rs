@@ -592,6 +592,19 @@ impl EngineCore {
                 };
                 typed = false;
             }
+            Command::SetTheme(theme) => {
+                if self.colors.set_theme(*theme) {
+                    self.acc.palette = true;
+                    self.acc.full = true;
+                }
+                typed = false;
+            }
+            Command::ClearBuffer => {
+                self.with_selection(Selection::clear);
+                self.terminal.clear();
+                self.acc.full = true;
+                typed = false;
+            }
             Command::SetScrollback(lines) => {
                 let lines = usize::try_from(lines)
                     .unwrap_or(MAX_SCROLLBACK)
