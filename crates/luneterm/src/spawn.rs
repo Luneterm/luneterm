@@ -593,7 +593,13 @@ mod tests {
             shell_args: args.into(),
             ..Settings::default()
         };
-        let var = var_of(&[("SHELL", "/bin/zsh"), ("HOME", "/Users/ann")]);
+        let home = if cfg!(windows) {
+            "C:\\Users\\ann".to_owned()
+        } else {
+            "/Users/ann".to_owned()
+        };
+        let vars = [("SHELL", "/bin/zsh"), ("HOME", home.as_str())];
+        let var = var_of(&vars);
         let mut asked = 0;
         let mut install = || {
             asked += 1;
@@ -608,7 +614,7 @@ mod tests {
         assert!(value(&list[0].env, "ZDOTDIR").is_some());
         assert_eq!(
             value(&list[0].env, "LUNETERM_USER_ZDOTDIR"),
-            Some("/Users/ann")
+            Some(home.as_str())
         );
         // An explicit bash with the default arguments gets the rc file.
         let list = spawn_list(

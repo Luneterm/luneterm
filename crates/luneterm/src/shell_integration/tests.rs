@@ -12,6 +12,15 @@ fn strs(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| (*s).to_owned()).collect()
 }
 
+/// An absolute directory on this OS (`/a/b`, or `C:\a\b` on Windows, where `/a/b` is not absolute).
+fn abs(p: &str) -> String {
+    if cfg!(windows) {
+        format!("C:{}", p.replace('/', "\\"))
+    } else {
+        p.to_owned()
+    }
+}
+
 fn fake_install() -> Install {
     let root = format!("{0}cfg{0}shell-integration", sep());
     Install { root }
@@ -157,25 +166,32 @@ fn zsh_gets_zdotdir_and_the_users_directory_and_its_arguments_are_untouched() {
     let i = fake_install();
     let login =
         |env: &[(&str, &str)], args: &[&str]| augment(&i, None, &strs(args), &vars(env), Os::Macos);
-    let a = login(&[("SHELL", "/bin/zsh"), ("HOME", "/Users/ann")], &[]).expect("zsh");
+    let a = login(
+        &[("SHELL", "/bin/zsh"), ("HOME", abs("/Users/ann").as_str())],
+        &[],
+    )
+    .expect("zsh");
     assert_eq!(a.program, None);
     assert!(a.args.is_empty());
     assert_eq!(value(&a.env, "ZDOTDIR"), Some(i.zsh_dir().as_str()));
-    assert_eq!(value(&a.env, "LUNETERM_USER_ZDOTDIR"), Some("/Users/ann"));
+    assert_eq!(
+        value(&a.env, "LUNETERM_USER_ZDOTDIR"),
+        Some(abs("/Users/ann").as_str())
+    );
     assert_eq!(a.env.len(), 2);
     // The user's own ZDOTDIR wins over HOME.
     let a = login(
         &[
             ("SHELL", "/bin/zsh"),
-            ("HOME", "/Users/ann"),
-            ("ZDOTDIR", "/Users/ann/zdot"),
+            ("HOME", abs("/Users/ann").as_str()),
+            ("ZDOTDIR", abs("/Users/ann/zdot").as_str()),
         ],
         &[],
     )
     .expect("zsh");
     assert_eq!(
         value(&a.env, "LUNETERM_USER_ZDOTDIR"),
-        Some("/Users/ann/zdot")
+        Some(abs("/Users/ann/zdot").as_str())
     );
     // An explicit zsh program keeps its arguments, whatever they are.
     let a = augment(
@@ -323,13 +339,19 @@ fn the_scripts_parse_in_their_shells_when_the_shells_are_here() {
     let dir = scratch("syntax");
     std::fs::create_dir_all(&dir).expect("create");
     let mut checked = 0;
-    for (shell, files) in [
-        (
-            "zsh",
-            vec![("zsh", ".zshenv"), ("zsh", ".zprofile"), ("zsh", ".zshrc")],
-        ),
-        ("bash", vec![("bash", "luneterm-rc.bash")]),
-    ] {
+    // zsh and bash are not integrated on Windows (and `bash -n` there takes POSIX paths).
+    let shells: Vec<(&str, Vec<(&str, &str)>)> = if cfg!(windows) {
+        Vec::new()
+    } else {
+        vec![
+            (
+                "zsh",
+                vec![("zsh", ".zshenv"), ("zsh", ".zprofile"), ("zsh", ".zshrc")],
+            ),
+            ("bash", vec![("bash", "luneterm-rc.bash")]),
+        ]
+    };
+    for (shell, files) in shells {
         for (sub, name) in files {
             let text = FILES
                 .iter()
