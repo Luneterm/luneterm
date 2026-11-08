@@ -95,8 +95,9 @@ Findings:
   steps 1 to 7, `3fa8cdb`): selection tests expecting `\n` (a copy breaks lines with CR LF on
   Windows, by design), workspace and shell-integration tests using `/a`-style paths (not absolute on
   Windows), the integration scripts checked out with CRLF (autocrlf), and `bash -n` over a Windows
-  path. All test portability, fixed in `0a39c61` (the tests, and `.gitattributes` pinning LF on the
-  scripts). No app behaviour changed.
+  path. All test portability, fixed in `0a39c61` and `e35e540` (the tests, and `.gitattributes`
+  pinning LF on the scripts); run 42509338634 at `e35e540` is green on all four jobs. No app
+  behaviour changed, so the exe run above (`3fa8cdb`) stands for `e35e540`.
 - No toolkit gap was found in this run: the window, the surface, the clipboard, the drawn caption,
   the edge resize and `material::apply` worked on Windows. The two limits are the VM's (no 3D
   hardware, so no glass to look at) and the missing readback (P19).
