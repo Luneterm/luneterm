@@ -364,6 +364,11 @@ fn has_selection_needs_a_start_and_a_different_end() {
     }
 }
 
+/// `text` with the line breaks of a copy on this OS (a copy breaks lines with CR LF on Windows).
+fn nl(text: &str) -> String {
+    text.replace('\n', super::EOL)
+}
+
 fn column_text(t: &Terminal, start: Pos, end: Pos) -> String {
     let mut sel = Selection::new();
     sel.mode = SelectionMode::Column;
@@ -376,24 +381,24 @@ fn column_text(t: &Terminal, start: Pos, end: Pos) -> String {
 fn column_selection_selects_a_column_of_text() {
     let mut t = t20();
     put(&mut t, "abcdefghij\r\nklmnopqrst\r\nuvwxyz");
-    assert_eq!(column_text(&t, [2, 0], [4, 2]), "cd\nmn\nwx");
+    assert_eq!(column_text(&t, [2, 0], [4, 2]), nl("cd\nmn\nwx"));
     // The corners swap independently.
-    assert_eq!(column_text(&t, [4, 2], [2, 0]), "cd\nmn\nwx");
-    assert_eq!(column_text(&t, [4, 0], [2, 2]), "cd\nmn\nwx");
+    assert_eq!(column_text(&t, [4, 2], [2, 0]), nl("cd\nmn\nwx"));
+    assert_eq!(column_text(&t, [4, 0], [2, 2]), nl("cd\nmn\nwx"));
 }
 
 #[test]
 fn column_selection_does_not_chop_wide_characters() {
     let mut t = t20();
     put(&mut t, "a\r\n語\r\nb");
-    assert_eq!(column_text(&t, [0, 0], [1, 2]), "a\n語\nb");
+    assert_eq!(column_text(&t, [0, 0], [1, 2]), nl("a\n語\nb"));
 }
 
 #[test]
 fn column_selection_with_a_single_character_emoji() {
     let mut t = t20();
     put(&mut t, "a\r\n☃\r\nc");
-    assert_eq!(column_text(&t, [0, 0], [1, 2]), "a\n☃\nc");
+    assert_eq!(column_text(&t, [0, 0], [1, 2]), nl("a\n☃\nc"));
 }
 
 #[test]
@@ -425,11 +430,11 @@ fn a_drag_selects_across_lines_and_trims_trailing_blanks() {
     put(&mut t, "hello world\r\nsecond line\r\nthird");
     let mut sel = Selection::new();
     drag(&mut sel, &mut t, (0, 6), (2, 3));
-    assert_eq!(text(&sel, &t), "world\nsecond line\nthi");
+    assert_eq!(text(&sel, &t), nl("world\nsecond line\nthi"));
     // A drag the other way selects the same text.
     let mut back = Selection::new();
     drag(&mut back, &mut t, (2, 3), (0, 6));
-    assert_eq!(text(&back, &t), "world\nsecond line\nthi");
+    assert_eq!(text(&back, &t), nl("world\nsecond line\nthi"));
 }
 
 #[test]
@@ -438,7 +443,7 @@ fn a_wrapped_line_copies_without_a_break_inside_it() {
     put(&mut t, &format!("{}tail\r\nnext", "x".repeat(20)));
     let mut sel = Selection::new();
     drag(&mut sel, &mut t, (0, 0), (2, 4));
-    assert_eq!(text(&sel, &t), format!("{}tail\nnext", "x".repeat(20)));
+    assert_eq!(text(&sel, &t), nl(&format!("{}tail\nnext", "x".repeat(20))));
 }
 
 #[test]
@@ -562,7 +567,7 @@ fn the_selection_shifts_with_a_trim_and_clears_when_its_anchor_is_trimmed() {
     lines(&mut t, 0, 3); // l0..l2 on lines 0..2, the cursor on line 3
     let mut sel = Selection::new();
     drag(&mut sel, &mut t, (1, 0), (2, 1)); // l1 .. "l" of l2: lines 1 and 2
-    assert_eq!(text(&sel, &t), "l1\nl");
+    assert_eq!(text(&sel, &t), nl("l1\nl"));
     let anchor_before = sel.view(&t).expect("selected").start.1;
     assert_eq!(anchor_before, 1);
 
@@ -576,7 +581,7 @@ fn the_selection_shifts_with_a_trim_and_clears_when_its_anchor_is_trimmed() {
         after.start.1 < anchor_before,
         "moved up with its text: {after:?}"
     );
-    assert_eq!(text(&sel, &t), "l1\nl", "the same text");
+    assert_eq!(text(&sel, &t), nl("l1\nl"), "the same text");
 
     // Trim past the anchor: gone.
     lines(&mut t, 8, 14);

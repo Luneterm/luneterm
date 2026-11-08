@@ -259,6 +259,21 @@ impl SaveGuard {
 mod tests {
     use super::*;
 
+    /// An absolute directory on this OS: `/a/b`, or `C:\a\b` on Windows (where `/a/b` is not
+    /// absolute, so the syntax check would refuse it).
+    fn abs(p: &str) -> String {
+        if cfg!(windows) {
+            format!("C:{}", p.replace('/', "\\"))
+        } else {
+            p.to_owned()
+        }
+    }
+
+    /// [`abs`] as it is written inside a JSON string.
+    fn json_abs(p: &str) -> String {
+        abs(p).replace('\\', "\\\\")
+    }
+
     fn tab(cwd: &str, live: Option<&str>, title: Option<&str>) -> TabState {
         TabState {
             working_directory: Some(cwd.into()),
@@ -271,8 +286,8 @@ mod tests {
     fn a_workspace_round_trips() {
         let ws = Workspace {
             tabs: vec![
-                tab("/a", Some("/a/b"), Some("build")),
-                tab("/c", None, None),
+                tab(&abs("/a"), Some(&abs("/a/b")), Some("build")),
+                tab(&abs("/c"), None, None),
                 TabState::default(),
             ],
             active: 1,
@@ -288,12 +303,20 @@ mod tests {
 
     #[test]
     fn at_most_32_tabs_are_read_and_active_is_clamped() {
-        let tabs: Vec<String> = (0..50).map(|i| format!(r#"{{"cwd":"/t{i}"}}"#)).collect();
+        let tabs: Vec<String> = (0..50)
+            .map(|i| {
+                let dir = json_abs(&format!("/t{i}"));
+                format!(r#"{{"cwd":"{dir}"}}"#)
+            })
+            .collect();
         let doc = format!(r#"{{"version":1,"active":45,"tabs":[{}]}}"#, tabs.join(","));
         let ws = parse_workspace(doc.as_bytes()).expect("read");
         assert_eq!(ws.tabs.len(), MAX_TABS);
         assert_eq!(ws.active, MAX_TABS - 1);
-        assert_eq!(ws.tabs[31].working_directory.as_deref(), Some("/t31"));
+        assert_eq!(
+            ws.tabs[31].working_directory.as_deref(),
+            Some(abs("/t31").as_str())
+        );
         for active in ["-1", "1.5", "\"two\"", "null", "9007199254740992"] {
             let doc = format!(r#"{{"version":1,"active":{active},"tabs":[{{}},{{}}]}}"#);
             let ws = parse_workspace(doc.as_bytes()).expect("read");
@@ -323,12 +346,13 @@ mod tests {
               {{"title":"{long}"}},
               {{"title":"   "}},
               {{"title":7}},
-              {{"cwd":"relative/dir","live_cwd":"/ok/dir"}},
+              {{"cwd":"relative/dir","live_cwd":"{ok}"}},
               {{"cwd":"\\\\evil\\share","live_cwd":"//evil/share"}},
               {{"cwd":"/has\nnewline"}},
               "not a tab",
               {{"cwd":["/a"]}}
-            ]}}"#
+            ]}}"#,
+            ok = json_abs("/ok/dir")
         );
         let ws = parse_workspace(doc.as_bytes()).expect("read");
         let titles: Vec<_> = ws.tabs.iter().map(|t| t.manual_title.as_deref()).collect();
@@ -349,7 +373,10 @@ mod tests {
         );
         assert_eq!(ws.tabs[3].manual_title, None, "a number is no title");
         assert_eq!(ws.tabs[4].working_directory, None, "relative");
-        assert_eq!(ws.tabs[4].current_directory.as_deref(), Some("/ok/dir"));
+        assert_eq!(
+            ws.tabs[4].current_directory.as_deref(),
+            Some(abs("/ok/dir").as_str())
+        );
         assert_eq!(
             ws.tabs[5],
             TabState::default(),
