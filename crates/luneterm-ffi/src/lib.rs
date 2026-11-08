@@ -8,6 +8,8 @@
 //!   `panic = "abort"` build of this crate is a compile error (M8 D4);
 //! - a caught panic poisons the handle; every call but `luneterm_engine_free` then returns
 //!   [`LUNETERM_ERR_POISONED`]. The library never installs a panic hook;
+//! - outputs (viewport, events) are engine-owned slots: a pointer stays valid until the next call
+//!   that fills the same slot, or `luneterm_engine_free` (see the `output` module docs);
 //! - [`ABI_VERSION`] is bumped on any breaking change.
 //!
 //! 64-bit targets only (D6).
