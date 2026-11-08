@@ -369,7 +369,9 @@ fn convert_event(event: &HostEvent, slot: &mut EventsSlot) -> LunetermEvent {
         HostEvent::UnknownOsc { ident, len } => {
             out.kind = LUNETERM_EVENT_UNKNOWN_OSC;
             out.value = *ident;
-            out.len = wide(*len);
+            // The payload length is child-chosen: it goes in `value2` (saturated), never in
+            // `len`, so `offset`/`len` stay a range of the data pool for every event.
+            out.value2 = i32::try_from(*len).unwrap_or(i32::MAX);
         }
         HostEvent::ClipboardWrite(text) => {
             out.kind = LUNETERM_EVENT_CLIPBOARD_WRITE;
@@ -985,7 +987,7 @@ mod tests {
                     8 => HostEvent::A11yTab(usize::try_from(e.value).expect("tab count")),
                     9 => HostEvent::UnknownOsc {
                         ident: e.value,
-                        len: e.len as usize,
+                        len: usize::try_from(e.value2).expect("payload length"),
                     },
                     10 => {
                         data_used += e.len as usize;
@@ -1568,8 +1570,14 @@ mod tests {
         );
         let (events, _, _) = run("\x1b]9999;12345\x07");
         assert_eq!(
-            (events[0].kind, events[0].value, events[0].len),
-            (9, 9999, 5)
+            (
+                events[0].kind,
+                events[0].value,
+                events[0].value2,
+                events[0].offset,
+                events[0].len
+            ),
+            (9, 9999, 5, 0, 0)
         );
         let (events, _, _) = run("\x1b]9;4;2;77\x07");
         assert_eq!(
@@ -1593,6 +1601,19 @@ mod tests {
         let mut slot = EventsSlot::default();
         let out = flatten_events(&[HostEvent::A11yTab(usize::MAX)], &mut slot);
         assert_eq!(slice(out.events, out.count)[0].value, i32::MAX);
+        // An unknown-OSC payload length past INT32_MAX saturates in `value2`; offset and len stay 0.
+        let out = flatten_events(
+            &[HostEvent::UnknownOsc {
+                ident: 7,
+                len: usize::MAX,
+            }],
+            &mut slot,
+        );
+        let event = slice(out.events, out.count)[0];
+        assert_eq!(
+            (event.value, event.value2, event.offset, event.len),
+            (7, i32::MAX, 0, 0)
+        );
     }
 
     #[test]

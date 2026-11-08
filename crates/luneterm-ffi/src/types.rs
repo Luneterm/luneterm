@@ -246,7 +246,8 @@ pub const LUNETERM_EVENT_WINDOW_REPORT: u32 = 6;
 pub const LUNETERM_EVENT_A11Y_TEXT: u32 = 7;
 /// Event kind: HT moved the cursor (`value` = cells, saturated to `INT32_MAX`).
 pub const LUNETERM_EVENT_A11Y_TAB: u32 = 8;
-/// Event kind: an OSC nobody handled (`value` = ident, `len` = payload length, no data).
+/// Event kind: an OSC nobody handled (`value` = ident, `value2` = payload length saturated to
+/// `INT32_MAX`; no data, `offset` and `len` are 0).
 pub const LUNETERM_EVENT_UNKNOWN_OSC: u32 = 9;
 /// Event kind: OSC 52 clipboard write (`data`, UTF-8).
 pub const LUNETERM_EVENT_CLIPBOARD_WRITE: u32 = 10;
@@ -291,7 +292,8 @@ pub struct LunetermEvent {
     pub value2: i32,
     /// Kind specific bits.
     pub flags: u32,
-    /// Offset into `LunetermEvents.data` (or the first request in `colors` for `COLOR`).
+    /// Offset into `LunetermEvents.data` (or the first request in `colors` for `COLOR`); 0 for
+    /// kinds without data.
     pub offset: u64,
     /// Length in bytes (or the number of requests for `COLOR`).
     pub len: u64,

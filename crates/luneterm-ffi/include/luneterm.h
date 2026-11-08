@@ -269,7 +269,8 @@ int32_t luneterm_engine_viewport(LunetermEngine* engine, LunetermViewport* out);
 #define LUNETERM_EVENT_WINDOW_REPORT 6u
 #define LUNETERM_EVENT_A11Y_TEXT 7u /* data (only with screen-reader mode, which this ABI never enables) */
 #define LUNETERM_EVENT_A11Y_TAB 8u  /* value: cells, saturated to INT32_MAX (same) */
-#define LUNETERM_EVENT_UNKNOWN_OSC 9u /* value: ident; len: payload length; no data */
+#define LUNETERM_EVENT_UNKNOWN_OSC 9u /* value: ident; value2: payload length saturated to INT32_MAX;
+                                         no data: offset and len are 0 */
 #define LUNETERM_EVENT_CLIPBOARD_WRITE 10u /* data: UTF-8 text (only while the gate is on) */
 #define LUNETERM_EVENT_CWD_CHANGED 11u     /* data: UTF-8 */
 #define LUNETERM_EVENT_PROGRESS 12u /* value: 0 none, 1 normal, 2 error, 3 indeterminate, 4 warning;
@@ -286,6 +287,9 @@ typedef struct LunetermEvent {
     int32_t value;
     int32_t value2;
     uint32_t flags;
+    /* offset/len are always a valid range of LunetermEvents.data (or of colors, for COLOR), and
+     * both are 0 for an event without data. Never a child-chosen count that is not such a range
+     * (UNKNOWN_OSC carries its payload length in value2). */
     uint64_t offset; /* into data (or the first request in colors) */
     uint64_t len;    /* bytes (or the number of requests) */
 } LunetermEvent;

@@ -741,7 +741,9 @@ The Lunegit-side swap (P/Invoke, deleting the V8 host) is not part of M8.
   in the header); a host refuses a library whose value differs. It is bumped on any change to an
   existing export's signature or meaning, a struct layout, a constant's value, or a removal. Adding an
   export does not bump it (the host resolves symbols at load time). M8 defines ABI 1 in full; the
-  stub's only export is unchanged.
+  stub's only export is unchanged. ABI 1 has no consumer yet, so
+  `UNKNOWN_OSC` carries its payload length in `value2` (saturated to `INT32_MAX`; `offset` and `len`
+  are 0) without a bump: `offset`/`len` are a data-pool range for every event.
 - **Construction (D9).** `luneterm_engine_new(const LunetermConfig*, LunetermEngine**)` always
   installs the standard extensions. An all-zero config is the safe default: 2 x 1, no scrollback,
   Unicode 6, XTVERSION unanswered, clipboard writes off. The XTVERSION name is passed as bytes
