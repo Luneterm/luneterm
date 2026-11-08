@@ -21,6 +21,7 @@ use lune_vt::{
     ViewportCursor,
 };
 use luneterm::app::cursor_of;
+use luneterm::links::{LinkKind, UriTable, scan_row};
 use luneterm::render::{Content, Renderer};
 use luneterm::session::{
     Command, CopyResult, Exit, Geometry, HostPalette, SelectCmd, Session, SessionConfig,
@@ -108,6 +109,11 @@ pub(crate) const CASES: &[Case] = &[
         id: "E11",
         name: "selection and copy",
         run: e11_copy,
+    },
+    Case {
+        id: "E12",
+        name: "links",
+        run: e12_links,
     },
 ];
 
@@ -255,6 +261,8 @@ struct Seen {
     cursor: ViewportCursor,
     /// What `CopySelection` answered, in order.
     copied: Vec<CopyResult>,
+    /// The OSC 8 ids and URIs the Updates carried.
+    link_uris: Vec<(u32, String)>,
 }
 
 /// A running session and the UI side of it: the wake-up, the mirrored grid, what was seen.
@@ -289,6 +297,7 @@ impl Rig {
                 modes: UpdateModes::default(),
                 cursor: ViewportCursor::default(),
                 copied: Vec::new(),
+                link_uris: Vec::new(),
             },
         })
     }
@@ -327,6 +336,7 @@ impl Rig {
         if let Some(copied) = update.selection_text {
             self.seen.copied.push(copied);
         }
+        self.seen.link_uris.extend(update.link_uris);
         true
     }
 
@@ -1191,6 +1201,7 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
             maximized: false,
             grid,
             selection: &[],
+            hover_link: 0,
             toasts: None,
             cursor: cursor_of(cursor, COLS),
             blink_on: true,
@@ -1495,4 +1506,61 @@ fn e11_copy() -> CaseResult {
     })?;
     ensure(rig.close(), || "close timed out".to_owned())?;
     ok("word, line, drag and wrapped line copied from a real shell; no selection answers nothing")
+}
+
+// ------------------------------------------------------------------------------- E12
+
+/// Links over a real PTY child: an OSC 8 hyperlink (its URI arrives in an Update and its cells
+/// carry the id) and a bare URL in the same row, found by the scanner on the mirror; a hostile OSC
+/// 8 URI is carried but is not a link.
+fn e12_links() -> CaseResult {
+    if let Some(s) = unix_only() {
+        return s;
+    }
+    let script = r#"printf '\033]8;;https://example.com/osc\033\\click\033]8;;\033\\ and https://example.org/bare ok\r\n\033]8;;file:///etc/passwd\033\\evil\033]8;;\033\\ http://user@host/x\r\n'; read l"#;
+    let pty = spawn_pty(Path::new("/bin/sh"), &strs(&["-c", script]))?;
+    let mut rig = Rig::start(pty, config(true))?;
+    rig.wait("the printed rows", WAIT, |r| r.contains("evil"))?;
+    ensure(
+        rig.seen
+            .link_uris
+            .iter()
+            .any(|(_, u)| u == "https://example.com/osc"),
+        || {
+            format!(
+                "the OSC 8 URI did not reach the Update: {:?}",
+                rig.seen.link_uris
+            )
+        },
+    )?;
+    let uris: UriTable = rig.seen.link_uris.iter().cloned().collect();
+    let scan = |row: usize| {
+        let mut out = Vec::new();
+        scan_row(rig.grid.row(row).expect("row"), row, &uris, &mut out);
+        out
+    };
+    let first = scan(0);
+    let kinds: Vec<_> = first
+        .iter()
+        .map(|s| (s.uri.as_str(), matches!(s.kind, LinkKind::Osc8(_))))
+        .collect();
+    ensure(
+        kinds
+            == [
+                ("https://example.com/osc", true),
+                ("https://example.org/bare", false),
+            ],
+        || format!("row 0 spans: {first:?}"),
+    )?;
+    // `click` is columns 0..=4.
+    ensure((first[0].start, first[0].end) == (0, 4), || {
+        format!("OSC 8 columns {first:?}")
+    })?;
+    // The hostile ones: a file: hyperlink and userinfo in plain text give nothing to click.
+    let second = scan(1);
+    ensure(second.is_empty(), || {
+        format!("row 1 should have no link: {second:?}")
+    })?;
+    ensure(rig.close(), || "close timed out".to_owned())?;
+    ok("an OSC 8 link and a bare URL found on a real session's rows; file: and userinfo refused")
 }

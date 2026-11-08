@@ -52,6 +52,9 @@ pub struct Content<'a> {
     pub grid: &'a mut Grid,
     /// The selected cells, in viewport rows.
     pub selection: &'a [SelectionRange],
+    /// The link id under the pointer with the link modifier held (0: none): underlined, and the
+    /// pointer becomes a hand.
+    pub hover_link: u32,
     /// The app's toasts, drawn over everything; `None` draws none.
     pub toasts: Option<&'a mut Toasts>,
     pub cursor: Cursor,
@@ -272,6 +275,9 @@ impl Renderer {
             toasts: content.toasts.take(),
         };
         let shell_out = shell::draw(&mut ui, view);
+        if content.hover_link != 0 {
+            ui.set_cursor(lune_ui::input::CursorIcon::Pointer);
+        }
 
         let cursor = content.cursor;
         let cols = content.grid.cols();
@@ -319,7 +325,7 @@ impl Renderer {
             focused: input.focused,
             blink_on: content.blink_on,
             selection: content.selection,
-            hover_link: 0,
+            hover_link: content.hover_link,
         };
         self.term.update(
             &mut self.text.fonts,

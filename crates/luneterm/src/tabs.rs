@@ -16,6 +16,7 @@ use lune_ui::input::Event;
 
 use crate::app::{cursor_of, theme_with_palette};
 use crate::cwd;
+use crate::links::{self, Hover, LinkSpan, MAX_URI_TABLE, UriTable};
 use crate::outline::CommandState;
 use crate::session::{
     Command, CopyResult, ForegroundState, Geometry, SelectionView, Session, Update, UpdateModes,
@@ -213,6 +214,11 @@ pub struct Tab {
     osc_title: Option<String>,
     /// The selection as the engine last published it (buffer coordinates).
     pub selection: Option<SelectionView>,
+    /// The URIs of the OSC 8 link ids the engine published (untrusted text: every use checks it).
+    pub link_uris: UriTable,
+    /// The link shown as hovered, and the id the termview underlines for it (0: none).
+    hover: Option<Hover>,
+    pub hover_id: u32,
     /// The terminal colours in force (the session palette on the base theme).
     pub theme: TermTheme,
     /// The geometry the session was last told.
@@ -245,6 +251,9 @@ impl Tab {
             name: None,
             osc_title: None,
             selection: None,
+            link_uris: UriTable::new(),
+            hover: None,
+            hover_id: 0,
             theme,
             sent_geometry: None,
             cwd: None,
@@ -292,9 +301,41 @@ impl Tab {
         asks_on_close(self.session.is_some(), self.foreground, self.command)
     }
 
+    /// The link under cell (`row`, `col`) of the mirror, if any.
+    pub fn link_at(&self, row: usize, col: usize) -> Option<LinkSpan> {
+        links::link_at(&self.grid, row, col, &self.link_uris)
+    }
+
+    /// Stops showing a link as hovered.
+    pub fn hide_link_hover(&mut self) {
+        if let Some(hover) = self.hover.take() {
+            hover.hide(&mut self.grid);
+        }
+        self.hover_id = 0;
+    }
+
+    /// Shows the link at cell (`row`, `col`) as hovered, or none when there is none there.
+    /// Returns whether what is shown changed.
+    pub fn set_link_hover(&mut self, at: Option<(usize, usize)>) -> bool {
+        let span = at.and_then(|(row, col)| self.link_at(row, col));
+        if span.as_ref() == self.hover.as_ref().map(|h| &h.span) {
+            return false;
+        }
+        self.hide_link_hover();
+        if let Some(span) = span {
+            let (hover, id) = Hover::show(span, &mut self.grid);
+            self.hover = Some(hover);
+            self.hover_id = id;
+        }
+        true
+    }
+
     /// Applies one Update to the mirror and tells what the app must act on.
     pub fn apply(&mut self, update: Update) -> Effects {
         let mut fx = Effects::default();
+        // The hovered link's cells are put back first: the update may rewrite them. The app shows
+        // the hover again after the update.
+        self.hide_link_hover();
         apply_update(&mut self.grid, &update);
         self.cursor = cursor_of(&update.cursor, self.grid.cols());
         self.scroll = Some(ScrollView {
@@ -322,6 +363,12 @@ impl Tab {
         if let Some(c) = update.command {
             self.command = c;
             fx.chrome = true;
+        }
+        if !update.link_uris.is_empty() {
+            if self.link_uris.len() + update.link_uris.len() > MAX_URI_TABLE {
+                self.link_uris.clear();
+            }
+            self.link_uris.extend(update.link_uris);
         }
         if let Some(selection) = update.selection {
             self.selection = selection;
