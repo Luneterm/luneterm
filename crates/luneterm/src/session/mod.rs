@@ -8,6 +8,7 @@
 
 mod engine;
 mod host;
+mod selection;
 mod threads;
 mod update;
 
@@ -28,6 +29,11 @@ use lune_vt::{TerminalKeyEvent, TerminalMouseEvent};
 
 pub use crate::outline::CommandState;
 pub use host::HostPalette;
+pub use selection::{
+    CopyError, CopyResult, DRAG_SCROLL_INTERVAL, DRAG_SCROLL_MAX_SPEED, DRAG_SCROLL_MAX_THRESHOLD,
+    MAX_COPY_BYTES, Pos, SelectCmd, Selection, SelectionMode, SelectionModel, SelectionView,
+    drag_scroll_amount, edge_of, selection_text, view_range,
+};
 pub use update::{
     Exit, ForegroundState, LINK_URIS_CAP, MARKS_CAP, MAX_LINK_URI, Update, UpdateModes,
     apply_update,
@@ -110,6 +116,10 @@ pub enum Command {
     SetClipboardWrite(bool),
     /// Scrollback lines, capped at [`MAX_SCROLLBACK`] (a setting changed live).
     SetScrollback(u32),
+    /// Selection: a press, a drag, a release, a clear (the buffer is the engine's; plan M10 D2).
+    Select(SelectCmd),
+    /// Copy the selected text: the answer is `Update.selection_text`.
+    CopySelection,
 }
 
 impl fmt::Debug for Command {
@@ -126,6 +136,8 @@ impl fmt::Debug for Command {
             Command::Resize(g) => write!(f, "Resize({g:?})"),
             Command::SetClipboardWrite(b) => write!(f, "SetClipboardWrite({b})"),
             Command::SetScrollback(n) => write!(f, "SetScrollback({n})"),
+            Command::Select(c) => write!(f, "Select({c:?})"),
+            Command::CopySelection => f.write_str("CopySelection"),
         }
     }
 }

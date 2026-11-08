@@ -18,7 +18,8 @@ use crate::app::{cursor_of, theme_with_palette};
 use crate::cwd;
 use crate::outline::CommandState;
 use crate::session::{
-    Command, ForegroundState, Geometry, Session, Update, UpdateModes, apply_update,
+    Command, CopyResult, ForegroundState, Geometry, SelectionView, Session, Update, UpdateModes,
+    apply_update,
 };
 use crate::shell::ScrollView;
 use crate::spawn::SpawnFailure;
@@ -185,6 +186,8 @@ impl<T> TabSet<T> {
 pub struct Effects {
     pub bells: u32,
     pub clipboard_write: Option<String>,
+    /// The answer to a copy: the text, or that it was too large.
+    pub copy: Option<CopyResult>,
     pub exited: bool,
     /// The session palette changed: the terminal theme is new.
     pub palette: bool,
@@ -208,6 +211,8 @@ pub struct Tab {
     name: Option<String>,
     /// The program's title (OSC 0/2), sanitized; `None` while it set none.
     osc_title: Option<String>,
+    /// The selection as the engine last published it (buffer coordinates).
+    pub selection: Option<SelectionView>,
     /// The terminal colours in force (the session palette on the base theme).
     pub theme: TermTheme,
     /// The geometry the session was last told.
@@ -239,6 +244,7 @@ impl Tab {
             alt_screen: false,
             name: None,
             osc_title: None,
+            selection: None,
             theme,
             sent_geometry: None,
             cwd: None,
@@ -317,6 +323,10 @@ impl Tab {
             self.command = c;
             fx.chrome = true;
         }
+        if let Some(selection) = update.selection {
+            self.selection = selection;
+        }
+        fx.copy = update.selection_text;
         fx.bells = update.bells;
         fx.clipboard_write = update.clipboard_write;
         if update.exited.is_some() {

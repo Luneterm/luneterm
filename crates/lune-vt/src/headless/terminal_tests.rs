@@ -506,6 +506,24 @@ fn add_marker_follows_the_cursor_line_and_is_refused_on_the_alt_buffer() {
 }
 
 #[test]
+fn dispose_marker_frees_a_marker_and_ignores_an_unknown_or_repeated_id() {
+    let mut t = sized(10, 3);
+    t.write_str("\n\n");
+    let marker = t.add_marker(0).unwrap();
+    let other = t.add_marker(-1).unwrap();
+    assert_eq!(t.buffers().normal().markers().len(), 2);
+    t.dispose_marker(marker);
+    assert!(t.buffers().normal().marker(marker).is_none());
+    assert!(
+        t.buffers().normal().marker(other).is_some(),
+        "the other one stays"
+    );
+    t.dispose_marker(marker);
+    t.dispose_marker(other);
+    assert_eq!(t.buffers().normal().markers().len(), 0);
+}
+
+#[test]
 fn idle_finishes_the_memory_cleanup_after_a_column_shrink() {
     let mut t = term([
         OptionValue::Cols(80),

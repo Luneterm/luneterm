@@ -266,6 +266,8 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<(), String
             modal,
             maximized: false,
             grid: &mut grid,
+            selection: &[],
+            toasts: None,
             cursor,
             blink_on: true,
             scroll: scene.scroll,

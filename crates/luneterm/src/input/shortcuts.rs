@@ -12,6 +12,9 @@ use crate::session::Scroll;
 pub enum AppCommand {
     /// Paste the clipboard (the app reads it, then sends `Command::Paste`).
     Paste,
+    /// Copy the selection. With none selected the key is the terminal's (Ctrl+Shift+C) or
+    /// nobody's (Cmd+C): the app asks the table without this entry, [`AppShortcuts::without_copy`].
+    Copy,
     /// Scroll the viewport locally.
     Scroll(Scroll),
     /// Open a tab (D13).
@@ -32,7 +35,7 @@ impl AppCommand {
     pub fn once_per_press(self) -> bool {
         matches!(
             self,
-            AppCommand::Paste | AppCommand::NewTab | AppCommand::CloseTab
+            AppCommand::Paste | AppCommand::Copy | AppCommand::NewTab | AppCommand::CloseTab
         )
     }
 }
@@ -53,9 +56,12 @@ impl AppShortcuts {
         let ch = |c: &str| Chord::key(Key::Character(c.into()));
         let v = ch("v");
         let paste = if macos { v.logo() } else { v.ctrl().shift() };
+        let c = ch("c");
+        let copy = if macos { c.logo() } else { c.ctrl().shift() };
         let shift = |k| Chord::key(Key::Named(k)).shift();
         let mut entries = vec![
             (paste, AppCommand::Paste),
+            (copy, AppCommand::Copy),
             (
                 shift(NamedKey::PageUp),
                 AppCommand::Scroll(Scroll::Pages(-1)),
@@ -93,6 +99,18 @@ impl AppShortcuts {
             }
         }
         AppShortcuts { entries }
+    }
+
+    /// The same table without Copy: what a Copy chord means when nothing is selected.
+    pub fn without_copy(&self) -> AppShortcuts {
+        AppShortcuts {
+            entries: self
+                .entries
+                .iter()
+                .filter(|(_, cmd)| *cmd != AppCommand::Copy)
+                .cloned()
+                .collect(),
+        }
     }
 
     /// The command of the first chord that matches a press of `key` with `held` modifiers.
@@ -255,5 +273,37 @@ mod tests {
         assert!(AppCommand::CloseTab.once_per_press());
         assert!(!AppCommand::NextTab.once_per_press());
         assert!(!AppCommand::Scroll(Scroll::Top).once_per_press());
+    }
+
+    #[test]
+    fn copy_is_cmd_c_on_macos_and_ctrl_shift_c_elsewhere_and_ctrl_c_stays_the_terminals() {
+        let logo = Modifiers { logo: true, ..NONE };
+        let ctrl = Modifiers {
+            control: true,
+            ..NONE
+        };
+        let ctrl_shift = Modifiers {
+            control: true,
+            shift: true,
+            ..NONE
+        };
+        assert_eq!(tab_command(true, ch("c"), logo), Some(AppCommand::Copy));
+        assert_eq!(tab_command(true, ch("c"), ctrl), None);
+        assert_eq!(
+            tab_command(false, ch("C"), ctrl_shift),
+            Some(AppCommand::Copy)
+        );
+        // Plain Ctrl+C is the interrupt, never ours.
+        assert_eq!(tab_command(false, ch("c"), ctrl), None);
+        assert_eq!(tab_command(false, ch("c"), logo), None);
+        // Without a selection the table has no Copy: the chord falls through to the router.
+        let t = AppShortcuts::standard(false).without_copy();
+        assert_eq!(t.matching(&ch("C"), ctrl_shift, &Keymap::PC), None);
+        assert_eq!(
+            t.matching(&ch("v"), ctrl_shift, &Keymap::PC),
+            Some(AppCommand::Paste),
+            "the rest is kept"
+        );
+        assert!(AppCommand::Copy.once_per_press());
     }
 }

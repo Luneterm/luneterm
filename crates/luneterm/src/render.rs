@@ -2,7 +2,9 @@
 //! grid into the shell's slot, and the frame renderer puts both into a target. The window and the
 //! frame dumps call the same [`Renderer::draw`], so a dump shows what the window shows.
 
-use lune_termview::{CellMetrics, Cursor, Grid, GridLayout, TermTheme, TermView, ViewState};
+use lune_termview::{
+    CellMetrics, Cursor, Grid, GridLayout, SelectionRange, TermTheme, TermView, ViewState,
+};
 use lune_ui::color::premul;
 use lune_ui::frame::FrameRenderer;
 use lune_ui::gpu::Gpu;
@@ -16,6 +18,7 @@ use lune_ui::strings::{DisplayFormat, StringTable};
 use lune_ui::text::{Spec, Style, TextCache};
 use lune_ui::theme::{AcrylicLevel, Theme};
 use lune_ui::ui::{FrameConfig, Ui, UiStore};
+use lune_ui::widgets::toast::Toasts;
 
 use crate::fonts;
 use crate::session::Geometry;
@@ -47,6 +50,10 @@ pub struct Content<'a> {
     pub modal: Option<Modal<'a>>,
     pub maximized: bool,
     pub grid: &'a mut Grid,
+    /// The selected cells, in viewport rows.
+    pub selection: &'a [SelectionRange],
+    /// The app's toasts, drawn over everything; `None` draws none.
+    pub toasts: Option<&'a mut Toasts>,
     pub cursor: Cursor,
     pub blink_on: bool,
     pub scroll: Option<ScrollView>,
@@ -68,6 +75,7 @@ impl std::fmt::Debug for Content<'_> {
             .field("maximized", &self.maximized)
             .field("tabs", &self.tabs.len())
             .field("modal", &self.modal.is_some())
+            .field("selection", &self.selection.len())
             .field("ime", &self.ime)
             .field("clipboard_write", &self.clipboard_write.is_some())
             .field("clipboard_read", &self.clipboard_read)
@@ -261,6 +269,7 @@ impl Renderer {
             tabs: content.tabs,
             active_tab: content.active_tab,
             modal: content.modal.take(),
+            toasts: content.toasts.take(),
         };
         let shell_out = shell::draw(&mut ui, view);
 
@@ -305,12 +314,11 @@ impl Renderer {
         output.commands.extend(shell_out.commands);
         let (tab_events, modal) = (shell_out.tab_events, shell_out.modal);
 
-        let selection = [];
         let view_state = ViewState {
             cursor,
             focused: input.focused,
             blink_on: content.blink_on,
-            selection: &selection,
+            selection: content.selection,
             hover_link: 0,
         };
         self.term.update(

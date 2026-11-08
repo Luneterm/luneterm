@@ -19,11 +19,12 @@ use lune_vt::{
 };
 
 use super::host::{ColorState, window_report};
+use super::selection::{CopyResult, Selection};
 use super::threads::{Stats, WriteKind, WriteQueue};
 use super::update::{
     Exit, ForegroundState, LINK_URIS_CAP, MARKS_CAP, MAX_LINK_URI, Update, UpdateModes, to_cell,
 };
-use super::{Command, Geometry, MAX_SCROLLBACK, Scroll, SessionConfig};
+use super::{Command, Geometry, MAX_COPY_BYTES, MAX_SCROLLBACK, Scroll, SessionConfig};
 use crate::outline::{CommandState, CommandTracker};
 
 /// One output slice runs at most this long (plus the write in flight).
@@ -103,6 +104,10 @@ struct Acc {
     sync_in_command: bool,
     foreground: Option<ForegroundState>,
     command: Option<CommandState>,
+    /// The selection changed (publish it).
+    selection: bool,
+    /// The answer to a `CopySelection`.
+    copy: Option<CopyResult>,
 }
 
 impl Acc {
@@ -119,6 +124,8 @@ impl Acc {
             || self.sync_in_command
             || self.foreground.is_some()
             || self.command.is_some()
+            || self.selection
+            || self.copy.is_some()
     }
 
     fn add_rows(&mut self, start: usize, end: usize) {
@@ -218,6 +225,7 @@ pub(crate) struct EngineCore {
     last_output: Option<Duration>,
     /// Link ids already carried by an Update (or never publishable).
     sent_links: HashSet<u32>,
+    selection: Selection,
 }
 
 impl std::fmt::Debug for EngineCore {
@@ -295,6 +303,7 @@ impl EngineCore {
             published_command: CommandState::default(),
             last_output: None,
             sent_links: HashSet::new(),
+            selection: Selection::new(),
         }
     }
 
@@ -333,6 +342,12 @@ impl EngineCore {
             self.next_exit_poll = now;
         }
         self.run_slice(interrupt);
+        self.selection_follows_the_buffer();
+        let now = self.clock.now();
+        if self.selection.drag_due(now) {
+            self.with_selection(|s, t| s.drag_scroll(t, now));
+            self.acc.full = true;
+        }
         if self.pending.is_empty() && self.idle_pending {
             self.idle_pending = self.terminal.idle();
         }
@@ -362,6 +377,7 @@ impl EngineCore {
             || self.idle_pending
             || self.exit_poll_due(now)
             || self.probe_due(now)
+            || self.selection.drag_due(now)
             || (ui_ready && unpublished && self.may_publish(now, visible))
     }
 
@@ -378,6 +394,9 @@ impl EngineCore {
         let mut at = |d: Duration| deadline = Some(deadline.map_or(d, |old| old.min(d)));
         if self.reader_end_at.is_some() && !self.exit_reported {
             at(self.next_exit_poll);
+        }
+        if let Some(due) = self.selection.drag_deadline() {
+            at(due);
         }
         if ui_ready && unpublished {
             if self.sync_deferring(now) {
@@ -490,16 +509,19 @@ impl EngineCore {
         match command {
             Command::Key(event) => {
                 if let Some(bytes) = self.terminal.key_event(&event) {
+                    self.with_selection(Selection::user_input);
                     self.note_user_input();
                     self.out.push(WriteKind::Input, bytes);
                 }
             }
             Command::Text(text) => {
+                self.with_selection(Selection::user_input);
                 self.note_user_input();
                 self.terminal.input(&text, true);
             }
             Command::Paste(text) => {
                 if let Some(bytes) = self.terminal.paste(&text) {
+                    self.with_selection(Selection::user_input);
                     self.note_user_input();
                     self.out.push(WriteKind::Paste, bytes);
                 }
@@ -543,13 +565,31 @@ impl EngineCore {
                 self.geometry = g;
                 // Engine first, then the PTY (I11). A failed PTY resize leaves the child at its
                 // old size; the next resize retries.
+                let rows_before = self.terminal.rows();
                 self.terminal.resize(g.cols, g.rows);
+                if self.terminal.rows() != rows_before {
+                    // Upstream clears the selection on a vertical resize.
+                    self.with_selection(Selection::rows_changed);
+                }
                 let _ = self.pty.resize(g.pty_size());
                 self.acc.full = true;
                 self.idle_pending = true;
             }
             Command::SetClipboardWrite(enabled) => {
                 self.terminal.set_clipboard_write(enabled);
+                typed = false;
+            }
+            Command::Select(cmd) => {
+                let now = self.clock.now();
+                self.with_selection(|s, t| s.apply(t, cmd, now));
+                typed = false;
+            }
+            Command::CopySelection => {
+                self.acc.copy = match self.selection.text(&self.terminal, MAX_COPY_BYTES) {
+                    Some(Ok(text)) => Some(CopyResult::Text(text)),
+                    Some(Err(super::selection::CopyError::TooLarge)) => Some(CopyResult::TooLarge),
+                    None => None,
+                };
                 typed = false;
             }
             Command::SetScrollback(lines) => {
@@ -563,6 +603,22 @@ impl EngineCore {
             }
         }
         self.drain(typed);
+    }
+
+    /// Runs `f` on the selection and the terminal, and marks the selection for publishing when
+    /// what the UI sees of it changed.
+    fn with_selection(&mut self, f: impl FnOnce(&mut Selection, &mut Terminal)) {
+        let before = self.selection.view(&self.terminal);
+        f(&mut self.selection, &mut self.terminal);
+        if self.selection.view(&self.terminal) != before {
+            self.acc.selection = true;
+        }
+    }
+
+    /// Lines the program printed may have trimmed the anchor's line, or the program may have
+    /// switched buffers: the selection follows (plan M10 step 3).
+    fn selection_follows_the_buffer(&mut self) {
+        self.with_selection(Selection::sync);
     }
 
     /// Parse one slice of the pending output (I4): sub-writes of `step` bytes, the clock read
@@ -873,6 +929,8 @@ impl EngineCore {
             foreground: acc.foreground,
             command: acc.command,
             link_uris,
+            selection: acc.selection.then(|| self.selection.view(&self.terminal)),
+            selection_text: acc.copy,
             exited: self.exit_pending.take(),
         };
         self.last = Some(Published { state: st, modes });
