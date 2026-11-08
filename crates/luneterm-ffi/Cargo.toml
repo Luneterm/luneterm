@@ -10,6 +10,11 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Exports `luneterm_test_panic`, which panics inside the call guard. Tests and the panic
+# probe only (scripts/check-ffi.sh); never in a shipping build.
+panic-probe = []
+
 [dependencies]
 lune-vt.workspace = true
 
