@@ -166,8 +166,8 @@ const fn page(section: Section) -> Option<PageScene> {
 
 /// A pointer over the page's content (so a wheel scrolls it).
 const OVER_PAGE: (f32, f32) = (600.0, 300.0);
-/// Tab 1 of the strip.
-const OVER_TAB: (f32, f32) = (60.0, 50.0);
+/// The second tab (`cargo build`, index 1) of the strip.
+const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
 const SCENES: [Scene; 31] = [
     Scene {
@@ -315,7 +315,7 @@ const SCENES: [Scene; 31] = [
         tabs: FOUR,
         script: &[
             (1, Input::Move(OVER_TAB.0, OVER_TAB.1)),
-            (2, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
+            (1, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
         ],
         ..BASE
     },

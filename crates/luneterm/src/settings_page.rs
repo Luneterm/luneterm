@@ -579,7 +579,7 @@ impl PageLayout {
         PageLayout {
             card,
             back,
-            heading: (card.x + 20.0, back.bottom() + 16.0),
+            heading: (card.x + 18.0, back.bottom() + 16.0),
             nav,
             divider,
             page: Rect::new(
@@ -654,6 +654,15 @@ pub struct PageOut {
 
 fn spec(text: &str, size: f32, color: Rgba) -> Spec {
     Spec::plain(text, Style::ui(size, color))
+}
+
+/// The room the scroll bar keeps clear on the right: the groups end this far inside the viewport.
+const BAR_ROOM: f32 = 12.0;
+
+/// The width of the groups in the viewport `vp`: they end [`BAR_ROOM`] before its right edge, so
+/// the toolkit's scroll thumb never sits on a group's ring.
+pub fn group_width(vp: Rect) -> f32 {
+    (vp.w - BAR_ROOM).max(0.0)
 }
 
 /// Draws the page over `card` and returns what the user asked of it.
@@ -788,7 +797,7 @@ fn draw_group(
     out: &mut PageOut,
 ) -> f32 {
     let theme = *ui.theme();
-    let (x, w) = (vp.x, vp.w);
+    let (x, w) = (vp.x, group_width(vp));
     let header = Spec::plain(
         strings.tr(group.header),
         Style::ui(theme.font_m, theme.fg_primary).medium(),
@@ -1126,11 +1135,16 @@ mod tests {
         let card = Rect::new(10.0, 34.0, 1020.0, 616.0);
         let l = PageLayout::new(card);
         assert_eq!(l.back, Rect::new(20.0, 46.0, 190.0, 32.0));
-        assert_eq!(l.heading, (30.0, 94.0));
+        assert_eq!(l.heading, (28.0, 94.0));
         assert_eq!((l.nav.x, l.nav.y, l.nav.w), (20.0, 118.0, 190.0));
         assert_eq!(l.divider, Rect::new(220.0, 46.0, 1.0, 592.0));
         assert_eq!(l.page, Rect::new(225.0, 38.0, 801.0, 608.0));
         assert_eq!(l.viewport(), Rect::new(245.0, 58.0, 761.0, 568.0));
+        // The groups end 12 px before the viewport's right edge (1006): the thumb has the room.
+        let v = l.viewport();
+        assert_eq!(v.x + group_width(v), v.right() - 12.0);
+        assert_eq!(v.x + group_width(v), 994.0);
+        assert_eq!(group_width(Rect::new(0.0, 0.0, 5.0, 5.0)), 0.0);
         // A tiny card has empty rects, not negative ones.
         let t = PageLayout::new(Rect::new(0.0, 0.0, 30.0, 20.0));
         assert!(t.page.w >= 0.0 && t.page.h >= 0.0 && t.divider.h >= 0.0);
