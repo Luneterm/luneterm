@@ -505,13 +505,13 @@ impl Fuzz<'_> {
                 | LUNETERM_EVENT_CLIPBOARD_WRITE
                 | LUNETERM_EVENT_CWD_CHANGED => in_data,
                 LUNETERM_EVENT_COLOR => in_colors,
-                LUNETERM_EVENT_UNKNOWN_OSC => event.offset == 0,
                 LUNETERM_EVENT_BELL
                 | LUNETERM_EVENT_TITLE_CHANGED
                 | LUNETERM_EVENT_FOCUS_REPORT_REQUESTED
                 | LUNETERM_EVENT_WINDOW_REPORT
                 | LUNETERM_EVENT_A11Y_TAB
                 | LUNETERM_EVENT_PROGRESS
+                | LUNETERM_EVENT_UNKNOWN_OSC
                 | LUNETERM_EVENT_COMMAND_MARK
                 | LUNETERM_EVENT_SYNC_UPDATE_IN_COMMAND => event.offset == 0 && event.len == 0,
                 _ => false,
