@@ -3,6 +3,9 @@
 //! reading the offscreen target back). The frames are what the window would show, through the same
 //! [`Renderer::draw`].
 //!
+//! The scenes are the shell with one default tab, and the tab strip, the close-confirm and rename
+//! dialogs and a failed start (M10 step 2); a dialog is drawn after its entry animation.
+//!
 //! The fonts are the window's, system fonts included (the demo has an emoji), so the PNGs are
 //! reproducible on one machine and may differ between machines.
 
@@ -14,23 +17,43 @@ use lune_ui::dump::{read_rgba, target, write_png};
 use lune_ui::gpu::{self, Gpu};
 use lune_ui::input::RawInput;
 
+use crate::app::failure_grid;
 use crate::demo::{demo_cursor, demo_grid};
 use crate::fonts;
 use crate::render::{Content, Renderer};
 use crate::settings::Settings;
-use crate::shell::{HOST, ScrollView};
+use crate::shell::{HOST, Modal, ScrollView, StripTab};
+use crate::spawn::SpawnFailure;
+use crate::tabs::confirm_message;
 
 /// The offscreen colour format (the surface's preferred one).
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 /// The window's first size, logical px.
 const SIZE: (f32, f32) = (1040.0, 660.0);
 
-/// One dumped frame: a file name, a scale and the scroll state the thumb shows.
+/// What a scene shows over the terminal.
+#[derive(Debug, Clone, Copy)]
+enum Overlay {
+    None,
+    /// The close-confirm dialog for `n` sessions.
+    Confirm(usize),
+    /// The rename dialog with this text in its field.
+    Rename(&'static str),
+}
+
+/// One dumped frame: a file name, a scale, the scroll state the thumb shows, the tabs (none: the
+/// single unlabelled tab of a fresh window), whether the window is focused, and what lies over it.
 #[derive(Debug, Clone, Copy)]
 struct Scene {
     name: &'static str,
     scale: u32,
     scroll: Option<ScrollView>,
+    tabs: &'static [&'static str],
+    active: usize,
+    focused: bool,
+    overlay: Overlay,
+    /// The shell never started in this tab: the grid tells why.
+    failed: bool,
 }
 
 /// 200 lines of history above a 35-line screen, scrolled to the middle: the thumb shows.
@@ -40,26 +63,102 @@ const SCROLLED: ScrollView = ScrollView {
     total_lines: 235,
 };
 
-const SCENES: [Scene; 4] = [
+const FOUR: &[&str] = &["zsh", "cargo build", "claude", "colors"];
+const MANY: &[&str] = &[
+    "tab 1", "tab 2", "tab 3", "tab 4", "tab 5", "tab 6", "tab 7", "tab 8", "tab 9", "tab 10",
+    "tab 11", "tab 12", "tab 13", "tab 14", "tab 15", "tab 16",
+];
+const LONG: &[&str] =
+    &["A tab title far longer than the widest tab the strip will ever draw for it, 80 chars!!"];
+
+const BASE: Scene = Scene {
+    name: "",
+    scale: 2,
+    scroll: None,
+    tabs: &[],
+    active: 0,
+    focused: true,
+    overlay: Overlay::None,
+    failed: false,
+};
+
+const SCENES: [Scene; 14] = [
     Scene {
         name: "shell@1x.png",
         scale: 1,
-        scroll: None,
+        ..BASE
     },
     Scene {
         name: "shell@2x.png",
-        scale: 2,
-        scroll: None,
+        ..BASE
     },
     Scene {
         name: "shell-scrolled@1x.png",
         scale: 1,
         scroll: Some(SCROLLED),
+        ..BASE
     },
     Scene {
         name: "shell-scrolled@2x.png",
-        scale: 2,
         scroll: Some(SCROLLED),
+        ..BASE
+    },
+    Scene {
+        name: "tabs@2x.png",
+        tabs: FOUR,
+        ..BASE
+    },
+    Scene {
+        name: "tabs@1x.png",
+        scale: 1,
+        tabs: FOUR,
+        ..BASE
+    },
+    Scene {
+        name: "tabs-second@2x.png",
+        tabs: FOUR,
+        active: 1,
+        ..BASE
+    },
+    Scene {
+        name: "tabs-unfocused@2x.png",
+        tabs: FOUR,
+        focused: false,
+        ..BASE
+    },
+    Scene {
+        name: "tabs-many@2x.png",
+        tabs: MANY,
+        active: 15,
+        ..BASE
+    },
+    Scene {
+        name: "tabs-long@2x.png",
+        tabs: LONG,
+        ..BASE
+    },
+    Scene {
+        name: "confirm-one@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::Confirm(1),
+        ..BASE
+    },
+    Scene {
+        name: "confirm-many@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::Confirm(3),
+        ..BASE
+    },
+    Scene {
+        name: "rename@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::Rename("zsh"),
+        ..BASE
+    },
+    Scene {
+        name: "spawn-failed@2x.png",
+        failed: true,
+        ..BASE
     },
 ];
 
@@ -91,28 +190,83 @@ pub fn dump_frames(dir: &Path) -> Result<Vec<PathBuf>, DumpError> {
     Ok(written)
 }
 
-/// Draws `scene` twice into a fresh target (a warm-up, then the captured frame, as the toolkit's
-/// own dump does) and writes the capture.
+/// The frames drawn per scene: the first starts what animates (a dialog opening, a tab revealed),
+/// the last, a second and a half on, is the picture. A scene's clock starts at zero on a fresh UI
+/// state, so a scene cannot show what an earlier one left behind.
+const FRAME_TIMES_MS: [u64; 3] = [0, 800, 1600];
+
+/// Draws `scene` into a fresh target, warming up first as the toolkit's own dump does, and writes
+/// the last frame.
 fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<(), String> {
+    r.reset_ui();
     let scale = scene.scale as f32;
     let size = (SIZE.0 as u32 * scene.scale, SIZE.1 as u32 * scene.scale);
     let (cols, rows) = r.grid_size(SIZE, scale);
-    let mut grid = demo_grid(cols, rows);
+    let failure = SpawnFailure {
+        kind: std::io::ErrorKind::NotFound,
+        program: "pwsh.exe".to_owned(),
+    };
+    let mut cursor = demo_cursor();
+    let mut grid = if scene.failed {
+        cursor.visible = false;
+        failure_grid(cols, rows, &failure)
+    } else {
+        demo_grid(cols, rows)
+    };
     let texture = target(&r.gpu.device, FORMAT, size);
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let input = RawInput {
-        size: SIZE,
-        scale,
-        time: Duration::ZERO,
-        focused: true,
-        events: Vec::new(),
+
+    // The strip's tabs: ids are the places, so a scene's tabs are the same every run.
+    let labelled = !scene.tabs.is_empty();
+    let titles: &[&str] = if labelled { scene.tabs } else { &["Terminal"] };
+    let strip: Vec<StripTab<'_>> = titles
+        .iter()
+        .enumerate()
+        .map(|(i, title)| StripTab {
+            id: i as u64 + 1,
+            title,
+        })
+        .collect();
+    let active = scene.active.min(strip.len().saturating_sub(1));
+    let label = labelled.then(|| titles[active]);
+    let message = match scene.overlay {
+        Overlay::Confirm(n) => confirm_message(n),
+        _ => String::new(),
     };
-    for _ in 0..2 {
+    let mut dont_ask = false;
+    let mut name = String::new();
+
+    for (k, ms) in FRAME_TIMES_MS.iter().enumerate() {
+        let input = RawInput {
+            size: SIZE,
+            scale,
+            time: Duration::from_millis(*ms),
+            focused: scene.focused,
+            events: Vec::new(),
+        };
+        let modal = match scene.overlay {
+            Overlay::None => None,
+            Overlay::Confirm(_) => Some(Modal::Confirm {
+                message: &message,
+                dont_ask: &mut dont_ask,
+            }),
+            Overlay::Rename(text) => {
+                text.clone_into(&mut name);
+                Some(Modal::Rename {
+                    text: &mut name,
+                    // As the app: the caret goes into the field on the second frame.
+                    focus: k == 1,
+                })
+            }
+        };
         let content = Content {
-            title: "Luneterm",
+            title: label,
+            tabs: &strip,
+            active_tab: Some(active as u64 + 1),
+            modal,
             maximized: false,
             grid: &mut grid,
-            cursor: demo_cursor(),
+            cursor,
             blink_on: true,
             scroll: scene.scroll,
             chrome: HOST,
@@ -190,8 +344,8 @@ mod tests {
         assert_eq!(exit_for(&failed, false).0, 1);
     }
 
-    /// The four frames are written, are the right size, are not blank, and two runs give
-    /// byte-identical files.
+    /// Every scene is written, is the right size, is not blank, and two runs give byte-identical
+    /// files.
     #[test]
     fn two_dumps_are_byte_identical() {
         let (a, b) = (scratch("a"), scratch("b"));

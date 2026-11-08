@@ -14,6 +14,27 @@ pub enum AppCommand {
     Paste,
     /// Scroll the viewport locally.
     Scroll(Scroll),
+    /// Open a tab (D13).
+    NewTab,
+    /// Close the active tab (asks first when a program runs).
+    CloseTab,
+    /// The next tab to the right, wrapping.
+    NextTab,
+    /// The next tab to the left, wrapping.
+    PrevTab,
+    /// The tab at this 0-based place (1..=9 on the keyboard).
+    SelectTab(usize),
+}
+
+impl AppCommand {
+    /// Whether a held key must not repeat the command: a held chord would paste, open or close
+    /// again and again.
+    pub fn once_per_press(self) -> bool {
+        matches!(
+            self,
+            AppCommand::Paste | AppCommand::NewTab | AppCommand::CloseTab
+        )
+    }
 }
 
 /// The shortcut table. A chord matches only with exactly its modifiers held.
@@ -25,26 +46,53 @@ pub struct AppShortcuts {
 impl AppShortcuts {
     /// Lunegit's table (TerminalView.cs:1151-1175, :1807-1810): Shift+PageUp/PageDown scroll a
     /// page, Shift+Home/End go to the top and bottom; paste is Cmd+V on macOS and Ctrl+Shift+V
-    /// elsewhere (plain Ctrl+V is the shell's literal-next).
+    /// elsewhere (plain Ctrl+V is the shell's literal-next). The tab shortcuts are ours (D13:
+    /// Lunegit only binds Meta+T): on macOS Cmd+T, Cmd+W, Cmd+Shift+[ and ], Cmd+1..9; elsewhere
+    /// Ctrl+Shift+T, Ctrl+Shift+W, Ctrl+Tab, Ctrl+Shift+Tab, Alt+1..9.
     pub fn standard(macos: bool) -> AppShortcuts {
-        let v = Chord::key(Key::Character("v".into()));
+        let ch = |c: &str| Chord::key(Key::Character(c.into()));
+        let v = ch("v");
         let paste = if macos { v.logo() } else { v.ctrl().shift() };
         let shift = |k| Chord::key(Key::Named(k)).shift();
-        AppShortcuts {
-            entries: vec![
-                (paste, AppCommand::Paste),
-                (
-                    shift(NamedKey::PageUp),
-                    AppCommand::Scroll(Scroll::Pages(-1)),
-                ),
-                (
-                    shift(NamedKey::PageDown),
-                    AppCommand::Scroll(Scroll::Pages(1)),
-                ),
-                (shift(NamedKey::Home), AppCommand::Scroll(Scroll::Top)),
-                (shift(NamedKey::End), AppCommand::Scroll(Scroll::Bottom)),
-            ],
+        let mut entries = vec![
+            (paste, AppCommand::Paste),
+            (
+                shift(NamedKey::PageUp),
+                AppCommand::Scroll(Scroll::Pages(-1)),
+            ),
+            (
+                shift(NamedKey::PageDown),
+                AppCommand::Scroll(Scroll::Pages(1)),
+            ),
+            (shift(NamedKey::Home), AppCommand::Scroll(Scroll::Top)),
+            (shift(NamedKey::End), AppCommand::Scroll(Scroll::Bottom)),
+        ];
+        if macos {
+            entries.push((ch("t").logo(), AppCommand::NewTab));
+            entries.push((ch("w").logo(), AppCommand::CloseTab));
+            // Shift turns [ and ] into { and } on most layouts; the chord compares the text.
+            for (key, cmd) in [
+                ("[", AppCommand::PrevTab),
+                ("{", AppCommand::PrevTab),
+                ("]", AppCommand::NextTab),
+                ("}", AppCommand::NextTab),
+            ] {
+                entries.push((ch(key).logo().shift(), cmd));
+            }
+            for n in 1..=9usize {
+                entries.push((ch(&n.to_string()).logo(), AppCommand::SelectTab(n - 1)));
+            }
+        } else {
+            entries.push((ch("t").ctrl().shift(), AppCommand::NewTab));
+            entries.push((ch("w").ctrl().shift(), AppCommand::CloseTab));
+            let tab = Chord::key(Key::Named(NamedKey::Tab));
+            entries.push((tab.clone().ctrl(), AppCommand::NextTab));
+            entries.push((tab.ctrl().shift(), AppCommand::PrevTab));
+            for n in 1..=9usize {
+                entries.push((ch(&n.to_string()).alt(), AppCommand::SelectTab(n - 1)));
+            }
         }
+        AppShortcuts { entries }
     }
 
     /// The command of the first chord that matches a press of `key` with `held` modifiers.
@@ -130,5 +178,82 @@ mod tests {
             ..NONE
         };
         assert_eq!(at(NamedKey::PageUp, both), None);
+    }
+
+    fn tab_command(macos: bool, key: Key, held: Modifiers) -> Option<AppCommand> {
+        let t = AppShortcuts::standard(macos);
+        let keymap = if macos { &Keymap::MAC } else { &Keymap::PC };
+        t.matching(&key, held, keymap)
+    }
+
+    #[test]
+    fn the_tab_shortcuts_follow_d13_on_macos() {
+        let logo = Modifiers { logo: true, ..NONE };
+        let logo_shift = Modifiers {
+            logo: true,
+            shift: true,
+            ..NONE
+        };
+        let at = |k: &str, m| tab_command(true, ch(k), m);
+        assert_eq!(at("t", logo), Some(AppCommand::NewTab));
+        assert_eq!(at("w", logo), Some(AppCommand::CloseTab));
+        assert_eq!(at("[", logo_shift), Some(AppCommand::PrevTab));
+        assert_eq!(at("{", logo_shift), Some(AppCommand::PrevTab));
+        assert_eq!(at("]", logo_shift), Some(AppCommand::NextTab));
+        assert_eq!(at("}", logo_shift), Some(AppCommand::NextTab));
+        for n in 1..=9usize {
+            assert_eq!(at(&n.to_string(), logo), Some(AppCommand::SelectTab(n - 1)));
+        }
+        assert_eq!(at("0", logo), None);
+        // Plain keys and Ctrl chords are the terminal's.
+        let ctrl = Modifiers {
+            control: true,
+            ..NONE
+        };
+        assert_eq!(at("t", NONE), None);
+        assert_eq!(at("t", ctrl), None);
+        assert_eq!(at("w", ctrl), None);
+        assert_eq!(at("1", NONE), None);
+        assert_eq!(tab_command(true, Key::Named(NamedKey::Tab), ctrl), None);
+    }
+
+    #[test]
+    fn the_tab_shortcuts_follow_d13_elsewhere() {
+        let ctrl_shift = Modifiers {
+            control: true,
+            shift: true,
+            ..NONE
+        };
+        let ctrl = Modifiers {
+            control: true,
+            ..NONE
+        };
+        let alt = Modifiers { alt: true, ..NONE };
+        let at = |k: &str, m| tab_command(false, ch(k), m);
+        assert_eq!(at("t", ctrl_shift), Some(AppCommand::NewTab));
+        assert_eq!(at("w", ctrl_shift), Some(AppCommand::CloseTab));
+        let tab = |m| tab_command(false, Key::Named(NamedKey::Tab), m);
+        assert_eq!(tab(ctrl), Some(AppCommand::NextTab));
+        assert_eq!(tab(ctrl_shift), Some(AppCommand::PrevTab));
+        assert_eq!(tab(NONE), None);
+        for n in 1..=9usize {
+            assert_eq!(at(&n.to_string(), alt), Some(AppCommand::SelectTab(n - 1)));
+        }
+        // Ctrl+T and Ctrl+W alone reach the shell (readline), and Alt+letter is Meta.
+        assert_eq!(at("t", ctrl), None);
+        assert_eq!(at("w", ctrl), None);
+        assert_eq!(at("t", alt), None);
+        // Cmd (Win) chords are not ours on these platforms.
+        let logo = Modifiers { logo: true, ..NONE };
+        assert_eq!(at("t", logo), None);
+    }
+
+    #[test]
+    fn only_the_commands_that_must_not_repeat_say_so() {
+        assert!(AppCommand::Paste.once_per_press());
+        assert!(AppCommand::NewTab.once_per_press());
+        assert!(AppCommand::CloseTab.once_per_press());
+        assert!(!AppCommand::NextTab.once_per_press());
+        assert!(!AppCommand::Scroll(Scroll::Top).once_per_press());
     }
 }

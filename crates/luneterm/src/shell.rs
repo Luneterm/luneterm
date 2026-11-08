@@ -3,7 +3,9 @@
 //! the toolkit's `Ui`, one function for the window and for frame dumps.
 //!
 //! Layout, logical px: a 34 px title band, then the card inset 10 px from the left, right and
-//! bottom, then the terminal's body inset 10 px inside the card. There is no tab strip until M10.
+//! bottom. The 32 px tab strip heads the card (the toolkit draws it and the outline around the
+//! card); the terminal's body sits under it, inset 10 px inside the card. The close-confirm and
+//! rename dialogs are drawn here too, on the modal layer.
 
 use lune_termview::{CellMetrics, GridLayout};
 use lune_ui::chrome::CARD_RADIUS;
@@ -15,7 +17,10 @@ use lune_ui::scene::LayerId;
 use lune_ui::text::{Spec, Style};
 use lune_ui::ui::{Sense, Ui};
 use lune_ui::widgets::caption::{CaptionButton, CaptionOptions};
+use lune_ui::widgets::dialog::{Cancel, Dialog, DialogGlass};
+use lune_ui::widgets::field::FieldOptions;
 use lune_ui::widgets::scrollbar::{self, ThumbGeometry, thumb_geometry};
+use lune_ui::widgets::tab_strip::{self, Tab as StripItem, TabEvent, TabKey, TabStripOptions};
 use lune_ui::window::{ResizeEdge, edge_at};
 
 /// The title band's height.
@@ -28,6 +33,13 @@ pub const BODY_PAD: f32 = 10.0;
 pub const THUMB_ALPHA: f32 = 0.55;
 /// The slot of the terminal in the frame's custom-draw list.
 pub const TERM_SLOT: usize = 0;
+/// The strip's height: the toolkit's.
+pub const STRIP_HEIGHT: f32 = tab_strip::HEIGHT;
+/// The strip stops this far short of the card's right edge: the room of the `⋯` menu (step 6).
+pub const STRIP_RESERVE: f32 = 40.0;
+/// The header's darker band, punched out by the tab outline (luneui-rs D131: the gallery's value;
+/// the header layer is a material of the app's preset, so the app passes it).
+pub const HEADER_TINT: [u8; 4] = [0x00, 0x00, 0x00, 0x24];
 
 /// What differs per OS in the chrome: whether the app draws the caption buttons (a borderless
 /// window) and how far the centred title keeps clear of the native or drawn buttons.
@@ -72,6 +84,8 @@ pub struct Layout {
     pub window: Rect,
     pub band: Rect,
     pub card: Rect,
+    /// The tab strip, at the card's top (its right end stays free, see [`STRIP_RESERVE`]).
+    pub strip: Rect,
     pub body: Rect,
 }
 
@@ -84,16 +98,23 @@ impl Layout {
             (window.w - 2.0 * CARD_MARGIN).max(0.0),
             (window.h - TITLE_BAND - CARD_MARGIN).max(0.0),
         );
+        let strip = Rect::new(
+            card.x,
+            card.y,
+            (card.w - STRIP_RESERVE).max(0.0),
+            STRIP_HEIGHT.min(card.h),
+        );
         let body = Rect::new(
             card.x + BODY_PAD,
-            card.y + BODY_PAD,
+            card.y + STRIP_HEIGHT + BODY_PAD,
             (card.w - 2.0 * BODY_PAD).max(0.0),
-            (card.h - 2.0 * BODY_PAD).max(0.0),
+            (card.h - STRIP_HEIGHT - 2.0 * BODY_PAD).max(0.0),
         );
         Layout {
             window,
             band: Rect::new(window.x, window.y, window.w, TITLE_BAND.min(window.h)),
             card,
+            strip,
             body,
         }
     }
@@ -202,10 +223,32 @@ impl ThumbDrag {
     }
 }
 
-/// What the shell draws a frame from.
-#[derive(Debug, Clone, Copy)]
-pub struct ShellView<'a> {
+/// One tab of the strip: the app's id and what the strip shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StripTab<'a> {
+    pub id: u64,
     pub title: &'a str,
+}
+
+/// The dialog the frame shows over everything, if any. The text is the app's state: the dialog
+/// edits it in place.
+#[derive(Debug)]
+pub enum Modal<'a> {
+    /// Close-confirm: the message, and the "Don't ask again" box.
+    Confirm {
+        message: &'a str,
+        dont_ask: &'a mut bool,
+    },
+    /// Rename Tab: the field's text. `focus` asks to put the caret in the field (once, a frame
+    /// after the dialog opened: the open focus goes to the confirm button).
+    Rename { text: &'a mut String, focus: bool },
+}
+
+/// What the shell draws a frame from.
+#[derive(Debug)]
+pub struct ShellView<'a> {
+    /// The active tab's own label (name or program title); `None` shows the app's name alone.
+    pub title: Option<&'a str>,
     pub maximized: bool,
     /// The window has keyboard focus (inactive caption glyphs are dimmer).
     pub focused: bool,
@@ -214,6 +257,16 @@ pub struct ShellView<'a> {
     /// One terminal line in logical px.
     pub cell_h: f32,
     pub chrome: Chrome,
+    pub tabs: &'a [StripTab<'a>],
+    pub active_tab: Option<u64>,
+    pub modal: Option<Modal<'a>>,
+}
+
+/// What the dialog of a frame asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ModalOut {
+    pub confirmed: bool,
+    pub cancelled: bool,
 }
 
 /// What a drawn frame hands back.
@@ -223,6 +276,12 @@ pub struct ShellOut {
     pub body: Rect,
     /// Window operations the chrome asks for this frame, in order.
     pub commands: Vec<WindowCommand>,
+    /// What the user asked of the tabs this frame; the app applies them.
+    pub tab_events: Vec<TabEvent>,
+    /// The dialog's answer; `None` while none is shown.
+    pub modal: Option<ModalOut>,
+    /// Where the dialog's text field edits, for the IME; `None` without one.
+    pub ime_area: Option<Rect>,
 }
 
 /// The cursor for resizing from `edge`.
@@ -267,11 +326,34 @@ pub fn band_command(press_count: u8, chrome: Chrome) -> WindowCommand {
     }
 }
 
-/// Draws the shell into `ui` and returns the terminal body and the chrome's window commands.
+/// The band's title: `<tab>  ·  Luneterm` in two runs when the tab has a label of its own, the
+/// app's name alone otherwise.
+fn band_title(label: Option<&str>, theme: &lune_ui::theme::Theme) -> Spec {
+    match label {
+        Some(name) => Spec {
+            runs: vec![
+                (
+                    name.to_owned(),
+                    Style::ui(12.0, theme.fg_secondary).medium(),
+                ),
+                (
+                    "  \u{b7}  Luneterm".to_owned(),
+                    Style::ui(12.0, theme.fg_tertiary),
+                ),
+            ],
+            wrap: None,
+        },
+        None => Spec::plain("Luneterm", Style::ui(12.0, theme.fg_secondary).medium()),
+    }
+}
+
+/// Draws the shell into `ui` and returns the terminal body, the chrome's window commands, the
+/// tab events and the dialog's answer.
 ///
 /// The glass layers go on the fixed base layer (panel over the window, card on top); the
-/// terminal's custom slot sits in the body, below the thumb.
-pub fn draw(ui: &mut Ui<'_>, view: &ShellView<'_>) -> ShellOut {
+/// terminal's custom slot sits in the body, below the thumb. The strip heads the card and its
+/// outline wraps it; the dialogs come last, on the modal layer.
+pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
     let theme = *ui.theme();
     let win = ui.painter().window;
     let layout = Layout::new(win);
@@ -285,7 +367,7 @@ pub fn draw(ui: &mut Ui<'_>, view: &ShellView<'_>) -> ShellOut {
 
         // The title, centred in the band and kept clear of the window buttons.
         let side = view.chrome.title_inset;
-        let spec = Spec::plain(view.title, Style::ui(12.0, theme.fg_secondary).medium());
+        let spec = band_title(view.title, &theme);
         p.set_clip(Some(Rect::new(
             side,
             0.0,
@@ -334,9 +416,147 @@ pub fn draw(ui: &mut Ui<'_>, view: &ShellView<'_>) -> ShellOut {
             commands.push(caption_command(button));
         }
     }
+
+    // The header of the card drags the window where no tab or button is: its region goes in
+    // before the strip's, so what the strip registers sits on top of it.
+    let header = Rect::new(
+        layout.card.x,
+        layout.card.y,
+        layout.card.w,
+        STRIP_HEIGHT.min(layout.card.h),
+    );
+    let header_id = ui.id("strip-drag");
+    let drag = ui.interact(header_id, header, Sense::CLICK);
+    if drag.press_started && pressed_edge.is_none() {
+        commands.push(band_command(drag.press_count, view.chrome));
+    }
+
+    let modal_open = view.modal.is_some();
+    let tabs: Vec<StripItem<'_>> = view
+        .tabs
+        .iter()
+        .map(|t| StripItem {
+            key: TabKey(t.id),
+            title: t.title,
+            closable: true,
+            progress: None,
+        })
+        .collect();
+    let opts = TabStripOptions {
+        active: view.active_tab.map(TabKey),
+        panel_focused: view.focused && !modal_open,
+        busy: None,
+        busy_tone: lune_ui::widgets::tone::Tone::Neutral,
+        card: layout.card,
+        menu_extra: &[],
+        name: "Terminal sessions",
+        header_tint: Some(HEADER_TINT),
+    };
+    let tab_events = ui.tab_strip("strip", layout.strip, &tabs, &opts).events;
+
+    // The strip's scroll area covers the empty space between the last tab and the + button, and
+    // the topmost region takes a press even though it captures none, so the header region above
+    // never sees a press there (a toolkit gap, D23: the strip has no "empty press" of its own).
+    // The scroll area senses no hover, so over it the toolkit's hovered widget is `None`; over a
+    // tab, a close glyph, the + button, a menu or a dialog it is that widget. A primary press in
+    // the header with nothing hovered is a press on empty space.
+    let hovered = ui.painter().hover;
+    let empty_press = (hovered.is_none() || hovered == Some(header_id))
+        && ui.input().events.iter().any(|e| {
+            matches!(
+                e,
+                Event::PointerButton {
+                    pos,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    ..
+                } if header.contains(*pos)
+            )
+        });
+    if empty_press && !drag.press_started && pressed_edge.is_none() {
+        commands.push(band_command(1, view.chrome));
+    }
+
+    let (modal, ime_area) = match view.modal {
+        Some(m) => {
+            let (out, ime) = draw_modal(ui, m);
+            (Some(out), ime)
+        }
+        None => (None, None),
+    };
     ShellOut {
         body: layout.body,
         commands,
+        tab_events,
+        modal,
+        ime_area,
+    }
+}
+
+/// The close-confirm or rename dialog (Lunegit's copy, `en.json`; layout as the spike's).
+fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
+    let glass = DialogGlass::of(ui.theme());
+    match modal {
+        Modal::Confirm { message, dont_ask } => {
+            let dialog = Dialog {
+                title: "Close Terminal Session",
+                message,
+                extra_h: 34.0,
+                confirm: "Close",
+                cancel: Cancel::Default,
+            };
+            let r = ui.dialog("confirm-close", &dialog, &glass, |ui, x, y, w| {
+                let rect = Rect::new(x, y + 12.0, w, 22.0);
+                ui.checkbox("dont-ask", rect, dont_ask, "Don't ask again");
+            });
+            (
+                ModalOut {
+                    confirmed: r.confirmed,
+                    cancelled: r.cancelled,
+                },
+                None,
+            )
+        }
+        Modal::Rename { text, focus } => {
+            let dialog = Dialog {
+                title: "Rename Tab",
+                message: "Enter a new name for this terminal tab.",
+                extra_h: 22.0 + 34.0 + 4.0,
+                confirm: "Rename",
+                cancel: Cancel::Default,
+            };
+            let mut submitted = false;
+            let mut ime = None;
+            let r = ui.dialog("rename-tab", &dialog, &glass, |ui, x, y, w| {
+                let theme = *ui.theme();
+                let label = Spec::plain(
+                    "TAB NAME",
+                    Style::ui(theme.font_s, theme.fg_tertiary).medium(),
+                );
+                ui.painter().text(&label, x, y + 18.0);
+                let field = Rect::new(x, y + 36.0, w, 32.0);
+                let id = ui.id("rename-field");
+                if focus {
+                    ui.request_focus(id);
+                }
+                let opts = FieldOptions {
+                    placeholder: "Tab name",
+                    max_chars: Some(crate::title::MAX_TITLE_CHARS),
+                    label: Some("Tab name"),
+                    ..FieldOptions::default()
+                };
+                let out = ui.text_field_with("rename-field", field, text, &opts);
+                submitted = out.submitted;
+                ime = out.ime_area;
+            });
+            (
+                ModalOut {
+                    confirmed: r.confirmed || submitted,
+                    cancelled: r.cancelled && !submitted,
+                },
+                ime,
+            )
+        }
     }
 }
 
@@ -372,25 +592,26 @@ mod tests {
         let l = Layout::new(win);
         assert_eq!(l.band, Rect::new(0.0, 0.0, 1040.0, 34.0));
         assert_eq!(l.card, Rect::new(10.0, 34.0, 1020.0, 616.0));
-        assert_eq!(l.body, Rect::new(20.0, 44.0, 1000.0, 596.0));
+        assert_eq!(l.strip, Rect::new(10.0, 34.0, 980.0, 32.0));
+        assert_eq!(l.body, Rect::new(20.0, 76.0, 1000.0, 564.0));
 
         // Scale 1: an 8 x 17 cell; scale 2: 16 x 34 (the same cell in logical px).
         let one = place_grid(l.body, metrics(8, 17, 1.0));
         assert_eq!(
             one,
             GridPlacement {
-                origin: (20.0, 44.0),
+                origin: (20.0, 76.0),
                 cols: 125,
-                rows: 35
+                rows: 33
             }
         );
         let two = place_grid(l.body, metrics(16, 34, 2.0));
         assert_eq!(
             two,
             GridPlacement {
-                origin: (20.0, 44.0),
+                origin: (20.0, 76.0),
                 cols: 125,
-                rows: 35
+                rows: 33
             }
         );
     }
@@ -410,6 +631,7 @@ mod tests {
     fn a_tiny_window_has_empty_rects_not_negative_ones() {
         let l = Layout::new(Rect::new(0.0, 0.0, 15.0, 20.0));
         assert_eq!((l.card.w, l.card.h), (0.0, 0.0));
+        assert_eq!((l.strip.w, l.strip.h), (0.0, 0.0));
         assert_eq!((l.body.w, l.body.h), (0.0, 0.0));
         assert_eq!(l.band.h, 20.0);
     }
@@ -529,6 +751,26 @@ mod tests {
         chrome: Chrome,
         maximized: bool,
     ) -> ShellOut {
+        frame_with(store, text, events, chrome, maximized, &[TAB_A, TAB_B])
+    }
+
+    const TAB_A: StripTab<'static> = StripTab {
+        id: 1,
+        title: "zsh",
+    };
+    const TAB_B: StripTab<'static> = StripTab {
+        id: 2,
+        title: "cargo build",
+    };
+
+    fn frame_with(
+        store: &mut UiStore,
+        text: &mut TextCache,
+        events: Vec<Event>,
+        chrome: Chrome,
+        maximized: bool,
+        tabs: &[StripTab<'_>],
+    ) -> ShellOut {
         let input = RawInput {
             size: (1040.0, 660.0),
             scale: 1.0,
@@ -546,15 +788,18 @@ mod tests {
             shortcuts: &shortcuts,
         };
         let view = ShellView {
-            title: "Luneterm",
+            title: None,
             maximized,
             focused: true,
             scroll: None,
             cell_h: 17.0,
             chrome,
+            tabs,
+            active_tab: tabs.first().map(|t| t.id),
+            modal: None,
         };
         let mut ui = Ui::begin(store, &input, config, text);
-        let out = draw(&mut ui, &view);
+        let out = draw(&mut ui, view);
         let _ = ui.finish();
         out
     }
@@ -686,5 +931,120 @@ mod tests {
         }
         assert_eq!(resize_cursor(ResizeEdge::NorthWest), CursorIcon::NwseResize);
         assert_eq!(resize_cursor(ResizeEdge::South), CursorIcon::NsResize);
+    }
+
+    /// The strip's header: a press on empty space drags the window, a press on a tab activates it
+    /// and does not drag.
+    #[test]
+    fn the_empty_strip_drags_the_window_and_a_tab_does_not() {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let mut go = |events| frame(&mut store, &mut text, events, BORDERLESS, false);
+        go(vec![]);
+        go(vec![]);
+        // Strip y is 34..66. Tab 1 is at x 10..118 (108 wide); far to the right is empty.
+        let empty = (700.0, 50.0);
+        // A real press follows a pointer move: the toolkit resolves what is under the pointer
+        // from the frame before.
+        go(vec![Event::PointerMoved { pos: empty }]);
+        go(vec![]);
+        let out = go(vec![button(empty, true)]);
+        assert_eq!(out.commands, vec![WindowCommand::DragMove]);
+        assert!(out.tab_events.is_empty(), "{:?}", out.tab_events);
+        go(vec![button(empty, false)]);
+        // Each press on empty space is a drag (the band is where a double press maximizes).
+        let out = go(vec![button(empty, true)]);
+        assert_eq!(out.commands, vec![WindowCommand::DragMove]);
+        go(vec![button(empty, false)]);
+        // The reserved right end drags too.
+        let out = go(vec![button((1015.0, 50.0), true)]);
+        assert_eq!(out.commands, vec![WindowCommand::DragMove]);
+        go(vec![button((1015.0, 50.0), false)]);
+        // A press on the second tab activates it; it must not also drag the window.
+        let on_tab = (150.0, 50.0);
+        go(vec![Event::PointerMoved { pos: on_tab }]);
+        go(vec![]);
+        let out = go(vec![button(on_tab, true)]);
+        assert!(
+            out.tab_events.contains(&TabEvent::Activate(TabKey(2))),
+            "{:?}",
+            out.tab_events
+        );
+        assert!(
+            !out.commands.contains(&WindowCommand::DragMove),
+            "{:?}",
+            out.commands
+        );
+    }
+
+    /// The traffic lights and the caption buttons live in the band, above the strip: nothing of
+    /// the strip's header reaches into the band's rows.
+    #[test]
+    fn the_strip_stays_below_the_band_and_the_caption_buttons() {
+        let l = Layout::new(Rect::new(0.0, 0.0, 1040.0, 660.0));
+        assert!(l.strip.y >= l.band.bottom());
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let mut go = |events| frame(&mut store, &mut text, events, BORDERLESS, false);
+        go(vec![]);
+        go(vec![]);
+        // A caption button press (band, top right) is the button's, not the header's.
+        let press = go(vec![button((1017.0, 17.0), true)]);
+        assert!(
+            !press.commands.contains(&WindowCommand::DragMove),
+            "{:?}",
+            press.commands
+        );
+        assert_eq!(
+            go(vec![button((1017.0, 17.0), false)]).commands,
+            vec![WindowCommand::Close]
+        );
+    }
+
+    #[test]
+    fn the_new_tab_button_asks_for_a_tab() {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let mut go = |events| frame(&mut store, &mut text, events, BORDERLESS, false);
+        go(vec![]);
+        go(vec![]);
+        // The + button: 20 px, 6 px from the strip's right end (x 990), centred in its 32 px.
+        let at = (990.0 - 6.0 - 10.0, 50.0);
+        go(vec![Event::PointerMoved { pos: at }]);
+        go(vec![]);
+        let press = go(vec![button(at, true)]);
+        assert!(
+            press.commands.is_empty(),
+            "no window drag from the + button: {:?}",
+            press.commands
+        );
+        let out = go(vec![button(at, false)]);
+        assert_eq!(out.tab_events, vec![TabEvent::New], "{:?}", out.tab_events);
+        // The close glyph of the active tab (right end of tab 1: x 10..118, glyph 20 px, 8 from
+        // the edge) closes, and is no drag either.
+        let close = (118.0 - 8.0 - 10.0, 50.0);
+        go(vec![Event::PointerMoved { pos: close }]);
+        go(vec![]);
+        let press = go(vec![button(close, true)]);
+        assert!(
+            press.commands.is_empty(),
+            "no window drag from a close glyph: {:?}",
+            press.commands
+        );
+        let out = go(vec![button(close, false)]);
+        assert_eq!(
+            out.tab_events,
+            vec![TabEvent::Close(TabKey(1))],
+            "{:?}",
+            out.tab_events
+        );
+    }
+
+    #[test]
+    fn the_band_shows_the_app_name_alone_or_after_the_tab_label() {
+        let theme = THEME;
+        assert_eq!(band_title(None, &theme).runs.len(), 1);
+        assert_eq!(band_title(None, &theme).runs[0].0, "Luneterm");
+        let two = band_title(Some("zsh"), &theme);
+        assert_eq!(two.runs.len(), 2);
+        assert_eq!(two.runs[0].0, "zsh");
+        assert_eq!(two.runs[1].0, "  \u{b7}  Luneterm");
     }
 }

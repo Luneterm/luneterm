@@ -15,4 +15,5 @@ pub mod session;
 pub mod settings;
 pub mod shell;
 pub mod spawn;
+pub mod tabs;
 pub mod title;

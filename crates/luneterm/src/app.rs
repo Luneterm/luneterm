@@ -1,5 +1,5 @@
-//! The app: the event loop, the window, the frame loop and the session wiring (plan M9 steps 4
-//! and 6).
+//! The app: the event loop, the window, the frame loop and the tabs' session wiring (plan M9 steps
+//! 4 and 6, M10 step 2).
 //!
 //! Composition follows the toolkit's gallery (`apps/gallery/src/window.rs`): the app owns the event
 //! loop, the window, the GPU stack and the clock. The window is created hidden and shown after its
@@ -7,15 +7,17 @@
 //! `Clipboard::service` → present, and the frame's `Repaint` (merged with the cursor blink) sets
 //! the loop's control flow, so an idle window waits with no timer.
 //!
-//! The terminal owns the keyboard (D4): key and IME events go to the session (through the shortcut
-//! table and the key router) and never reach the toolkit's translator, so `Ui::begin` cannot eat
-//! Tab or Escape. Modifier, pointer, wheel, focus, resize and scale events always reach it. The
-//! session runs on its own threads; this thread only sends it commands and takes its Updates, one
-//! per frame (D1, D2).
+//! The terminal owns the keyboard (D4): key and IME events go to the active tab's session (through
+//! the shortcut table and the key router) and never reach the toolkit's translator, so `Ui::begin`
+//! cannot eat Tab or Escape; while a dialog is open they are the toolkit's instead. Modifier,
+//! pointer, wheel, focus, resize and scale events always reach it. Each tab's session runs on its
+//! own threads; this thread only sends commands and takes the Updates, one per tab per frame
+//! (D1, D2).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
@@ -30,12 +32,16 @@ use lune_pty::PortablePtyBackend;
 use lune_termview::{Cell, Cursor, CursorShape, Grid, TermTheme};
 use lune_ui::clipboard::Clipboard;
 use lune_ui::gpu::{self, Gpu};
-use lune_ui::input::{ClipboardRequest, Event, OutputState, Translator, control_flow, keymap};
+use lune_ui::input::{
+    ClipboardRequest, OutputState, Translator, WindowCommand, control_flow, keymap,
+};
 use lune_ui::material::{self, Material};
 use lune_ui::surface::{Acquired, WindowSurface};
+use lune_ui::widgets::tab_strip::TabEvent;
 use lune_ui::window::glass_attributes;
 use lune_vt::{CursorStyle, MouseEncoding, MouseTracking, TerminalMouseButton, ViewportCursor};
 
+use crate::cwd;
 use crate::dump;
 use crate::fonts;
 use crate::input::{
@@ -44,14 +50,14 @@ use crate::input::{
     wheel, wheel_delta, wheel_report,
 };
 use crate::render::{Content, Placed, Renderer};
-use crate::session::{
-    Command, Geometry, HostPalette, Scroll, Session, SessionConfig, Update, UpdateModes,
-    apply_update,
-};
+use crate::session::{Command, HostPalette, Scroll, Session, SessionConfig, UpdateModes};
 use crate::settings::Settings;
-use crate::shell::{self, HOST, ScrollView, ThumbDrag};
+use crate::shell::{self, HOST, Modal, ModalOut, ScrollView, StripTab, ThumbDrag};
 use crate::spawn::{self, SpawnFailure};
-use crate::title::{self, DEFAULT_TITLE};
+use crate::tabs::{
+    ClosePlan, CwdCheck, CwdState, PasteState, Tab, TabId, TabSet, confirm_message, plan_close,
+};
+use crate::title::DEFAULT_TITLE;
 
 /// The window's first size and its minimum, logical px.
 const WINDOW_SIZE: (f64, f64) = (1040.0, 660.0);
@@ -144,47 +150,6 @@ impl BellLimiter {
         }
         self.last = Some(now);
         true
-    }
-}
-
-/// A paste in flight (D8): Cmd+V or Ctrl+Shift+V asks the toolkit for the clipboard's text, which
-/// arrives in a later frame's input. The text goes to the PTY only through `Command::Paste`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PasteState {
-    /// A paste was asked for and not answered yet.
-    pending: bool,
-    /// The next frame must carry the read request.
-    read: bool,
-}
-
-impl PasteState {
-    /// A paste shortcut was pressed. A second press while one is pending does nothing.
-    pub fn request(&mut self) {
-        if !self.pending {
-            self.pending = true;
-            self.read = true;
-        }
-    }
-
-    /// Whether the frame being built carries the read request (once per paste).
-    pub fn take_read(&mut self) -> bool {
-        std::mem::take(&mut self.read)
-    }
-
-    /// An event of a frame's input. Returns the text to paste when it answers a pending paste;
-    /// clipboard text nobody asked for is ignored.
-    pub fn answer(&mut self, event: &Event) -> Option<String> {
-        match event {
-            Event::ClipboardText(text) if self.pending => {
-                self.pending = false;
-                (!text.is_empty()).then(|| text.clone())
-            }
-            Event::ClipboardUnavailable => {
-                self.pending = false;
-                None
-            }
-            _ => None,
-        }
     }
 }
 
@@ -323,6 +288,40 @@ fn apply_material(window: &Window, settings: &Settings) -> bool {
     false
 }
 
+/// A dialog over the window. It takes the keyboard (the toolkit's, not the terminal's) and the
+/// pointer until it is answered.
+#[derive(Debug)]
+enum ModalState {
+    /// Close-confirm over `ids` (the tabs to close if confirmed).
+    Confirm {
+        ids: Vec<TabId>,
+        message: String,
+        dont_ask: bool,
+    },
+    /// Rename Tab. `frames` counts the frames drawn: the caret goes into the field on the second
+    /// (the dialog's own open focus lands on the confirm button).
+    Rename {
+        id: TabId,
+        text: String,
+        frames: u32,
+    },
+}
+
+/// Ends a session without keeping the UI thread: it stops in the background and the child is
+/// killed there. (The last session of the app is closed by [`App::shutdown`], which waits.)
+fn retire(session: Session) {
+    session.begin_close();
+    let spawned = thread::Builder::new()
+        .name("luneterm-retire".into())
+        .spawn(move || {
+            let _ = session.close(CLOSE_WAIT);
+        });
+    if let Err(e) = spawned {
+        // The closure, and the session in it, was dropped: that signals shutdown too.
+        eprintln!("luneterm: retire thread: {:?}", e.kind());
+    }
+}
+
 struct App {
     settings: Settings,
     /// OS glass is behind the window.
@@ -330,23 +329,17 @@ struct App {
     win: Option<Win>,
     stack: Option<Stack>,
     proxy: EventLoopProxy<UserEvent>,
-    /// The shell's session; `None` before the window exists and after a failed start.
-    session: Option<Session>,
-    /// Why no shell started (D12): the grid tells, keys are ignored.
-    failure: Option<SpawnFailure>,
-    /// The terminal body: what the session's Updates make of it.
-    grid: Grid,
-    cursor: Cursor,
-    scroll: Option<ScrollView>,
-    modes: UpdateModes,
-    alt_screen: bool,
-    title: String,
-    /// The terminal colours now in force (the session palette on the theme).
-    theme: TermTheme,
+    /// The tabs, one session each (D1).
+    tabs: TabSet<Tab>,
+    /// Sessions of tabs closed as the app leaves: closed with a wait in `shutdown`.
+    leaving: Vec<Session>,
+    /// A new tab waiting for the check of the directory it should start in.
+    pending_new: Option<CwdCheck>,
+    modal: Option<ModalState>,
+    /// The OS window's title as last set.
+    window_title: String,
     /// The last frame's placement: the pointer maps through it.
     placed: Option<Placed>,
-    /// The geometry the session was last told.
-    sent_geometry: Option<Geometry>,
     /// The IME's composing text.
     preedit: Option<String>,
     paste: PasteState,
@@ -379,17 +372,12 @@ impl App {
             win: None,
             stack: None,
             proxy,
-            session: None,
-            failure: None,
-            grid: Grid::new(0, 0),
-            cursor: Cursor::default(),
-            scroll: None,
-            modes: UpdateModes::default(),
-            alt_screen: false,
-            title: DEFAULT_TITLE.to_owned(),
-            theme: TermTheme::lunegit_one_dark(),
+            tabs: TabSet::new(),
+            leaving: Vec::new(),
+            pending_new: None,
+            modal: None,
+            window_title: DEFAULT_TITLE.to_owned(),
             placed: None,
-            sent_geometry: None,
             preedit: None,
             paste: PasteState::default(),
             clipboard_write: None,
@@ -416,14 +404,25 @@ impl App {
         event_loop.exit();
     }
 
-    /// Ends the session, waiting briefly for its threads so the child is killed before the
-    /// process leaves.
+    /// Ends every session, waiting briefly for the threads so the children are killed before the
+    /// process leaves. All are signalled first, so the wait is one deadline, not one per tab.
     fn shutdown(&mut self) {
-        if let Some(session) = self.session.take()
-            && !session.close(CLOSE_WAIT)
-        {
-            eprintln!("luneterm: the session's threads did not stop in time");
+        let mut sessions = std::mem::take(&mut self.leaving);
+        sessions.extend(self.tabs.iter_mut().filter_map(|(_, t)| t.session.take()));
+        for s in &sessions {
+            s.begin_close();
         }
+        let deadline = Instant::now() + CLOSE_WAIT;
+        for s in sessions {
+            if !s.close(deadline.saturating_duration_since(Instant::now())) {
+                eprintln!("luneterm: a session's threads did not stop in time");
+            }
+        }
+    }
+
+    /// The terminal colours the window starts with and a new tab starts from.
+    fn base_theme() -> TermTheme {
+        TermTheme::lunegit_one_dark()
     }
 
     /// Rebuilds the GPU stack after the device was lost; every row is drawn again.
@@ -432,10 +431,16 @@ impl App {
             return;
         };
         self.stack = None;
-        match Stack::build(event_loop, &window, &self.settings, self.glass, &self.theme) {
+        let theme = self
+            .tabs
+            .active_item()
+            .map_or_else(Self::base_theme, |t| t.theme.clone());
+        match Stack::build(event_loop, &window, &self.settings, self.glass, &theme) {
             Ok(stack) => {
                 self.stack = Some(stack);
-                self.grid.mark_all_dirty();
+                if let Some(tab) = self.tabs.active_item_mut() {
+                    tab.grid.mark_all_dirty();
+                }
                 window.request_redraw();
             }
             Err(e) => self.fail(event_loop, &format!("rebuild after device loss: {e}")),
@@ -460,17 +465,58 @@ impl App {
         }
     }
 
+    /// Sends `command` to the active tab's session.
     fn send(&self, command: Command) {
-        if let Some(session) = &self.session {
+        if let Some(session) = self.tabs.active_item().and_then(|t| t.session.as_ref()) {
             session.send(command);
         }
     }
 
-    // ----------------------------------------------------------------------------- the session
+    fn scroll_view(&self) -> Option<ScrollView> {
+        self.tabs.active_item().and_then(|t| t.scroll)
+    }
 
-    /// Spawns the shell and starts its session at the window's grid size. On failure the grid
-    /// tells why (D12).
-    fn start_session(&mut self) {
+    fn modes(&self) -> UpdateModes {
+        self.tabs
+            .active_item()
+            .map_or_else(UpdateModes::default, |t| t.modes)
+    }
+
+    fn has_session(&self) -> bool {
+        self.tabs.active_item().is_some_and(|t| t.session.is_some())
+    }
+
+    // ------------------------------------------------------------------------------- the tabs
+
+    /// A new tab was asked for: in the active tab's directory when the shell reported one that
+    /// checks out (off the UI thread, [`CwdCheck`]), else in the default one.
+    fn new_tab_request(&mut self) {
+        if self.pending_new.is_some() || self.win.is_none() {
+            return;
+        }
+        let now = Instant::now();
+        let raw = self
+            .tabs
+            .active_item()
+            .and_then(|t| t.cwd.as_deref())
+            .filter(|raw| cwd::syntax(raw).is_some())
+            .map(str::to_owned);
+        let check = raw.and_then(|raw| {
+            let proxy = self.proxy.clone();
+            CwdCheck::start(raw, now, move || {
+                let _ = proxy.send_event(UserEvent::Wake);
+            })
+            .ok()
+        });
+        match check {
+            Some(check) => self.pending_new = Some(check),
+            None => self.open_tab(None),
+        }
+    }
+
+    /// Spawns a shell and adds its tab, active, at the window's grid size. On failure the tab's
+    /// grid tells why (D12) and it can be closed.
+    fn open_tab(&mut self, dir: Option<PathBuf>) {
         let (Some(win), Some(stack)) = (&self.win, &mut self.stack) else {
             return;
         };
@@ -480,109 +526,313 @@ impl App {
         let geometry = stack.renderer.place(logical, scale).geometry();
         let adapter = stack.renderer.gpu.adapter.get_info();
 
-        let (pty, program) =
-            match spawn::launch(&PortablePtyBackend, &self.settings, geometry.pty_size()) {
-                Ok(started) => started,
-                Err(failure) => {
-                    eprintln!(
-                        "luneterm: failed to start a shell: {:?} ({})",
-                        failure.kind, failure.program
-                    );
-                    self.failure = Some(failure);
-                    return;
-                }
-            };
-        let pid = pty.process_id();
-        let proxy = self.proxy.clone();
-        let config = SessionConfig {
-            geometry,
-            scrollback: self.settings.scrollback as usize,
-            xtversion: spawn::xtversion(),
-            clipboard_write: self.settings.osc_clipboard,
-            windows_pty: spawn::windows_pty(),
-            palette: HostPalette::from_theme(&self.theme),
-            focused: self.focused,
-        };
-        let waker = Box::new(move || {
-            let _ = proxy.send_event(UserEvent::Wake);
-        });
-        match Session::start(pty, config, waker) {
-            Ok(session) => {
-                let shell = if program == "login shell" {
-                    std::env::var("SHELL").unwrap_or(program)
-                } else {
-                    program
-                };
+        let mut tab = Tab::empty(Self::base_theme());
+        tab.focused = self.focused;
+        match spawn::launch_in(
+            &PortablePtyBackend,
+            &self.settings,
+            geometry.pty_size(),
+            dir.as_deref(),
+        ) {
+            Err(failure) => {
                 eprintln!(
-                    "luneterm: gpu {} ({:?}); shell {shell} (pid {}); grid {}x{}",
-                    adapter.name,
-                    adapter.backend,
-                    pid.map_or_else(|| "?".to_owned(), |p| p.to_string()),
-                    geometry.cols,
-                    geometry.rows
+                    "luneterm: failed to start a shell: {:?} ({})",
+                    failure.kind, failure.program
                 );
-                self.session = Some(session);
-                self.sent_geometry = Some(geometry);
+                tab.failure = Some(failure);
             }
-            Err(e) => {
-                self.failure = Some(SpawnFailure {
-                    kind: e.kind(),
-                    program: "session".to_owned(),
+            Ok((pty, program)) => {
+                let pid = pty.process_id();
+                let proxy = self.proxy.clone();
+                let config = SessionConfig {
+                    geometry,
+                    scrollback: self.settings.scrollback as usize,
+                    xtversion: spawn::xtversion(),
+                    clipboard_write: self.settings.osc_clipboard,
+                    windows_pty: spawn::windows_pty(),
+                    palette: HostPalette::from_theme(&tab.theme),
+                    focused: self.focused,
+                };
+                let waker = Box::new(move || {
+                    let _ = proxy.send_event(UserEvent::Wake);
                 });
-                eprintln!("luneterm: session: {:?}", e.kind());
+                match Session::start(pty, config, waker) {
+                    Ok(session) => {
+                        let shell = if program == "login shell" {
+                            std::env::var("SHELL").unwrap_or(program)
+                        } else {
+                            program
+                        };
+                        eprintln!(
+                            "luneterm: gpu {} ({:?}); shell {shell} (pid {}); grid {}x{}",
+                            adapter.name,
+                            adapter.backend,
+                            pid.map_or_else(|| "?".to_owned(), |p| p.to_string()),
+                            geometry.cols,
+                            geometry.rows
+                        );
+                        tab.session = Some(session);
+                        tab.sent_geometry = Some(geometry);
+                    }
+                    Err(e) => {
+                        tab.failure = Some(SpawnFailure {
+                            kind: e.kind(),
+                            program: "session".to_owned(),
+                        });
+                        eprintln!("luneterm: session: {:?}", e.kind());
+                    }
+                }
+            }
+        }
+        let before = self.tabs.active();
+        self.tabs.push(tab);
+        self.active_changed(before);
+    }
+
+    /// The active tab changed from `before`: what belonged to the old tab's pointer and keyboard
+    /// state is dropped, the sessions' visibility and focus follow, and the new tab's grid is
+    /// drawn from scratch.
+    fn active_changed(&mut self, before: Option<TabId>) {
+        let now = self.tabs.active();
+        if now == before {
+            return;
+        }
+        self.preedit = None;
+        self.mouse_captured = false;
+        self.thumb_drag = None;
+        self.mouse = MouseState::default();
+        self.wheel = WheelState::default();
+        self.blink = Blink::default();
+        if let Some(tab) = before.and_then(|id| self.tabs.get_mut(id)) {
+            tab.set_focus(false);
+        }
+        let focused = self.focused;
+        if let Some(tab) = self.tabs.active_item_mut() {
+            tab.set_focus(focused);
+            tab.grid.mark_all_dirty();
+            if let Some(stack) = &mut self.stack
+                && stack.renderer.term_theme() != &tab.theme
+            {
+                stack.renderer.set_term_theme(tab.theme.clone());
+            }
+        }
+        self.refresh_visibility();
+        self.request_redraw();
+    }
+
+    /// Only the active tab of a shown window is visible; a hidden session's Updates come at most
+    /// every 100 ms.
+    fn refresh_visibility(&mut self) {
+        let active = self.tabs.active();
+        let occluded = self.occluded;
+        for (id, tab) in self.tabs.iter_mut() {
+            if let Some(session) = &tab.session {
+                session.set_visible(!occluded && Some(id) == active);
             }
         }
     }
 
-    /// Takes the session's published Update, if any, and applies it.
-    fn pump(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(update) = self.session.as_ref().and_then(Session::take_update) {
-            self.apply(update, event_loop);
-        }
-    }
-
-    /// Applies one Update: the grid, the cursor and scroll state, the palette, the title, the
-    /// bell, an OSC 52 write and the child's exit.
-    fn apply(&mut self, update: Update, event_loop: &ActiveEventLoop) {
-        apply_update(&mut self.grid, &update);
-        self.cursor = cursor_of(&update.cursor, self.grid.cols());
-        self.scroll = Some(ScrollView {
-            viewport_top: update.viewport_top,
-            base_y: update.base_y,
-            total_lines: update.total_lines,
+    /// Closes the tabs `ids` that are open, asking first when the setting and the tabs say so.
+    fn request_close(&mut self, ids: Vec<TabId>, event_loop: &ActiveEventLoop) {
+        let plan = plan_close(ids, self.settings.confirm_close, |id| {
+            self.tabs.get(id).is_some_and(Tab::needs_confirm)
         });
-        self.modes = update.modes;
-        self.alt_screen = update.alt_screen;
+        match plan {
+            ClosePlan::Now(ids) => self.close_tabs(&ids, event_loop),
+            ClosePlan::Ask { ids, n } => {
+                self.modal = Some(ModalState::Confirm {
+                    ids,
+                    message: confirm_message(n),
+                    dont_ask: false,
+                });
+                self.request_redraw();
+            }
+        }
+    }
 
-        if let Some(palette) = &update.palette {
-            self.theme = theme_with_palette(&self.theme, palette);
-            if let Some(stack) = &mut self.stack {
-                stack.renderer.set_term_theme(self.theme.clone());
+    /// Closes `ids` now. The last tab closing exits the app.
+    fn close_tabs(&mut self, ids: &[TabId], event_loop: &ActiveEventLoop) {
+        let before = self.tabs.active();
+        for id in ids {
+            let Some(tab) = self.tabs.close(*id) else {
+                continue;
+            };
+            if let Some(session) = tab.session {
+                if self.tabs.is_empty() {
+                    // The app is leaving: `shutdown` closes it with a wait.
+                    self.leaving.push(session);
+                } else {
+                    retire(session);
+                }
             }
-            self.grid.mark_all_dirty();
         }
-        if let Some(raw) = &update.title {
-            self.title = title::sanitize(raw);
-            if let Some(win) = &self.win {
-                win.window.set_title(&self.title);
-            }
-        }
-        if update.bells > 0
-            && self.bell.due(Instant::now(), self.focused)
-            && let Some(win) = &self.win
-        {
-            win.window
-                .request_user_attention(Some(UserAttentionType::Informational));
-        }
-        if let Some(text) = update.clipboard_write
-            && self.settings.osc_clipboard
-        {
-            self.clipboard_write = Some(text);
-        }
-        if update.exited.is_some() {
-            // The child is gone: the window closes (D12).
+        if self.tabs.is_empty() {
             event_loop.exit();
+            return;
         }
+        self.active_changed(before);
+        self.request_redraw();
+    }
+
+    /// What the user asked of the strip this frame.
+    fn tab_event(&mut self, event: TabEvent, event_loop: &ActiveEventLoop) {
+        let before = self.tabs.active();
+        match event {
+            TabEvent::Activate(key) => {
+                self.tabs.activate(key.0);
+                self.active_changed(before);
+            }
+            TabEvent::Close(key) => self.request_close(vec![key.0], event_loop),
+            TabEvent::New => self.new_tab_request(),
+            TabEvent::Reorder { from, to } => self.tabs.reorder(from, to),
+            TabEvent::CloseOthers(key) => {
+                let ids = self
+                    .tabs
+                    .ids()
+                    .into_iter()
+                    .filter(|id| *id != key.0)
+                    .collect();
+                self.request_close(ids, event_loop);
+            }
+            TabEvent::CloseAll => self.request_close(self.tabs.ids(), event_loop),
+            TabEvent::Rename(key) => {
+                if let Some(tab) = self.tabs.get(key.0) {
+                    self.modal = Some(ModalState::Rename {
+                        id: key.0,
+                        text: tab.strip_title().to_owned(),
+                        frames: 0,
+                    });
+                }
+            }
+            TabEvent::MenuExtra(..) => {}
+        }
+        self.request_redraw();
+    }
+
+    /// An app shortcut (D13).
+    fn app_command(&mut self, cmd: AppCommand, event_loop: &ActiveEventLoop) {
+        let before = self.tabs.active();
+        match cmd {
+            AppCommand::Paste => {
+                if let Some(id) = self.tabs.active().filter(|_| self.has_session()) {
+                    self.paste.request(id);
+                    self.request_redraw();
+                }
+            }
+            AppCommand::Scroll(scroll) => self.send(Command::Scroll(scroll)),
+            AppCommand::NewTab => self.new_tab_request(),
+            AppCommand::CloseTab => {
+                if let Some(id) = self.tabs.active() {
+                    self.request_close(vec![id], event_loop);
+                }
+            }
+            AppCommand::NextTab => self.tabs.activate_step(1),
+            AppCommand::PrevTab => self.tabs.activate_step(-1),
+            AppCommand::SelectTab(i) => {
+                self.tabs.activate_index(i);
+            }
+        }
+        self.active_changed(before);
+    }
+
+    /// The dialog's answer: a confirm acts, a cancel closes it.
+    fn resolve_modal(&mut self, out: ModalOut, event_loop: &ActiveEventLoop) {
+        if !out.confirmed && !out.cancelled {
+            return;
+        }
+        let modal = self.modal.take();
+        if out.confirmed {
+            match modal {
+                Some(ModalState::Confirm { ids, dont_ask, .. }) => {
+                    if dont_ask {
+                        // In memory until the settings file (step 5).
+                        self.settings.confirm_close = false;
+                    }
+                    self.close_tabs(&ids, event_loop);
+                }
+                Some(ModalState::Rename { id, text, .. }) => {
+                    if let Some(tab) = self.tabs.get_mut(id) {
+                        tab.rename(&text);
+                    }
+                }
+                None => {}
+            }
+        }
+        self.request_redraw();
+    }
+
+    // ------------------------------------------------------------------------- the sessions
+
+    /// Takes every tab's published Update and applies it; a hidden tab's mirror must keep up
+    /// too (I7). Closes the tabs whose child exited, starts a waiting new tab whose directory
+    /// check answered. Returns whether a frame is worth drawing.
+    fn pump(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        let active = self.tabs.active();
+        let mut seen = Vec::new();
+        for (id, tab) in self.tabs.iter_mut() {
+            if let Some(update) = tab.session.as_ref().and_then(Session::take_update) {
+                seen.push((id, tab.apply(update)));
+            }
+        }
+        let mut worth_a_frame = false;
+        let mut exited = Vec::new();
+        for (id, fx) in seen {
+            worth_a_frame |= Some(id) == active || fx.chrome;
+            if fx.palette
+                && Some(id) == active
+                && let (Some(stack), Some(tab)) = (&mut self.stack, self.tabs.get(id))
+            {
+                stack.renderer.set_term_theme(tab.theme.clone());
+            }
+            if fx.bells > 0
+                && self.bell.due(Instant::now(), self.focused)
+                && let Some(win) = &self.win
+            {
+                win.window
+                    .request_user_attention(Some(UserAttentionType::Informational));
+            }
+            if let Some(text) = fx.clipboard_write
+                && self.settings.osc_clipboard
+            {
+                self.clipboard_write = Some(text);
+                worth_a_frame = true;
+            }
+            if fx.exited {
+                exited.push(id);
+            }
+        }
+        if !exited.is_empty() {
+            // The child is gone: its tab closes, the others stay (the last one takes the app).
+            self.close_tabs(&exited, event_loop);
+            worth_a_frame = true;
+        }
+        let done = self.pending_new.as_ref().map(|c| c.poll(Instant::now()));
+        if let Some(CwdState::Done(dir)) = done {
+            self.pending_new = None;
+            self.open_tab(dir);
+            worth_a_frame = true;
+        }
+        // A dialog about a tab that is gone has nothing to act on.
+        let gone = match &mut self.modal {
+            Some(ModalState::Rename { id, .. }) => self.tabs.get(*id).is_none(),
+            Some(ModalState::Confirm { ids, .. }) => {
+                ids.retain(|id| self.tabs.get(*id).is_some());
+                ids.is_empty()
+            }
+            None => false,
+        };
+        if gone {
+            self.modal = None;
+            worth_a_frame = true;
+        }
+        worth_a_frame
+    }
+
+    /// When a waiting new tab gives up on its directory check.
+    fn pending_flow(&self) -> ControlFlow {
+        self.pending_new
+            .as_ref()
+            .map_or(ControlFlow::Wait, |c| ControlFlow::WaitUntil(c.deadline()))
     }
 
     // ----------------------------------------------------------------------------- the frame
@@ -600,7 +850,7 @@ impl App {
             return;
         }
         self.pump(event_loop);
-        if event_loop.exiting() {
+        if event_loop.exiting() || self.tabs.is_empty() {
             return;
         }
         let (Some(win), Some(stack)) = (self.win.as_mut(), self.stack.as_mut()) else {
@@ -630,49 +880,91 @@ impl App {
         let scale = win.window.scale_factor() as f32;
         let input = win.translator.take(self.start.elapsed());
 
-        // The clipboard's answer to a paste goes to the session as a paste, nowhere else.
+        // The clipboard's answer to a paste goes to the tab that asked, as a paste, nowhere else.
         for event in &input.events {
-            if let Some(text) = self.paste.answer(event)
-                && let Some(session) = &self.session
+            if let Some((id, text)) = self.paste.answer(event)
+                && let Some(session) = self.tabs.get(id).and_then(|t| t.session.as_ref())
             {
                 session.send(Command::Paste(text));
             }
         }
 
-        // Where things are in this frame; a changed grid size or cell size is the session's news.
+        // Where things are in this frame; a changed grid size or cell size is the active
+        // session's news (a hidden tab hears it when it is activated).
         let placed = stack.renderer.place(input.size, input.scale);
         self.placed = Some(placed);
         let geometry = placed.geometry();
-        if geometry.cols > 0
-            && geometry.rows > 0
-            && self.sent_geometry != Some(geometry)
-            && let Some(session) = &self.session
-        {
-            session.send(Command::Resize(geometry));
-            self.sent_geometry = Some(geometry);
-        }
-        if let Some(failure) = &self.failure {
-            let (cols, rows) = (placed.placement.cols, placed.placement.rows);
-            if (self.grid.cols(), self.grid.rows()) != (cols, rows) {
-                self.grid = failure_grid(cols, rows, failure);
+        if let Some(tab) = self.tabs.active_item_mut() {
+            if geometry.cols > 0
+                && geometry.rows > 0
+                && tab.sent_geometry != Some(geometry)
+                && let Some(session) = &tab.session
+            {
+                session.send(Command::Resize(geometry));
+                tab.sent_geometry = Some(geometry);
             }
-            self.cursor.visible = false;
+            if let Some(failure) = &tab.failure {
+                let (cols, rows) = (placed.placement.cols, placed.placement.rows);
+                if (tab.grid.cols(), tab.grid.rows()) != (cols, rows) {
+                    tab.grid = failure_grid(cols, rows, failure);
+                }
+                tab.cursor.visible = false;
+            }
         }
 
-        let cursor = self.cursor;
+        // The strip's tabs and the window's title, from the tabs as they are now.
+        let titles: Vec<(TabId, String)> = self
+            .tabs
+            .iter()
+            .map(|(id, t)| (id, t.strip_title().to_owned()))
+            .collect();
+        let strip: Vec<StripTab<'_>> = titles
+            .iter()
+            .map(|(id, title)| StripTab { id: *id, title })
+            .collect();
+        let active_tab = self.tabs.active();
+        let label = self
+            .tabs
+            .active_item()
+            .and_then(|t| t.label())
+            .map(str::to_owned);
+        let os_title = label.as_deref().unwrap_or(DEFAULT_TITLE);
+        if self.window_title != os_title {
+            self.window_title = os_title.to_owned();
+            win.window.set_title(os_title);
+        }
+        let modal = match &mut self.modal {
+            Some(ModalState::Confirm {
+                message, dont_ask, ..
+            }) => Some(Modal::Confirm { message, dont_ask }),
+            Some(ModalState::Rename { text, frames, .. }) => {
+                let focus = *frames == 1;
+                *frames = frames.saturating_add(1);
+                Some(Modal::Rename { text, focus })
+            }
+            None => None,
+        };
+
+        let Some(tab) = self.tabs.active_item_mut() else {
+            return;
+        };
+        let cursor = tab.cursor;
         let next_blink = self.blink.tick(
             Instant::now(),
             input.focused && cursor.blink && cursor.visible,
         );
         let content = Content {
-            title: &self.title,
+            title: label.as_deref(),
+            tabs: &strip,
+            active_tab,
+            modal,
             maximized: win.window.is_maximized(),
-            grid: &mut self.grid,
+            grid: &mut tab.grid,
             cursor,
             blink_on: self.blink.on(),
-            scroll: self.scroll,
+            scroll: tab.scroll,
             chrome: HOST,
-            ime: self.session.is_some(),
+            ime: tab.session.is_some(),
             preedit: self.preedit.as_deref(),
             clipboard_write: self.clipboard_write.take(),
             clipboard_read: self.paste.take_read(),
@@ -684,7 +976,14 @@ impl App {
                 return;
             }
         };
-        let out = drawn.output;
+        let mut out = drawn.output;
+        let (tab_events, modal_out) = (drawn.tab_events, drawn.modal);
+        // Closing the window is closing every tab: it asks like they do.
+        let close_asked = out
+            .commands
+            .iter()
+            .any(|c| matches!(c, WindowCommand::Close));
+        out.commands.retain(|c| !matches!(c, WindowCommand::Close));
         if win.output.apply(&win.window, &out, scale) {
             event_loop.exit();
         }
@@ -704,10 +1003,23 @@ impl App {
 
         let (flow, redraw) = control_flow(out.repaint, self.start);
         let blink_flow = next_blink.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
-        event_loop.set_control_flow(merge_flow(flow, blink_flow));
+        let base_flow = merge_flow(flow, blink_flow);
         if redraw {
             win.window.request_redraw();
         }
+
+        // What the frame asked of the tabs and the dialog, now that the frame is out.
+        if let Some(out) = modal_out {
+            self.resolve_modal(out, event_loop);
+        } else {
+            if close_asked && self.modal.is_none() {
+                self.request_close(self.tabs.ids(), event_loop);
+            }
+            for event in tab_events {
+                self.tab_event(event, event_loop);
+            }
+        }
+        event_loop.set_control_flow(merge_flow(base_flow, self.pending_flow()));
         self.show_once();
         if self
             .stack
@@ -720,11 +1032,9 @@ impl App {
 
     // ----------------------------------------------------------------------------- keyboard, IME
 
-    /// A key event (D4): the shortcut table, then the key router; the translator never sees it.
-    fn on_key(&mut self, event: &KeyEvent, synthetic: bool) {
-        if self.session.is_none() {
-            return;
-        }
+    /// A key event (D4): the shortcut table, then the key router; the translator never sees it
+    /// (unless a dialog is open: then the toolkit takes the keyboard, see `window_event`).
+    fn on_key(&mut self, event: &KeyEvent, synthetic: bool, event_loop: &ActiveEventLoop) {
         let input = key_input(event, self.mods, synthetic);
         let route = {
             let ctx = RouteCtx {
@@ -735,21 +1045,19 @@ impl App {
             };
             route_key(&input, &ctx)
         };
+        let live = self.has_session();
         match route {
-            KeyRoute::Shortcut(AppCommand::Paste) => {
-                self.paste.request();
-                self.request_redraw();
-            }
-            KeyRoute::Shortcut(AppCommand::Scroll(scroll)) => self.send(Command::Scroll(scroll)),
-            KeyRoute::Terminal(key) => {
+            // Tab shortcuts work on a tab whose shell never started too: it can be closed.
+            KeyRoute::Shortcut(cmd) => self.app_command(cmd, event_loop),
+            KeyRoute::Terminal(key) if live => {
                 self.typed();
                 self.send(Command::Key(key));
             }
-            KeyRoute::Text(text) => {
+            KeyRoute::Text(text) if live => {
                 self.typed();
                 self.send(Command::Text(text));
             }
-            KeyRoute::Ignore => {}
+            _ => {}
         }
     }
 
@@ -769,7 +1077,7 @@ impl App {
             }
             Ime::Commit(text) => {
                 self.preedit = None;
-                if !text.is_empty() && self.session.is_some() {
+                if !text.is_empty() && self.has_session() {
                     self.typed();
                     self.send(Command::Text(text.clone()));
                 }
@@ -786,16 +1094,17 @@ impl App {
 
     fn mouse_ctx(&self) -> Option<MouseCtx> {
         let placed = self.placed?;
+        let tab = self.tabs.active_item()?;
         Some(MouseCtx {
             layout: placed.grid_layout(),
-            cols: self.grid.cols(),
-            rows: self.grid.rows(),
-            pixel_reports: self.modes.mouse_encoding == MouseEncoding::SgrPixels,
+            cols: tab.grid.cols(),
+            rows: tab.grid.rows(),
+            pixel_reports: tab.modes.mouse_encoding == MouseEncoding::SgrPixels,
         })
     }
 
     fn tracking(&self) -> bool {
-        self.session.is_some() && self.modes.mouse_tracking != MouseTracking::None
+        self.has_session() && self.modes().mouse_tracking != MouseTracking::None
     }
 
     fn over_body(&self, pos: (f32, f32)) -> bool {
@@ -819,9 +1128,13 @@ impl App {
 
     fn on_cursor_moved(&mut self, pos: (f32, f32)) {
         self.pointer = Some(pos);
+        if self.modal.is_some() {
+            return;
+        }
         let Some(placed) = self.placed else { return };
         if let Some(drag) = &mut self.thumb_drag {
-            if let Some(scroll) = self.scroll {
+            let scroll = self.tabs.active_item().and_then(|t| t.scroll);
+            if let Some(scroll) = scroll {
                 let lines = drag.moved(pos.1, placed.layout.body, placed.cell_h_logical(), scroll);
                 if lines != 0 {
                     self.send(Command::Scroll(Scroll::Lines(lines)));
@@ -835,12 +1148,15 @@ impl App {
     }
 
     fn on_mouse_button(&mut self, state: ElementState, button: MouseButton) {
+        if self.modal.is_some() {
+            return;
+        }
         let (Some(pos), Some(placed)) = (self.pointer, self.placed) else {
             return;
         };
         if button == MouseButton::Left {
             if state.is_pressed() {
-                if let Some(scroll) = self.scroll
+                if let Some(scroll) = self.scroll_view()
                     && shell::thumb_hit(placed.layout.body, placed.cell_h_logical(), scroll, pos)
                 {
                     self.thumb_drag = Some(ThumbDrag::start(pos.1));
@@ -876,19 +1192,24 @@ impl App {
     }
 
     fn on_wheel(&mut self, delta: MouseScrollDelta) {
+        if self.modal.is_some() {
+            return;
+        }
         let (Some(pos), Some(placed)) = (self.pointer, self.placed) else {
             return;
         };
-        if self.session.is_none() || !placed.layout.body.contains(pos) {
+        if !self.has_session() || !placed.layout.body.contains(pos) {
             return;
         }
         let Some(delta) = wheel_delta(delta) else {
             return;
         };
+        let modes = self.modes();
+        let alt_screen = self.tabs.active_item().is_some_and(|t| t.alt_screen);
         let ctx = WheelCtx {
-            tracking: self.modes.mouse_tracking != MouseTracking::None,
+            tracking: modes.mouse_tracking != MouseTracking::None,
             shift: self.mods.shift_key(),
-            no_scrollback: self.alt_screen || self.settings.scrollback == 0,
+            no_scrollback: alt_screen || self.settings.scrollback == 0,
             cell_h: placed.metrics.cell_h as f32,
         };
         match wheel(&mut self.wheel, delta, &ctx) {
@@ -927,8 +1248,13 @@ impl ApplicationHandler<UserEvent> for App {
             window.set_option_as_alt(crate::input::option_as_alt(self.settings.option_as_meta));
         }
         self.glass = apply_material(&window, &self.settings);
-        let stack = match Stack::build(event_loop, &window, &self.settings, self.glass, &self.theme)
-        {
+        let stack = match Stack::build(
+            event_loop,
+            &window,
+            &self.settings,
+            self.glass,
+            &Self::base_theme(),
+        ) {
             Ok(s) => s,
             Err(e) => {
                 self.fail(event_loop, &e);
@@ -942,7 +1268,7 @@ impl ApplicationHandler<UserEvent> for App {
             window,
         });
         self.stack = Some(stack);
-        self.start_session();
+        self.open_tab(None);
         // The first frame is drawn here, not on a redraw event a hidden window may never get;
         // the window is shown right after it.
         self.redraw(event_loop);
@@ -954,10 +1280,13 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Wake => {
-                if self.occluded {
-                    // No frame while hidden, but the child's exit and its bell still act.
-                    self.pump(event_loop);
-                } else {
+                if event_loop.exiting() {
+                    return;
+                }
+                // Every tab's Update is taken here (a hidden tab's too), and a frame is asked
+                // for only when something the window shows changed.
+                let worth_a_frame = self.pump(event_loop);
+                if worth_a_frame && !self.occluded {
                     self.request_redraw();
                 }
             }
@@ -985,7 +1314,10 @@ impl ApplicationHandler<UserEvent> for App {
         }
         match &event {
             WindowEvent::CloseRequested => {
-                event_loop.exit();
+                // Closing the window closes every tab: it asks like they do.
+                if self.modal.is_none() {
+                    self.request_close(self.tabs.ids(), event_loop);
+                }
                 return;
             }
             WindowEvent::RedrawRequested => {
@@ -994,9 +1326,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Occluded(occluded) => {
                 self.occluded = *occluded;
-                if let Some(session) = &self.session {
-                    session.set_visible(!occluded);
-                }
+                self.refresh_visibility();
                 if !occluded {
                     self.request_redraw();
                 }
@@ -1007,18 +1337,20 @@ impl ApplicationHandler<UserEvent> for App {
                 event,
                 is_synthetic,
                 ..
-            } => {
-                self.on_key(event, *is_synthetic);
+            } if self.modal.is_none() => {
+                self.on_key(event, *is_synthetic, event_loop);
                 return;
             }
-            WindowEvent::Ime(ime) => {
+            WindowEvent::Ime(ime) if self.modal.is_none() => {
                 self.on_ime(ime);
                 return;
             }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::Focused(focused) => {
                 self.focused = *focused;
-                self.send(Command::Focus(*focused));
+                if let Some(tab) = self.tabs.active_item_mut() {
+                    tab.set_focus(*focused);
+                }
                 if !focused {
                     self.thumb_drag = None;
                 }
@@ -1116,35 +1448,6 @@ mod tests {
         assert!(b.due(t0 + ms(2000), false));
         assert!(!b.due(t0 + ms(3999), false));
         assert!(b.due(t0 + ms(4000), false));
-    }
-
-    #[test]
-    fn a_paste_is_one_read_one_answer_and_unasked_text_is_ignored() {
-        let text = |t: &str| Event::ClipboardText(t.to_owned());
-        let mut p = PasteState::default();
-        // Text nobody asked for goes nowhere.
-        assert_eq!(p.answer(&text("surprise")), None);
-        assert!(!p.take_read());
-        // A request is one read, however many presses.
-        p.request();
-        p.request();
-        assert!(p.take_read());
-        assert!(!p.take_read());
-        p.request();
-        assert!(!p.take_read(), "still pending: no second read");
-        // Other events do not answer it; the text does, once.
-        assert_eq!(p.answer(&Event::Focus(true)), None);
-        assert_eq!(p.answer(&text("hello")), Some("hello".to_owned()));
-        assert_eq!(p.answer(&text("again")), None);
-        // Unavailable clears a pending paste; empty text pastes nothing.
-        p.request();
-        assert!(p.take_read());
-        assert_eq!(p.answer(&Event::ClipboardUnavailable), None);
-        p.request();
-        assert!(p.take_read(), "a new paste can be asked for");
-        assert_eq!(p.answer(&text("")), None);
-        p.request();
-        assert!(p.take_read());
     }
 
     #[test]

@@ -99,6 +99,11 @@ pub(crate) const CASES: &[Case] = &[
         name: "environment",
         run: e9_env,
     },
+    Case {
+        id: "E10",
+        name: "tabs are isolated",
+        run: e10_tabs,
+    },
 ];
 
 // ------------------------------------------------------------------------------- constants
@@ -1168,7 +1173,10 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
     grid.mark_all_dirty();
     for _ in 0..2 {
         let content = Content {
-            title: "Luneterm",
+            title: None,
+            tabs: &[],
+            active_tab: None,
+            modal: None,
             maximized: false,
             grid,
             cursor: cursor_of(cursor, COLS),
@@ -1280,4 +1288,121 @@ fn e9_env() -> CaseResult {
         format!("the child printed {row:?}, wanted {wanted:?} (via {program})")
     })?;
     ok("TERM, COLORTERM and TERM_PROGRAM as set")
+}
+
+// ------------------------------------------------------------------------------- E10
+
+/// A shell that names itself, then answers each line it reads with `<name>-got:<line>`.
+fn named_shell(name: &str) -> Result<Rig, String> {
+    let script =
+        format!(r#"printf '{name}-READY\n'; while read l; do printf '{name}-got:%s\n' "$l"; done"#);
+    let pty = spawn_pty(Path::new("/bin/sh"), &strs(&["-c", &script]))?;
+    let mut rig = Rig::start(pty, config(true))?;
+    let ready = format!("{name}-READY");
+    rig.wait(&format!("{name}'s READY"), WAIT, |r| r.contains(&ready))?;
+    Ok(rig)
+}
+
+/// Pumps `rigs` (every tab's Updates are taken, as the app's pump does) until `pred` holds.
+fn wait_all(
+    rigs: &mut [&mut Rig],
+    what: &str,
+    pred: impl Fn(&[&mut Rig]) -> bool,
+) -> Result<(), String> {
+    let t0 = Instant::now();
+    loop {
+        if pred(rigs) {
+            return Ok(());
+        }
+        ensure(t0.elapsed() < WAIT, || {
+            format!(
+                "timed out waiting for {what}; screens:\n{}",
+                rigs.iter()
+                    .map(|r| r.screen())
+                    .collect::<Vec<_>>()
+                    .join("\n---\n")
+            )
+        })?;
+        for r in rigs.iter_mut() {
+            r.pump(Duration::from_millis(5));
+        }
+    }
+}
+
+/// Two real sessions side by side (two tabs): what one is sent and prints never reaches the
+/// other; closing one leaves the other running; a flood in a hidden tab (visible = false, as the
+/// app sets it) keeps the other tab's keys answered and the hidden one's queues within the I3
+/// bounds.
+fn e10_tabs() -> CaseResult {
+    if let Some(s) = unix_only() {
+        return s;
+    }
+    let mut a = named_shell("ALPHA")?;
+    let mut b = named_shell("BRAVO")?;
+
+    // Input to A reaches A only.
+    a.type_text("one\r");
+    wait_all(&mut [&mut a, &mut b], "ALPHA's answer", |r| {
+        r[0].contains("ALPHA-got:one")
+    })?;
+    let mut both = [&mut a, &mut b];
+    for r in both.iter_mut() {
+        r.pump_for(Duration::from_millis(300));
+    }
+    ensure(!b.contains("one") && !b.contains("ALPHA"), || {
+        format!("ALPHA's line reached BRAVO:\n{}", b.screen())
+    })?;
+    // And B's reaches B only.
+    b.type_text("two\r");
+    wait_all(&mut [&mut a, &mut b], "BRAVO's answer", |r| {
+        r[1].contains("BRAVO-got:two")
+    })?;
+    let mut both = [&mut a, &mut b];
+    for r in both.iter_mut() {
+        r.pump_for(Duration::from_millis(300));
+    }
+    ensure(!a.contains("two") && !a.contains("BRAVO"), || {
+        format!("BRAVO's line reached ALPHA:\n{}", a.screen())
+    })?;
+
+    // Close A: B goes on.
+    ensure(a.close(), || "closing ALPHA timed out".to_owned())?;
+    b.type_text("three\r");
+    b.wait("BRAVO after ALPHA closed", WAIT, |r| {
+        r.contains("BRAVO-got:three")
+    })?;
+
+    // A flood in a hidden tab: C floods while hidden, B keeps answering.
+    let bytes: usize = 4 << 30;
+    let pty = spawn_child("flood", &[bytes.to_string(), "plain".to_owned()])?;
+    let mut c = Rig::start(pty, config(true))?;
+    c.session().set_visible(false);
+    c.pump_for(Duration::from_millis(300));
+    let started = Instant::now();
+    let mut worst = Duration::ZERO;
+    for i in 0..10 {
+        let line = format!("k{i}");
+        let sent = Instant::now();
+        b.type_text(&format!("{line}\r"));
+        let want = format!("BRAVO-got:{line}");
+        wait_all(&mut [&mut b, &mut c], "BRAVO's answer mid-flood", |r| {
+            r[0].contains(&want)
+        })?;
+        worst = worst.max(sent.elapsed());
+    }
+    let stats = c.stats();
+    check_bounds(&stats)?;
+    ensure(stats.bytes_read > 1 << 20, || {
+        format!("the flood barely ran: {} bytes read", stats.bytes_read)
+    })?;
+    ensure(c.close(), || {
+        "closing the hidden flood timed out".to_owned()
+    })?;
+    ensure(b.close(), || "closing BRAVO timed out".to_owned())?;
+    ok(format!(
+        "isolated both ways; B outlived A; 10 keys in {} ms (worst {} ms) beside a hidden flood (inbox {} KiB)",
+        ms(started.elapsed()),
+        ms(worst),
+        stats.inbox_high_water >> 10
+    ))
 }

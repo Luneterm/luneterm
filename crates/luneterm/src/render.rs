@@ -20,7 +20,9 @@ use lune_ui::ui::{FrameConfig, Ui, UiStore};
 use crate::fonts;
 use crate::session::Geometry;
 use crate::settings::Settings;
-use crate::shell::{self, Chrome, GridPlacement, Layout, ScrollView, ShellView};
+use crate::shell::{
+    self, Chrome, GridPlacement, Layout, Modal, ModalOut, ScrollView, ShellView, StripTab,
+};
 
 /// The saturation the backdrop blur applies (Luneium's menu glass; no backdrop is requested in M9).
 const BACKDROP_SATURATION: f32 = 1.8;
@@ -37,7 +39,12 @@ pub fn theme(glass: bool) -> Theme {
 
 /// What a frame shows besides the shell.
 pub struct Content<'a> {
-    pub title: &'a str,
+    /// The active tab's own label for the title band; `None` shows the app's name alone.
+    pub title: Option<&'a str>,
+    pub tabs: &'a [StripTab<'a>],
+    pub active_tab: Option<u64>,
+    /// A dialog over everything: it takes the keyboard and the IME.
+    pub modal: Option<Modal<'a>>,
     pub maximized: bool,
     pub grid: &'a mut Grid,
     pub cursor: Cursor,
@@ -59,6 +66,8 @@ impl std::fmt::Debug for Content<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Content")
             .field("maximized", &self.maximized)
+            .field("tabs", &self.tabs.len())
+            .field("modal", &self.modal.is_some())
             .field("ime", &self.ime)
             .field("clipboard_write", &self.clipboard_write.is_some())
             .field("clipboard_read", &self.clipboard_read)
@@ -113,6 +122,10 @@ pub struct Drawn {
     /// The window operations, repaint request and clipboard requests of the frame, the shell
     /// chrome's commands included.
     pub output: FrameOutput,
+    /// What the user asked of the tabs this frame.
+    pub tab_events: Vec<lune_ui::widgets::tab_strip::TabEvent>,
+    /// The dialog's answer; `None` while none is shown.
+    pub modal: Option<ModalOut>,
     /// The grid size the frame was laid out for.
     pub cols: usize,
     pub rows: usize,
@@ -169,6 +182,12 @@ impl Renderer {
             term_theme,
             font_size,
         }
+    }
+
+    /// Forgets the toolkit's retained state (focus, scroll offsets, open dialogs, animations). The
+    /// frame dumps call it between scenes so one scene cannot leak into the next.
+    pub fn reset_ui(&mut self) {
+        self.store = UiStore::default();
     }
 
     /// New terminal colours (a colour set or restore by the child). The caller marks the grid
@@ -231,6 +250,7 @@ impl Renderer {
             shortcuts: &self.shortcuts,
         };
         let mut ui = Ui::begin(&mut self.store, input, config, &mut self.text);
+        let modal_open = content.modal.is_some();
         let view = ShellView {
             title: content.title,
             maximized: content.maximized,
@@ -238,17 +258,21 @@ impl Renderer {
             scroll: content.scroll,
             cell_h: metrics.cell_h as f32 / metrics.scale,
             chrome: content.chrome,
+            tabs: content.tabs,
+            active_tab: content.active_tab,
+            modal: content.modal.take(),
         };
-        let shell_out = shell::draw(&mut ui, &view);
+        let shell_out = shell::draw(&mut ui, view);
 
         let cursor = content.cursor;
         let cols = content.grid.cols();
-        let cell = (content.ime && cols > 0).then(|| {
+        // With a dialog open the keyboard and the IME are the toolkit's.
+        let cell = (content.ime && cols > 0 && !modal_open).then(|| {
             placed
                 .grid_layout()
                 .cell_rect(cursor.row, cursor.col.min(cols - 1), 1)
         });
-        ui.set_ime_area(cell);
+        ui.set_ime_area(if modal_open { shell_out.ime_area } else { cell });
         if let (Some(cell), Some(text)) = (cell, content.preedit.filter(|t| !t.is_empty())) {
             let (fg, bg) = (self.term_theme.foreground, self.term_theme.background);
             let line = placed.cell_h_logical();
@@ -279,6 +303,7 @@ impl Renderer {
         }
         let (scene, mut output) = ui.finish();
         output.commands.extend(shell_out.commands);
+        let (tab_events, modal) = (shell_out.tab_events, shell_out.modal);
 
         let selection = [];
         let view_state = ViewState {
@@ -312,6 +337,8 @@ impl Renderer {
         )?;
         Ok(Drawn {
             output,
+            tab_events,
+            modal,
             cols: placement.cols,
             rows: placement.rows,
         })

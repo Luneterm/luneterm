@@ -177,10 +177,24 @@ pub fn launch(
     settings: &Settings,
     size: PtySize,
 ) -> Result<(Box<dyn Pty>, String), SpawnFailure> {
+    launch_in(backend, settings, size, None)
+}
+
+/// [`launch`] in `cwd` when given (a directory the caller already checked, see `cwd::validated`),
+/// else in the settings' directory.
+pub fn launch_in(
+    backend: &dyn PtyBackend,
+    settings: &Settings,
+    size: PtySize,
+    cwd: Option<&Path>,
+) -> Result<(Box<dyn Pty>, String), SpawnFailure> {
     let env = env(settings, &|k| std::env::var(k).ok());
     let mut list = candidates(settings, Os::HOST);
     for options in &mut list {
         options.env.clone_from(&env);
+        if let Some(dir) = cwd {
+            options.cwd = Some(dir.to_path_buf());
+        }
     }
     first_spawned(&list, |options| backend.spawn(options, size))
 }
