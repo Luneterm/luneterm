@@ -269,6 +269,11 @@ XTVERSION name `ExtensionError::InvalidXtversion` (nothing is registered then).
   only when it changed) and `selection_text` (at most 32 MiB, else `CopyResult::TooLarge` and a
   toast). A marker on the anchor line follows trim (`Terminal::dispose_marker` frees it); a
   vertical resize, a buffer switch and typing clear the selection.
+- Links (M10 step 4): `crates/luneterm/src/links/`. `scan.rs` ports Lunegit's link scanner (OSC 8
+  runs by the engine's link id plus bare `http(s)://` text) and runs on demand over the row under
+  the pointer; `open.rs` is the only code that opens anything: a closed URL grammar (`check_url`)
+  applied at open, then one argv element to `/usr/bin/open`, `xdg-open` or `ShellExecuteW`
+  (`unsafe` lives in that Windows module). A Cmd-click (macOS) or Shift-click opens, a drag selects.
 - Own the clipboard setting: `StandardExtensions::clipboard_write` and `set_clipboard_write`
   (default `false`). `ClipboardWrite` arrives only while it is on; the host decides what to do
   with the text (no query is ever answered). **Done:** `Settings.osc_clipboard` (default on, as

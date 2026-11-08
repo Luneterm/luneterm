@@ -50,6 +50,7 @@ use crate::input::{
     WheelAction, WheelCtx, WheelState, key_input, mouse_to_terminal, pointer_event, route_key,
     selection_position, selection_scroll, terminal_mods, wheel, wheel_delta, wheel_report,
 };
+use crate::links::{self, open::OpenError};
 use crate::render::{Content, Placed, Renderer};
 use crate::session::{
     Command, CopyResult, HostPalette, MAX_COPY_BYTES, Scroll, SelectCmd, Session, SessionConfig,
@@ -311,6 +312,16 @@ enum ModalState {
     },
 }
 
+/// How far (logical px) the pointer may move with a link pressed before it is a drag.
+const LINK_DRAG_SLOP: f32 = 4.0;
+
+/// A press on a link, waiting for its release.
+#[derive(Debug)]
+struct PendingLink {
+    uri: String,
+    down: (f32, f32),
+}
+
 /// Ends a session without keeping the UI thread: it stops in the background and the child is
 /// killed there. (The last session of the app is closed by [`App::shutdown`], which waits.)
 fn retire(session: Session) {
@@ -360,6 +371,9 @@ struct App {
     mouse_captured: bool,
     /// A press started a selection and the button is still down: moves drag it.
     selecting: bool,
+    /// A press on a link with the link modifier held: a release without a drag opens it, a drag
+    /// makes it a selection.
+    pending_link: Option<PendingLink>,
     clicks: ClickCounter,
     toasts: Toasts,
     wheel: WheelState,
@@ -398,6 +412,7 @@ impl App {
             mouse: MouseState::default(),
             mouse_captured: false,
             selecting: false,
+            pending_link: None,
             clicks: ClickCounter::default(),
             toasts: Toasts::default(),
             wheel: WheelState::default(),
@@ -494,6 +509,53 @@ impl App {
         self.tabs
             .active_item()
             .map_or_else(UpdateModes::default, |t| t.modes)
+    }
+
+    /// The modifier that makes a click open a link: Cmd on macOS, Shift on every OS.
+    fn link_modifier_held(&self) -> bool {
+        self.mods.shift_key() || (cfg!(target_os = "macos") && self.mods.super_key())
+    }
+
+    /// The cell under the pointer when it is over the grid.
+    fn cell_under_pointer(&self) -> Option<(usize, usize)> {
+        let pos = self.pointer?;
+        let ctx = self.mouse_ctx()?;
+        if self.modal.is_some() || !self.over_body(pos) {
+            return None;
+        }
+        ctx.layout.cell_at(pos, ctx.cols, ctx.rows)
+    }
+
+    /// Shows the link under the pointer as hovered while the link modifier is held, and stops
+    /// showing it otherwise. Redraws when it changed.
+    fn refresh_hover(&mut self) {
+        let at = (self.link_modifier_held() && !self.selecting)
+            .then(|| self.cell_under_pointer())
+            .flatten();
+        if let Some(tab) = self.tabs.active_item_mut()
+            && tab.set_link_hover(at)
+        {
+            self.request_redraw();
+        }
+    }
+
+    /// Opens a link the user clicked: checked again here, whatever produced it.
+    fn open_link(&mut self, uri: &str) {
+        match links::open::open_url(uri) {
+            Ok(()) => {}
+            Err(e) => {
+                // The reason, never the URL (its query can hold a token).
+                match e {
+                    OpenError::Rejected(why) => eprintln!("luneterm: link refused: {why:?}"),
+                    OpenError::Failed(kind) => eprintln!("luneterm: link not opened: {kind:?}"),
+                }
+                self.toasts.push(
+                    ToastSpec::new(ToastKind::Warning, e.message()),
+                    self.start.elapsed(),
+                );
+                self.request_redraw();
+            }
+        }
     }
 
     fn has_selection(&self) -> bool {
@@ -620,6 +682,7 @@ impl App {
         self.preedit = None;
         self.mouse_captured = false;
         self.selecting = false;
+        self.pending_link = None;
         self.clicks.reset();
         self.thumb_drag = None;
         self.mouse = MouseState::default();
@@ -871,6 +934,8 @@ impl App {
             self.modal = None;
             worth_a_frame = true;
         }
+        // An update hid the hovered link's cells; show the link again if it is still there.
+        self.refresh_hover();
         worth_a_frame
     }
 
@@ -1015,6 +1080,7 @@ impl App {
             maximized: win.window.is_maximized(),
             grid: &mut tab.grid,
             selection: &ranges,
+            hover_link: tab.hover_id,
             toasts: Some(&mut self.toasts),
             cursor,
             blink_on: self.blink.on(),
@@ -1194,10 +1260,22 @@ impl App {
             return;
         }
         let Some(placed) = self.placed else { return };
+        if let Some(p) = &self.pending_link {
+            if (pos.0 - p.down.0).abs() <= LINK_DRAG_SLOP
+                && (pos.1 - p.down.1).abs() <= LINK_DRAG_SLOP
+            {
+                return;
+            }
+            // Moved past the slop: it was a drag, not a click on a link.
+            let down = p.down;
+            self.pending_link = None;
+            self.start_selection(down);
+        }
         if self.selecting {
             self.drag_selection(pos);
             return;
         }
+        self.refresh_hover();
         if let Some(drag) = &mut self.thumb_drag {
             let scroll = self.tabs.active_item().and_then(|t| t.scroll);
             if let Some(scroll) = scroll {
@@ -1235,6 +1313,19 @@ impl App {
         let Some(ev) = pointer_event(state, button) else {
             return;
         };
+        // A press on a link with the link modifier held is the link's, not the program's and not
+        // a selection's, until it is seen whether the pointer moves.
+        if ev == PointerEvent::Down(TerminalMouseButton::Left)
+            && self.link_modifier_held()
+            && let Some((row, col)) = self.cell_under_pointer()
+            && let Some(span) = self.tabs.active_item().and_then(|t| t.link_at(row, col))
+        {
+            self.pending_link = Some(PendingLink {
+                uri: span.uri,
+                down: pos,
+            });
+            return;
+        }
         match ev {
             PointerEvent::Down(button) => {
                 let reported = self.tracking() && self.over_body(pos) && self.report(ev, pos);
@@ -1250,6 +1341,12 @@ impl App {
                 }
             }
             PointerEvent::Up(button) => {
+                if button == TerminalMouseButton::Left
+                    && let Some(link) = self.pending_link.take()
+                {
+                    self.open_link(&link.uri);
+                    return;
+                }
                 if button == TerminalMouseButton::Left && std::mem::take(&mut self.selecting) {
                     self.send(Command::Select(SelectCmd::End));
                 }
@@ -1451,13 +1548,17 @@ impl ApplicationHandler<UserEvent> for App {
                 self.on_ime(ime);
                 return;
             }
-            WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+            WindowEvent::ModifiersChanged(m) => {
+                self.mods = m.state();
+                self.refresh_hover();
+            }
             WindowEvent::Focused(focused) => {
                 self.focused = *focused;
                 if let Some(tab) = self.tabs.active_item_mut() {
                     tab.set_focus(*focused);
                 }
                 if !focused {
+                    self.pending_link = None;
                     self.thumb_drag = None;
                     if std::mem::take(&mut self.selecting) {
                         self.send(Command::Select(SelectCmd::End));
@@ -1480,7 +1581,10 @@ impl ApplicationHandler<UserEvent> for App {
                     ));
                 }
             }
-            WindowEvent::CursorLeft { .. } => self.pointer = None,
+            WindowEvent::CursorLeft { .. } => {
+                self.pointer = None;
+                self.refresh_hover();
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 self.on_mouse_button(*state, *button);
             }
