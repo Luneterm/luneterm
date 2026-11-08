@@ -14,11 +14,12 @@
 //! `waker()` (I1). The engine never touches PTY input (I2): every write goes through the writer
 //! thread, so a child that blocks writing output while we write its input cannot deadlock us.
 //!
-//! Publish/wake order (sketch trap 1). Engine: `ui_ready = false`, `wake_pending.swap(true)`,
-//! store the Update, `waker()` if the swap saw `false`. UI (`take_update`): clear
-//! `wake_pending`, take the Update, then `ui_ready = true`. The engine publishes only after
-//! `ui_ready`, which the UI sets only after clearing the flag, so the swap always sees `false`:
-//! exactly one wake per Update, and none is lost.
+//! Publish/wake order (sketch trap 1). Engine: `ui_ready = false`, store the Update, then
+//! `wake_pending.swap(true)` and `waker()` if the swap saw `false`. UI (`take_update`): clear
+//! `wake_pending`, take the Update, then `ui_ready = true`. Because the store precedes the swap,
+//! an Update in the mailbox always has a wake pending or a swap still to run: none is lost. The
+//! UI also takes on every frame, so it can find an Update before its wake: at most one wake per
+//! Update. Swap-then-store loses a wake (review r10 F1; `session_publish_wake_is_never_lost`).
 
 use std::collections::VecDeque;
 use std::io::{self, Read};
@@ -163,8 +164,15 @@ impl Shared {
     }
 
     pub(crate) fn take_update(&self) -> Option<Update> {
+        self.take_update_with(&mut || {})
+    }
+
+    /// `take_update` with `between` run after the flag is cleared and before the take, so a
+    /// test can interleave a publish there (module docs).
+    pub(crate) fn take_update_with(&self, between: &mut dyn FnMut()) -> Option<Update> {
         // Order matters (module docs): clear, take, then ready.
         self.wake_pending.store(false, Ordering::SeqCst);
+        between();
         let update = lock(&self.mailbox).take();
         if update.is_some() {
             lock(&self.inbox).ui_ready = true;
@@ -185,11 +193,18 @@ impl Shared {
 
     /// Engine side of the publish order (module docs).
     fn publish(&self, update: Update, waker: &dyn Fn()) {
+        self.publish_with(update, waker, &mut || {});
+    }
+
+    /// `publish` with `between` run after the store and before the swap, so a test can
+    /// interleave a take there. No lock is held while `between` or `waker` runs.
+    pub(crate) fn publish_with(&self, update: Update, waker: &dyn Fn(), between: &mut dyn FnMut()) {
         lock(&self.inbox).ui_ready = false;
-        let woken = self.wake_pending.swap(true, Ordering::SeqCst);
         self.stats.updates_published.fetch_add(1, Ordering::SeqCst);
+        // Store first, then swap (module docs): the swap-then-store order can lose a wake.
         *lock(&self.mailbox) = Some(update);
-        if !woken {
+        between();
+        if !self.wake_pending.swap(true, Ordering::SeqCst) {
             waker();
         }
     }

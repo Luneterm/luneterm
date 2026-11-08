@@ -871,11 +871,13 @@ scroll, resize, clipboard gate) and takes `Update`s.
 | Caps | cols 2..=4096, rows 1..=2048, scrollback at most 100,000 (clamped, not rejected: the app computes the size itself) |
 | Exit | the output ends, then the exit status is polled every 20 ms for at most 1 s; `Session::close` joins the engine and writer so the `Pty` drop kills the child; the app waits at most 500 ms |
 
-**Publish protocol (ledger 6).** Engine: `ui_ready = false`, `wake_pending.swap(true)`, store the
-Update in the mailbox, call the waker only if the swap saw `false`. UI `take_update`: clear
-`wake_pending`, take the Update, then set `ui_ready = true`. The engine publishes only when
-`ui_ready`, which the UI sets only after clearing the flag, so every Update has exactly one wake and
-none is lost. The waker is an `EventLoopProxy` clone sending `UserEvent::Wake`; the loop requests a
+**Publish protocol (ledger 6).** Engine: `ui_ready = false`, store the Update in the mailbox, then
+`wake_pending.swap(true)` and call the waker only if the swap saw `false`. UI `take_update`: clear
+`wake_pending`, take the Update, then set `ui_ready = true`. Because the store comes before the swap,
+an Update in the mailbox always has a wake pending or a swap still to run, so none is lost; a take
+that runs every frame can find an Update before its wake, so there is at most one wake per Update
+(not exactly one). Swapping before the store loses a wake in one interleaving
+(`session_publish_wake_is_never_lost`). The waker is an `EventLoopProxy` clone sending `UserEvent::Wake`; the loop requests a
 redraw when visible and applies the Update without drawing when occluded. The result is vsync
 pacing by construction: an Update is built at most once per frame the UI actually consumes, so a
 flood costs one grid mirror per frame, not one per read. An `Update` carries the changed viewport
