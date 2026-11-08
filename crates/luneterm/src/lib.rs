@@ -7,6 +7,7 @@ pub mod app;
 pub mod demo;
 pub mod dump;
 pub mod fonts;
+pub mod input;
 pub mod render;
 pub mod session;
 pub mod settings;
