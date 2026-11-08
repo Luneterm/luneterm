@@ -11,11 +11,12 @@ use std::sync::OnceLock;
 use std::thread;
 
 use portable_pty::Child;
+use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
 use windows_sys::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::LibraryLoader::{
     LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, SetDefaultDllDirectories,
 };
-use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, OSVERSIONINFOW};
 use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
 
 /// Outcome of the one `SetDefaultDllDirectories` call: `Err` holds the OS error code. An
@@ -45,6 +46,20 @@ pub(crate) fn ensure_dll_search_restricted() -> io::Result<()> {
             format!("SetDefaultDllDirectories failed (os error {code}); refusing to load conpty"),
         )),
     }
+}
+
+/// The OS build number from `RtlGetVersion`. `GetVersionExW` is not used: without an application
+/// manifest it reports a stale version.
+pub(crate) fn os_build() -> Option<u32> {
+    let mut info = OSVERSIONINFOW {
+        dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32,
+        ..OSVERSIONINFOW::default()
+    };
+    // SAFETY: `info` is a valid, writable OSVERSIONINFOW with its size field set, and outlives
+    // the call; `RtlGetVersion` only writes into it.
+    let status = unsafe { RtlGetVersion(&mut info) };
+    // STATUS_SUCCESS is 0; any negative NTSTATUS is a failure.
+    (status == 0 && info.dwBuildNumber != 0).then_some(info.dwBuildNumber)
 }
 
 /// Starts the exit-watcher thread: it waits on a duplicate of the child's process handle and

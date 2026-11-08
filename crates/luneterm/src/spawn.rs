@@ -7,6 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use lune_pty::{Pty, PtyBackend, PtySize, SpawnOptions};
+use lune_vt::services::options_service::{PtyBackendKind, WindowsPty};
 
 use crate::settings::Settings;
 
@@ -36,6 +37,15 @@ impl Os {
 /// What XTVERSION answers: `Luneterm(<version>)`, Lunegit's `Lunegit(<ver>)` form.
 pub fn xtversion() -> String {
     format!("Luneterm({VERSION})")
+}
+
+/// What the engine's reflow heuristics need to know about the PTY: on Windows ConPTY and the OS
+/// build; elsewhere nothing.
+pub fn windows_pty() -> Option<WindowsPty> {
+    cfg!(windows).then(|| WindowsPty {
+        backend: Some(PtyBackendKind::Conpty),
+        build_number: lune_pty::conpty_build(),
+    })
 }
 
 /// The programs to try, in order, with the working directory set and no environment yet. The
@@ -380,6 +390,18 @@ mod tests {
         assert_eq!(none.map_err(|f| f.kind), Err(io::ErrorKind::NotFound));
         // The login shell has no program name.
         assert_eq!(program_name(&SpawnOptions::default()), "login shell");
+    }
+
+    #[test]
+    fn conpty_is_declared_on_windows_only() {
+        let pty = windows_pty();
+        if cfg!(windows) {
+            let pty = pty.expect("ConPTY on Windows");
+            assert_eq!(pty.backend, Some(PtyBackendKind::Conpty));
+            assert!(pty.build_number.is_some_and(|b| b >= 17763));
+        } else {
+            assert_eq!(pty, None);
+        }
     }
 
     #[test]
