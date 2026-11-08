@@ -4,10 +4,12 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod cwd;
 pub mod demo;
 pub mod dump;
 pub mod fonts;
 pub mod input;
+pub mod outline;
 pub mod render;
 pub mod session;
 pub mod settings;

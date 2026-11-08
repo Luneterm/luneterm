@@ -15,8 +15,8 @@ use lune_vt::services::options_service::{OptionValue, WindowOptions};
 use lune_vt::{CellColor, UnderlineStyle as VtUnderline, Viewport, ViewportCell};
 
 use super::engine::{
-    Clock, EngineCore, HIDDEN_INTERVAL, SLICE, STEP_MAX, STEP_MIN, SYNC_TIMEOUT, TickInput,
-    build_terminal,
+    Clock, EngineCore, HIDDEN_INTERVAL, PROBE_IDLE, SLICE, STEP_MAX, STEP_MIN, SYNC_TIMEOUT,
+    TickInput, build_terminal,
 };
 use super::fake_pty::{FakePty, Gate, Probe, Script};
 use super::threads::{
@@ -896,6 +896,458 @@ fn session_events_reach_the_update() {
     rig.command(Command::SetClipboardWrite(false));
     let u = rig.feed(b"\x1b]52;c;YWJj\x07q").expect("update");
     assert!(u.clipboard_write.is_none());
+}
+
+// ---------------------------------------------------------------- M10 step 1: probes, kitty reset
+
+const KITTY_ON: &[u8] = b"\x1b[>1u";
+const SHELL: u32 = 100;
+const CHILD: u32 = 200;
+const OTHER_CHILD: u32 = 300;
+
+impl Rig {
+    fn kitty_flags(&self) -> u8 {
+        self.core.terminal.keyboard_protocol().flags(false)
+    }
+
+    fn set_foreground(&self, pid: Option<u32>) {
+        *lock(&self.probe.foreground) = pid;
+    }
+
+    /// A rig whose PTY reports `SHELL` as the shell, in the foreground, and a first probe done.
+    fn with_known_foreground() -> Rig {
+        let mut rig = rig_published();
+        *lock(&rig.probe.pid) = Some(SHELL);
+        rig.set_foreground(Some(SHELL));
+        rig.probe_pass();
+        rig
+    }
+
+    /// Time for one idle probe interval to pass, then a tick.
+    fn probe_pass(&mut self) -> Option<Update> {
+        self.clock.advance(PROBE_IDLE);
+        self.idle()
+    }
+}
+
+#[test]
+fn session_foreground_shell_child_shell_resets_once() {
+    let mut rig = Rig::with_known_foreground();
+    rig.feed(KITTY_ON);
+    assert_eq!(rig.kitty_flags(), 1);
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 1, "shell stays foreground: untouched");
+
+    // A program takes the terminal and sets flags: they stay while it runs.
+    rig.set_foreground(Some(CHILD));
+    rig.probe_pass();
+    rig.feed(b"\x1b[>4u");
+    assert_eq!(rig.kitty_flags(), 4);
+    for _ in 0..5 {
+        rig.probe_pass();
+    }
+    assert_eq!(
+        rig.kitty_flags(),
+        4,
+        "flags set by the program stay until it leaves"
+    );
+
+    // It leaves without popping them: reset on the way back.
+    rig.set_foreground(Some(SHELL));
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 0);
+
+    // Set again with the shell in front: later probes do not reset again.
+    rig.feed(KITTY_ON);
+    for _ in 0..3 {
+        rig.probe_pass();
+    }
+    assert_eq!(rig.kitty_flags(), 1, "one reset per departure");
+}
+
+#[test]
+fn session_foreground_child_to_child_does_not_reset() {
+    let mut rig = Rig::with_known_foreground();
+    rig.set_foreground(Some(CHILD));
+    rig.probe_pass();
+    rig.feed(KITTY_ON);
+    rig.set_foreground(Some(OTHER_CHILD));
+    rig.probe_pass();
+    rig.set_foreground(Some(CHILD));
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 1);
+}
+
+#[test]
+fn session_foreground_a_failed_probe_between_does_not_lose_the_departure() {
+    let mut rig = Rig::with_known_foreground();
+    rig.set_foreground(Some(CHILD));
+    rig.probe_pass();
+    rig.feed(KITTY_ON);
+    rig.set_foreground(None);
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 1, "unknown is not a return");
+    rig.set_foreground(Some(SHELL));
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 0);
+}
+
+#[test]
+fn session_foreground_known_ignores_prompt_marks() {
+    // The foreground is known and the shell never left: a prompt mark must not reset.
+    let mut rig = Rig::with_known_foreground();
+    rig.feed(KITTY_ON);
+    rig.feed(b"\x1b]133;A\x07");
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 1);
+    // And with a program in front, a prompt mark (a program printing one) does not either.
+    rig.set_foreground(Some(CHILD));
+    rig.probe_pass();
+    rig.feed(b"\x1b]133;A\x07");
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 1);
+}
+
+#[test]
+fn session_foreground_unknown_resets_on_the_prompt_mark_only() {
+    // The fake reports no pid and no foreground: the Windows case, same code path.
+    let mut rig = rig_published();
+    rig.feed(KITTY_ON);
+    assert_eq!(rig.kitty_flags(), 1);
+    for _ in 0..4 {
+        rig.probe_pass();
+    }
+    rig.feed(b"\x1b]133;C\x07\x1b]133;B\x07\x1b]133;D;0\x07");
+    assert_eq!(rig.kitty_flags(), 1, "unknown and no prompt mark: no reset");
+    rig.feed(b"\x1b]133;A\x07");
+    assert_eq!(rig.kitty_flags(), 0, "unknown and PromptStart: reset");
+    // The same mark with the flags set again resets again (each prompt is the shell's).
+    rig.feed(KITTY_ON);
+    rig.feed(b"\x1b]133;A\x07");
+    assert_eq!(rig.kitty_flags(), 0);
+}
+
+#[test]
+fn session_foreground_prompt_mark_probes_at_once() {
+    // The program left and the shell printed its prompt before the next scheduled probe: the
+    // prompt mark brings the probe forward, so the reset does not wait for the cadence.
+    let mut rig = Rig::with_known_foreground();
+    rig.set_foreground(Some(CHILD));
+    rig.probe_pass();
+    rig.feed(KITTY_ON);
+    rig.set_foreground(Some(SHELL));
+    let before = rig.probe.foreground_probes.load(Ordering::SeqCst);
+    rig.feed(b"\x1b]133;A\x07");
+    assert_eq!(
+        rig.probe.foreground_probes.load(Ordering::SeqCst),
+        before + 1
+    );
+    assert_eq!(rig.kitty_flags(), 0, "no clock advance needed");
+}
+
+#[test]
+fn session_probe_publishes_only_a_change() {
+    let mut rig = Rig::with_known_foreground();
+    let u = rig.idle();
+    assert!(u.is_none() || u.is_some_and(|u| u.foreground.is_none()));
+    // Many unchanged probes: no Update, no work for the UI.
+    for _ in 0..20 {
+        assert!(rig.probe_pass().is_none(), "unchanged probe");
+    }
+    assert!(!rig.core.unpublished());
+    // A change is one Update, then quiet again.
+    rig.set_foreground(Some(CHILD));
+    let u = rig.probe_pass().expect("the change is published");
+    assert_eq!(
+        u.foreground,
+        Some(ForegroundState {
+            shell_is_foreground: Some(false),
+            raw: lune_pty::RawMode::Unknown,
+        })
+    );
+    assert!(rig.probe_pass().is_none());
+    *lock(&rig.probe.raw) = lune_pty::RawMode::Raw;
+    let u = rig.probe_pass().expect("raw mode changed");
+    assert_eq!(u.foreground.map(|f| f.raw), Some(lune_pty::RawMode::Raw));
+    // Back to the first value is a change too.
+    *lock(&rig.probe.raw) = lune_pty::RawMode::Unknown;
+    rig.set_foreground(Some(SHELL));
+    let u = rig.probe_pass().expect("back");
+    assert_eq!(
+        u.foreground,
+        Some(ForegroundState::default().with_shell(true))
+    );
+}
+
+impl ForegroundState {
+    fn with_shell(self, is: bool) -> ForegroundState {
+        ForegroundState {
+            shell_is_foreground: Some(is),
+            ..self
+        }
+    }
+}
+
+#[test]
+fn session_probe_cadence_follows_output_and_the_running_command() {
+    let mut rig = rig_published();
+    let probes = |rig: &Rig| rig.probe.foreground_probes.load(Ordering::SeqCst);
+    // Idle: one probe per second, however often the engine ticks.
+    let start = probes(&rig);
+    for _ in 0..100 {
+        rig.clock.advance(Duration::from_millis(100));
+        rig.idle();
+    }
+    let idle = probes(&rig) - start;
+    assert!((9..=11).contains(&idle), "10 s idle: {idle} probes");
+    let due = rig.core.probe_deadline(rig.core.now()).expect("probing");
+    assert!(due > rig.core.now(), "just probed: not due");
+    assert!(due <= rig.core.now() + PROBE_IDLE);
+
+    // Output flowing: every 250 ms.
+    let start = probes(&rig);
+    for _ in 0..40 {
+        rig.clock.advance(Duration::from_millis(50));
+        rig.feed(b"x");
+    }
+    let flowing = probes(&rig) - start;
+    assert!(
+        (7..=9).contains(&flowing),
+        "2 s of output: {flowing} probes"
+    );
+
+    // A running command, no output: still 250 ms, so a short-lived program is seen leaving.
+    rig.feed(b"\x1b]133;C\x07");
+    rig.clock.advance(Duration::from_secs(5));
+    rig.idle();
+    let start = probes(&rig);
+    for _ in 0..40 {
+        rig.clock.advance(Duration::from_millis(50));
+        rig.idle();
+    }
+    let running = probes(&rig) - start;
+    assert!(
+        (7..=9).contains(&running),
+        "2 s of a silent command: {running}"
+    );
+}
+
+#[test]
+fn session_probe_wakes_the_loop_but_never_the_ui() {
+    let mut rig = rig_published();
+    let now = rig.core.now();
+    // The wait in the thread loop ends at the next probe even with nothing else to do.
+    assert_eq!(
+        rig.core
+            .next_deadline(now, true, true, rig.core.unpublished()),
+        None
+    );
+    let wake = rig
+        .core
+        .next_wake(now, true, true, rig.core.unpublished())
+        .expect("a probe is scheduled");
+    assert!(wake > now && wake <= now + PROBE_IDLE);
+    assert!(!rig.core.wants_tick(now, true, true, false));
+    assert!(rig.core.wants_tick(wake, true, true, false));
+    // Once the output has ended there is nothing left to probe.
+    drop(rig._tx);
+}
+
+#[test]
+fn session_probes_stop_when_the_output_has_ended() {
+    let mut rig = rig_published();
+    *lock(&rig.probe.exit_code) = Some(0);
+    rig.tick_with(TickInput {
+        reader_ended: true,
+        ui_ready: true,
+        visible: true,
+        ..TickInput::default()
+    });
+    let now = rig.core.now();
+    assert_eq!(rig.core.probe_deadline(now), None);
+    let before = rig.probe.foreground_probes.load(Ordering::SeqCst);
+    rig.clock.advance(Duration::from_secs(10));
+    rig.idle();
+    assert_eq!(rig.probe.foreground_probes.load(Ordering::SeqCst), before);
+}
+
+#[test]
+fn session_threaded_idle_probe_does_not_wake_the_ui() {
+    let (pty, probe, _tx) = FakePty::scripted(Gate::Open);
+    *lock(&probe.pid) = Some(SHELL);
+    *lock(&probe.foreground) = Some(SHELL);
+    let (w, woken) = waker();
+    let session = Session::start(pty, config(20, 3), w).expect("session");
+    assert!(wait_until(Duration::from_secs(5), || session
+        .take_update()
+        .is_some()));
+    let wakes = woken.calls.load(Ordering::SeqCst);
+    let published = session.stats().updates_published;
+    // The engine probes on its own timer: at least two probes in 2.5 s, no Update for them.
+    assert!(wait_until(Duration::from_secs(10), || {
+        probe.foreground_probes.load(Ordering::SeqCst) >= 3
+    }));
+    assert_eq!(session.stats().updates_published, published);
+    assert_eq!(woken.calls.load(Ordering::SeqCst), wakes);
+    assert!(session.take_update().is_none());
+    assert!(session.close(Duration::from_secs(5)));
+}
+
+// ------------------------------------------------ M10 step 1: command tracking
+
+#[test]
+fn session_command_state_follows_marks_sync_and_typing() {
+    let mut rig = rig_published();
+    // A prompt, then a command starts.
+    let u = rig.feed(b"\x1b]133;A\x07\x1b]133;B\x07").expect("update");
+    assert_eq!(u.command, None, "no change from the default");
+    let u = rig.feed(b"\x1b]133;C\x07").expect("update");
+    assert_eq!(
+        u.command,
+        Some(CommandState {
+            running: true,
+            interactive: false
+        })
+    );
+    // Typing into a cooked PTY does not make it interactive.
+    *lock(&rig.probe.raw) = lune_pty::RawMode::Cooked;
+    rig.command(Command::Text("x".to_owned()));
+    assert!(rig.idle().is_none());
+    // Typing into a raw one does.
+    *lock(&rig.probe.raw) = lune_pty::RawMode::Raw;
+    let u = rig.command(Command::Text("y".to_owned())).expect("update");
+    assert_eq!(
+        u.command,
+        Some(CommandState {
+            running: true,
+            interactive: true
+        })
+    );
+    let probes = rig.probe.raw_probes.load(Ordering::SeqCst);
+    rig.command(Command::Text("z".to_owned()));
+    assert_eq!(
+        rig.probe.raw_probes.load(Ordering::SeqCst),
+        probes,
+        "no more probes once captured"
+    );
+    // The command ends; the next one starts clean.
+    let u = rig.feed(b"\x1b]133;D;0\x07").expect("update");
+    assert_eq!(u.command.map(|c| c.running), Some(false));
+    let u = rig.feed(b"\x1b]133;C\x07").expect("update");
+    assert_eq!(
+        u.command,
+        Some(CommandState {
+            running: true,
+            interactive: false
+        })
+    );
+    // Mode 2026 inside the command: interactive.
+    let u = rig.feed(b"\x1b[?2026h\x1b[?2026l").expect("update");
+    assert!(u.sync_update_in_command);
+    assert_eq!(u.command.map(|c| c.interactive), Some(true));
+}
+
+#[test]
+fn session_a_command_that_flips_and_flips_back_publishes_no_change() {
+    let mut rig = rig_published();
+    // C and D inside one slice: the state ends where it started.
+    let u = rig.feed(b"\x1b]133;C\x07\x1b]133;D;0\x07");
+    let u = u.expect("the marks themselves are news");
+    assert_eq!(u.command, None);
+    assert_eq!(u.marks.len(), 2);
+}
+
+// ------------------------------------------------ M10 step 1: link uris, scrollback
+
+fn link(id: usize, text: &str) -> Vec<u8> {
+    format!("\x1b]8;;http://h/{id}\x1b\\{text}\x1b]8;;\x1b\\").into_bytes()
+}
+
+#[test]
+fn session_link_uris_are_sent_once_per_id() {
+    let mut rig = Rig::new(&config(40, 5));
+    let mut bytes = link(1, "ab");
+    bytes.extend(link(2, "cd"));
+    let u = rig.feed(&bytes).expect("update");
+    let mut uris: Vec<&str> = u.link_uris.iter().map(|(_, s)| s.as_str()).collect();
+    uris.sort_unstable();
+    assert_eq!(uris, ["http://h/1", "http://h/2"]);
+    // The ids are the ones on the cells.
+    let row0 = &u
+        .rows_changed
+        .iter()
+        .find(|(y, _)| *y == 0)
+        .expect("row 0")
+        .1;
+    let ids: Vec<u32> = u.link_uris.iter().map(|(id, _)| *id).collect();
+    assert!(ids.contains(&row0[0].link) && ids.contains(&row0[2].link));
+    // The row changes again (same links): nothing new to send.
+    let u = rig.feed(b"\rzz").expect("update");
+    assert!(u.link_uris.is_empty());
+    // A new link is sent, the old ones are not.
+    let u = rig.feed(&link(3, "ef")).expect("update");
+    assert_eq!(u.link_uris.len(), 1);
+    assert_eq!(u.link_uris[0].1, "http://h/3");
+}
+
+#[test]
+fn session_link_uris_skip_a_uri_over_2048_bytes() {
+    let mut rig = Rig::new(&config(40, 5));
+    let at_cap = format!("http://h/{}", "a".repeat(MAX_LINK_URI - "http://h/".len()));
+    let over = format!(
+        "http://h/{}",
+        "b".repeat(MAX_LINK_URI - "http://h/".len() + 1)
+    );
+    assert_eq!((at_cap.len(), over.len()), (MAX_LINK_URI, MAX_LINK_URI + 1));
+    let mut bytes = format!("\x1b]8;;{at_cap}\x1b\\p\x1b]8;;\x1b\\").into_bytes();
+    bytes.extend(format!("\x1b]8;;{over}\x1b\\q\x1b]8;;\x1b\\").into_bytes());
+    let u = rig.feed(&bytes).expect("update");
+    assert_eq!(u.link_uris.len(), 1);
+    assert_eq!(u.link_uris[0].1, at_cap);
+    // The over-long one is not looked up again either: a full refresh sends nothing.
+    rig.command(Command::Scroll(Scroll::Top));
+    let u = rig
+        .command(Command::Scroll(Scroll::Bottom))
+        .expect("update");
+    assert!(u.link_uris.is_empty());
+}
+
+#[test]
+fn session_link_uris_are_capped_per_update_and_the_rest_follow() {
+    // 300 one-cell links on 3 rows of 100 columns.
+    let mut rig = Rig::new(&config(100, 5));
+    let mut bytes = Vec::new();
+    for i in 0..300 {
+        bytes.extend(link(i, "x"));
+    }
+    let u = rig.feed(&bytes).expect("update");
+    assert_eq!(u.link_uris.len(), LINK_URIS_CAP);
+    let mut seen: std::collections::HashSet<u32> = u.link_uris.iter().map(|(id, _)| *id).collect();
+    // The remainder follows in the next Update, with no further output needed.
+    let u = rig.idle().expect("the rest follows");
+    assert_eq!(u.link_uris.len(), 300 - LINK_URIS_CAP);
+    for (id, _) in &u.link_uris {
+        assert!(seen.insert(*id), "no id twice");
+    }
+    assert_eq!(seen.len(), 300);
+    assert!(rig.idle().is_none());
+}
+
+#[test]
+fn session_set_scrollback_applies_and_caps() {
+    let mut rig = rig_published();
+    assert_eq!(rig.core.terminal.options().scrollback, 1000);
+    let u = rig.command(Command::SetScrollback(50)).expect("update");
+    assert!(u.full);
+    assert_eq!(rig.core.terminal.options().scrollback, 50);
+    rig.command(Command::SetScrollback(u32::MAX));
+    assert_eq!(rig.core.terminal.options().scrollback, MAX_SCROLLBACK);
+    rig.command(Command::SetScrollback(0));
+    assert_eq!(rig.core.terminal.options().scrollback, 0);
+    assert_eq!(
+        format!("{:?}", Command::SetScrollback(7)),
+        "SetScrollback(7)"
+    );
 }
 
 // ---------------------------------------------------------------- T8 caps (I10, I11)

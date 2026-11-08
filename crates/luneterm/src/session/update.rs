@@ -4,11 +4,14 @@
 use std::fmt;
 use std::sync::Arc;
 
+use lune_pty::RawMode;
 use lune_termview::{Attrs, Cell, Color, Grid, UnderlineStyle};
 use lune_vt::{
     CellColor, CommandMark, MouseEncoding, MouseTracking, Progress, UnderlineStyle as VtUnderline,
     ViewportCell, ViewportCursor,
 };
+
+use crate::outline::CommandState;
 
 use super::HostPalette;
 
@@ -28,6 +31,17 @@ pub struct UpdateModes {
 pub struct Exit {
     /// `None` when the exit status was still unknown 1 s after the output ended.
     pub code: Option<i32>,
+}
+
+/// What the engine thread's probes of the PTY last saw (plan M10 D3). A session starts at the
+/// default (nothing known); an Update carries a new value only when it differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ForegroundState {
+    /// Whether the shell (the child the session spawned) is the PTY's foreground process;
+    /// `None` when the platform cannot say (Windows) or a probe failed.
+    pub shell_is_foreground: Option<bool>,
+    /// The PTY's line discipline.
+    pub raw: RawMode,
 }
 
 /// One published change set. Apply them in order with [`apply_update`].
@@ -63,6 +77,14 @@ pub struct Update {
     /// OSC 133 marks in order, at most [`MARKS_CAP`] (the oldest are dropped).
     pub marks: Vec<CommandMark>,
     pub sync_update_in_command: bool,
+    /// The PTY probes, only when they changed.
+    pub foreground: Option<ForegroundState>,
+    /// The command tracking, only when it changed.
+    pub command: Option<CommandState>,
+    /// `(id, uri)` of every OSC 8 link id appearing in `rows_changed` that no earlier Update of
+    /// this session carried, at most [`LINK_URIS_CAP`]; a uri over [`MAX_LINK_URI`] bytes is
+    /// never carried (that id stays unopenable). Untrusted text: check before use.
+    pub link_uris: Vec<(u32, String)>,
     pub exited: Option<Exit>,
 }
 
@@ -88,6 +110,9 @@ impl fmt::Debug for Update {
             .field("palette", &self.palette.is_some())
             .field("cwd", &self.cwd.is_some())
             .field("marks", &self.marks.len())
+            .field("foreground", &self.foreground)
+            .field("command", &self.command)
+            .field("link_uris", &self.link_uris.len())
             .field("exited", &self.exited)
             .finish_non_exhaustive()
     }
@@ -95,6 +120,10 @@ impl fmt::Debug for Update {
 
 /// At most this many marks per Update.
 pub const MARKS_CAP: usize = 64;
+/// At most this many link uris per Update; the rest follow in the next ones.
+pub const LINK_URIS_CAP: usize = 256;
+/// A link uri longer than this (bytes) is not published.
+pub const MAX_LINK_URI: usize = 2048;
 
 /// Brings `grid` to the screen `update` was built from: resizes on a size change, then sets the
 /// changed rows and marks them dirty.
