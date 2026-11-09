@@ -22,8 +22,8 @@ Lunegit). The owner line in luneui-rs still says "M9 to M11"; M11 no longer exis
 
 | What the done standard needs | Evidence so far | Status |
 |---|---|---|
-| macOS `Vibrancy` (NSVisualEffect, light, kept active) on a real window | The app applies it through `material::apply(window, Material::Vibrancy)` for the default Lunegit glass style (`crates/luneterm/src/app.rs`, `apply_material`). A debug launch on this Mac (Apple M1 Pro, 2026-11-08, M9 step 6) returned `Ok`: stderr held only the adapter line and no `glass: ... continuing opaque` line. Nobody looked at the window. | **Pending the hands-on macOS run**: how it looks over a busy desktop, active and inactive window, against Lunegit |
-| Windows acrylic and Mica | `material::apply` returned `Ok` for Default (acrylic), Mica, Mica Alt and Off, switched live from the settings page on claude-vm-win with no error and no crash (2026-11-09). **Not judged:** the VM has no 3D acceleration (WARP), so no OS material shows. The glass look needs a real GPU. | The user's glass check (step 9) |
+| macOS `Vibrancy` (NSVisualEffect, light, kept active) on a real window | The app applies it through `material::apply(window, Material::Vibrancy)` for the default Lunegit glass style (`crates/luneterm/src/app.rs`, `apply_material`). A debug launch on this Mac (Apple M1 Pro, 2026-11-08, M9 step 6) returned `Ok`: stderr held only the adapter line and no `glass: ... continuing opaque` line. Nobody looked at the window. | **Run by the user at M10 Stop A (2026-11-09)**: reported ok ("ok i think") with no defect named; the comparison against Lunegit and the dark glass are judged again at step 14 (see "Stop A" below) |
+| Windows acrylic and Mica | `material::apply` returned `Ok` for Default (acrylic), Mica, Mica Alt and Off, switched live from the settings page on claude-vm-win with no error and no crash (2026-11-09). **Not judged:** the VM has no 3D acceleration (WARP), so no OS material shows. The glass look needs a real GPU. | **Skipped at Stop A** (item 10, 2026-11-09: "skipped for now"); open until the step 14 glass check on a real GPU |
 | The inactive window | Not run. The toolkit no longer draws an inactive solid, so `VibrancyFollowsWindow` changes nothing in the fills; the app maps the Lunegit style to `Vibrancy` (M9 step 4 note). | M10 |
 | Liquid Glass on macOS versions without it | Not run. | M10 |
 | Blur and noise against Avalonia's defaults | Not run. | M10 |
@@ -32,7 +32,7 @@ Lunegit). The owner line in luneui-rs still says "M9 to M11"; M11 no longer exis
 
 | What the done standard needs | Evidence so far | Status |
 |---|---|---|
-| Acquire, present, resize, skip while hidden in a consumer's window | The app's frame loop handles all three `Acquired` results (`app.rs`, `redraw`): `Frame` draws, `Skip` sets `ControlFlow::Wait` and shows the window, `Redraw` asks for another redraw; `Occluded` stops redraws and the session keeps pumping without drawing; a lost device rebuilds the stack. The macOS debug launch (2026-11-08) opened the window, ran a login shell, idled at 0.0% CPU and exited 15 ms after the shell's SIGHUP. | **Pending the hands-on macOS run** for what was seen: first frame, live resize, minimise and restore, occlusion |
+| Acquire, present, resize, skip while hidden in a consumer's window | The app's frame loop handles all three `Acquired` results (`app.rs`, `redraw`): `Frame` draws, `Skip` sets `ControlFlow::Wait` and shows the window, `Redraw` asks for another redraw; `Occluded` stops redraws and the session keeps pumping without drawing; a lost device rebuilds the stack. The macOS debug launch (2026-11-08) opened the window, ran a login shell, idled at 0.0% CPU and exited 15 ms after the shell's SIGHUP. | **Run by the user at M10 Stop A (2026-11-09)** on the release build: tabs, selection, settings, shell integration and the title were used and reported ok; no defect in the first frame, resize or the window was named ("Stop A" below). Occlusion and minimise were not singled out |
 | A pixel gate on a presented frame | Offscreen only. The e2e case E8 draws a real session through the toolkit's `dump` path and compares it to a reference replay: byte-identical on macOS and on Windows CI (1040 x 660), so the scene is stable; presented frames cannot be captured on this Mac (no screen capture). | M10: tried on claude-vm-win (P19), otherwise recorded as not closed |
 | Windows window path | **Run on claude-vm-win, 2026-11-09 (M10 step 8)**: the window opened on DX12 with the adapter `Microsoft Basic Render Driver` (WARP), drew, presented, took live resize (maximise, restore, edge drag; the ConPTY followed: 208x46, then 111x28) and the device was never lost. See the Windows section. | Seen on WARP only; a real GPU is the user's stop |
 
@@ -102,6 +102,24 @@ Findings:
   the edge resize and `material::apply` worked on Windows. The two limits are the VM's (no 3D
   hardware, so no glass to look at) and the missing readback (P19).
 
+## Stop A: the user's hands-on run (M10 step 9, macOS, 2026-11-09)
+
+The release build of `782cced` on the user's Mac with their real config directory. Reported
+result per item (the checklist is the task's `hands-on-mid.md`):
+
+| Item | Result |
+|---|---|
+| 1 Tabs, 2 Selection, 4 Settings and restore, 5 Shell integration, 8 Kitty reset, 9 Title | Reported ok ("ok i think"); no defect named. |
+| 3 Links | First **not ok**: no underline and no hand with Cmd or Shift held. On the retest it worked with Cmd held; the earlier report expected a hover effect without a modifier. The user then changed the behaviour (`b46c9fc`): underline on hover, a tooltip with the URL and the open hint, a hand only while the modifier is held. |
+| 6 Outline CPU (ledger 16) | **Skipped** by the user: no figure. |
+| 7 Bell (F3, the dock bounce) | Reported ok with the rest. |
+| 10 Windows glass | **Skipped for now**; open until step 14. |
+| 11 macOS Liquid Glass, blur and noise against Lunegit | Not stated separately; judged again at step 14. |
+
+Toolkit asks that came out of the run (for a luneui-rs task, not patched here: D23): the strip's
+`+` right after the last tab instead of at the strip's right end (gap 8 above), and a tab-switch
+animation (the active highlight sliding).
+
 ### Earlier: CI evidence (M9)
 
 - **Run 42474728954** (22b0e71, M9 step 7), all four jobs green: the app and the toolkit build on
@@ -109,8 +127,8 @@ Findings:
   control child loaded the planted `dxcompiler.dll`; the hardened children (in the plant's
   directory, and with it on `PATH`) loaded NULL, with `gpu::instance(None)` and `Gpu::new`
   completing, so the runner has an adapter and the hardening does not break GPU initialisation.
-  `luneterm.exe` = 13,858,304 bytes, `glass-ui.exe` = 12,567,552 bytes (artifact
-  `luneterm-windows-x64`).
+  `luneterm.exe` = 13,858,304 bytes, `glass-ui.exe` = 12,567,552 bytes (the spike, retired in
+  M10 step 12; artifact `luneterm-windows-x64`).
 - **Run 42477613074** (b535456, M9 step 8), all four jobs green: the e2e harness ran 10 cases, 0
   failed, in 46.1 s. E2 to E5 and E9 skipped (they need a Unix tty, `stty`). E1 (round trip through
   ConPTY and the engine) and E7 (exit code 3, the child dies within 2 s of the session dropping)
@@ -121,8 +139,8 @@ Findings:
 ## What worked (P20, so far)
 
 - The toolkit resolved and built from a git rev on all three CI runners, with `Cargo.lock`
-  recording both `lune-ui` 0.1.0 (the spike) and 0.2.0 (luneui-rs) without duplicating wgpu, winit,
-  glyphon or cosmic-text.
+  recording both `lune-ui` 0.1.0 (the in-tree spike toolkit, removed in M10 step 12) and 0.2.0
+  (luneui-rs) without duplicating wgpu, winit, glyphon or cosmic-text.
 - The gallery's composition (event loop with a user event, `glass_attributes`, hidden-then-shown,
   `material::apply`, `gpu::instance`, `Gpu::new`, `WindowSurface`, `FrameRenderer`, `Clipboard::service`,
   `OutputState::apply`) was enough to build the app shell without touching the toolkit.

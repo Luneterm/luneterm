@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "spikes/*"]
+members = ["crates/*"]
 default-members = ["crates/luneterm"]
 
 [workspace.package]
