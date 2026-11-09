@@ -70,6 +70,13 @@ pub struct MouseState {
     bypassed: bool,
 }
 
+impl MouseState {
+    /// The button of the press the program has seen and not yet seen released.
+    pub fn held_button(&self) -> Option<TerminalMouseButton> {
+        self.held
+    }
+}
+
 /// Presses within this long and this far (logical px) of the last one count as one click more
 /// (xterm.js reads the browser's `detail`; this is the OS's double-click time and slop, roughly).
 pub const MULTI_CLICK_TIME: Duration = Duration::from_millis(500);

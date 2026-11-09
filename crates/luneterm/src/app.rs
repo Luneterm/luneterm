@@ -703,10 +703,64 @@ impl App {
 
     /// Whether a press of ours is down: the pointer leaving the window must not forget where it was.
     fn button_held(&self) -> bool {
-        self.selecting
-            || self.mouse_captured
-            || self.thumb_drag.is_some()
-            || self.pending_link.is_some()
+        self.holds().any()
+    }
+
+    /// What the presses of ours that are down hold.
+    fn holds(&self) -> Holds {
+        Holds {
+            selecting: self.selecting,
+            captured: self.mouse_captured,
+            thumb: self.thumb_drag.is_some(),
+            link: self.pending_link.is_some(),
+        }
+    }
+
+    /// The program's release of the press it has seen, at the pointer's last position. Nothing when
+    /// there is no such press or no position to report at (the grid is not placed yet).
+    fn send_program_release(&mut self) {
+        let (Some(button), Some(pos), Some(ctx)) = (
+            self.mouse.held_button(),
+            self.pointer.last(),
+            self.mouse_ctx(),
+        ) else {
+            return;
+        };
+        let mods = terminal_mods(self.mods);
+        let up = mouse_to_terminal(&mut self.mouse, PointerEvent::Up(button), pos, mods, &ctx);
+        if let Some(report) = up {
+            self.send(Command::Mouse(report));
+        }
+    }
+
+    /// A release while a menu, a dialog or the settings page covers the terminal. A press of ours
+    /// that was down before it opened (a right press during a left drag opens the context menu, a
+    /// shortcut opens the close dialog mid-drag) ends here, with no pointer position needed: the
+    /// selection ends, the thumb and a pending link press are dropped (an overlay never opens a
+    /// link), and the program sees its release. A release that belongs to a press the overlay
+    /// itself took holds nothing and does nothing. Moves are ignored while it is open
+    /// (`on_cursor_moved`), so the hold only waits for its release.
+    fn release_under_overlay(&mut self, state: ElementState, button: MouseButton) {
+        let program_button = match pointer_event(state, button) {
+            Some(PointerEvent::Up(b)) => Some(b) == self.mouse.held_button(),
+            _ => false,
+        };
+        let (after, ended) =
+            release_under_overlay(self.holds(), button == MouseButton::Left, program_button);
+        if !after.thumb {
+            self.thumb_drag = None;
+        }
+        if !after.link {
+            self.pending_link = None;
+        }
+        self.selecting = after.selecting;
+        if ended.end_selection {
+            self.send(Command::Select(SelectCmd::End));
+        }
+        if ended.release_to_program {
+            self.send_program_release();
+        }
+        self.mouse_captured = after.captured;
     }
 
     /// Shows the link under the pointer as hovered (underlined, tooltip), and stops showing it when
@@ -808,9 +862,12 @@ impl App {
     fn pointer_left_terminal(&mut self) {
         self.pending_link = None;
         self.thumb_drag = None;
-        self.mouse_captured = false;
         if std::mem::take(&mut self.selecting) {
             self.send(Command::Select(SelectCmd::End));
+        }
+        // The program's press is released to it, or it would see the button down for good.
+        if std::mem::take(&mut self.mouse_captured) {
+            self.send_program_release();
         }
     }
 
@@ -2087,6 +2144,9 @@ impl App {
 
     fn mouse_button(&mut self, state: ElementState, button: MouseButton) {
         if self.overlay_open() {
+            if !state.is_pressed() && self.button_held() {
+                self.release_under_overlay(state, button);
+            }
             return;
         }
         let (Some(pos), Some(placed)) = (self.pointer.last(), self.placed) else {
@@ -2442,6 +2502,54 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
+/// What the presses of ours that are down hold (see [`App::holds`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Holds {
+    /// A selection follows the pointer.
+    selecting: bool,
+    /// The program has seen a press and not its release.
+    captured: bool,
+    /// The scroll thumb is being dragged.
+    thumb: bool,
+    /// A press on a link waits to be a click or a drag.
+    link: bool,
+}
+
+impl Holds {
+    fn any(self) -> bool {
+        self.selecting || self.captured || self.thumb || self.link
+    }
+}
+
+/// What a release under an overlay asks the app to send.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Ended {
+    /// Tell the engine the selection ended.
+    end_selection: bool,
+    /// Tell the program its button went up.
+    release_to_program: bool,
+}
+
+/// The holds that remain, and what to send, when a button is released while an overlay covers the
+/// terminal. `left` is the released button; `program_button` says it is the one the program saw
+/// pressed. The primary button's holds (selection, thumb, link press) end with it, and a pending
+/// link is only dropped, never opened.
+fn release_under_overlay(holds: Holds, left: bool, program_button: bool) -> (Holds, Ended) {
+    let mut h = holds;
+    let mut e = Ended::default();
+    if left {
+        e.end_selection = h.selecting;
+        h.selecting = false;
+        h.thumb = false;
+        h.link = false;
+    }
+    if h.captured && program_button {
+        e.release_to_program = true;
+        h.captured = false;
+    }
+    (h, e)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2630,5 +2738,67 @@ mod tests {
         // A grid too small for the text cuts it instead of failing.
         let tiny = failure_grid(4, 1, &failure);
         assert_eq!(tiny.cols(), 4);
+    }
+
+    /// F2, review r10: an overlay opened during a press (a right press, Cmd+W) must not leave the
+    /// press held. The class is every hold a press sets.
+    #[test]
+    fn a_release_under_an_overlay_ends_what_that_button_holds() {
+        let all = Holds {
+            selecting: true,
+            captured: true,
+            thumb: true,
+            link: true,
+        };
+        // The primary button: selection, thumb and link press end; the program's press stays
+        // (it belongs to its own button, which is not this one).
+        let (h, e) = release_under_overlay(all, true, false);
+        assert_eq!(
+            h,
+            Holds {
+                captured: true,
+                ..Holds::default()
+            }
+        );
+        assert_eq!(
+            e,
+            Ended {
+                end_selection: true,
+                release_to_program: false
+            }
+        );
+        // The program's button: it sees the release; the selection is left to its own button.
+        let (h, e) = release_under_overlay(all, false, true);
+        assert!(!h.captured && h.selecting && h.thumb && h.link);
+        assert_eq!(
+            e,
+            Ended {
+                end_selection: false,
+                release_to_program: true
+            }
+        );
+        // The primary button is also the program's: everything ends and the program is told.
+        let (h, e) = release_under_overlay(all, true, true);
+        assert!(!h.any());
+        assert!(e.end_selection && e.release_to_program);
+    }
+
+    #[test]
+    fn a_release_that_belongs_to_the_overlay_does_nothing() {
+        // Nothing held: nothing to end, whichever button.
+        for (left, program) in [(true, false), (false, false), (true, true)] {
+            let (h, e) = release_under_overlay(Holds::default(), left, program);
+            assert_eq!(h, Holds::default());
+            assert_eq!(e, Ended::default());
+        }
+        // A press of the program's that is down, released on another button: untouched.
+        let held = Holds {
+            captured: true,
+            ..Holds::default()
+        };
+        let (h, e) = release_under_overlay(held, false, false);
+        assert_eq!(h, held);
+        assert_eq!(e, Ended::default());
+        assert!(held.any() && !Holds::default().any());
     }
 }
