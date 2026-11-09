@@ -214,6 +214,8 @@ struct Ctx {
     queue: wgpu::Queue,
     fs: FontSystem,
     fonts: TermFonts,
+    // Last: dropped after the device.
+    _gpu: common::GpuLock,
 }
 
 fn family_of(db: &fontdb::Database, id: fontdb::ID) -> String {
@@ -272,13 +274,14 @@ fn system_fonts() -> (FontSystem, TermFonts) {
 }
 
 fn ctx(fonts: fn() -> (FontSystem, TermFonts)) -> Option<Ctx> {
-    let (device, queue, _) = common::device()?;
+    let (_gpu, device, queue, _) = common::device()?;
     let (fs, fonts) = fonts();
     Some(Ctx {
         device,
         queue,
         fs,
         fonts,
+        _gpu,
     })
 }
 

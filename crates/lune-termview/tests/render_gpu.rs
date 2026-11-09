@@ -110,7 +110,7 @@ fn close(a: [u8; 4], b: [u8; 4]) -> bool {
 
 #[test]
 fn background_cell_and_clear_colour() {
-    let Some((device, queue, _)) = common::device() else {
+    let Some((_gpu, device, queue, _)) = common::device() else {
         return;
     };
     let (mut fs, fonts) = test_fonts();
@@ -137,7 +137,7 @@ fn background_cell_and_clear_colour() {
 
 #[test]
 fn text_stays_in_its_cell_and_dirty_rows_update() {
-    let Some((device, queue, _)) = common::device() else {
+    let Some((_gpu, device, queue, _)) = common::device() else {
         return;
     };
     let (mut fs, fonts) = test_fonts();
@@ -178,7 +178,7 @@ fn text_stays_in_its_cell_and_dirty_rows_update() {
 
 #[test]
 fn decorations_cursor_and_selection_draw() {
-    let Some((device, queue, _)) = common::device() else {
+    let Some((_gpu, device, queue, _)) = common::device() else {
         return;
     };
     let (mut fs, fonts) = test_fonts();
@@ -230,7 +230,7 @@ fn fill(grid: &mut Grid, text: &str, row: usize) {
 /// incrementally updated view must draw exactly what a fresh view draws for the same grid.
 #[test]
 fn incremental_updates_match_a_fresh_view() {
-    let Some((device, queue, _)) = common::device() else {
+    let Some((_gpu, device, queue, _)) = common::device() else {
         return;
     };
     let (mut fs, fonts) = test_fonts();
@@ -311,7 +311,7 @@ fn busy_grid() -> (Grid, ViewState<'static>) {
 
 /// The grid at `opacity`, drawn over the clear colour.
 fn drawn_at(opacity: Option<f32>) -> (Vec<u8>, u32) {
-    let (device, queue, _) = common::device().expect("a device (checked by the caller)");
+    let (_gpu, device, queue, _) = common::device().expect("a device (checked by the caller)");
     let (mut fs, fonts) = test_fonts();
     let mut tv = TermView::new(&device, FORMAT, fonts, TermTheme::lunegit_one_dark());
     if let Some(o) = opacity {
@@ -381,7 +381,7 @@ fn colour_fonts() -> (FontSystem, TermFonts) {
 
 /// One colour glyph, alone in the grid, at `opacity`.
 fn colour_glyph_at(opacity: f32) -> Vec<u8> {
-    let (device, queue, _) = common::device().expect("a device (checked by the caller)");
+    let (_gpu, device, queue, _) = common::device().expect("a device (checked by the caller)");
     let (mut fs, fonts) = colour_fonts();
     let mut tv = TermView::new(&device, FORMAT, fonts, TermTheme::lunegit_one_dark());
     tv.set_opacity(opacity);
