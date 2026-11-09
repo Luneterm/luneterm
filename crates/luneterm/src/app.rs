@@ -1034,7 +1034,13 @@ impl App {
             .ok()
         });
         match check {
-            Some(check) => self.pending_new = Some(check),
+            Some(check) => {
+                self.pending_new = Some(check);
+                // The check's timeout reaches the event loop only through a frame's
+                // `pending_flow`: every new-tab path (the strip, the menu and the shortcut) asks
+                // for one, or a worker hung in `stat` would wake nothing.
+                self.request_redraw();
+            }
             None => {
                 self.open_tab(None, None);
                 self.workspace_changed(true);
