@@ -13,8 +13,8 @@ style (`GlassStyle::Default`, persisted as `default`) is luneui-rs's `near_black
 | What | Value |
 |---|---|
 | Window material | `near_black::MATERIAL`: macOS `UltraDark` vibrancy, state `Active`; Windows acrylic, tint `#A0000000`, dark (the tint is honoured on builds 17763 to 22522 only) |
-| Theme | the whole `near_black::THEME` (as `DEFAULT_GLASS_THEME`), never `theme.glass = GLASS` alone: menus, dropdowns, popovers, tooltips, toasts and dialogs fill from `menu_glass` (`near_black::MENU_GLASS`, `#0A0A0A9D`) |
-| Layers | tint black, tint opacity 1, material opacity 0.1; luminosity `black_max` **0.42** window, **0.38** panel, **0.48** card: the app's `render::DEFAULT_GLASS_THEME`, `near_black::THEME` with only these three lowered from the toolkit's 0.60 / 0.55 / 0.65 (the user's eye-check of 2026-11-09: "more transparent"). Raise them for blacker glass with less blur showing through, lower them for more transparency |
+| Theme | the whole `near_black::THEME`, never `theme.glass = GLASS` alone: menus, dropdowns, popovers, tooltips, toasts and dialogs fill from `menu_glass` (`near_black::MENU_GLASS`, `#0A0A0A9D`) |
+| Layers | tint black, tint opacity 1, material opacity 0.1; luminosity `black_max` 0.60 window, 0.55 panel, 0.65 card |
 | Header tint | the app's own `shell::NEAR_BLACK_HEADER_TINT`, a 6% white wash (`#FFFFFF10`), not luneui-rs's 4% `near_black::HEADER_TINT`: over black glass a black wash shows nothing, and at 4% the header was within 6 levels of the title band over a dark backdrop (3 at `#30`, crossing over a mid one); at 6% band against header is 12 / 8 / 3 levels over `#10` / `#30` / `#60` and header against card about 14. The header is a lighter band and the active tab is punched out of it |
 
 The app chooses all three by the pair (glass behind the window, style): `render::theme` and
