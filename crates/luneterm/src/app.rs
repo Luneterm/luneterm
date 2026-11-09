@@ -46,7 +46,10 @@ use lune_ui::widgets::tab_strip::TabEvent;
 use lune_ui::widgets::toast::{ToastKind, ToastSpec, Toasts};
 use lune_ui::widgets::tone::Tone;
 use lune_ui::window::glass_attributes;
-use lune_vt::{CursorStyle, MouseEncoding, MouseTracking, TerminalMouseButton, ViewportCursor};
+use lune_vt::{
+    CursorStyle, MouseEncoding, MouseTracking, TerminalModifiers, TerminalMouseButton,
+    TerminalMouseEvent, ViewportCursor,
+};
 
 use crate::cwd;
 use crate::dump;
@@ -669,6 +672,13 @@ impl App {
         }
     }
 
+    /// Sends `command` to the session of tab `id`, whether or not it is the active one.
+    fn send_to(&self, id: TabId, command: Command) {
+        if let Some(session) = self.tabs.get(id).and_then(|t| t.session.as_ref()) {
+            session.send(command);
+        }
+    }
+
     /// Sends `command` to the active tab's session.
     fn send(&self, command: Command) {
         if let Some(session) = self.tabs.active_item().and_then(|t| t.session.as_ref()) {
@@ -719,17 +729,24 @@ impl App {
     /// The program's release of the press it has seen, at the pointer's last position. Nothing when
     /// there is no such press or no position to report at (the grid is not placed yet).
     fn send_program_release(&mut self) {
-        let (Some(button), Some(pos), Some(ctx)) = (
-            self.mouse.held_button(),
-            self.pointer.last(),
-            self.mouse_ctx(),
-        ) else {
-            return;
-        };
+        let at = self.pointer.last().zip(self.mouse_ctx());
         let mods = terminal_mods(self.mods);
-        let up = mouse_to_terminal(&mut self.mouse, PointerEvent::Up(button), pos, mods, &ctx);
-        if let Some(report) = up {
+        if let Some(report) = program_release(&mut self.mouse, at, mods) {
             self.send(Command::Mouse(report));
+        }
+    }
+
+    /// Tab `id` is being left: its selection drag ends in its engine and
+    /// its program sees its button go up, so nothing stays held in a tab the pointer has left. The
+    /// release is built from that tab's grid and modes; the tab need not be active any more.
+    fn end_holds_of(&mut self, id: TabId) {
+        let holds = self.holds();
+        let at = self.pointer.last().zip(self.mouse_ctx_of(id));
+        let mods = terminal_mods(self.mods);
+        let mut commands = Vec::new();
+        end_left_tab_holds(holds, &mut self.mouse, at, mods, &mut commands);
+        for command in commands {
+            self.send_to(id, command);
         }
     }
 
@@ -1303,6 +1320,10 @@ impl App {
         let now = self.tabs.active();
         if now == before {
             return;
+        }
+        // Every way of leaving a tab comes through here. A tab that was closed has nobody to tell.
+        if let Some(id) = before.filter(|id| self.tabs.get(*id).is_some()) {
+            self.end_holds_of(id);
         }
         // The crossfade between the old tab's content and the new one's. The first tab and a
         // restored workspace do not fade; a tab that was closed has nothing to fade out, so the
@@ -2059,8 +2080,14 @@ impl App {
     // ----------------------------------------------------------------------------- pointer
 
     fn mouse_ctx(&self) -> Option<MouseCtx> {
+        self.mouse_ctx_of(self.tabs.active()?)
+    }
+
+    /// The pointer mapping for tab `id`: the grid's place is shared, its size and modes are the
+    /// tab's own.
+    fn mouse_ctx_of(&self, id: TabId) -> Option<MouseCtx> {
         let placed = self.placed?;
-        let tab = self.tabs.active_item()?;
+        let tab = self.tabs.get(id)?;
         Some(MouseCtx {
             layout: placed.grid_layout(),
             cols: tab.grid.cols(),
@@ -2458,13 +2485,10 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 if !focused {
                     self.tip_hidden = true;
-                    self.pending_link = None;
-                    self.thumb_drag = None;
-                    if std::mem::take(&mut self.selecting) {
-                        self.send(Command::Select(SelectCmd::End));
-                    }
-                    let held = self.button_held();
-                    self.pointer.released(held);
+                    // Every press of ours ends here, the program's too: the window may never
+                    // see the release.
+                    self.pointer_left_terminal();
+                    self.pointer.released(false);
                 }
             }
             WindowEvent::Resized(size) => {
@@ -2550,9 +2574,127 @@ fn release_under_overlay(holds: Holds, left: bool, program_button: bool) -> (Hol
     (h, e)
 }
 
+/// The release of the press the program has seen, at `at` (the pointer's last position and the
+/// mapping of the tab that owns the press). `None` when there is no such press or no position.
+fn program_release(
+    mouse: &mut MouseState,
+    at: Option<((f32, f32), MouseCtx)>,
+    mods: TerminalModifiers,
+) -> Option<TerminalMouseEvent> {
+    let button = mouse.held_button()?;
+    let (pos, ctx) = at?;
+    mouse_to_terminal(mouse, PointerEvent::Up(button), pos, mods, &ctx)
+}
+
+/// What a tab being left is told about the presses still down in it: the selection drag ends (its
+/// engine would go on autoscrolling), and a press its program saw is released. `at` is built from
+/// the tab being left, not the one taking over.
+fn end_left_tab_holds(
+    holds: Holds,
+    mouse: &mut MouseState,
+    at: Option<((f32, f32), MouseCtx)>,
+    mods: TerminalModifiers,
+    out: &mut Vec<Command>,
+) {
+    if holds.selecting {
+        out.push(Command::Select(SelectCmd::End));
+    }
+    if holds.captured
+        && let Some(report) = program_release(mouse, at, mods)
+    {
+        out.push(Command::Mouse(report));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lune_vt::TerminalMouseEventType;
+
+    fn left_tab_ctx(cols: usize, rows: usize) -> MouseCtx {
+        let m = lune_termview::CellMetrics {
+            cell_w: 8,
+            cell_h: 17,
+            char_h: 15,
+            char_top: 1,
+            baseline: 13,
+            font_size: 13.0,
+            scale: 1.0,
+        };
+        MouseCtx {
+            layout: lune_termview::GridLayout::new((0.0, 0.0), m),
+            cols,
+            rows,
+            pixel_reports: false,
+        }
+    }
+
+    /// A press the program saw, on the grid `ctx`.
+    fn pressed(ctx: &MouseCtx) -> MouseState {
+        let mut m = MouseState::default();
+        let down = PointerEvent::Down(TerminalMouseButton::Left);
+        assert!(
+            mouse_to_terminal(&mut m, down, (4.0, 4.0), TerminalModifiers::default(), ctx)
+                .is_some()
+        );
+        m
+    }
+
+    /// F7: leaving a tab mid-drag. The engine's selection ends (it would autoscroll on, hidden),
+    /// the program sees its button go up, and the report is clamped to the grid of the tab being
+    /// left: a different grid taking over must not change where the button went up.
+    #[test]
+    fn a_tab_left_during_a_press_is_told_it_ended() {
+        let none = TerminalModifiers::default();
+        let old = left_tab_ctx(10, 5);
+        let far = (4000.0, 4000.0);
+        let holds = Holds {
+            selecting: true,
+            captured: true,
+            ..Holds::default()
+        };
+        let mut mouse = pressed(&old);
+        let mut sent = Vec::new();
+        end_left_tab_holds(holds, &mut mouse, Some((far, old)), none, &mut sent);
+        assert_eq!(sent.len(), 2);
+        assert!(matches!(sent[0], Command::Select(SelectCmd::End)));
+        let Command::Mouse(up) = &sent[1] else {
+            panic!("{:?}", sent[1]);
+        };
+        assert_eq!(up.kind, TerminalMouseEventType::Up);
+        assert_eq!((up.col, up.row), (9, 4), "the left tab's last cell");
+        assert_eq!(mouse.held_button(), None);
+
+        // No hold: nothing is said, even with a button the mapping remembers (a Shift bypass goes
+        // to the selection, never to the program).
+        let mut mouse = pressed(&old);
+        let mut sent = Vec::new();
+        end_left_tab_holds(
+            Holds::default(),
+            &mut mouse,
+            Some((far, old)),
+            none,
+            &mut sent,
+        );
+        assert!(sent.is_empty());
+
+        // Selection only.
+        let holds = Holds {
+            selecting: true,
+            ..Holds::default()
+        };
+        end_left_tab_holds(holds, &mut MouseState::default(), None, none, &mut sent);
+        assert!(matches!(sent[..], [Command::Select(SelectCmd::End)]));
+
+        // Captured with no position to report at: no invented report.
+        let holds = Holds {
+            captured: true,
+            ..Holds::default()
+        };
+        let mut sent = Vec::new();
+        end_left_tab_holds(holds, &mut pressed(&old), None, none, &mut sent);
+        assert!(sent.is_empty());
+    }
 
     /// A drag that ends outside the window: the pointer leaves with the button down, and the
     /// release still arrives. It must be handled from the last position, and only then is the
