@@ -583,17 +583,15 @@ mod tests {
         }
     }
 
-    fn icon_rig() -> IconRig {
-        const ICONS_REGULAR: &[u8] =
-            include_bytes!("../tests/fonts/RobotoMonoNerdFontMono-Regular.pua.subset.ttf");
-        const ICONS_BOLD: &[u8] =
-            include_bytes!("../tests/fonts/RobotoMonoNerdFontMono-Bold.pua.subset.ttf");
+    /// The mono faces, `icon_faces` (the icon family under test) and a decoy copy of each of those
+    /// that comes first in the fallback list.
+    fn rig_with(icon_faces: &[&'static [u8]]) -> IconRig {
         let mut db = fontdb::Database::new();
         let mono = db.load_font_source(fontdb::Source::Binary(std::sync::Arc::new(REGULAR)));
         db.load_font_source(fontdb::Source::Binary(std::sync::Arc::new(BOLD)));
         let mut icons = Vec::new();
-        for data in [ICONS_REGULAR, ICONS_BOLD] {
-            icons.extend(db.load_font_source(fontdb::Source::Binary(std::sync::Arc::new(data))));
+        for data in icon_faces {
+            icons.extend(db.load_font_source(fontdb::Source::Binary(std::sync::Arc::new(*data))));
         }
         for id in &icons {
             let mut decoy = db.face(*id).expect("face").clone();
@@ -605,6 +603,20 @@ mod tests {
             icons: family_of(&db, icons[0]),
             fs: FontSystem::new_with_locale_and_db_and_fallback("en-US".to_owned(), db, DecoyFirst),
         }
+    }
+
+    fn icon_rig() -> IconRig {
+        const ICONS_REGULAR: &[u8] =
+            include_bytes!("../tests/fonts/RobotoMonoNerdFontMono-Regular.pua.subset.ttf");
+        const ICONS_BOLD: &[u8] =
+            include_bytes!("../tests/fonts/RobotoMonoNerdFontMono-Bold.pua.subset.ttf");
+        rig_with(&[ICONS_REGULAR, ICONS_BOLD])
+    }
+
+    /// A rig of its own: the symbols face as the icon family. It maps U+2605, which is not
+    /// private-use, and no private-use code point, so the icon cases keep `icon_rig`.
+    fn symbols_rig() -> IconRig {
+        rig_with(&[SYMBOLS])
     }
 
     fn icon_fonts(family: &str, icon_family: Option<&str>, emoji: Option<&str>) -> TermFonts {
@@ -647,14 +659,12 @@ mod tests {
         }
     }
 
+    /// The emoji family here has the icon (it is the decoy), so a selector that did send the icon
+    /// there would draw it from the decoy and the icon family would never be asked.
     #[test]
     fn an_emoji_selector_does_not_send_an_icon_to_the_emoji_family() {
         let mut r = icon_rig();
-        let f = icon_fonts(
-            &r.mono.clone(),
-            Some(&r.icons.clone()),
-            Some("Absent Emoji"),
-        );
+        let f = icon_fonts(&r.mono.clone(), Some(&r.icons.clone()), Some(DECOY));
         let s = Shaper::new()
             .shape(&mut r.fs, &f, "\u{F013}\u{FE0F}", false, false)
             .clone();
@@ -666,10 +676,9 @@ mod tests {
         assert_eq!(faces.first(), Some(&r.icons), "{faces:?}");
     }
 
-    /// The icon family only fills a gap: a font that has the glyph keeps it, and text that is not
-    /// private-use is left to the ordinary fallback.
+    /// The icon family only fills a gap: a font that has the glyph keeps it.
     #[test]
-    fn the_icon_family_does_not_take_what_the_font_has_or_other_text() {
+    fn the_icon_family_does_not_take_what_the_font_has() {
         let mut r = icon_rig();
         // the decoy has the icon, as a RznMono with its own icons would
         let f = icon_fonts(DECOY, Some(&r.icons.clone()), None);
@@ -677,16 +686,19 @@ mod tests {
             .shape(&mut r.fs, &f, "\u{F013}", false, false)
             .clone();
         assert_eq!(only_face(&r, &s).0, DECOY);
-        // a non-private-use character the font lacks never reaches the icon family
+    }
+
+    /// Text that is not private-use is left to the ordinary fallback, even when the icon family
+    /// could draw it: here the icon family is the symbols face, which has the star, and the
+    /// fallback list reaches a decoy copy of it first.
+    #[test]
+    fn the_icon_family_does_not_take_text_that_is_not_private_use() {
+        let mut r = symbols_rig();
         let f = icon_fonts(&r.mono.clone(), Some(&r.icons.clone()), None);
         let s = Shaper::new()
             .shape(&mut r.fs, &f, "\u{2605}", false, false)
             .clone();
-        assert!(
-            s.glyphs
-                .iter()
-                .all(|g| family_of(r.fs.db(), g.font_id) != r.icons || g.glyph_id == 0)
-        );
+        assert_eq!(only_face(&r, &s).0, DECOY);
     }
 
     #[test]

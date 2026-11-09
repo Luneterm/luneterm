@@ -326,7 +326,7 @@ fn drawn_at(opacity: Option<f32>) -> (Vec<u8>, u32) {
 
 #[test]
 fn opacity_scales_every_pipeline_and_a_default_view_is_opaque() {
-    if common::device().is_none() {
+    if !common::has_device() {
         return;
     }
     let (full, w) = drawn_at(None);
@@ -405,7 +405,7 @@ fn colour_glyph_at(opacity: f32) -> Vec<u8> {
 /// cannot, which is what proves this path drew it.
 #[test]
 fn opacity_scales_a_colour_glyph() {
-    if common::device().is_none() {
+    if !common::has_device() {
         return;
     }
     let full = colour_glyph_at(1.0);
