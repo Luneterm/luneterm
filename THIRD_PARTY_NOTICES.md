@@ -8,7 +8,7 @@
 | RznMono 0.007 | bundled terminal font (app): Regular, Bold, Italic, Bold Italic | OFL 1.1 — `licenses/RznMono.OFL.txt` (a copy of `crates/luneterm/assets/RznMono.OFL.txt`) |
 | RobotoMono Nerd Font Mono | bundled in the app as the fallback for Nerd icons RznMono does not have, and as a terminal font option | Apache 2.0 — `licenses/RobotoMonoNerdFont.LICENSE.txt` (a copy of `crates/luneterm/assets/RobotoMonoNerdFont.LICENSE.txt`) |
 | RznSans | bundled UI font (app) | OFL 1.1 — `licenses/RznSans.OFL.txt` (a copy of `crates/luneterm/assets/RznSans.OFL.txt`) |
-| luneui-rs (git pin `5be5dbe`) | the UI toolkit: windowing glue, widgets, glass, text, the frame renderer | MIT OR Apache-2.0 — `licenses/luneui-rs-LICENSE-MIT`, `licenses/luneui-rs-LICENSE-APACHE`; its own third-party notices: `licenses/luneui-rs-THIRD_PARTY_NOTICES.md` |
+| luneui-rs (git pin `32d1904`) | the UI toolkit: windowing glue, widgets, glass, text, the frame renderer | MIT OR Apache-2.0 — `licenses/luneui-rs-LICENSE-MIT`, `licenses/luneui-rs-LICENSE-APACHE`; its own third-party notices: `licenses/luneui-rs-THIRD_PARTY_NOTICES.md` |
 | Every Rust crate the shipped binaries are built from | the dependencies of `luneterm` and `luneterm-ffi` | each its own licence — `licenses/THIRD_PARTY_CRATES.txt`, generated from `cargo metadata --locked` by `scripts/gen-licenses.py` (`--check` runs in CI; it fails on a package with no text, an SPDX id with no text in `licenses/spdx/`, or a stale file) |
 
 Luneterm itself is MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`; copies in `licenses/` as

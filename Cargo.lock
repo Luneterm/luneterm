@@ -1037,7 +1037,7 @@ dependencies = [
 [[package]]
 name = "lune-ui"
 version = "0.2.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=5be5dbea92b8994b1b088942da36b77f40469c0e#5be5dbea92b8994b1b088942da36b77f40469c0e"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=32d19048684745b54ab542e5dc886bea43326e08#32d19048684745b54ab542e5dc886bea43326e08"
 dependencies = [
  "lune-ui-core",
  "lune-ui-platform",
@@ -1048,12 +1048,12 @@ dependencies = [
 [[package]]
 name = "lune-ui-core"
 version = "0.2.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=5be5dbea92b8994b1b088942da36b77f40469c0e#5be5dbea92b8994b1b088942da36b77f40469c0e"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=32d19048684745b54ab542e5dc886bea43326e08#32d19048684745b54ab542e5dc886bea43326e08"
 
 [[package]]
 name = "lune-ui-platform"
 version = "0.2.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=5be5dbea92b8994b1b088942da36b77f40469c0e#5be5dbea92b8994b1b088942da36b77f40469c0e"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=32d19048684745b54ab542e5dc886bea43326e08#32d19048684745b54ab542e5dc886bea43326e08"
 dependencies = [
  "lune-ui-core",
  "objc2 0.6.5",
@@ -1067,7 +1067,7 @@ dependencies = [
 [[package]]
 name = "lune-ui-wgpu"
 version = "0.2.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=5be5dbea92b8994b1b088942da36b77f40469c0e#5be5dbea92b8994b1b088942da36b77f40469c0e"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=32d19048684745b54ab542e5dc886bea43326e08#32d19048684745b54ab542e5dc886bea43326e08"
 dependencies = [
  "bytemuck",
  "glyphon",
@@ -1080,7 +1080,7 @@ dependencies = [
 [[package]]
 name = "lune-ui-winit"
 version = "0.2.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=5be5dbea92b8994b1b088942da36b77f40469c0e#5be5dbea92b8994b1b088942da36b77f40469c0e"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=32d19048684745b54ab542e5dc886bea43326e08#32d19048684745b54ab542e5dc886bea43326e08"
 dependencies = [
  "arboard",
  "lune-ui-core",
