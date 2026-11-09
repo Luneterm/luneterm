@@ -30,6 +30,20 @@ pub(crate) fn device() -> Option<(GpuLock, wgpu::Device, wgpu::Queue, String)> {
     }
 }
 
+/// Whether a device exists, for a test that only checks before it makes devices of its own. The
+/// temporary from `device()` would drop field by field, the lock first; this one drops the device
+/// and the queue, then releases the lock, and returns before the caller takes it again.
+#[allow(dead_code)] // used by `render_gpu`, not by every test binary that includes this module
+pub(crate) fn has_device() -> bool {
+    let Some((lock, device, queue, _)) = device() else {
+        return false;
+    };
+    drop(device);
+    drop(queue);
+    drop(lock);
+    true
+}
+
 fn request() -> Result<(wgpu::Device, wgpu::Queue, String), String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
