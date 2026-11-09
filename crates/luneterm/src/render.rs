@@ -240,6 +240,43 @@ pub struct Renderer {
     font_size: f32,
 }
 
+/// Puts the item that holds each of `ids` at its own index in `pool` (items are swapped, so each
+/// keeps what it holds), and gives an id no item holds an item that holds none of `ids`. Returns,
+/// per id, whether it was not held (its item needs a full rebuild). `pool` has at least `ids.len()`
+/// items; `owner` says which tab an item holds. Ids are distinct.
+fn arrange_pool<T>(
+    pool: &mut [T],
+    owner: impl Fn(&T) -> Option<TabId>,
+    ids: &[TabId],
+) -> Vec<bool> {
+    let n = pool.len();
+    // `want[i]`: the original index of the item that goes to index `i`.
+    let mut want: Vec<Option<usize>> = vec![None; n];
+    let mut taken = vec![false; n];
+    for (i, id) in ids.iter().enumerate() {
+        if let Some(j) = pool.iter().position(|t| owner(t) == Some(*id)) {
+            want[i] = Some(j);
+            taken[j] = true;
+        }
+    }
+    let fresh: Vec<bool> = want.iter().take(ids.len()).map(Option::is_none).collect();
+    // The rest of the items, in order, fill what is still open.
+    let mut rest = (0..n).filter(|j| !taken[*j]);
+    for w in want.iter_mut().filter(|w| w.is_none()) {
+        *w = rest.next();
+    }
+    // Apply the permutation with swaps; `at[p]` is the original index now at position `p`.
+    let mut at: Vec<usize> = (0..n).collect();
+    for (i, w) in want.iter().enumerate() {
+        let Some(w) = *w else { continue };
+        if let Some(p) = at.iter().skip(i).position(|o| *o == w) {
+            pool.swap(i, i + p);
+            at.swap(i, i + p);
+        }
+    }
+    fresh
+}
+
 /// A [`TermView`] that draws one fading tab's grid, and which tab and colours it holds.
 struct FadingView {
     view: TermView,
@@ -323,10 +360,14 @@ impl Renderer {
         self.term.set_fonts(fonts);
     }
 
-    /// Gives each fading layer a view: the one that already holds that tab, else a free one
-    /// (made when the pool is short), whose rows are then rebuilt from the tab's grid. Returns the
-    /// view index per layer. The pool never shrinks (a fade is 250 ms; the views are cheap to keep).
-    fn assign_fading(&mut self, layers: &mut [FadingGrid<'_>]) -> Vec<usize> {
+    /// Gives each fading layer a view, **at the pool index equal to the layer's index**: the scene
+    /// reserves slots `1..=layers` and `draw` hands exactly the first `layers` views to the frame
+    /// renderer, so a view anywhere else would be updated and never drawn (or the reverse: a
+    /// view drawn with another tab's rows). The view that already holds a tab is swapped into place
+    /// (it keeps its rows); a layer no view holds takes the view at its index, whose rows are then
+    /// rebuilt from the tab's grid. The pool grows to the number of layers and never shrinks (the
+    /// views are cheap to keep); views past the layers hold no tab.
+    fn assign_fading(&mut self, layers: &mut [FadingGrid<'_>]) {
         while self.fading.len() < layers.len() {
             let theme = layers
                 .get(self.fading.len())
@@ -343,35 +384,22 @@ impl Renderer {
                 theme,
             });
         }
-        let mut used = vec![false; self.fading.len()];
-        let mut slots = vec![usize::MAX; layers.len()];
-        for (i, l) in layers.iter().enumerate() {
-            if let Some(j) = self.fading.iter().position(|v| v.owner == Some(l.id)) {
-                slots[i] = j;
-                used[j] = true;
+        let ids: Vec<TabId> = layers.iter().map(|l| l.id).collect();
+        let fresh = arrange_pool(&mut self.fading, |v| v.owner, &ids);
+        for (i, (l, fresh)) in layers.iter_mut().zip(fresh).enumerate() {
+            let fv = &mut self.fading[i];
+            if fresh {
+                fv.owner = Some(l.id);
+                l.grid.mark_all_dirty();
             }
-        }
-        for (i, l) in layers.iter_mut().enumerate() {
-            if slots[i] != usize::MAX {
-                continue;
-            }
-            let Some(j) = used.iter().position(|u| !*u) else {
-                continue;
-            };
-            used[j] = true;
-            slots[i] = j;
-            self.fading[j].owner = Some(l.id);
-            l.grid.mark_all_dirty();
-        }
-        for (l, &j) in layers.iter().zip(&slots) {
-            if let Some(fv) = self.fading.get_mut(j)
-                && fv.theme != *l.theme
-            {
+            if fv.theme != *l.theme {
                 fv.view.set_theme(l.theme.clone());
                 fv.theme = l.theme.clone();
             }
         }
-        slots
+        for fv in self.fading.iter_mut().skip(layers.len()) {
+            fv.owner = None;
+        }
     }
 
     /// The app's string table (the page, the menus and the toolkit's own texts).
@@ -557,11 +585,8 @@ impl Renderer {
             scale,
         );
         // The tabs fading out under it (a tab-switch crossfade), each in a view of its own.
-        let slots = self.assign_fading(&mut content.fading);
-        for (layer, slot) in content.fading.iter_mut().zip(slots) {
-            let Some(fv) = self.fading.get_mut(slot) else {
-                continue;
-            };
+        self.assign_fading(&mut content.fading);
+        for (layer, fv) in content.fading.iter_mut().zip(self.fading.iter_mut()) {
             fv.view.set_opacity(layer.alpha);
             let faded = ViewState {
                 cursor: layer.cursor,
@@ -586,11 +611,14 @@ impl Renderer {
             ..FrameParams::default()
         };
         // Slot 0 is the active tab's grid, the rest are the fading ones (`shell::TERM_SLOT`).
-        let mut customs: Vec<&mut dyn CustomDraw> = Vec::with_capacity(1 + self.fading.len());
+        // Only the views of this frame's layers go in: slot `n` is `self.fading[n - 1]`.
+        let shown = content.fading.len();
+        let mut customs: Vec<&mut dyn CustomDraw> = Vec::with_capacity(1 + shown);
         customs.push(&mut self.term);
         customs.extend(
             self.fading
                 .iter_mut()
+                .take(shown)
                 .map(|fv| &mut fv.view as &mut dyn CustomDraw),
         );
         self.frame.draw_with(
@@ -682,5 +710,76 @@ mod theme_tests {
             header_tint(true, GlassStyle::Default),
             header_tint(true, GlassStyle::LiquidRegular)
         );
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    /// The pool as the tab each view holds; `None` holds nothing.
+    fn arranged(mut pool: Vec<Option<TabId>>, ids: &[TabId]) -> (Vec<Option<TabId>>, Vec<bool>) {
+        let fresh = arrange_pool(&mut pool, |t| *t, ids);
+        (pool, fresh)
+    }
+
+    const A: TabId = 1;
+    const B: TabId = 2;
+    const C: TabId = 3;
+
+    /// F1: two quick switches leave the pool `[A, B]`; later B leaves alone. B's view must sit at
+    /// index 0, the one slot the scene draws for a single layer, and keep its rows.
+    #[test]
+    fn a_tab_fading_alone_gets_the_first_view_and_keeps_its_rows() {
+        let (pool, fresh) = arranged(vec![Some(A), Some(B)], &[B]);
+        assert_eq!(pool, vec![Some(B), Some(A)]);
+        assert_eq!(fresh, vec![false]);
+    }
+
+    #[test]
+    fn closing_a_fading_tab_moves_the_other_into_the_drawn_slot() {
+        // `[A, B]` fading, then A is closed: the layers are `[B]`.
+        let (pool, fresh) = arranged(vec![Some(A), Some(B)], &[B]);
+        assert_eq!(pool[0], Some(B));
+        assert_eq!(fresh, vec![false]);
+    }
+
+    #[test]
+    fn layers_in_another_order_swap_their_views() {
+        let (pool, fresh) = arranged(vec![Some(A), Some(B)], &[B, A]);
+        assert_eq!(pool, vec![Some(B), Some(A)]);
+        assert_eq!(fresh, vec![false, false]);
+    }
+
+    #[test]
+    fn a_tab_no_view_holds_takes_a_view_that_holds_no_layer_and_is_rebuilt() {
+        let (pool, fresh) = arranged(vec![Some(A), Some(B)], &[C]);
+        assert_eq!(fresh, vec![true]);
+        // Index 0 is some view of the pool (its stale rows are rebuilt by the caller).
+        assert!(pool[0] == Some(A) || pool[0] == Some(B));
+    }
+
+    /// The case a one-pass swap gets wrong: a layer that holds no view sits at an index whose
+    /// view holds a later layer.
+    #[test]
+    fn a_view_holding_a_later_layer_is_not_taken_for_an_earlier_one() {
+        let (pool, fresh) = arranged(vec![Some(C), Some(A), None], &[A, B, C]);
+        assert_eq!(pool[0], Some(A));
+        assert_eq!(pool[2], Some(C));
+        assert_eq!(pool[1], None);
+        assert_eq!(fresh, vec![false, true, false]);
+    }
+
+    #[test]
+    fn every_view_stays_in_the_pool_and_a_longer_pool_keeps_the_rest_behind() {
+        let (pool, fresh) = arranged(vec![Some(C), None, Some(B), Some(A)], &[A, B]);
+        assert_eq!(&pool[..2], &[Some(A), Some(B)]);
+        assert_eq!(fresh, vec![false, false]);
+        let mut sorted = pool.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![None, Some(A), Some(B), Some(C)]);
+        // No layers: nothing moves needlessly and nothing is fresh.
+        let (_, fresh) = arranged(vec![Some(A)], &[]);
+        assert!(fresh.is_empty());
     }
 }
