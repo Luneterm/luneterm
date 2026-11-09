@@ -3,8 +3,8 @@
 //!
 //! The terminal draws with RznMono (Regular, Bold, Italic, Bold Italic: the four styles termview
 //! asks for, so no synthetic italic or bold). RznMono has no Nerd icons yet (its stage 4), so the
-//! RobotoMono Nerd Font Mono faces stay bundled as the fallback for private-use code points: a
-//! prompt icon draws from them through the shaper's fallback. The toolkit's `TextCache` loads no
+//! RobotoMono Nerd Font Mono faces stay bundled for the private-use code points it lacks, named as
+//! `TermFonts::icon_family` so a system face cannot take them first. The toolkit's `TextCache` loads no
 //! system font, so the app does, once: without them emoji and CJK would have no fallback face. One
 //! `FontSystem` serves the UI text and the terminal (a second one would duplicate the faces).
 
@@ -98,6 +98,7 @@ pub fn term_fonts(text: &mut TextCache, settings: &Settings) -> TermFonts {
         size,
         line_height: natural_line_height(&mut text.fonts, family, size),
         emoji_family: Some(emoji_family().to_owned()),
+        icon_family: Some(NERD_FONT.to_owned()),
     }
 }
 
@@ -217,7 +218,7 @@ mod tests {
     }
 
     /// A4: a private-use Nerd icon is not in RznMono; it draws from the bundled RobotoMono Nerd
-    /// face through the shaper's fallback, with the icon's own glyph (not .notdef), and its
+    /// face through `icon_family`, with the icon's own glyph (not .notdef), and its
     /// advance is the cell's, so it is cell-contained (the golden `nerd_fallback` draws it).
     #[test]
     fn a_private_use_icon_falls_back_to_the_bundled_nerd_face() {
@@ -253,13 +254,20 @@ mod tests {
 
     /// A4 in the app's real stack: the bundled faces first, then the system fonts, as the window
     /// loads them. Some system faces map the same private-use range (Wingdings and Webdings on a
-    /// Mac), so a pass means the bundled Nerd face wins, regular and bold. The instrument is
+    /// Mac, Segoe UI Symbol on Windows), so a pass means the bundled Nerd face wins, regular and bold. The instrument is
     /// checked in the same test: a cache built without the Nerd faces must not resolve to them.
     #[test]
     fn the_icon_fallback_holds_with_system_fonts_loaded() {
         let (mut text, _) = text_cache();
         for (bold, weight) in [(false, 400), (true, 700)] {
-            for cluster in ["\u{F015}", "\u{F07B}", "\u{F013}"] {
+            for cluster in [
+                "\u{F015}",
+                "\u{F07B}",
+                "\u{F013}",
+                "\u{E725}",
+                "\u{F121}",
+                "\u{F0001}",
+            ] {
                 let s = shaped(&mut text, cluster, bold, false);
                 assert_eq!(s.glyphs.len(), 1, "{cluster:?}");
                 let (family, w, italic) = face_of(&text, &s.glyphs[0]);

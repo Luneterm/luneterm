@@ -71,7 +71,9 @@ the grid (in the app, `session::apply_update` from the engine thread's Updates; 
   strikethrough, overline), cursor, selection, link hover. Glass, scrollbar and chrome are drawn by
   the app around the grid.
 - **Text:** one-line cosmic-text shaping per cluster (`Shaping::Advanced`, with fallback),
-  cached by (text, bold, italic). Clusters with U+FE0F try `TermFonts.emoji_family` first. Glyphs
+  cached by (text, bold, italic). Clusters with U+FE0F try `TermFonts.emoji_family` first; a
+  private-use code point the terminal's own family lacks comes from `TermFonts.icon_family`, ahead
+  of the platform's fallback list. Glyphs
   sit in an etagere atlas (a mask page and a colour page) keyed by cosmic `CacheKey` (font id,
   glyph id, size, subpixel bin, weight, flags) or, for procedural glyphs, `AtlasKey::Custom`.
   Ligatures (ledger 15) are not shaped yet; whole-row shaping can reuse the same key later.
