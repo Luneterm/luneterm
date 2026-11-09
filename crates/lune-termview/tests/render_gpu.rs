@@ -282,3 +282,86 @@ fn incremental_updates_match_a_fresh_view() {
     copy.mark_all_dirty();
     assert_eq!(d, fresh(&mut fs, &mut copy, &v), "after resize");
 }
+
+/// A grid with a background, a glyph, an underline and a cursor, so every pipeline draws: the
+/// rects, the mask glyphs, the decorations and the overlay.
+fn busy_grid() -> (Grid, ViewState<'static>) {
+    let mut grid = Grid::new(4, 2);
+    grid.set(0, 0, cell(|c| c.bg = Color::Rgb(200, 0, 0)));
+    grid.set(
+        0,
+        1,
+        cell(|c| {
+            c.set_char('W');
+            c.underline = UnderlineStyle::Curly;
+            c.underline_color = Color::Rgb(255, 0, 255);
+        }),
+    );
+    let mut v = view();
+    v.cursor = Cursor {
+        visible: true,
+        row: 1,
+        col: 2,
+        ..Cursor::default()
+    };
+    (grid, v)
+}
+
+/// The grid at `opacity`, drawn over the clear colour.
+fn drawn_at(opacity: Option<f32>) -> (Vec<u8>, u32) {
+    let (device, queue, _) = common::device().expect("a device (checked by the caller)");
+    let (mut fs, fonts) = test_fonts();
+    let mut tv = TermView::new(&device, FORMAT, fonts, TermTheme::lunegit_one_dark());
+    if let Some(o) = opacity {
+        tv.set_opacity(o);
+    }
+    let (mut grid, v) = busy_grid();
+    tv.update(&mut fs, &mut grid, &v, (0.0, 0.0), 2.0);
+    let m = tv.metrics(&mut fs, 2.0);
+    let (w, h) = (4 * m.cell_w, 2 * m.cell_h);
+    (draw(&device, &queue, &mut tv, (w, h), 2.0), w)
+}
+
+#[test]
+fn opacity_scales_every_pipeline_and_a_default_view_is_opaque() {
+    if common::device().is_none() {
+        return;
+    }
+    let (full, w) = drawn_at(None);
+    let (one, _) = drawn_at(Some(1.0));
+    assert_eq!(full, one, "the default is opacity 1");
+    // Something other than the clear colour is drawn, so the comparisons below mean something.
+    let inked = full
+        .chunks_exact(4)
+        .filter(|p| p[..3] != CLEAR[..3])
+        .count();
+    assert!(inked > 200, "{inked} inked pixels");
+    // Half: every pixel is the clear colour moved half way to the opaque one (premultiplied
+    // colours scale with the opacity, so the blend is linear in it).
+    let (half, _) = drawn_at(Some(0.5));
+    let mut worst = 0u8;
+    for (i, (h, f)) in half.chunks_exact(4).zip(full.chunks_exact(4)).enumerate() {
+        for k in 0..3 {
+            let want = CLEAR[k] as f32 + (f[k] as f32 - CLEAR[k] as f32) * 0.5;
+            let d = (h[k] as f32 - want).abs().round() as u8;
+            worst = worst.max(d);
+            assert!(d <= 2, "pixel {i} channel {k}: {} vs {want}", h[k]);
+        }
+    }
+    assert!(worst <= 2);
+    // The red cell's centre, by hand: 200 * 0.5 + 10 * 0.5 = 105.
+    let c = px(&half, w, 8, 17);
+    assert!(
+        c.iter()
+            .zip([105u8, 10, 15, 255])
+            .all(|(a, b)| a.abs_diff(b) <= 2),
+        "{c:?}"
+    );
+    // Zero draws nothing at all; out of range and NaN are the clamp's.
+    let (none, _) = drawn_at(Some(0.0));
+    assert!(none.chunks_exact(4).all(|p| p == CLEAR), "opacity 0");
+    let (over, _) = drawn_at(Some(3.0));
+    assert_eq!(over, full, "above 1 is 1");
+    let (nan, _) = drawn_at(Some(f32::NAN));
+    assert_eq!(nan, full, "NaN is 1");
+}

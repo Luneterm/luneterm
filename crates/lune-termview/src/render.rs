@@ -141,11 +141,7 @@ impl TermView {
     /// link hover alike), 0..=1; a value outside that range is clamped and a NaN is 1. The default
     /// 1 draws exactly as before. The app uses it for a tab-switch crossfade between two views.
     pub fn set_opacity(&mut self, opacity: f32) {
-        self.opacity = if opacity.is_nan() {
-            1.0
-        } else {
-            opacity.clamp(0.0, 1.0)
-        };
+        self.opacity = clamp_opacity(opacity);
     }
 
     /// The opacity set by [`set_opacity`](Self::set_opacity).
@@ -340,6 +336,15 @@ impl CustomDraw for TermView {
     }
 }
 
+/// The rule of [`TermView::set_opacity`]: 0..=1, a NaN is 1 (draw as it is rather than nothing).
+fn clamp_opacity(opacity: f32) -> f32 {
+    if opacity.is_nan() {
+        1.0
+    } else {
+        opacity.clamp(0.0, 1.0)
+    }
+}
+
 fn make_pipelines(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -421,5 +426,22 @@ fn make_pipelines(
             glyph_layout,
         ),
         deco: make("termview decorations", "vs_deco", "fs_deco", deco_layout),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_opacity;
+
+    #[test]
+    fn opacity_is_clamped_to_0_1_and_nan_is_1() {
+        assert_eq!(clamp_opacity(0.5), 0.5);
+        assert_eq!(clamp_opacity(0.0), 0.0);
+        assert_eq!(clamp_opacity(1.0), 1.0);
+        assert_eq!(clamp_opacity(-0.25), 0.0);
+        assert_eq!(clamp_opacity(7.0), 1.0);
+        assert_eq!(clamp_opacity(f32::INFINITY), 1.0);
+        assert_eq!(clamp_opacity(f32::NEG_INFINITY), 0.0);
+        assert_eq!(clamp_opacity(f32::NAN), 1.0);
     }
 }
