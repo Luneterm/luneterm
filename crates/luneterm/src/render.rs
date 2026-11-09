@@ -5,6 +5,7 @@
 use lune_termview::{
     CellMetrics, Cursor, Grid, GridLayout, SelectionRange, TermTheme, TermView, ViewState,
 };
+use lune_ui::GlassLayer;
 use lune_ui::color::premul;
 use lune_ui::frame::FrameRenderer;
 use lune_ui::gpu::Gpu;
@@ -17,7 +18,7 @@ use lune_ui::scene::{FrameParams, LayerId};
 use lune_ui::shortcuts::Shortcuts;
 use lune_ui::strings::{DisplayFormat, StringTable};
 use lune_ui::text::{Spec, Style, TextCache};
-use lune_ui::theme::{AcrylicLevel, Theme};
+use lune_ui::theme::{AcrylicLevel, Theme, ThemeGlass};
 use lune_ui::ui::{FrameConfig, Sense, Ui, UiStore};
 use lune_ui::widgets::menu::{MenuOptions, MenuPlace, MenuResponse, MenuRow};
 use lune_ui::widgets::tab_strip::BusyCue;
@@ -36,13 +37,40 @@ use crate::shell::{
 /// The saturation the backdrop blur applies (Luneium's menu glass; no backdrop is requested in M9).
 const BACKDROP_SATURATION: f32 = 1.8;
 
+/// The default look's tint opacity at pure black on the window layer. `near_black` has 0.60; raise
+/// it for blacker glass with less blur showing through, lower it for more transparent glass (the
+/// user's eye-check of the near-black look, 2026-11-09: "more transparent").
+pub const WINDOW_BLACK_MAX: f64 = 0.42;
+/// The same for the panel layer (`near_black` has 0.55). Same direction as [`WINDOW_BLACK_MAX`].
+pub const PANEL_BLACK_MAX: f64 = 0.38;
+/// The same for the card layer (`near_black` has 0.65). Same direction as [`WINDOW_BLACK_MAX`].
+pub const CARD_BLACK_MAX: f64 = 0.48;
+
+/// `layer` with its luminosity curve's black opacity replaced; every other field is the toolkit's.
+const fn with_black_max(mut layer: GlassLayer, black_max_opacity: f64) -> GlassLayer {
+    layer.curve.black_max_opacity = black_max_opacity;
+    layer
+}
+
+/// The default style's theme: the toolkit's `near_black::THEME` whole (floating surfaces, the other
+/// tokens, the layers' tint, material opacity and curve), with only the three layers' black opacity
+/// lowered to the constants above. The OS material, `MENU_GLASS` and the header tint are unchanged.
+pub const DEFAULT_GLASS_THEME: Theme = Theme {
+    glass: ThemeGlass {
+        window: with_black_max(near_black::WINDOW, WINDOW_BLACK_MAX),
+        panel: with_black_max(near_black::PANEL, PANEL_BLACK_MAX),
+        card: with_black_max(near_black::CARD, CARD_BLACK_MAX),
+    },
+    ..near_black::THEME
+};
+
 /// The toolkit theme for a window with or without OS glass: without it (Linux, or a material the
-/// OS refused) every glass layer is opaque. With it, the default style is the near-black look (the
-/// toolkit's `near_black::THEME`, whole, so floating surfaces take it too) and the liquid styles
-/// keep Lunegit's layers.
+/// OS refused) every glass layer is opaque. With it, the default style is the near-black look
+/// ([`DEFAULT_GLASS_THEME`]: the toolkit's `near_black::THEME`, whole, so floating surfaces take it
+/// too, with more transparent layers) and the liquid styles keep Lunegit's layers.
 pub fn theme(glass: bool, style: GlassStyle) -> Theme {
     match (glass, style) {
-        (true, GlassStyle::Default) => near_black::THEME,
+        (true, GlassStyle::Default) => DEFAULT_GLASS_THEME,
         (true, _) => THEME,
         (false, _) => THEME.with_acrylic(AcrylicLevel::Opaque),
     }
@@ -498,11 +526,38 @@ mod theme_tests {
     const LIQUID: [GlassStyle; 2] = [GlassStyle::LiquidClear, GlassStyle::LiquidRegular];
 
     #[test]
-    fn default_glass_is_the_near_black_theme_whole() {
+    fn default_glass_is_the_near_black_theme_with_only_three_black_opacities_lowered() {
         // Floating surfaces fill from `menu_glass`: the whole theme, not only its layers.
         let t = theme(true, GlassStyle::Default);
-        assert_eq!(t, near_black::THEME);
-        assert_eq!(t.glass, near_black::GLASS);
+        assert_eq!(t, DEFAULT_GLASS_THEME);
+        // The three values, exactly.
+        assert_eq!(t.glass.window.curve.black_max_opacity, 0.42);
+        assert_eq!(t.glass.panel.curve.black_max_opacity, 0.38);
+        assert_eq!(t.glass.card.curve.black_max_opacity, 0.48);
+        // More transparent than the toolkit's look, never opaque.
+        assert!(
+            t.glass.window.curve.black_max_opacity < near_black::WINDOW.curve.black_max_opacity
+        );
+        assert!(t.glass.panel.curve.black_max_opacity < near_black::PANEL.curve.black_max_opacity);
+        assert!(t.glass.card.curve.black_max_opacity < near_black::CARD.curve.black_max_opacity);
+        // Everything else is `near_black::THEME`'s: put the toolkit's three values back and the
+        // theme equals it (a mutant of any other field, or of one of the three, breaks one of
+        // these two comparisons).
+        let mut back = t;
+        back.glass.window.curve.black_max_opacity = near_black::WINDOW.curve.black_max_opacity;
+        back.glass.panel.curve.black_max_opacity = near_black::PANEL.curve.black_max_opacity;
+        back.glass.card.curve.black_max_opacity = near_black::CARD.curve.black_max_opacity;
+        assert_eq!(back, near_black::THEME);
+        // The layers keep the toolkit's tint, material opacity and the rest of the curve.
+        for (mine, theirs) in [
+            (t.glass.window, near_black::WINDOW),
+            (t.glass.panel, near_black::PANEL),
+            (t.glass.card, near_black::CARD),
+        ] {
+            assert_eq!(mine.tint, theirs.tint);
+            assert_eq!(mine.tint_opacity, theirs.tint_opacity);
+            assert_eq!(mine.material_opacity, theirs.material_opacity);
+        }
         assert_eq!(t.menu_glass, near_black::MENU_GLASS);
         assert_ne!(t.glass, THEME.glass);
         assert_ne!(t.menu_glass, THEME.menu_glass);
