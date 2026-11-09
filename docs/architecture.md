@@ -273,7 +273,13 @@ XTVERSION name `ExtensionError::InvalidXtversion` (nothing is registered then).
   runs by the engine's link id plus bare `http(s)://` text) and runs on demand over the row under
   the pointer; `open.rs` is the only code that opens anything: a closed URL grammar (`check_url`)
   applied at open, then one argv element to `/usr/bin/open`, `xdg-open` or `ShellExecuteW`
-  (`unsafe` lives in that Windows module). A Cmd-click (macOS) or Shift-click opens, a drag selects.
+  (`unsafe` lives in that Windows module). Hovering a link `check_url` accepts underlines it and,
+  after the toolkit's tooltip delay (`Ui::tooltip` over a hover-only region on the link's cells),
+  shows `tip_url` (the checked URI, shortened for display only: the host is never cut at its start)
+  and the hint "Cmd+click to open" (macOS) or "Shift+click to open"; a refused link has neither.
+  The pointer is a hand only while the modifier is held. A Cmd-click (macOS) or Shift-click opens
+  (Shift also on macOS), a drag selects. The row under the pointer is read on pointer moves and
+  once after output that hid a shown hover, never on output alone.
 - Own the clipboard setting: `StandardExtensions::clipboard_write` and `set_clipboard_write`
   (default `false`). `ClipboardWrite` arrives only while it is on; the host decides what to do
   with the text (no query is ever answered). **Done:** `Settings.osc_clipboard` (default on, as

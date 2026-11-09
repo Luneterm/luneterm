@@ -17,13 +17,14 @@ use lune_ui::shortcuts::Shortcuts;
 use lune_ui::strings::{DisplayFormat, StringTable};
 use lune_ui::text::{Spec, Style, TextCache};
 use lune_ui::theme::{AcrylicLevel, Theme};
-use lune_ui::ui::{FrameConfig, Ui, UiStore};
+use lune_ui::ui::{FrameConfig, Sense, Ui, UiStore};
 use lune_ui::widgets::menu::{MenuOptions, MenuPlace, MenuResponse, MenuRow};
 use lune_ui::widgets::tab_strip::BusyCue;
 use lune_ui::widgets::toast::Toasts;
 use lune_ui::widgets::tone::Tone;
 
 use crate::fonts;
+use crate::links;
 use crate::session::Geometry;
 use crate::settings::Settings;
 use crate::settings_page::{self, PageOut, PageView};
@@ -56,9 +57,12 @@ pub struct Content<'a> {
     pub grid: &'a mut Grid,
     /// The selected cells, in viewport rows.
     pub selection: &'a [SelectionRange],
-    /// The link id under the pointer with the link modifier held (0: none): underlined, and the
-    /// pointer becomes a hand.
+    /// The link id under the pointer (0: none), underlined. Only a link that would open is one.
     pub hover_link: u32,
+    /// The link modifier is held over a hovered link: the pointer becomes a hand (the click opens).
+    pub link_hand: bool,
+    /// The tooltip for the hovered link; the toolkit shows it after its delay.
+    pub link_tip: Option<LinkTip<'a>>,
     /// The app's toasts, drawn over everything; `None` draws none.
     pub toasts: Option<&'a mut Toasts>,
     pub cursor: Cursor,
@@ -83,6 +87,17 @@ pub struct Content<'a> {
     pub busy_tone: Tone,
     /// The rows after the toolkit's four on a tab's context menu.
     pub tab_menu_extra: &'a [&'a str],
+}
+
+/// What the hovered link's tooltip says and where it hangs.
+#[derive(Debug, Clone, Copy)]
+pub struct LinkTip<'a> {
+    /// The link's cells, logical px: the tooltip's anchor.
+    pub rect: Rect,
+    /// Where the link goes, checked and shortened for display ([`crate::links::tip_url`]).
+    pub url: &'a str,
+    /// Names the link, so another link starts its own delay.
+    pub key: u64,
 }
 
 /// A menu to draw this frame.
@@ -358,8 +373,17 @@ impl Renderer {
             };
             ui.menu_with("app-menu", &m.rows, &options)
         });
-        if content.hover_link != 0 {
+        if content.link_hand {
             ui.set_cursor(lune_ui::input::CursorIcon::Pointer);
+        }
+        if let Some(tip) = content.link_tip {
+            // The tooltip hangs from a hover-only region over the link's cells, on the page layer
+            // under the menus and dialogs: they cover it and the toolkit hides the tip.
+            ui.painter().on(LayerId::Page);
+            let id = ui.id(("link-tip", tip.key));
+            let anchor = ui.interact(id, tip.rect, Sense::HOVER);
+            let hint = self.strings.tr(links::hint_key(cfg!(target_os = "macos")));
+            ui.tooltip(&anchor, &format!("{}\n{hint}", tip.url));
         }
 
         let cursor = content.cursor;

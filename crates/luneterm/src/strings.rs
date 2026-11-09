@@ -35,6 +35,7 @@ mod tests {
         let table = english();
         let mut keys = settings_page::required_keys();
         keys.extend(menus::required_keys());
+        keys.extend(crate::links::required_keys());
         assert!(keys.len() > 60, "{} keys", keys.len());
         for key in keys {
             let text = table.get(&key);

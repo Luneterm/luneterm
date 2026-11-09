@@ -143,3 +143,10 @@ Findings:
 - **Settings page scroll bar and banner.** The page's scroll thumb sits at the viewport's right edge
   (the app keeps its groups 12 px clear of it); the restart banner is a full-width bar over the
   content's last rows rather than docked outside the scroll area.
+
+## Seen in M10 step 4 (link tooltip)
+
+- `Ui::tooltip` fits a link tooltip without a patch: the app registers a `Sense::HOVER` region over
+  the link's cells and hangs the tooltip from it (`render.rs`). One small gap: the text is one
+  style, so the hint line ("Cmd+click to open") reads as loud as the URL; a dimmer second line
+  would need `tooltip_with` drawing its own two runs, which the app has not done.

@@ -1215,6 +1215,8 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
             grid,
             selection: &[],
             hover_link: 0,
+            link_hand: false,
+            link_tip: None,
             toasts: None,
             cursor: cursor_of(cursor, COLS),
             blink_on: true,

@@ -27,8 +27,9 @@ use lune_ui::widgets::tone::Tone;
 use crate::app::failure_grid;
 use crate::demo::{demo_cursor, demo_grid};
 use crate::fonts;
+use crate::links;
 use crate::menus::{self, MenuKind, MenuModel};
-use crate::render::{Content, MenuDraw, Renderer};
+use crate::render::{Content, LinkTip, MenuDraw, Renderer};
 use crate::settings::Settings;
 use crate::settings_page::{PageState, PageView, Section};
 use crate::shell::{HOST, Layout, Modal, ScrollView, StripTab};
@@ -67,6 +68,17 @@ enum MenuScene {
     App,
     Terminal { selection: bool },
 }
+
+/// A link on the demo grid with the pointer on it from frame `move_at` on.
+#[derive(Debug, Clone, Copy)]
+struct LinkScene {
+    move_at: usize,
+}
+
+/// Where the link scenes' URL is on the demo grid: a free row, and the column it starts at.
+const LINK_ROW: usize = 13;
+const LINK_COL: usize = 6;
+const LINK_TEXT: &str = "see https://example.com/docs/getting-started?lang=en for details";
 
 /// Input the dump sends at the start of a frame.
 #[derive(Debug, Clone, Copy)]
@@ -123,6 +135,9 @@ struct Scene {
     script: &'static [(usize, Input)],
     /// A selection on the demo grid.
     selected: bool,
+    /// A URL on the demo grid under the pointer: underlined, and its tooltip once the delay has
+    /// passed.
+    link: Option<LinkScene>,
 }
 
 /// 200 lines of history above a 35-line screen, scrolled to the middle: the thumb shows.
@@ -155,6 +170,7 @@ const BASE: Scene = Scene {
     palette: "One Dark",
     script: &[],
     selected: false,
+    link: None,
 };
 
 const fn page(section: Section) -> Option<PageScene> {
@@ -170,7 +186,7 @@ const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
-const SCENES: [Scene; 31] = [
+const SCENES: [Scene; 34] = [
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -333,6 +349,26 @@ const SCENES: [Scene; 31] = [
         menu: MenuScene::Terminal { selection: false },
         ..BASE
     },
+    // Links (M10 step 4): the underline at once, the tooltip after the toolkit's delay.
+    Scene {
+        name: "link-hover@2x.png",
+        tabs: FOUR,
+        link: Some(LinkScene { move_at: 3 }),
+        ..BASE
+    },
+    Scene {
+        name: "link-tip@2x.png",
+        tabs: FOUR,
+        link: Some(LinkScene { move_at: 1 }),
+        ..BASE
+    },
+    Scene {
+        name: "link-tip@1x.png",
+        scale: 1,
+        tabs: FOUR,
+        link: Some(LinkScene { move_at: 1 }),
+        ..BASE
+    },
     // A palette switch reaches the terminal.
     Scene {
         name: "palette@2x.png",
@@ -439,6 +475,29 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     } else {
         demo_grid(cols, rows)
     };
+    // A link scene: the URL is in the grid, shown as hovered as the app shows it (the same
+    // `Hover`), with its tooltip hanging from its cells.
+    let mut link_hover = None;
+    let mut link_tip = None;
+    if scene.link.is_some() {
+        for (x, ch) in LINK_TEXT.chars().enumerate() {
+            let mut cell = lune_termview::Cell::default();
+            cell.set_char(ch);
+            grid.set(LINK_ROW, LINK_COL + x, cell);
+        }
+        let uris = links::UriTable::new();
+        let span = links::link_at(&grid, LINK_ROW, LINK_COL + 8, &uris)
+            .ok_or("the demo URL is not a link")?;
+        let rect = r.place(SIZE, scale).grid_layout().cell_rect(
+            span.row,
+            span.start,
+            span.end + 1 - span.start,
+        );
+        let url = links::tip_url(&span.uri).ok_or("the demo URL does not pass the check")?;
+        let (hover, id) = links::Hover::show(span, &mut grid);
+        link_hover = Some((hover, id));
+        link_tip = Some((rect, url));
+    }
     let texture = target(&r.gpu.device, FORMAT, size);
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -502,12 +561,19 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     let extra: [&str; 2] = [extra[0].as_str(), extra[1].as_str()];
 
     for (k, ms) in FRAME_TIMES_MS.iter().enumerate() {
-        let events = scene
+        let mut events: Vec<Event> = scene
             .script
             .iter()
             .filter(|(frame, _)| *frame == k)
             .flat_map(|(_, input)| input.events())
             .collect();
+        if let (Some(link), Some((rect, _))) = (scene.link, &link_tip)
+            && link.move_at == k
+        {
+            events.push(Event::PointerMoved {
+                pos: (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0),
+            });
+        }
         let input = RawInput {
             size: SIZE,
             scale,
@@ -538,7 +604,16 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             maximized: false,
             grid: &mut grid,
             selection: if scene.selected { &selection } else { &[] },
-            hover_link: 0,
+            hover_link: link_hover.as_ref().map_or(0, |(_, id)| *id),
+            link_hand: false,
+            link_tip: link_tip
+                .as_ref()
+                .filter(|_| scene.link.is_some_and(|l| l.move_at <= k))
+                .map(|(rect, url)| LinkTip {
+                    rect: *rect,
+                    url,
+                    key: 1,
+                }),
             toasts: None,
             cursor,
             blink_on: true,
@@ -715,6 +790,9 @@ mod tests {
             named("settings-appearance@2x.png"),
             named("settings-combo@2x.png")
         );
+        // The tooltip is not there at the first dwell and is there after the delay.
+        assert_ne!(named("link-hover@2x.png"), named("link-tip@2x.png"));
+        assert_ne!(named("link-hover@2x.png"), tabs);
         std::fs::remove_dir_all(&a).expect("remove a");
         std::fs::remove_dir_all(&b).expect("remove b");
     }
