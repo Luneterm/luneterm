@@ -1,0 +1,169 @@
+name: release
+
+# A version tag builds the Windows and Linux archives and creates a DRAFT release. A person then
+# adds the macOS app (scripts/package-macos.sh <tag>, there is no macOS runner), checks it and
+# publishes the draft; the runbook is under Commands in CLAUDE.md.
+#
+# v<version> is the release, v<version>-rc.<N> a rehearsal of the same path (a prerelease draft).
+# Runners and their images: see ci.yml.
+on:
+  push:
+    tags: ["v[0-9]*"]
+
+# Only the publish job can write. Build jobs run the project's build on a VM that persists between
+# jobs, so they hold a read-only token.
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  verify:
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tag names this version and a commit on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "tag $TAG is not v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-rc.<N>" >&2
+            exit 1
+          fi
+          version="${TAG#v}"
+          version="${version%%-rc.*}"
+          cargo_version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          if [ "$version" != "$cargo_version" ]; then
+            echo "tag $TAG does not match the workspace version $cargo_version in Cargo.toml" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "tag $TAG is not on main" >&2
+            exit 1
+          fi
+
+  linux:
+    needs: verify
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # As check-linux in ci.yml: the image has no compiler or Rust.
+      - name: Install build tools and rustup
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(id -u)" = 0 ]; then SUDO=""; else SUDO="sudo"; fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends build-essential pkg-config procps
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - run: cargo build --release --locked -p luneterm
+      # What the binary links, and the glibc it needs: the release notes state the floor.
+      - name: Measure and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=target/release/luneterm
+          readelf -d "$bin" | grep NEEDED
+          glibc="$(objdump -T "$bin" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -V | tail -n 1)"
+          if [ -z "$glibc" ]; then
+            echo "no GLIBC_ version found in $bin" >&2
+            exit 1
+          fi
+          echo "highest required glibc: $glibc"
+          top="luneterm-${TAG#v}-linux-x64"
+          mkdir -p "dist/$top"
+          cp "$bin" "dist/$top/luneterm"
+          cp -R licenses "dist/$top/licenses"
+          tar -czf "dist/$top.tar.gz" -C dist "$top"
+          rm -rf "dist/$top"
+          printf '%s\n' "$glibc" > dist/glibc-min.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-linux
+          path: dist
+          retention-days: 7
+          if-no-files-found: error
+
+  # Accepted risk while the repo and its releases are private: this job builds on the shared VM,
+  # which persists between jobs, so a compromised VM could taint the exe. Decide this again before
+  # the repo or any release goes public.
+  windows:
+    needs: verify
+    runs-on: [self-hosted, windows, x64]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Rust toolchain
+        shell: powershell
+        run: |
+          # The VM has Windows PowerShell 5.1 only (no pwsh): TLS 1.2 is asked for by hand.
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $bin = Join-Path $HOME ".cargo\bin"
+          $env:PATH = "$bin;$env:PATH"
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+            Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+            .\rustup-init.exe -y --default-toolchain none --profile minimal
+            Remove-Item rustup-init.exe
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          rustup toolchain install
+      # The CRT is linked in: the zip must run on a machine without the VC++ redistributable.
+      - shell: powershell
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --locked -p luneterm
+      # luneterm.exe at the zip's root, licenses/ beside it. ZipFile rather than Compress-Archive,
+      # whose 5.1 version writes backslashes into the entry names.
+      - name: Package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = $env:TAG.Substring(1)
+          New-Item -ItemType Directory dist, pkg | Out-Null
+          Copy-Item target/release/luneterm.exe pkg/luneterm.exe
+          Copy-Item -Recurse licenses pkg/licenses
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = Join-Path (Resolve-Path dist) "luneterm-$version-windows-x64.zip"
+          [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path pkg).Path, $zip)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-windows
+          path: dist
+          retention-days: 7
+          if-no-files-found: error
+
+  # A single-use Linux container, never the Windows VM: the only job with a write token.
+  publish:
+    needs: [verify, linux, windows]
+    runs-on: [self-hosted, linux, x64]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # By name into separate directories: one job's upload cannot overwrite another's files.
+      # v8.0.2 or newer, not v4: v4's unzip-stream lets an entry like a/../../../x escape the path and
+      # replace files this job then runs with the write token. A build job controls these zips.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-linux
+          path: dist/linux
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-windows
+          path: dist/windows
+      - name: Create the draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/publish-release.py "$TAG" dist docs/release-notes.md
