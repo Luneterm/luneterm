@@ -6,33 +6,63 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Runners (2026-11-09: GitHub-hosted runners are blocked by account billing, so CI is self-hosted):
+#   linux   - the gha-autoscaler (infra/runners): one single-use Debian container per job, labels
+#             self-hosted, linux, x64. The image has git, python3 and curl but no Rust or C toolchain,
+#             so the job installs them.
+#   windows - one standing repo-scoped runner on claude-vm-win (service, work dir
+#             C:\actions-runner-luneterm), labels self-hosted, windows, x64, luneterm-win. It has Rust,
+#             the VS Build Tools, git and Git Bash.
+#   macOS   - no runner: scripts/check-macos.sh is the local gate (fmt, clippy, tests, check-ffi.sh).
+# The repo is private. The Windows runner is a standing machine, so no Windows job runs for a pull
+# request from a fork; the Linux containers are single-use.
 jobs:
-  check:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  check-linux:
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v4
-      # rust-toolchain.toml pins the toolchain; rustup installs it on first cargo call.
+      # The runner image is Debian trixie-slim as root: no compiler, linker or procps. Rust comes
+      # from rustup (--default-toolchain none: rust-toolchain.toml pins the version, and rustup
+      # 1.28+ does not install it on the first cargo call, so the next step does).
+      - name: Install build tools and rustup
+        run: |
+          if [ "$(id -u)" = 0 ]; then SUDO=""; else SUDO="sudo"; fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends build-essential pkg-config procps
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
       - run: cargo fmt --all -- --check
-      - if: runner.os == 'Linux'
-        run: scripts/check-lib-boundaries.sh
+      - run: scripts/check-lib-boundaries.sh
       # M9 D18: every package comes from this repo, crates.io or the pinned luneui-rs rev.
-      - if: runner.os == 'Linux'
-        run: scripts/check-deps.sh
+      - run: scripts/check-deps.sh
       # M10 D11: licenses/THIRD_PARTY_CRATES.txt is what `cargo metadata --locked` says ships
       # (four targets), with every package's text; fails on a stale, incomplete or unknown-id bundle.
-      - if: runner.os == 'Linux'
-        run: python3 scripts/gen-licenses.py --check
+      - run: python3 scripts/gen-licenses.py --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
-      # M8 D8: header == exported symbols (nm vs the clang AST), shipping and panic-probe builds,
-      # plus the C smoke test. Needs clang and nm; macOS has both. Windows checks the DLL builds
-      # (job windows-exe) and the Rust tests; Linux runs the C smoke test through cargo test.
-      - if: runner.os == 'macOS'
-        run: scripts/check-ffi.sh
+      # M3 D10: lune-pty flake detector, 5 consecutive runs; stops at the first failure.
+      - name: lune-pty soak (5x)
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "lune-pty soak run $i"
+            cargo test -p lune-pty --locked || exit 1
+          done
+      # cargo test captures stdout; --nocapture puts the P6 adapter / P4 emoji probe lines in the log.
+      - run: cargo test -p lune-termview --locked --test probe -- --nocapture
+
+  check-windows:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, windows, x64, luneterm-win]
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the toolchain; the runner machine has it installed.
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      # M8 D8: header == exported symbols (nm vs the clang AST): macOS only (scripts/check-macos.sh).
+      # Windows checks the DLL builds (job windows-exe) and the Rust tests.
       # M3 D10: lune-pty flake detector, 5 consecutive runs; stops at the first failure.
       - name: lune-pty soak (5x)
         shell: bash
@@ -47,7 +77,7 @@ jobs:
   # Windows build for testing on real hardware: the app, luneterm.exe (M9).
   windows-exe:
     if: github.event_name != 'pull_request'
-    runs-on: windows-latest
+    runs-on: [self-hosted, windows, x64, luneterm-win]
     steps:
       - uses: actions/checkout@v4
       # rust-toolchain.toml pins the toolchain; rustup installs it on first cargo call.
