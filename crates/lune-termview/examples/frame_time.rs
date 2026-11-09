@@ -103,9 +103,9 @@ fn main() {
             }
         };
 
-    // The committed RobotoMono subset (it holds every glyph the grid uses), loaded by path.
-    let font_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fonts/RobotoMonoNerdFontMono-Regular.subset.ttf");
+    // The committed RznMono subset (it holds every glyph the grid uses), loaded by path.
+    let font_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fonts/RznMono-Regular.subset.ttf");
     let mut fs = FontSystem::new();
     let ids = fs
         .db_mut()
@@ -114,12 +114,13 @@ fn main() {
         .first()
         .and_then(|id| fs.db().face(*id))
         .map(|f| f.families[0].0.clone())
-        .unwrap_or_else(|| "RobotoMono Nerd Font Mono".to_owned());
+        .unwrap_or_else(|| "RznMono".to_owned());
     let fonts = TermFonts {
         family,
         size: 13.0,
         line_height: 17.0,
         emoji_family: None,
+        icon_family: None,
     };
 
     let mut tv = TermView::new(&device, FORMAT, fonts, TermTheme::lunegit_one_dark());

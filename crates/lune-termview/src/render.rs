@@ -25,7 +25,8 @@ const MIN_CAP: usize = 8;
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Globals {
     size: [f32; 2],
-    _pad: [f32; 2],
+    opacity: f32,
+    _pad: f32,
 }
 
 const STRIDE: [usize; 4] = [
@@ -74,6 +75,8 @@ pub struct TermView {
     pipelines: Pipelines,
     globals: wgpu::Buffer,
     globals_bind: wgpu::BindGroup,
+    /// The whole grid's opacity, 0..=1 (see [`set_opacity`](Self::set_opacity)).
+    opacity: f32,
     rows_buf: Option<RowBuffers>,
     /// Per row, the counts uploaded by the last `prepare`: [bgs, mask, color, decos].
     drawn: Vec<[u32; 4]>,
@@ -101,7 +104,7 @@ impl TermView {
             label: Some("termview globals layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -125,12 +128,25 @@ impl TermView {
             pipelines,
             globals,
             globals_bind,
+            opacity: 1.0,
             rows_buf: None,
             drawn: Vec::new(),
             overlay_buf: None,
             overlay_n: 0,
             overlay_scratch: Vec::new(),
         }
+    }
+
+    /// The opacity the whole grid is drawn at (cells, glyphs, decorations, cursor, selection and
+    /// link hover alike), 0..=1; a value outside that range is clamped and a NaN is 1. The default
+    /// 1 draws exactly as before. The app uses it for a tab-switch crossfade between two views.
+    pub fn set_opacity(&mut self, opacity: f32) {
+        self.opacity = clamp_opacity(opacity);
+    }
+
+    /// The opacity set by [`set_opacity`](Self::set_opacity).
+    pub fn opacity(&self) -> f32 {
+        self.opacity
     }
 
     /// New colours; everything is rebuilt on the next update.
@@ -277,7 +293,8 @@ impl CustomDraw for TermView {
             0,
             bytemuck::bytes_of(&Globals {
                 size: [frame.size.0.max(1) as f32, frame.size.1.max(1) as f32],
-                _pad: [0.0; 2],
+                opacity: self.opacity,
+                _pad: 0.0,
             }),
         );
         self.upload_rows(device, queue);
@@ -316,6 +333,15 @@ impl CustomDraw for TermView {
             pass.set_vertex_buffer(0, buf.slice(..));
             pass.draw(0..4, 0..self.overlay_n);
         }
+    }
+}
+
+/// The rule of [`TermView::set_opacity`]: 0..=1, a NaN is 1 (draw as it is rather than nothing).
+fn clamp_opacity(opacity: f32) -> f32 {
+    if opacity.is_nan() {
+        1.0
+    } else {
+        opacity.clamp(0.0, 1.0)
     }
 }
 
@@ -400,5 +426,22 @@ fn make_pipelines(
             glyph_layout,
         ),
         deco: make("termview decorations", "vs_deco", "fs_deco", deco_layout),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_opacity;
+
+    #[test]
+    fn opacity_is_clamped_to_0_1_and_nan_is_1() {
+        assert_eq!(clamp_opacity(0.5), 0.5);
+        assert_eq!(clamp_opacity(0.0), 0.0);
+        assert_eq!(clamp_opacity(1.0), 1.0);
+        assert_eq!(clamp_opacity(-0.25), 0.0);
+        assert_eq!(clamp_opacity(7.0), 1.0);
+        assert_eq!(clamp_opacity(f32::INFINITY), 1.0);
+        assert_eq!(clamp_opacity(f32::NEG_INFINITY), 0.0);
+        assert_eq!(clamp_opacity(f32::NAN), 1.0);
     }
 }

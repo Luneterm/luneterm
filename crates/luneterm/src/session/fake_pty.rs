@@ -6,7 +6,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use lune_pty::{Pty, PtySize, PtyWriter};
+use lune_pty::{Pty, PtySize, PtyWriter, RawMode};
 
 use super::threads::lock;
 
@@ -26,6 +26,16 @@ pub(crate) struct Probe {
     pub(crate) discarded: AtomicU64,
     /// A `Gate::Forever` writer is blocked.
     pub(crate) blocked: AtomicBool,
+    /// What `process_id` answers (the shell).
+    pub(crate) pid: Mutex<Option<u32>>,
+    /// What `foreground_process` answers.
+    pub(crate) foreground: Mutex<Option<u32>>,
+    /// What `raw_mode` answers.
+    pub(crate) raw: Mutex<RawMode>,
+    /// Calls of `foreground_process` (one per probe).
+    pub(crate) foreground_probes: AtomicU64,
+    /// Calls of `raw_mode`.
+    pub(crate) raw_probes: AtomicU64,
     /// Releases a `Gate::Forever` writer.
     release: (Mutex<bool>, Condvar),
 }
@@ -248,6 +258,16 @@ impl Pty for FakePty {
     }
 
     fn process_id(&self) -> Option<u32> {
-        None
+        *lock(&self.probe.pid)
+    }
+
+    fn raw_mode(&self) -> RawMode {
+        self.probe.raw_probes.fetch_add(1, Ordering::SeqCst);
+        *lock(&self.probe.raw)
+    }
+
+    fn foreground_process(&self) -> Option<u32> {
+        self.probe.foreground_probes.fetch_add(1, Ordering::SeqCst);
+        *lock(&self.probe.foreground)
     }
 }

@@ -96,7 +96,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
  "x11rb",
 ]
 
@@ -441,7 +441,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -707,17 +707,6 @@ dependencies = [
  "khronos_api",
  "log",
  "xml-rs",
-]
-
-[[package]]
-name = "glass-ui"
-version = "0.1.0"
-dependencies = [
- "lune-ui 0.1.0",
- "png",
- "pollster",
- "wgpu",
- "winit",
 ]
 
 [[package]]
@@ -1038,31 +1027,18 @@ dependencies = [
  "cosmic-text",
  "etagere",
  "fontdb",
- "lune-ui 0.2.0",
+ "lune-ui",
  "png",
  "pollster",
+ "unicode-script",
  "wgpu",
  "zeno",
 ]
 
 [[package]]
 name = "lune-ui"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "glyphon",
- "objc2-app-kit 0.3.2",
- "png",
- "raw-window-handle",
- "wgpu",
- "window-vibrancy",
- "winit",
-]
-
-[[package]]
-name = "lune-ui"
 version = "0.2.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=5216931d8ae06f01cbf38e3408bc43b1096dceed#5216931d8ae06f01cbf38e3408bc43b1096dceed"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=32d19048684745b54ab542e5dc886bea43326e08#32d19048684745b54ab542e5dc886bea43326e08"
 dependencies = [
  "lune-ui-core",
  "lune-ui-platform",
@@ -1073,12 +1049,12 @@ dependencies = [
 [[package]]
 name = "lune-ui-core"
 version = "0.2.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=5216931d8ae06f01cbf38e3408bc43b1096dceed#5216931d8ae06f01cbf38e3408bc43b1096dceed"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=32d19048684745b54ab542e5dc886bea43326e08#32d19048684745b54ab542e5dc886bea43326e08"
 
 [[package]]
 name = "lune-ui-platform"
 version = "0.2.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=5216931d8ae06f01cbf38e3408bc43b1096dceed#5216931d8ae06f01cbf38e3408bc43b1096dceed"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=32d19048684745b54ab542e5dc886bea43326e08#32d19048684745b54ab542e5dc886bea43326e08"
 dependencies = [
  "lune-ui-core",
  "objc2 0.6.5",
@@ -1092,7 +1068,7 @@ dependencies = [
 [[package]]
 name = "lune-ui-wgpu"
 version = "0.2.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=5216931d8ae06f01cbf38e3408bc43b1096dceed#5216931d8ae06f01cbf38e3408bc43b1096dceed"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=32d19048684745b54ab542e5dc886bea43326e08#32d19048684745b54ab542e5dc886bea43326e08"
 dependencies = [
  "bytemuck",
  "glyphon",
@@ -1105,7 +1081,7 @@ dependencies = [
 [[package]]
 name = "lune-ui-winit"
 version = "0.2.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=5216931d8ae06f01cbf38e3408bc43b1096dceed#5216931d8ae06f01cbf38e3408bc43b1096dceed"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=32d19048684745b54ab542e5dc886bea43326e08#32d19048684745b54ab542e5dc886bea43326e08"
 dependencies = [
  "arboard",
  "lune-ui-core",
@@ -1127,9 +1103,11 @@ dependencies = [
 name = "luneterm"
 version = "0.1.0"
 dependencies = [
+ "dirs",
+ "libc",
  "lune-pty",
  "lune-termview",
- "lune-ui 0.2.0",
+ "lune-ui",
  "lune-vt",
  "pollster",
  "wgpu",

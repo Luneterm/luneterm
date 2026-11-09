@@ -717,9 +717,8 @@ mod tests {
     use cosmic_text::fontdb;
     use std::sync::Arc;
 
-    const REGULAR: &[u8] =
-        include_bytes!("../tests/fonts/RobotoMonoNerdFontMono-Regular.subset.ttf");
-    const BOLD: &[u8] = include_bytes!("../tests/fonts/RobotoMonoNerdFontMono-Bold.subset.ttf");
+    const REGULAR: &[u8] = include_bytes!("../tests/fonts/RznMono-Regular.subset.ttf");
+    const BOLD: &[u8] = include_bytes!("../tests/fonts/RznMono-Bold.subset.ttf");
     const SYMBOLS: &[u8] = include_bytes!("../tests/fonts/NotoSansSymbols2.subset.ttf");
     const TWEMOJI: &[u8] = include_bytes!("../tests/fonts/TwemojiLunegit.subset.ttf");
 
@@ -742,6 +741,7 @@ mod tests {
             size: 13.0,
             line_height: 17.0,
             emoji_family: None,
+            icon_family: None,
         };
         Rig {
             b: Builder::new(fonts, TermTheme::lunegit_one_dark()),

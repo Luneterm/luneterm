@@ -15,8 +15,8 @@ use lune_vt::services::options_service::{OptionValue, WindowOptions};
 use lune_vt::{CellColor, UnderlineStyle as VtUnderline, Viewport, ViewportCell};
 
 use super::engine::{
-    Clock, EngineCore, HIDDEN_INTERVAL, SLICE, STEP_MAX, STEP_MIN, SYNC_TIMEOUT, TickInput,
-    build_terminal,
+    Clock, EngineCore, HIDDEN_INTERVAL, PROBE_IDLE, SLICE, STEP_MAX, STEP_MIN, SYNC_TIMEOUT,
+    TickInput, build_terminal,
 };
 use super::fake_pty::{FakePty, Gate, Probe, Script};
 use super::threads::{
@@ -898,6 +898,458 @@ fn session_events_reach_the_update() {
     assert!(u.clipboard_write.is_none());
 }
 
+// ---------------------------------------------------------------- M10 step 1: probes, kitty reset
+
+const KITTY_ON: &[u8] = b"\x1b[>1u";
+const SHELL: u32 = 100;
+const CHILD: u32 = 200;
+const OTHER_CHILD: u32 = 300;
+
+impl Rig {
+    fn kitty_flags(&self) -> u8 {
+        self.core.terminal.keyboard_protocol().flags(false)
+    }
+
+    fn set_foreground(&self, pid: Option<u32>) {
+        *lock(&self.probe.foreground) = pid;
+    }
+
+    /// A rig whose PTY reports `SHELL` as the shell, in the foreground, and a first probe done.
+    fn with_known_foreground() -> Rig {
+        let mut rig = rig_published();
+        *lock(&rig.probe.pid) = Some(SHELL);
+        rig.set_foreground(Some(SHELL));
+        rig.probe_pass();
+        rig
+    }
+
+    /// Time for one idle probe interval to pass, then a tick.
+    fn probe_pass(&mut self) -> Option<Update> {
+        self.clock.advance(PROBE_IDLE);
+        self.idle()
+    }
+}
+
+#[test]
+fn session_foreground_shell_child_shell_resets_once() {
+    let mut rig = Rig::with_known_foreground();
+    rig.feed(KITTY_ON);
+    assert_eq!(rig.kitty_flags(), 1);
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 1, "shell stays foreground: untouched");
+
+    // A program takes the terminal and sets flags: they stay while it runs.
+    rig.set_foreground(Some(CHILD));
+    rig.probe_pass();
+    rig.feed(b"\x1b[>4u");
+    assert_eq!(rig.kitty_flags(), 4);
+    for _ in 0..5 {
+        rig.probe_pass();
+    }
+    assert_eq!(
+        rig.kitty_flags(),
+        4,
+        "flags set by the program stay until it leaves"
+    );
+
+    // It leaves without popping them: reset on the way back.
+    rig.set_foreground(Some(SHELL));
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 0);
+
+    // Set again with the shell in front: later probes do not reset again.
+    rig.feed(KITTY_ON);
+    for _ in 0..3 {
+        rig.probe_pass();
+    }
+    assert_eq!(rig.kitty_flags(), 1, "one reset per departure");
+}
+
+#[test]
+fn session_foreground_child_to_child_does_not_reset() {
+    let mut rig = Rig::with_known_foreground();
+    rig.set_foreground(Some(CHILD));
+    rig.probe_pass();
+    rig.feed(KITTY_ON);
+    rig.set_foreground(Some(OTHER_CHILD));
+    rig.probe_pass();
+    rig.set_foreground(Some(CHILD));
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 1);
+}
+
+#[test]
+fn session_foreground_a_failed_probe_between_does_not_lose_the_departure() {
+    let mut rig = Rig::with_known_foreground();
+    rig.set_foreground(Some(CHILD));
+    rig.probe_pass();
+    rig.feed(KITTY_ON);
+    rig.set_foreground(None);
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 1, "unknown is not a return");
+    rig.set_foreground(Some(SHELL));
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 0);
+}
+
+#[test]
+fn session_foreground_known_ignores_prompt_marks() {
+    // The foreground is known and the shell never left: a prompt mark must not reset.
+    let mut rig = Rig::with_known_foreground();
+    rig.feed(KITTY_ON);
+    rig.feed(b"\x1b]133;A\x07");
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 1);
+    // And with a program in front, a prompt mark (a program printing one) does not either.
+    rig.set_foreground(Some(CHILD));
+    rig.probe_pass();
+    rig.feed(b"\x1b]133;A\x07");
+    rig.probe_pass();
+    assert_eq!(rig.kitty_flags(), 1);
+}
+
+#[test]
+fn session_foreground_unknown_resets_on_the_prompt_mark_only() {
+    // The fake reports no pid and no foreground: the Windows case, same code path.
+    let mut rig = rig_published();
+    rig.feed(KITTY_ON);
+    assert_eq!(rig.kitty_flags(), 1);
+    for _ in 0..4 {
+        rig.probe_pass();
+    }
+    rig.feed(b"\x1b]133;C\x07\x1b]133;B\x07\x1b]133;D;0\x07");
+    assert_eq!(rig.kitty_flags(), 1, "unknown and no prompt mark: no reset");
+    rig.feed(b"\x1b]133;A\x07");
+    assert_eq!(rig.kitty_flags(), 0, "unknown and PromptStart: reset");
+    // The same mark with the flags set again resets again (each prompt is the shell's).
+    rig.feed(KITTY_ON);
+    rig.feed(b"\x1b]133;A\x07");
+    assert_eq!(rig.kitty_flags(), 0);
+}
+
+#[test]
+fn session_foreground_prompt_mark_probes_at_once() {
+    // The program left and the shell printed its prompt before the next scheduled probe: the
+    // prompt mark brings the probe forward, so the reset does not wait for the cadence.
+    let mut rig = Rig::with_known_foreground();
+    rig.set_foreground(Some(CHILD));
+    rig.probe_pass();
+    rig.feed(KITTY_ON);
+    rig.set_foreground(Some(SHELL));
+    let before = rig.probe.foreground_probes.load(Ordering::SeqCst);
+    rig.feed(b"\x1b]133;A\x07");
+    assert_eq!(
+        rig.probe.foreground_probes.load(Ordering::SeqCst),
+        before + 1
+    );
+    assert_eq!(rig.kitty_flags(), 0, "no clock advance needed");
+}
+
+#[test]
+fn session_probe_publishes_only_a_change() {
+    let mut rig = Rig::with_known_foreground();
+    let u = rig.idle();
+    assert!(u.is_none() || u.is_some_and(|u| u.foreground.is_none()));
+    // Many unchanged probes: no Update, no work for the UI.
+    for _ in 0..20 {
+        assert!(rig.probe_pass().is_none(), "unchanged probe");
+    }
+    assert!(!rig.core.unpublished());
+    // A change is one Update, then quiet again.
+    rig.set_foreground(Some(CHILD));
+    let u = rig.probe_pass().expect("the change is published");
+    assert_eq!(
+        u.foreground,
+        Some(ForegroundState {
+            shell_is_foreground: Some(false),
+            raw: lune_pty::RawMode::Unknown,
+        })
+    );
+    assert!(rig.probe_pass().is_none());
+    *lock(&rig.probe.raw) = lune_pty::RawMode::Raw;
+    let u = rig.probe_pass().expect("raw mode changed");
+    assert_eq!(u.foreground.map(|f| f.raw), Some(lune_pty::RawMode::Raw));
+    // Back to the first value is a change too.
+    *lock(&rig.probe.raw) = lune_pty::RawMode::Unknown;
+    rig.set_foreground(Some(SHELL));
+    let u = rig.probe_pass().expect("back");
+    assert_eq!(
+        u.foreground,
+        Some(ForegroundState::default().with_shell(true))
+    );
+}
+
+impl ForegroundState {
+    fn with_shell(self, is: bool) -> ForegroundState {
+        ForegroundState {
+            shell_is_foreground: Some(is),
+            ..self
+        }
+    }
+}
+
+#[test]
+fn session_probe_cadence_follows_output_and_the_running_command() {
+    let mut rig = rig_published();
+    let probes = |rig: &Rig| rig.probe.foreground_probes.load(Ordering::SeqCst);
+    // Idle: one probe per second, however often the engine ticks.
+    let start = probes(&rig);
+    for _ in 0..100 {
+        rig.clock.advance(Duration::from_millis(100));
+        rig.idle();
+    }
+    let idle = probes(&rig) - start;
+    assert!((9..=11).contains(&idle), "10 s idle: {idle} probes");
+    let due = rig.core.probe_deadline(rig.core.now()).expect("probing");
+    assert!(due > rig.core.now(), "just probed: not due");
+    assert!(due <= rig.core.now() + PROBE_IDLE);
+
+    // Output flowing: every 250 ms.
+    let start = probes(&rig);
+    for _ in 0..40 {
+        rig.clock.advance(Duration::from_millis(50));
+        rig.feed(b"x");
+    }
+    let flowing = probes(&rig) - start;
+    assert!(
+        (7..=9).contains(&flowing),
+        "2 s of output: {flowing} probes"
+    );
+
+    // A running command, no output: still 250 ms, so a short-lived program is seen leaving.
+    rig.feed(b"\x1b]133;C\x07");
+    rig.clock.advance(Duration::from_secs(5));
+    rig.idle();
+    let start = probes(&rig);
+    for _ in 0..40 {
+        rig.clock.advance(Duration::from_millis(50));
+        rig.idle();
+    }
+    let running = probes(&rig) - start;
+    assert!(
+        (7..=9).contains(&running),
+        "2 s of a silent command: {running}"
+    );
+}
+
+#[test]
+fn session_probe_wakes_the_loop_but_never_the_ui() {
+    let mut rig = rig_published();
+    let now = rig.core.now();
+    // The wait in the thread loop ends at the next probe even with nothing else to do.
+    assert_eq!(
+        rig.core
+            .next_deadline(now, true, true, rig.core.unpublished()),
+        None
+    );
+    let wake = rig
+        .core
+        .next_wake(now, true, true, rig.core.unpublished())
+        .expect("a probe is scheduled");
+    assert!(wake > now && wake <= now + PROBE_IDLE);
+    assert!(!rig.core.wants_tick(now, true, true, false));
+    assert!(rig.core.wants_tick(wake, true, true, false));
+    // Once the output has ended there is nothing left to probe.
+    drop(rig._tx);
+}
+
+#[test]
+fn session_probes_stop_when_the_output_has_ended() {
+    let mut rig = rig_published();
+    *lock(&rig.probe.exit_code) = Some(0);
+    rig.tick_with(TickInput {
+        reader_ended: true,
+        ui_ready: true,
+        visible: true,
+        ..TickInput::default()
+    });
+    let now = rig.core.now();
+    assert_eq!(rig.core.probe_deadline(now), None);
+    let before = rig.probe.foreground_probes.load(Ordering::SeqCst);
+    rig.clock.advance(Duration::from_secs(10));
+    rig.idle();
+    assert_eq!(rig.probe.foreground_probes.load(Ordering::SeqCst), before);
+}
+
+#[test]
+fn session_threaded_idle_probe_does_not_wake_the_ui() {
+    let (pty, probe, _tx) = FakePty::scripted(Gate::Open);
+    *lock(&probe.pid) = Some(SHELL);
+    *lock(&probe.foreground) = Some(SHELL);
+    let (w, woken) = waker();
+    let session = Session::start(pty, config(20, 3), w).expect("session");
+    assert!(wait_until(Duration::from_secs(5), || session
+        .take_update()
+        .is_some()));
+    let wakes = woken.calls.load(Ordering::SeqCst);
+    let published = session.stats().updates_published;
+    // The engine probes on its own timer: at least two probes in 2.5 s, no Update for them.
+    assert!(wait_until(Duration::from_secs(10), || {
+        probe.foreground_probes.load(Ordering::SeqCst) >= 3
+    }));
+    assert_eq!(session.stats().updates_published, published);
+    assert_eq!(woken.calls.load(Ordering::SeqCst), wakes);
+    assert!(session.take_update().is_none());
+    assert!(session.close(Duration::from_secs(5)));
+}
+
+// ------------------------------------------------ M10 step 1: command tracking
+
+#[test]
+fn session_command_state_follows_marks_sync_and_typing() {
+    let mut rig = rig_published();
+    // A prompt, then a command starts.
+    let u = rig.feed(b"\x1b]133;A\x07\x1b]133;B\x07").expect("update");
+    assert_eq!(u.command, None, "no change from the default");
+    let u = rig.feed(b"\x1b]133;C\x07").expect("update");
+    assert_eq!(
+        u.command,
+        Some(CommandState {
+            running: true,
+            interactive: false
+        })
+    );
+    // Typing into a cooked PTY does not make it interactive.
+    *lock(&rig.probe.raw) = lune_pty::RawMode::Cooked;
+    rig.command(Command::Text("x".to_owned()));
+    assert!(rig.idle().is_none());
+    // Typing into a raw one does.
+    *lock(&rig.probe.raw) = lune_pty::RawMode::Raw;
+    let u = rig.command(Command::Text("y".to_owned())).expect("update");
+    assert_eq!(
+        u.command,
+        Some(CommandState {
+            running: true,
+            interactive: true
+        })
+    );
+    let probes = rig.probe.raw_probes.load(Ordering::SeqCst);
+    rig.command(Command::Text("z".to_owned()));
+    assert_eq!(
+        rig.probe.raw_probes.load(Ordering::SeqCst),
+        probes,
+        "no more probes once captured"
+    );
+    // The command ends; the next one starts clean.
+    let u = rig.feed(b"\x1b]133;D;0\x07").expect("update");
+    assert_eq!(u.command.map(|c| c.running), Some(false));
+    let u = rig.feed(b"\x1b]133;C\x07").expect("update");
+    assert_eq!(
+        u.command,
+        Some(CommandState {
+            running: true,
+            interactive: false
+        })
+    );
+    // Mode 2026 inside the command: interactive.
+    let u = rig.feed(b"\x1b[?2026h\x1b[?2026l").expect("update");
+    assert!(u.sync_update_in_command);
+    assert_eq!(u.command.map(|c| c.interactive), Some(true));
+}
+
+#[test]
+fn session_a_command_that_flips_and_flips_back_publishes_no_change() {
+    let mut rig = rig_published();
+    // C and D inside one slice: the state ends where it started.
+    let u = rig.feed(b"\x1b]133;C\x07\x1b]133;D;0\x07");
+    let u = u.expect("the marks themselves are news");
+    assert_eq!(u.command, None);
+    assert_eq!(u.marks.len(), 2);
+}
+
+// ------------------------------------------------ M10 step 1: link uris, scrollback
+
+fn link(id: usize, text: &str) -> Vec<u8> {
+    format!("\x1b]8;;http://h/{id}\x1b\\{text}\x1b]8;;\x1b\\").into_bytes()
+}
+
+#[test]
+fn session_link_uris_are_sent_once_per_id() {
+    let mut rig = Rig::new(&config(40, 5));
+    let mut bytes = link(1, "ab");
+    bytes.extend(link(2, "cd"));
+    let u = rig.feed(&bytes).expect("update");
+    let mut uris: Vec<&str> = u.link_uris.iter().map(|(_, s)| s.as_str()).collect();
+    uris.sort_unstable();
+    assert_eq!(uris, ["http://h/1", "http://h/2"]);
+    // The ids are the ones on the cells.
+    let row0 = &u
+        .rows_changed
+        .iter()
+        .find(|(y, _)| *y == 0)
+        .expect("row 0")
+        .1;
+    let ids: Vec<u32> = u.link_uris.iter().map(|(id, _)| *id).collect();
+    assert!(ids.contains(&row0[0].link) && ids.contains(&row0[2].link));
+    // The row changes again (same links): nothing new to send.
+    let u = rig.feed(b"\rzz").expect("update");
+    assert!(u.link_uris.is_empty());
+    // A new link is sent, the old ones are not.
+    let u = rig.feed(&link(3, "ef")).expect("update");
+    assert_eq!(u.link_uris.len(), 1);
+    assert_eq!(u.link_uris[0].1, "http://h/3");
+}
+
+#[test]
+fn session_link_uris_skip_a_uri_over_2048_bytes() {
+    let mut rig = Rig::new(&config(40, 5));
+    let at_cap = format!("http://h/{}", "a".repeat(MAX_LINK_URI - "http://h/".len()));
+    let over = format!(
+        "http://h/{}",
+        "b".repeat(MAX_LINK_URI - "http://h/".len() + 1)
+    );
+    assert_eq!((at_cap.len(), over.len()), (MAX_LINK_URI, MAX_LINK_URI + 1));
+    let mut bytes = format!("\x1b]8;;{at_cap}\x1b\\p\x1b]8;;\x1b\\").into_bytes();
+    bytes.extend(format!("\x1b]8;;{over}\x1b\\q\x1b]8;;\x1b\\").into_bytes());
+    let u = rig.feed(&bytes).expect("update");
+    assert_eq!(u.link_uris.len(), 1);
+    assert_eq!(u.link_uris[0].1, at_cap);
+    // The over-long one is not looked up again either: a full refresh sends nothing.
+    rig.command(Command::Scroll(Scroll::Top));
+    let u = rig
+        .command(Command::Scroll(Scroll::Bottom))
+        .expect("update");
+    assert!(u.link_uris.is_empty());
+}
+
+#[test]
+fn session_link_uris_are_capped_per_update_and_the_rest_follow() {
+    // 300 one-cell links on 3 rows of 100 columns.
+    let mut rig = Rig::new(&config(100, 5));
+    let mut bytes = Vec::new();
+    for i in 0..300 {
+        bytes.extend(link(i, "x"));
+    }
+    let u = rig.feed(&bytes).expect("update");
+    assert_eq!(u.link_uris.len(), LINK_URIS_CAP);
+    let mut seen: std::collections::HashSet<u32> = u.link_uris.iter().map(|(id, _)| *id).collect();
+    // The remainder follows in the next Update, with no further output needed.
+    let u = rig.idle().expect("the rest follows");
+    assert_eq!(u.link_uris.len(), 300 - LINK_URIS_CAP);
+    for (id, _) in &u.link_uris {
+        assert!(seen.insert(*id), "no id twice");
+    }
+    assert_eq!(seen.len(), 300);
+    assert!(rig.idle().is_none());
+}
+
+#[test]
+fn session_set_scrollback_applies_and_caps() {
+    let mut rig = rig_published();
+    assert_eq!(rig.core.terminal.options().scrollback, 1000);
+    let u = rig.command(Command::SetScrollback(50)).expect("update");
+    assert!(u.full);
+    assert_eq!(rig.core.terminal.options().scrollback, 50);
+    rig.command(Command::SetScrollback(u32::MAX));
+    assert_eq!(rig.core.terminal.options().scrollback, MAX_SCROLLBACK);
+    rig.command(Command::SetScrollback(0));
+    assert_eq!(rig.core.terminal.options().scrollback, 0);
+    assert_eq!(
+        format!("{:?}", Command::SetScrollback(7)),
+        "SetScrollback(7)"
+    );
+}
+
 // ---------------------------------------------------------------- T8 caps (I10, I11)
 
 #[test]
@@ -1420,4 +1872,233 @@ fn session_start_names_its_threads_and_fails_cleanly() {
     let (w, _woken) = waker();
     assert!(Session::start(pty, cfg, w).is_err());
     assert!(probe.dropped.load(Ordering::SeqCst));
+}
+
+// ---------------------------------------------------------------- selection (plan M10 step 3)
+
+fn select(cmd: SelectCmd) -> Command {
+    Command::Select(cmd)
+}
+
+fn press(row: usize, col: usize, clicks: u8) -> Command {
+    select(SelectCmd::Start {
+        cell: (row, col),
+        top: 0,
+        clicks,
+        extend: false,
+        column: false,
+    })
+}
+
+fn selection_rig() -> Rig {
+    let mut rig = Rig::new(&config(20, 5));
+    rig.feed(b"hello world\r\nsecond line")
+        .expect("first update");
+    rig
+}
+
+#[test]
+fn selection_is_published_only_when_it_changes() {
+    let mut rig = selection_rig();
+    // A double click selects a word and publishes it.
+    let u = rig.command(press(0, 7, 2)).expect("an update");
+    let view = u.selection.expect("changed").expect("selected");
+    assert_eq!((view.start, view.end), ((6, 0), (11, 0)), "world");
+    assert!(!view.column);
+    // Nothing happens: nothing is published, and a repeat of the same click does not republish.
+    assert!(rig.idle().is_none());
+    assert!(rig.command(press(0, 7, 2)).is_none());
+    // A click elsewhere replaces it; a plain click selects nothing, which is published once.
+    let u = rig.command(press(1, 3, 1)).expect("an update");
+    assert_eq!(u.selection, Some(None));
+    assert!(rig.command(select(SelectCmd::End)).is_none());
+}
+
+#[test]
+fn selection_copy_answers_in_the_next_update_and_only_with_a_selection() {
+    let mut rig = selection_rig();
+    // No selection: nothing to publish.
+    assert!(rig.command(Command::CopySelection).is_none());
+    rig.command(press(0, 0, 3)).expect("update");
+    let u = rig.command(Command::CopySelection).expect("an update");
+    assert_eq!(
+        u.selection_text,
+        Some(CopyResult::Text("hello world".to_owned()))
+    );
+    assert!(u.selection.is_none(), "the selection did not change");
+    // Debug never shows the text (I16).
+    assert!(!format!("{u:?}").contains("hello"));
+    assert!(rig.idle().is_none());
+}
+
+#[test]
+fn selection_clears_on_typing_pasting_and_a_vertical_resize_but_not_on_output() {
+    let mut rig = selection_rig();
+    rig.command(press(0, 0, 3)).expect("update");
+    // The program prints more: the selection stays.
+    let u = rig.feed(b"\r\nmore").expect("update");
+    assert!(u.selection.is_none());
+    // A key that produces input clears it.
+    let u = rig.command(Command::Text("x".into())).expect("update");
+    assert_eq!(u.selection, Some(None));
+    rig.command(press(0, 0, 3)).expect("update");
+    let u = rig.command(Command::Paste("p".into())).expect("update");
+    assert_eq!(u.selection, Some(None));
+    // A horizontal resize keeps it (upstream), a vertical one clears it.
+    rig.command(press(0, 0, 3)).expect("update");
+    let u = rig
+        .command(Command::Resize(geometry(30, 5)))
+        .expect("update");
+    assert!(u.selection.is_none(), "columns only: kept");
+    let u = rig
+        .command(Command::Resize(geometry(30, 6)))
+        .expect("update");
+    assert_eq!(u.selection, Some(None));
+}
+
+#[test]
+fn selection_clears_when_its_anchor_line_is_trimmed() {
+    let mut cfg = config(10, 3);
+    cfg.scrollback = 4;
+    let mut rig = Rig::new(&cfg);
+    rig.feed(b"l0\r\nl1\r\nl2").expect("update");
+    rig.command(press(1, 0, 3)).expect("selected l1");
+    // Output that trims one line moves the selection up with its text.
+    let u = rig.feed(b"\r\nl3\r\nl4\r\nl5\r\nl6\r\nl7").expect("update");
+    let moved = u.selection.expect("changed").expect("still selected");
+    assert!(moved.start.1 < 1, "{moved:?}");
+    // Output that trims the anchor away clears it.
+    let u = rig.feed(b"\r\nl8\r\nl9\r\nl10\r\nl11").expect("update");
+    assert_eq!(u.selection, Some(None));
+}
+
+#[test]
+fn selection_drag_scroll_runs_on_the_engines_clock() {
+    let mut rig = Rig::new(&config(20, 3));
+    rig.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh")
+        .expect("update");
+    let top = rig.core.terminal.viewport_state().viewport_top;
+    // A plain click selects nothing yet, so nothing is published.
+    assert!(
+        rig.command(select(SelectCmd::Start {
+            cell: (2, 0),
+            top,
+            clicks: 1,
+            extend: false,
+            column: false,
+        }))
+        .is_none()
+    );
+    // The pointer is held above the viewport: the engine wakes for the scroll step by itself.
+    rig.command(select(SelectCmd::Drag {
+        cell: (0, 3),
+        top,
+        scroll: -1,
+    }));
+    let now = rig.clock.now();
+    assert!(
+        rig.core.next_wake(now, true, true, false).is_some(),
+        "a deadline for the drag scroll"
+    );
+    assert!(rig.idle().is_none() || rig.core.terminal.viewport_state().viewport_top == top);
+    rig.clock.advance(Duration::from_millis(60));
+    let u = rig.idle().expect("the drag scrolled");
+    assert_eq!(u.viewport_top, top - 1);
+    assert!(u.full);
+    // A release stops it.
+    rig.command(select(SelectCmd::End));
+    rig.clock.advance(Duration::from_millis(200));
+    assert!(rig.idle().is_none());
+}
+
+// ---------------------------------------------------------------- step 6: live theme, select all, clear
+
+fn palette_with(ansi1: [u8; 3]) -> HostPalette {
+    let mut p = HostPalette::from_theme(&TermTheme::lunegit_one_dark());
+    p.ansi[1] = ansi1;
+    p.foreground = [1, 2, 3];
+    p
+}
+
+#[test]
+fn session_set_theme_replaces_the_colours_the_child_did_not_set_and_keeps_the_ones_it_did() {
+    let mut rig = rig_published();
+    // The child sets colour 2; colour 1 and the foreground are still the theme's.
+    rig.feed(b"\x1b]4;2;rgb:12/34/56\x1b\\");
+    let u = rig
+        .command(Command::SetTheme(Box::new(palette_with([9, 9, 9]))))
+        .expect("update");
+    let live = u.palette.expect("the palette changed");
+    assert!(u.full);
+    assert_eq!(live.ansi[1], [9, 9, 9], "followed the new theme");
+    assert_eq!(live.foreground, [1, 2, 3]);
+    assert_eq!(
+        live.ansi[2],
+        [0x12, 0x34, 0x56],
+        "the child's own colour stays"
+    );
+    // A colour report answers from the live palette.
+    rig.feed(b"\x1b]4;1;?\x1b\\");
+    assert_eq!(rig.written_bytes(), b"\x1b]4;1;rgb:0909/0909/0909\x1b\\");
+    // Restoring colour 2 returns to the NEW theme's value, not the old one.
+    rig.feed(b"\x1b]104;2\x1b\\");
+    rig.feed(b"\x1b]4;2;?\x1b\\");
+    assert_eq!(rig.written_bytes(), b"\x1b]4;2;rgb:9898/c3c3/7979\x1b\\");
+    // The same theme again changes nothing and publishes nothing.
+    assert!(
+        rig.command(Command::SetTheme(Box::new(palette_with([9, 9, 9]))))
+            .is_none()
+    );
+    assert_eq!(format!("{:?}", Command::ClearBuffer), "ClearBuffer");
+}
+
+#[test]
+fn session_select_all_selects_the_whole_buffer_and_typing_clears_it() {
+    let mut rig = selection_rig();
+    let u = rig.command(select(SelectCmd::All)).expect("update");
+    let view = u.selection.expect("changed").expect("selected");
+    assert_eq!(view.start, (0, 0));
+    assert_eq!(view.end, (20, 4), "the last column of the last row");
+    rig.command(Command::CopySelection);
+    let u = rig.idle().or_else(|| rig.command(Command::CopySelection));
+    let text = match u.and_then(|u| u.selection_text) {
+        Some(CopyResult::Text(t)) => t,
+        other => panic!("{other:?}"),
+    };
+    assert!(text.starts_with("hello world"), "{} bytes", text.len());
+    assert!(text.contains("second line"));
+    // A press replaces it, even a double click.
+    let u = rig.command(press(0, 7, 2)).expect("update");
+    let view = u.selection.expect("changed").expect("selected");
+    assert_eq!((view.start, view.end), ((6, 0), (11, 0)));
+    // Select all, then input clears it.
+    rig.command(select(SelectCmd::All)).expect("update");
+    let u = rig.command(Command::Text("x".into())).expect("update");
+    assert_eq!(u.selection, Some(None));
+}
+
+#[test]
+fn session_clear_buffer_keeps_the_prompt_line_and_drops_the_rest_and_the_selection() {
+    let mut rig = Rig::new(&config(20, 3));
+    rig.feed(b"one\r\ntwo\r\nthree\r\nfour\r\nprompt$ ")
+        .expect("update");
+    rig.command(select(SelectCmd::All)).expect("update");
+    let u = rig.command(Command::ClearBuffer).expect("update");
+    assert!(u.full);
+    assert_eq!(u.selection, Some(None), "the selection went with the text");
+    assert_eq!(u.base_y, 0, "no scrollback left");
+    let row0: String = u
+        .rows_changed
+        .iter()
+        .find(|(y, _)| *y == 0)
+        .map(|(_, cells)| {
+            cells
+                .iter()
+                .map(|c| c.text().chars().next().unwrap_or(' '))
+                .collect()
+        })
+        .expect("row 0");
+    assert!(row0.starts_with("prompt$"), "{row0:?}");
+    assert_eq!(rig.core.terminal.buffers().active().ybase, 0);
+    assert_eq!(rig.core.terminal.buffers().active().y, 0);
 }

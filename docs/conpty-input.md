@@ -28,7 +28,9 @@ carries a character typed by Alt+numpad (see UTF-8 below). It also lists focus a
 ### Conditions of the committed measurement
 
 - OS: `Microsoft Windows [Version 10.0.26100.33650]` and `10.0.26100.33674`. The windows-latest
-  image changed between the two runs, and both gave the same table.
+  image changed between the two runs, and both gave the same table. Build `10.0.26200.9711` (the
+  self-hosted runner, CI run 42565765001) differs in one case: vt mode `ctrl-z` reads back `1a`
+  where 26100 gives a zero-byte read (`[read0]`), so the golden lists both.
 - `%SystemRoot%\System32\conpty.dll`: absent. portable-pty therefore falls back to kernel32's
   inbox `CreatePseudoConsole` (the inbox conhost).
 - portable-pty 0.9.0 flags: `PSEUDOCONSOLE_INHERIT_CURSOR | PSEUDOCONSOLE_RESIZE_QUIRK |

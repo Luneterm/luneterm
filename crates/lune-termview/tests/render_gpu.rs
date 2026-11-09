@@ -11,8 +11,9 @@ use lune_termview::{
 };
 use lune_ui::custom::{CustomDraw, CustomFrame};
 
-const REGULAR: &[u8] = include_bytes!("fonts/RobotoMonoNerdFontMono-Regular.subset.ttf");
-const BOLD: &[u8] = include_bytes!("fonts/RobotoMonoNerdFontMono-Bold.subset.ttf");
+const REGULAR: &[u8] = include_bytes!("fonts/RznMono-Regular.subset.ttf");
+const BOLD: &[u8] = include_bytes!("fonts/RznMono-Bold.subset.ttf");
+const TWEMOJI: &[u8] = include_bytes!("fonts/TwemojiLunegit.subset.ttf");
 
 const CLEAR: [u8; 4] = [10, 20, 30, 255];
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -29,6 +30,7 @@ fn test_fonts() -> (FontSystem, TermFonts) {
             size: 13.0,
             line_height: 17.0,
             emoji_family: None,
+            icon_family: None,
         },
     )
 }
@@ -108,7 +110,7 @@ fn close(a: [u8; 4], b: [u8; 4]) -> bool {
 
 #[test]
 fn background_cell_and_clear_colour() {
-    let Some((device, queue, _)) = common::device() else {
+    let Some((_gpu, device, queue, _)) = common::device() else {
         return;
     };
     let (mut fs, fonts) = test_fonts();
@@ -135,7 +137,7 @@ fn background_cell_and_clear_colour() {
 
 #[test]
 fn text_stays_in_its_cell_and_dirty_rows_update() {
-    let Some((device, queue, _)) = common::device() else {
+    let Some((_gpu, device, queue, _)) = common::device() else {
         return;
     };
     let (mut fs, fonts) = test_fonts();
@@ -176,7 +178,7 @@ fn text_stays_in_its_cell_and_dirty_rows_update() {
 
 #[test]
 fn decorations_cursor_and_selection_draw() {
-    let Some((device, queue, _)) = common::device() else {
+    let Some((_gpu, device, queue, _)) = common::device() else {
         return;
     };
     let (mut fs, fonts) = test_fonts();
@@ -228,7 +230,7 @@ fn fill(grid: &mut Grid, text: &str, row: usize) {
 /// incrementally updated view must draw exactly what a fresh view draws for the same grid.
 #[test]
 fn incremental_updates_match_a_fresh_view() {
-    let Some((device, queue, _)) = common::device() else {
+    let Some((_gpu, device, queue, _)) = common::device() else {
         return;
     };
     let (mut fs, fonts) = test_fonts();
@@ -281,4 +283,151 @@ fn incremental_updates_match_a_fresh_view() {
     let mut copy = grid.clone();
     copy.mark_all_dirty();
     assert_eq!(d, fresh(&mut fs, &mut copy, &v), "after resize");
+}
+
+/// A grid with a background, a glyph, an underline and a cursor, so every pipeline draws: the
+/// rects, the mask glyphs, the decorations and the overlay.
+fn busy_grid() -> (Grid, ViewState<'static>) {
+    let mut grid = Grid::new(4, 2);
+    grid.set(0, 0, cell(|c| c.bg = Color::Rgb(200, 0, 0)));
+    grid.set(
+        0,
+        1,
+        cell(|c| {
+            c.set_char('W');
+            c.underline = UnderlineStyle::Curly;
+            c.underline_color = Color::Rgb(255, 0, 255);
+        }),
+    );
+    let mut v = view();
+    v.cursor = Cursor {
+        visible: true,
+        row: 1,
+        col: 2,
+        ..Cursor::default()
+    };
+    (grid, v)
+}
+
+/// The grid at `opacity`, drawn over the clear colour.
+fn drawn_at(opacity: Option<f32>) -> (Vec<u8>, u32) {
+    let (_gpu, device, queue, _) = common::device().expect("a device (checked by the caller)");
+    let (mut fs, fonts) = test_fonts();
+    let mut tv = TermView::new(&device, FORMAT, fonts, TermTheme::lunegit_one_dark());
+    if let Some(o) = opacity {
+        tv.set_opacity(o);
+    }
+    let (mut grid, v) = busy_grid();
+    tv.update(&mut fs, &mut grid, &v, (0.0, 0.0), 2.0);
+    let m = tv.metrics(&mut fs, 2.0);
+    let (w, h) = (4 * m.cell_w, 2 * m.cell_h);
+    (draw(&device, &queue, &mut tv, (w, h), 2.0), w)
+}
+
+#[test]
+fn opacity_scales_every_pipeline_and_a_default_view_is_opaque() {
+    if !common::has_device() {
+        return;
+    }
+    let (full, w) = drawn_at(None);
+    let (one, _) = drawn_at(Some(1.0));
+    assert_eq!(full, one, "the default is opacity 1");
+    // Something other than the clear colour is drawn, so the comparisons below mean something.
+    let inked = full
+        .chunks_exact(4)
+        .filter(|p| p[..3] != CLEAR[..3])
+        .count();
+    assert!(inked > 200, "{inked} inked pixels");
+    // Half: every pixel is the clear colour moved half way to the opaque one (premultiplied
+    // colours scale with the opacity, so the blend is linear in it).
+    let (half, _) = drawn_at(Some(0.5));
+    let mut worst = 0u8;
+    for (i, (h, f)) in half.chunks_exact(4).zip(full.chunks_exact(4)).enumerate() {
+        for k in 0..3 {
+            let want = CLEAR[k] as f32 + (f[k] as f32 - CLEAR[k] as f32) * 0.5;
+            let d = (h[k] as f32 - want).abs().round() as u8;
+            worst = worst.max(d);
+            assert!(d <= 2, "pixel {i} channel {k}: {} vs {want}", h[k]);
+        }
+    }
+    assert!(worst <= 2);
+    // The red cell's centre, by hand: 200 * 0.5 + 10 * 0.5 = 105.
+    let c = px(&half, w, 8, 17);
+    assert!(
+        c.iter()
+            .zip([105u8, 10, 15, 255])
+            .all(|(a, b)| a.abs_diff(b) <= 2),
+        "{c:?}"
+    );
+    // Zero draws nothing at all; out of range and NaN are the clamp's.
+    let (none, _) = drawn_at(Some(0.0));
+    assert!(none.chunks_exact(4).all(|p| p == CLEAR), "opacity 0");
+    let (over, _) = drawn_at(Some(3.0));
+    assert_eq!(over, full, "above 1 is 1");
+    let (nan, _) = drawn_at(Some(f32::NAN));
+    assert_eq!(nan, full, "NaN is 1");
+}
+
+/// A rig of its own: the other cases' fallback stays the mono faces only.
+fn colour_fonts() -> (FontSystem, TermFonts) {
+    let (mut fs, mut fonts) = test_fonts();
+    let id = fs
+        .db_mut()
+        .load_font_source(fontdb::Source::Binary(Arc::new(TWEMOJI)));
+    let family = fs.db().face(id[0]).expect("face").families[0].0.clone();
+    fonts.emoji_family = Some(family);
+    (fs, fonts)
+}
+
+/// One colour glyph, alone in the grid, at `opacity`.
+fn colour_glyph_at(opacity: f32) -> Vec<u8> {
+    let (_gpu, device, queue, _) = common::device().expect("a device (checked by the caller)");
+    let (mut fs, fonts) = colour_fonts();
+    let mut tv = TermView::new(&device, FORMAT, fonts, TermTheme::lunegit_one_dark());
+    tv.set_opacity(opacity);
+    let mut grid = Grid::new(4, 1);
+    grid.set(
+        0,
+        0,
+        cell(|c| {
+            c.set_char('\u{1F600}');
+            c.width = 2;
+        }),
+    );
+    grid.set(0, 1, cell(|c| c.width = 0));
+    tv.update(&mut fs, &mut grid, &view(), (0.0, 0.0), 2.0);
+    let m = tv.metrics(&mut fs, 2.0);
+    draw(&device, &queue, &mut tv, (4 * m.cell_w, m.cell_h), 2.0)
+}
+
+/// The colour-glyph path (`fs_glyph_color`): the page already holds premultiplied colour, so the
+/// opacity is applied in its own place. A colour glyph has channels a mask glyph's single tint
+/// cannot, which is what proves this path drew it.
+#[test]
+fn opacity_scales_a_colour_glyph() {
+    if !common::has_device() {
+        return;
+    }
+    let full = colour_glyph_at(1.0);
+    let inked = full
+        .chunks_exact(4)
+        .filter(|p| {
+            let spread = |a: u8, b: u8| a.abs_diff(b) > 40;
+            p[..3] != CLEAR[..3] && (spread(p[0], p[2]) || spread(p[1], p[2]))
+        })
+        .count();
+    assert!(inked > 50, "{inked} coloured pixels: no colour glyph drawn");
+    let half = colour_glyph_at(0.5);
+    for (i, (h, f)) in half.chunks_exact(4).zip(full.chunks_exact(4)).enumerate() {
+        for k in 0..3 {
+            let want = CLEAR[k] as f32 + (f[k] as f32 - CLEAR[k] as f32) * 0.5;
+            assert!(
+                (h[k] as f32 - want).abs() <= 2.0,
+                "pixel {i} channel {k}: {} vs {want}",
+                h[k]
+            );
+        }
+    }
+    let none = colour_glyph_at(0.0);
+    assert!(none.chunks_exact(4).all(|p| p == CLEAR), "opacity 0");
 }

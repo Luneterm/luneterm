@@ -7,19 +7,25 @@
 //! drops past its caps). The thread loop in `threads.rs` only waits and hands it work, so the
 //! tests can step it with a fake clock and no threads.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lune_pty::Pty;
 use lune_vt::services::options_service::OptionValue;
-use lune_vt::{HostEvent, StandardExtensions, Terminal, ViewportCell, ViewportState};
+use lune_vt::{
+    CommandMarkKind, HostEvent, StandardExtensions, Terminal, ViewportCell, ViewportState,
+};
 
 use super::host::{ColorState, window_report};
+use super::selection::{CopyResult, Selection};
 use super::threads::{Stats, WriteKind, WriteQueue};
-use super::update::{Exit, MARKS_CAP, Update, UpdateModes, to_cell};
-use super::{Command, Geometry, MAX_SCROLLBACK, Scroll, SessionConfig};
+use super::update::{
+    Exit, ForegroundState, LINK_URIS_CAP, MARKS_CAP, MAX_LINK_URI, Update, UpdateModes, to_cell,
+};
+use super::{Command, Geometry, MAX_COPY_BYTES, MAX_SCROLLBACK, Scroll, SessionConfig};
+use crate::outline::{CommandState, CommandTracker};
 
 /// One output slice runs at most this long (plus the write in flight).
 pub(crate) const SLICE: Duration = Duration::from_millis(4);
@@ -37,6 +43,16 @@ pub(crate) const HIDDEN_INTERVAL: Duration = Duration::from_millis(100);
 /// After the output ends, the exit status is polled this often, for at most `EXIT_WAIT`.
 const EXIT_POLL: Duration = Duration::from_millis(20);
 const EXIT_WAIT: Duration = Duration::from_secs(1);
+
+/// How often the PTY is probed (foreground process, line discipline; plan M10 D3): this often
+/// while output flowed in the last [`FLOWING`] or a command is running, [`PROBE_IDLE`] otherwise.
+pub(crate) const PROBE_FAST: Duration = Duration::from_millis(250);
+pub(crate) const PROBE_IDLE: Duration = Duration::from_secs(1);
+/// Output this recent counts as flowing.
+const FLOWING: Duration = Duration::from_secs(1);
+/// The ids already sent in `link_uris` are forgotten past this many (a link flood), which only
+/// means some uris are sent again.
+const SENT_LINKS_CAP: usize = 1 << 16;
 
 /// The engine's time source: monotonic time since some start. Tests inject a fake one.
 pub(crate) trait Clock: Send {
@@ -86,6 +102,12 @@ struct Acc {
     progress: Option<lune_vt::Progress>,
     marks: VecDeque<lune_vt::CommandMark>,
     sync_in_command: bool,
+    foreground: Option<ForegroundState>,
+    command: Option<CommandState>,
+    /// The selection changed (publish it).
+    selection: bool,
+    /// The answer to a `CopySelection`.
+    copy: Option<CopyResult>,
 }
 
 impl Acc {
@@ -100,6 +122,10 @@ impl Acc {
             || self.progress.is_some()
             || !self.marks.is_empty()
             || self.sync_in_command
+            || self.foreground.is_some()
+            || self.command.is_some()
+            || self.selection
+            || self.copy.is_some()
     }
 
     fn add_rows(&mut self, start: usize, end: usize) {
@@ -107,6 +133,41 @@ impl Acc {
             Some((a, b)) => (a.min(start), b.max(end)),
             None => (start, end),
         });
+    }
+}
+
+/// What the probes concluded so far about the shell and the kitty keyboard flags (plan M10 step
+/// 1, D16, ledger 11). Pure state: the engine feeds it probe results and marks.
+///
+/// A program that sets kitty keyboard flags and exits without popping them leaves the shell
+/// encoding keys wrongly. The flags are cleared when the shell gets the terminal back:
+///  - the foreground is known: on the transition from "something else is foreground" to "the
+///    shell is" (`away` latches on the first, so a probe that failed in between does not lose it);
+///  - the foreground is unknown (`None`, Windows): on the shell's next prompt mark.
+///
+/// Nothing else clears them, so flags set while a program runs are never touched.
+#[derive(Debug, Default)]
+struct ForegroundWatch {
+    last_probe: Option<Duration>,
+    /// A `PromptStart` mark arrived since the last probe.
+    prompt_start: bool,
+    /// The shell was seen not in the foreground since the last reset.
+    away: bool,
+}
+
+impl ForegroundWatch {
+    /// A probe result; whether the keyboard protocol must be reset now.
+    fn observe(&mut self, now: Duration, state: ForegroundState) -> bool {
+        self.last_probe = Some(now);
+        let prompt_start = std::mem::take(&mut self.prompt_start);
+        match state.shell_is_foreground {
+            Some(false) => {
+                self.away = true;
+                false
+            }
+            Some(true) => std::mem::take(&mut self.away),
+            None => prompt_start,
+        }
     }
 }
 
@@ -156,6 +217,15 @@ pub(crate) struct EngineCore {
     exit_pending: Option<Exit>,
     scratch: Vec<ViewportCell>,
     pub(crate) slice_log: SliceLog,
+    fg: ForegroundWatch,
+    published_fg: ForegroundState,
+    tracker: CommandTracker,
+    published_command: CommandState,
+    /// When the last output slice ran.
+    last_output: Option<Duration>,
+    /// Link ids already carried by an Update (or never publishable).
+    sent_links: HashSet<u32>,
+    selection: Selection,
 }
 
 impl std::fmt::Debug for EngineCore {
@@ -227,6 +297,13 @@ impl EngineCore {
             exit_pending: None,
             scratch: Vec::new(),
             slice_log: SliceLog::default(),
+            fg: ForegroundWatch::default(),
+            published_fg: ForegroundState::default(),
+            tracker: CommandTracker::new(),
+            published_command: CommandState::default(),
+            last_output: None,
+            sent_links: HashSet::new(),
+            selection: Selection::new(),
         }
     }
 
@@ -265,10 +342,19 @@ impl EngineCore {
             self.next_exit_poll = now;
         }
         self.run_slice(interrupt);
+        self.selection_follows_the_buffer();
+        let now = self.clock.now();
+        if self.selection.drag_due(now) {
+            self.with_selection(|s, t| s.drag_scroll(t, now));
+            self.acc.full = true;
+        }
         if self.pending.is_empty() && self.idle_pending {
             self.idle_pending = self.terminal.idle();
         }
         let now = self.clock.now();
+        if self.probe_due(now) {
+            self.probe(now);
+        }
         self.poll_exit(now);
         if input.ui_ready && self.unpublished() && self.may_publish(now, input.visible) {
             Some(self.build_update(now))
@@ -290,6 +376,8 @@ impl EngineCore {
         !self.pending.is_empty()
             || self.idle_pending
             || self.exit_poll_due(now)
+            || self.probe_due(now)
+            || self.selection.drag_due(now)
             || (ui_ready && unpublished && self.may_publish(now, visible))
     }
 
@@ -307,6 +395,9 @@ impl EngineCore {
         if self.reader_end_at.is_some() && !self.exit_reported {
             at(self.next_exit_poll);
         }
+        if let Some(due) = self.selection.drag_deadline() {
+            at(due);
+        }
         if ui_ready && unpublished {
             if self.sync_deferring(now) {
                 if let Some(since) = self.sync_since {
@@ -321,17 +412,117 @@ impl EngineCore {
         deadline
     }
 
+    /// When the next probe is due, for the wait in the thread loop; `None` once the session's
+    /// output has ended. Reads plain fields only (no `Pty` or `Terminal` call), so it may run
+    /// under the inbox lock.
+    pub(crate) fn probe_deadline(&self, now: Duration) -> Option<Duration> {
+        if !self.probing() {
+            return None;
+        }
+        if self.fg.prompt_start {
+            return Some(now);
+        }
+        Some(
+            self.fg
+                .last_probe
+                .map_or(now, |t| t + self.probe_interval(now)),
+        )
+    }
+
+    /// [`Self::next_deadline`] or the next probe, whichever is first.
+    pub(crate) fn next_wake(
+        &mut self,
+        now: Duration,
+        ui_ready: bool,
+        visible: bool,
+        unpublished: bool,
+    ) -> Option<Duration> {
+        let deadline = self.next_deadline(now, ui_ready, visible, unpublished);
+        match (deadline, self.probe_deadline(now)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Probes run until the output has ended.
+    fn probing(&self) -> bool {
+        self.reader_end_at.is_none() && !self.exit_reported
+    }
+
+    fn probe_interval(&self, now: Duration) -> Duration {
+        let flowing = self
+            .last_output
+            .is_some_and(|t| now.saturating_sub(t) < FLOWING);
+        if flowing || self.tracker.state().running {
+            PROBE_FAST
+        } else {
+            PROBE_IDLE
+        }
+    }
+
+    /// A probe is due: the cadence passed, or the shell printed a prompt (the moment a program
+    /// has just handed the terminal back, so the answer is fresh when the reset decision needs
+    /// it).
+    fn probe_due(&self, now: Duration) -> bool {
+        self.probing()
+            && (self.fg.prompt_start
+                || self
+                    .fg
+                    .last_probe
+                    .is_none_or(|t| now >= t + self.probe_interval(now)))
+    }
+
+    /// Probe the PTY (engine thread only): which process is foreground and the line
+    /// discipline. Resets the keyboard protocol when [`ForegroundWatch`] says so, and records a
+    /// change for the next Update. Publishes and wakes nothing when nothing changed.
+    fn probe(&mut self, now: Duration) {
+        let shell_is_foreground = match (self.pty.process_id(), self.pty.foreground_process()) {
+            (Some(shell), Some(foreground)) => Some(shell == foreground),
+            _ => None,
+        };
+        let state = ForegroundState {
+            shell_is_foreground,
+            raw: self.pty.raw_mode(),
+        };
+        if self.fg.observe(now, state) {
+            self.terminal.reset_keyboard_protocol();
+        }
+        self.acc.foreground = (state != self.published_fg).then_some(state);
+    }
+
+    /// Typed input is about to be queued: until the running program is seen consuming
+    /// keystrokes, ask the PTY whether it is (one `tcgetattr`, as Lunegit does per keystroke).
+    fn note_user_input(&mut self) {
+        if self.tracker.needs_raw_probe() {
+            let raw = self.pty.raw_mode();
+            self.tracker.user_input(raw);
+        }
+    }
+
+    fn refresh_command(&mut self) {
+        let state = self.tracker.state();
+        self.acc.command = (state != self.published_command).then_some(state);
+    }
+
     pub(crate) fn apply_command(&mut self, command: Command) {
         let mut typed = true;
         match command {
             Command::Key(event) => {
                 if let Some(bytes) = self.terminal.key_event(&event) {
+                    self.with_selection(Selection::user_input);
+                    self.note_user_input();
                     self.out.push(WriteKind::Input, bytes);
                 }
             }
-            Command::Text(text) => self.terminal.input(&text, true),
+            Command::Text(text) => {
+                self.with_selection(Selection::user_input);
+                self.note_user_input();
+                self.terminal.input(&text, true);
+            }
             Command::Paste(text) => {
                 if let Some(bytes) = self.terminal.paste(&text) {
+                    self.with_selection(Selection::user_input);
+                    self.note_user_input();
                     self.out.push(WriteKind::Paste, bytes);
                 }
             }
@@ -374,7 +565,12 @@ impl EngineCore {
                 self.geometry = g;
                 // Engine first, then the PTY (I11). A failed PTY resize leaves the child at its
                 // old size; the next resize retries.
+                let rows_before = self.terminal.rows();
                 self.terminal.resize(g.cols, g.rows);
+                if self.terminal.rows() != rows_before {
+                    // Upstream clears the selection on a vertical resize.
+                    self.with_selection(Selection::rows_changed);
+                }
                 let _ = self.pty.resize(g.pty_size());
                 self.acc.full = true;
                 self.idle_pending = true;
@@ -383,8 +579,59 @@ impl EngineCore {
                 self.terminal.set_clipboard_write(enabled);
                 typed = false;
             }
+            Command::Select(cmd) => {
+                let now = self.clock.now();
+                self.with_selection(|s, t| s.apply(t, cmd, now));
+                typed = false;
+            }
+            Command::CopySelection => {
+                self.acc.copy = match self.selection.text(&self.terminal, MAX_COPY_BYTES) {
+                    Some(Ok(text)) => Some(CopyResult::Text(text)),
+                    Some(Err(super::selection::CopyError::TooLarge)) => Some(CopyResult::TooLarge),
+                    None => None,
+                };
+                typed = false;
+            }
+            Command::SetTheme(theme) => {
+                if self.colors.set_theme(*theme) {
+                    self.acc.palette = true;
+                    self.acc.full = true;
+                }
+                typed = false;
+            }
+            Command::ClearBuffer => {
+                self.with_selection(Selection::clear);
+                self.terminal.clear();
+                self.acc.full = true;
+                typed = false;
+            }
+            Command::SetScrollback(lines) => {
+                let lines = usize::try_from(lines)
+                    .unwrap_or(MAX_SCROLLBACK)
+                    .min(MAX_SCROLLBACK);
+                // Never fails: scrollback is a plain, settable option.
+                let _ = self.terminal.set_option(OptionValue::Scrollback(lines));
+                self.acc.full = true;
+                typed = false;
+            }
         }
         self.drain(typed);
+    }
+
+    /// Runs `f` on the selection and the terminal, and marks the selection for publishing when
+    /// what the UI sees of it changed.
+    fn with_selection(&mut self, f: impl FnOnce(&mut Selection, &mut Terminal)) {
+        let before = self.selection.view(&self.terminal);
+        f(&mut self.selection, &mut self.terminal);
+        if self.selection.view(&self.terminal) != before {
+            self.acc.selection = true;
+        }
+    }
+
+    /// Lines the program printed may have trimmed the anchor's line, or the program may have
+    /// switched buffers: the selection follows (plan M10 step 3).
+    fn selection_follows_the_buffer(&mut self) {
+        self.with_selection(Selection::sync);
     }
 
     /// Parse one slice of the pending output (I4): sub-writes of `step` bytes, the clock read
@@ -394,6 +641,7 @@ impl EngineCore {
             return;
         }
         let start = self.clock.now();
+        self.last_output = Some(start);
         let mut log = SliceLog::default();
         while let Some(front) = self.pending.front() {
             let end = front.len().min(self.offset.saturating_add(self.step));
@@ -467,16 +715,24 @@ impl EngineCore {
                 HostEvent::CwdChanged(cwd) => self.acc.cwd = Some(cwd),
                 HostEvent::Progress(p) => self.acc.progress = Some(p),
                 HostEvent::CommandMark(mark) => {
+                    self.tracker.mark(mark.kind);
+                    if mark.kind == CommandMarkKind::PromptStart {
+                        self.fg.prompt_start = true;
+                    }
                     if self.acc.marks.len() >= MARKS_CAP {
                         self.acc.marks.pop_front();
                     }
                     self.acc.marks.push_back(mark);
                 }
-                HostEvent::SyncUpdateInCommand => self.acc.sync_in_command = true,
+                HostEvent::SyncUpdateInCommand => {
+                    self.acc.sync_in_command = true;
+                    self.tracker.sync_update();
+                }
                 // Dropped, never logged (I16).
                 HostEvent::A11yText(_) | HostEvent::A11yTab(_) | HostEvent::UnknownOsc { .. } => {}
             }
         }
+        self.refresh_command();
         let damage = self.terminal.take_damage();
         if damage.full || damage.scrolled {
             self.acc.full = true;
@@ -583,6 +839,39 @@ impl EngineCore {
         }
     }
 
+    /// The uris of the link ids in `rows` that no Update carried yet: at most `LINK_URIS_CAP`
+    /// (the flag says more are waiting), none over `MAX_LINK_URI` bytes (those ids count as sent,
+    /// so they are not looked up again).
+    fn collect_link_uris(
+        &mut self,
+        rows: &[(usize, Vec<lune_termview::Cell>)],
+    ) -> (Vec<(u32, String)>, bool) {
+        let mut out = Vec::new();
+        if self.sent_links.len() >= SENT_LINKS_CAP {
+            self.sent_links.clear();
+        }
+        for cell in rows.iter().flat_map(|(_, cells)| cells) {
+            let id = cell.link;
+            if id == 0 || self.sent_links.contains(&id) {
+                continue;
+            }
+            let Some(uri) = self.terminal.link_uri(id) else {
+                // Freed: no cell can show it for long, and ids are never reused.
+                continue;
+            };
+            if uri.len() > MAX_LINK_URI {
+                self.sent_links.insert(id);
+                continue;
+            }
+            if out.len() >= LINK_URIS_CAP {
+                return (out, true);
+            }
+            out.push((id, uri.to_owned()));
+            self.sent_links.insert(id);
+        }
+        (out, false)
+    }
+
     fn build_update(&mut self, now: Duration) -> Update {
         let st = self.terminal.viewport_state();
         let modes = self.modes();
@@ -615,7 +904,19 @@ impl EngineCore {
                 }
             }
         }
+        let (link_uris, more_links) = self.collect_link_uris(&rows_changed);
         let acc = std::mem::take(&mut self.acc);
+        if more_links {
+            // Cells of rows that do not change again would never carry their uri: republish
+            // everything next time, which sends the next batch.
+            self.acc.full = true;
+        }
+        if let Some(fg) = acc.foreground {
+            self.published_fg = fg;
+        }
+        if let Some(command) = acc.command {
+            self.published_command = command;
+        }
         self.seq += 1;
         let update = Update {
             seq: self.seq,
@@ -638,6 +939,11 @@ impl EngineCore {
             progress: acc.progress,
             marks: acc.marks.into(),
             sync_update_in_command: acc.sync_in_command,
+            foreground: acc.foreground,
+            command: acc.command,
+            link_uris,
+            selection: acc.selection.then(|| self.selection.view(&self.terminal)),
+            selection_text: acc.copy,
             exited: self.exit_pending.take(),
         };
         self.last = Some(Published { state: st, modes });
