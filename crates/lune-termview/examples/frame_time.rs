@@ -120,6 +120,7 @@ fn main() {
         size: 13.0,
         line_height: 17.0,
         emoji_family: None,
+        icon_family: None,
     };
 
     let mut tv = TermView::new(&device, FORMAT, fonts, TermTheme::lunegit_one_dark());

@@ -19,6 +19,7 @@ zeno = { version = "0.3.3", default-features = false, features = ["eval"] }
 [dev-dependencies]
 pollster = "0.4"
 png = "0.18"
+unicode-script = "0.5"
 
 [lints]
 workspace = true

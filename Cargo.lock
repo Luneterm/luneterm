@@ -1030,6 +1030,7 @@ dependencies = [
  "lune-ui",
  "png",
  "pollster",
+ "unicode-script",
  "wgpu",
  "zeno",
 ]

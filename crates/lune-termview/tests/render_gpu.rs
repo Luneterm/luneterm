@@ -30,6 +30,7 @@ fn test_fonts() -> (FontSystem, TermFonts) {
             size: 13.0,
             line_height: 17.0,
             emoji_family: None,
+            icon_family: None,
         },
     )
 }

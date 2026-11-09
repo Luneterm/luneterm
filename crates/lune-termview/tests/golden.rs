@@ -245,6 +245,7 @@ fn term_fonts(family: String, emoji: String) -> TermFonts {
         size: 13.0,
         line_height: 17.0,
         emoji_family: Some(emoji),
+        icon_family: None,
     }
 }
 

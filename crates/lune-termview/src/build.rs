@@ -741,6 +741,7 @@ mod tests {
             size: 13.0,
             line_height: 17.0,
             emoji_family: None,
+            icon_family: None,
         };
         Rig {
             b: Builder::new(fonts, TermTheme::lunegit_one_dark()),

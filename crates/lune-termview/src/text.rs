@@ -22,6 +22,10 @@ pub struct TermFonts {
     /// Family tried first for clusters containing U+FE0F (probe finding: a bare family falls
     /// back to a text-presentation face for `⚠\u{FE0F}`).
     pub emoji_family: Option<String>,
+    /// Family for a private-use code point that `family` has no glyph for. The shaper's own
+    /// fallback tries the platform's list first (Segoe UI Symbol on Windows maps part of the
+    /// private-use area), so the first face that happens to map the code point would win.
+    pub icon_family: Option<String>,
 }
 
 fn sane_scale(s: f32) -> f32 {
@@ -37,6 +41,23 @@ fn make_buffer(size: f32, line_height: f32) -> Buffer {
     buffer.set_wrap(Wrap::None);
     buffer.set_size(None, None);
     buffer
+}
+
+/// The Unicode private-use planes and area: what icon fonts map their glyphs to.
+fn is_private_use(c: char) -> bool {
+    matches!(u32::from(c), 0xE000..=0xF8FF | 0xF_0000..=0xF_FFFD | 0x10_0000..=0x10_FFFD)
+}
+
+/// Every glyph is a real glyph of a face of `family`, none came from the shaper's fallback.
+fn all_from_family(fs: &FontSystem, glyphs: &[ShapedGlyph], family: &str) -> bool {
+    !glyphs.is_empty()
+        && glyphs.iter().all(|g| {
+            g.glyph_id != 0
+                && fs
+                    .db()
+                    .face(g.font_id)
+                    .is_some_and(|f| f.families.iter().any(|(name, _)| name == family))
+        })
 }
 
 /// Shape `text` in one line; returns the glyphs (font, glyph id, x, y relative to the baseline,
@@ -176,6 +197,7 @@ struct FontSig {
     size_bits: u32,
     line_height_bits: u32,
     emoji_family: Option<String>,
+    icon_family: Option<String>,
 }
 
 impl FontSig {
@@ -184,6 +206,7 @@ impl FontSig {
             && self.line_height_bits == f.line_height.to_bits()
             && self.family == f.family
             && self.emoji_family == f.emoji_family
+            && self.icon_family == f.icon_family
     }
 }
 
@@ -259,6 +282,7 @@ impl Shaper {
                 size_bits: fonts.size.to_bits(),
                 line_height_bits: fonts.line_height.to_bits(),
                 emoji_family: fonts.emoji_family.clone(),
+                icon_family: fonts.icon_family.clone(),
             });
             self.buffer = None;
         }
@@ -272,15 +296,26 @@ impl Shaper {
             let buffer = self
                 .buffer
                 .get_or_insert_with(|| make_buffer(size, line_height));
+            // An icon is never an emoji-font glyph, whatever selector follows it.
+            let private_use = text.chars().any(is_private_use);
             let family = match &fonts.emoji_family {
-                Some(e) if text.contains('\u{FE0F}') => e.as_str(),
+                Some(e) if text.contains('\u{FE0F}') && !private_use => e.as_str(),
                 _ => fonts.family.as_str(),
             };
-            let attrs = Attrs::new()
-                .family(Family::Name(family))
-                .weight(if bold { Weight::BOLD } else { Weight::NORMAL })
-                .style(if italic { Style::Italic } else { Style::Normal });
-            let (glyphs, advance) = shape_line(fs, buffer, &attrs, text);
+            let attrs_of = |family| {
+                Attrs::new()
+                    .family(Family::Name(family))
+                    .weight(if bold { Weight::BOLD } else { Weight::NORMAL })
+                    .style(if italic { Style::Italic } else { Style::Normal })
+            };
+            let (mut glyphs, mut advance) = shape_line(fs, buffer, &attrs_of(family), text);
+            // The icon family replaces only what the terminal's own family cannot draw.
+            if let Some(icon) = fonts.icon_family.as_deref().filter(|i| *i != family)
+                && private_use
+                && !all_from_family(fs, &glyphs, family)
+            {
+                (glyphs, advance) = shape_line(fs, buffer, &attrs_of(icon), text);
+            }
             self.cache[slot].insert(text.to_owned(), Shaped { glyphs, advance });
             self.len += 1;
         }
@@ -331,6 +366,7 @@ mod tests {
             size: 13.0,
             line_height: 17.0,
             emoji_family: emoji.then(|| r.twemoji.clone()),
+            icon_family: None,
         }
     }
 
@@ -422,6 +458,7 @@ mod tests {
             size: 13.0,
             line_height: 17.0,
             emoji_family: None,
+            icon_family: None,
         };
         let m = cell_metrics(&mut fs, &f, 2.0);
         // round(0.6 * 13 * 2) = 16; ceil(1.2 * 13 * 2) = 32
@@ -514,6 +551,166 @@ mod tests {
         let mut sh = Shaper::new();
         let s = sh.shape(&mut r.fs, &f, "\u{2605}", false, false).clone();
         assert_eq!(face_family(&r, s.glyphs[0].font_id), r.symbols);
+    }
+
+    /// The Windows case on every host: a fallback list like the platform's names a face that maps
+    /// the same private-use code points as the bundled icon face, and comes before the walk over
+    /// every face. The decoy is the icon face itself under another name, so its coverage is the
+    /// icon face's coverage.
+    struct IconRig {
+        fs: FontSystem,
+        mono: String,
+        icons: String,
+    }
+
+    const DECOY: &str = "Decoy Symbols";
+
+    struct DecoyFirst;
+
+    impl cosmic_text::Fallback for DecoyFirst {
+        fn common_fallback(&self) -> &[&'static str] {
+            &[DECOY]
+        }
+        fn forbidden_fallback(&self) -> &[&'static str] {
+            &[]
+        }
+        fn script_fallback(
+            &self,
+            _script: unicode_script::Script,
+            _locale: &str,
+        ) -> &[&'static str] {
+            &[]
+        }
+    }
+
+    fn icon_rig() -> IconRig {
+        const ICONS_REGULAR: &[u8] =
+            include_bytes!("../tests/fonts/RobotoMonoNerdFontMono-Regular.pua.subset.ttf");
+        const ICONS_BOLD: &[u8] =
+            include_bytes!("../tests/fonts/RobotoMonoNerdFontMono-Bold.pua.subset.ttf");
+        let mut db = fontdb::Database::new();
+        let mono = db.load_font_source(fontdb::Source::Binary(std::sync::Arc::new(REGULAR)));
+        db.load_font_source(fontdb::Source::Binary(std::sync::Arc::new(BOLD)));
+        let mut icons = Vec::new();
+        for data in [ICONS_REGULAR, ICONS_BOLD] {
+            icons.extend(db.load_font_source(fontdb::Source::Binary(std::sync::Arc::new(data))));
+        }
+        for id in &icons {
+            let mut decoy = db.face(*id).expect("face").clone();
+            decoy.families[0].0 = DECOY.to_owned();
+            db.push_face_info(decoy);
+        }
+        IconRig {
+            mono: family_of(&db, mono[0]),
+            icons: family_of(&db, icons[0]),
+            fs: FontSystem::new_with_locale_and_db_and_fallback("en-US".to_owned(), db, DecoyFirst),
+        }
+    }
+
+    fn icon_fonts(family: &str, icon_family: Option<&str>, emoji: Option<&str>) -> TermFonts {
+        TermFonts {
+            family: family.to_owned(),
+            size: 13.0,
+            line_height: 17.0,
+            emoji_family: emoji.map(str::to_owned),
+            icon_family: icon_family.map(str::to_owned),
+        }
+    }
+
+    fn only_face(r: &IconRig, s: &Shaped) -> (String, u16) {
+        assert_eq!(s.glyphs.len(), 1);
+        assert_ne!(s.glyphs[0].glyph_id, 0, ".notdef");
+        let f = r.fs.db().face(s.glyphs[0].font_id).expect("face");
+        (f.families[0].0.clone(), f.weight.0)
+    }
+
+    #[test]
+    fn a_listed_face_wins_a_private_use_icon_without_an_icon_family() {
+        let mut r = icon_rig();
+        let f = icon_fonts(&r.mono.clone(), None, None);
+        let s = Shaper::new()
+            .shape(&mut r.fs, &f, "\u{F013}", false, false)
+            .clone();
+        assert_eq!(only_face(&r, &s).0, DECOY);
+    }
+
+    #[test]
+    fn a_private_use_icon_the_font_lacks_comes_from_the_icon_family() {
+        let mut r = icon_rig();
+        let f = icon_fonts(&r.mono.clone(), Some(&r.icons.clone()), None);
+        let mut sh = Shaper::new();
+        for text in ["\u{F013}", "\u{F015}", "\u{F07B}"] {
+            for (bold, weight) in [(false, 400), (true, 700)] {
+                let s = sh.shape(&mut r.fs, &f, text, bold, false).clone();
+                assert_eq!(only_face(&r, &s), (r.icons.clone(), weight), "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_emoji_selector_does_not_send_an_icon_to_the_emoji_family() {
+        let mut r = icon_rig();
+        let f = icon_fonts(
+            &r.mono.clone(),
+            Some(&r.icons.clone()),
+            Some("Absent Emoji"),
+        );
+        let s = Shaper::new()
+            .shape(&mut r.fs, &f, "\u{F013}\u{FE0F}", false, false)
+            .clone();
+        let faces: Vec<_> = s
+            .glyphs
+            .iter()
+            .map(|g| family_of(r.fs.db(), g.font_id))
+            .collect();
+        assert_eq!(faces.first(), Some(&r.icons), "{faces:?}");
+    }
+
+    /// The icon family only fills a gap: a font that has the glyph keeps it, and text that is not
+    /// private-use is left to the ordinary fallback.
+    #[test]
+    fn the_icon_family_does_not_take_what_the_font_has_or_other_text() {
+        let mut r = icon_rig();
+        // the decoy has the icon, as a RznMono with its own icons would
+        let f = icon_fonts(DECOY, Some(&r.icons.clone()), None);
+        let s = Shaper::new()
+            .shape(&mut r.fs, &f, "\u{F013}", false, false)
+            .clone();
+        assert_eq!(only_face(&r, &s).0, DECOY);
+        // a non-private-use character the font lacks never reaches the icon family
+        let f = icon_fonts(&r.mono.clone(), Some(&r.icons.clone()), None);
+        let s = Shaper::new()
+            .shape(&mut r.fs, &f, "\u{2605}", false, false)
+            .clone();
+        assert!(
+            s.glyphs
+                .iter()
+                .all(|g| family_of(r.fs.db(), g.font_id) != r.icons || g.glyph_id == 0)
+        );
+    }
+
+    #[test]
+    fn the_private_use_ranges_are_the_unicode_ones() {
+        for c in [
+            '\u{E000}',
+            '\u{F013}',
+            '\u{F8FF}',
+            '\u{F0000}',
+            '\u{FFFFD}',
+            '\u{100000}',
+            '\u{10FFFD}',
+        ] {
+            assert!(is_private_use(c), "{c:?}");
+        }
+        for c in [
+            '\u{D7FF}',
+            '\u{F900}',
+            '\u{EFFFF}',
+            '\u{FFFFE}',
+            '\u{10FFFE}',
+        ] {
+            assert!(!is_private_use(c), "{c:?}");
+        }
     }
 
     // A3: the Twemoji subset still rasterizes as a colour bitmap.
