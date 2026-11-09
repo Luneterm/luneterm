@@ -7,7 +7,7 @@ Source of truth: Lunegit `src/Lunegit.Desktop/` — `MainWindow.axaml`, `Views/T
 ## The default look is near-black (since M10 step 13, 2026-11-09)
 
 The layer stack below is **Lunegit's**; Luneterm shows it only under the liquid styles. The default
-style (`GlassStyle::Default`, persisted as `default`) is luneui-rs's `near_black` look (pin `5be5dbe`,
+style (`GlassStyle::Default`, persisted as `default`) is luneui-rs's `near_black` look (landed at luneui-rs `5be5dbe`; the pin is now `32d1904`,
 `crates/lune-ui-core/src/theme/near_black.rs`, the user-approved test build), as one value:
 
 | What | Value |
