@@ -93,6 +93,9 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # Accepted risk while the repo and its releases are private: this job builds on the shared VM,
+  # which persists between jobs, so a compromised VM could taint the exe. Decide this again before
+  # the repo or any release goes public.
   windows:
     needs: verify
     runs-on: [self-hosted, windows, x64]
@@ -114,7 +117,10 @@ jobs:
           }
           Add-Content -Path $env:GITHUB_PATH -Value $bin
           rustup toolchain install
+      # The CRT is linked in: the zip must run on a machine without the VC++ redistributable.
       - shell: powershell
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build --release --locked -p luneterm
       # luneterm.exe at the zip's root, licenses/ beside it. ZipFile rather than Compress-Archive,
       # whose 5.1 version writes backslashes into the entry names.
@@ -146,10 +152,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      # By name into separate directories: one job's upload cannot overwrite another's files.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          path: dist
-          merge-multiple: true
+          name: release-linux
+          path: dist/linux
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-windows
+          path: dist/windows
       - name: Create the draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

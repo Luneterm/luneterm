@@ -5,7 +5,7 @@ Run by the publish job of .github/workflows/release.yml:
 
     publish-release.py <tag> <artifacts-dir> <notes-file>
 
-Needs GITHUB_TOKEN (contents: write) and GITHUB_REPOSITORY in the environment. Standard library
+<artifacts-dir> holds linux/ (the tar.gz and glibc-min.txt) and windows/ (the zip). Needs GITHUB_TOKEN (contents: write) and GITHUB_REPOSITORY in the environment. Standard library
 only: the runner image has python3 and no gh.
 
 Everything local is checked before the first API call. An existing release for the tag, draft or
@@ -13,6 +13,7 @@ not, is never changed: the script stops, and a failed draft of an earlier run is
 """
 
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -51,9 +52,13 @@ def http_send(method, url, headers, data):
         with _OPENER.open(request, timeout=300) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as err:
-        return err.code, err.read()
-    except OSError as err:
-        raise Failure("%s %s: %s" % (method, url, err)) from err
+        try:
+            return err.code, err.read()
+        except (OSError, http.client.HTTPException):
+            return err.code, b""
+    except (OSError, http.client.HTTPException) as err:
+        # HTTPException (a truncated body, a bad status line) is not an OSError.
+        raise Failure("%s %s: %r" % (method, url, err)) from err
 
 
 class GitHub:
@@ -78,7 +83,10 @@ class GitHub:
         if not 200 <= status < 300:
             text = body[:500].decode("utf-8", "replace")
             raise Failure("%s %s: HTTP %d: %s" % (method, url, status, text))
-        return json.loads(body) if body else None
+        try:
+            return json.loads(body) if body else None
+        except ValueError as err:
+            raise Failure("%s %s: HTTP %d with a body that is not JSON" % (method, url, status)) from err
 
     def release_exists(self, tag):
         page = 1
@@ -128,9 +136,13 @@ def prepare(tag, directory, notes_path):
     if not TAG_RE.fullmatch(tag):
         raise Failure("bad tag: %r" % tag)
     version = tag[1:]
-    linux = only_file(directory, "-linux-x64.tar.gz", "luneterm-%s-linux-x64.tar.gz" % version)
-    windows = only_file(directory, "-windows-x64.zip", "luneterm-%s-windows-x64.zip" % version)
-    glibc = read_bytes(os.path.join(directory, "glibc-min.txt")).decode("ascii").strip()
+    # Each asset is read only from its own job's directory: the Windows VM persists between jobs,
+    # and what it uploaded must not be able to stand in for the Linux archive or the glibc value.
+    linux_dir = os.path.join(directory, "linux")
+    windows_dir = os.path.join(directory, "windows")
+    linux = only_file(linux_dir, "-linux-x64.tar.gz", "luneterm-%s-linux-x64.tar.gz" % version)
+    windows = only_file(windows_dir, "-windows-x64.zip", "luneterm-%s-windows-x64.zip" % version)
+    glibc = read_bytes(os.path.join(linux_dir, "glibc-min.txt")).decode("ascii").strip()
     if not GLIBC_RE.fullmatch(glibc):
         raise Failure("glibc-min.txt does not hold a version: %r" % glibc)
     with open(notes_path, encoding="utf-8") as handle:
