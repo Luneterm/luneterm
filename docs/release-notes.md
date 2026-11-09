@@ -15,7 +15,8 @@ Security and choose Open Anyway. Or remove the quarantine flag in a terminal:
 appears, choose More info, then Run anyway.
 
 **Linux** (x86_64; `luneterm-{version}-linux-x64.tar.gz`). Unpack and run `./luneterm`. It needs
-glibc {glibc} or newer, an X11 or Wayland session, a Vulkan or OpenGL ES driver, and `libxkbcommon`.
+glibc {glibc} or newer, an X11 or Wayland session, a Vulkan or OpenGL ES driver, `libxkbcommon` and, on X11,
+`libxkbcommon-x11` (Debian: `libxkbcommon-x11-0`).
 Linux has no glass effect: it uses an opaque dark theme.
 
 ## Checking a download
