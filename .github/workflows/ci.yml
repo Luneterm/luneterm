@@ -9,13 +9,15 @@ on:
 # Runners (2026-11-09: GitHub-hosted runners are blocked by account billing, so CI is self-hosted):
 #   linux   - the gha-autoscaler (infra/runners): one single-use Debian container per job, labels
 #             self-hosted, linux, x64. The image has git, python3 and curl but no Rust or C toolchain,
-#             so the job installs them.
-#   windows - one standing repo-scoped runner on claude-vm-win (service, work dir
-#             C:\actions-runner-luneterm), labels self-hosted, windows, x64, luneterm-win. It has Rust,
-#             the VS Build Tools, git and Git Bash.
+#             so the job installs them. Local equivalent: scripts/check-linux.sh (Docker).
+#   windows - DISABLED. There is no Windows runner (user decision 2026-11-09: nothing is installed
+#             on claude-vm-win), so check-windows and windows-exe are `if: false` below rather than
+#             queued forever. The last green Windows CI was e35e540. Local check on any host with the
+#             target installed: cargo clippy --workspace --all-targets --locked --target
+#             x86_64-pc-windows-msvc -- -D warnings.
 #   macOS   - no runner: scripts/check-macos.sh is the local gate (fmt, clippy, tests, check-ffi.sh).
-# The repo is private. The Windows runner is a standing machine, so no Windows job runs for a pull
-# request from a fork; the Linux containers are single-use.
+# The repo is private. A Windows job returns only with a runner and a rule that keeps it off pull
+# requests from forks (the `if` conditions below already do); the Linux containers are single-use.
 jobs:
   check-linux:
     runs-on: [self-hosted, linux, x64]
@@ -52,8 +54,11 @@ jobs:
       # cargo test captures stdout; --nocapture puts the P6 adapter / P4 emoji probe lines in the log.
       - run: cargo test -p lune-termview --locked --test probe -- --nocapture
 
+  # Disabled: no Windows runner (see the header). To bring it back, replace `false` with the
+  # condition that follows it and give runs-on a runner that exists.
   check-windows:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: false
     runs-on: [self-hosted, windows, x64, luneterm-win]
     steps:
       - uses: actions/checkout@v4
@@ -76,7 +81,9 @@ jobs:
 
   # Windows build for testing on real hardware: the app, luneterm.exe (M9).
   windows-exe:
-    if: github.event_name != 'pull_request'
+    # Disabled: no Windows runner (see the header). Condition to restore:
+    # if: github.event_name != 'pull_request'
+    if: false
     runs-on: [self-hosted, windows, x64, luneterm-win]
     steps:
       - uses: actions/checkout@v4
