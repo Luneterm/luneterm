@@ -477,9 +477,13 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
     let mut tab_events = Vec::new();
     let mut overflow = None;
     if !view.page_open {
+        // Since the luneui-rs pin 32d1904 (D290) the strip's viewport is as wide as its tabs and the
+        // `+` follows the last tab, so the empty space is no region of the strip and a press there
+        // reaches this one: no app-side detection of an "empty press" is needed. Each press drags
+        // (count 1): the band is where a double press maximizes.
         let drag = ui.interact(header_id, header, Sense::CLICK);
         if drag.press_started && pressed_edge.is_none() {
-            commands.push(band_command(drag.press_count, view.chrome));
+            commands.push(band_command(1, view.chrome));
         }
 
         let modal_open = view.modal.is_some();
@@ -505,28 +509,6 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         };
         tab_events = ui.tab_strip("strip", layout.strip, &tabs, &opts).events;
 
-        // The strip's scroll area covers the empty space between the last tab and the + button, and
-        // the topmost region takes a press even though it captures none, so the header region above
-        // never sees a press there (a toolkit gap, D23: the strip has no "empty press" of its own).
-        // The scroll area senses no hover, so over it the toolkit's hovered widget is `None`; over a
-        // tab, a close glyph, the + button, a menu or a dialog it is that widget. A primary press in
-        // the header with nothing hovered is a press on empty space.
-        let hovered = ui.painter().hover;
-        let empty_press = (hovered.is_none() || hovered == Some(header_id))
-            && ui.input().events.iter().any(|e| {
-                matches!(
-                    e,
-                    Event::PointerButton {
-                        pos,
-                        button: PointerButton::Primary,
-                        pressed: true,
-                        ..
-                    } if header.contains(*pos)
-                )
-            });
-        if empty_press && !drag.press_started && pressed_edge.is_none() {
-            commands.push(band_command(1, view.chrome));
-        }
         let more = IconButton {
             glyph: icon::ELLIPSIS,
             glyph_size: 16.0,
@@ -1103,8 +1085,9 @@ mod tests {
         let mut go = |events| frame(&mut store, &mut text, events, BORDERLESS, false);
         go(vec![]);
         go(vec![]);
-        // The + button: 20 px, 6 px from the strip's right end (x 990), centred in its 32 px.
-        let at = (990.0 - 6.0 - 10.0, 50.0);
+        // The + button: 20 px, 6 px after the last tab (two tabs of 108 and a gap of 5 from x 10:
+        // they end at 231), centred in its 32 px.
+        let at = (10.0 + 108.0 + 5.0 + 108.0 + 6.0 + 10.0, 50.0);
         go(vec![Event::PointerMoved { pos: at }]);
         go(vec![]);
         let press = go(vec![button(at, true)]);
