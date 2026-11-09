@@ -49,11 +49,11 @@ pub fn theme(glass: bool, style: GlassStyle) -> Theme {
 }
 
 /// The tab header's wash over the card, for the theme [`theme`] returns for the same arguments: the
-/// near-black look's own with its theme, the app's otherwise (luneui-rs D8: the header is a material
-/// of the look, so the app passes it).
+/// near-black look's with its theme (the app's own value, see `shell::NEAR_BLACK_HEADER_TINT`), the
+/// Lunegit one otherwise (luneui-rs D8: the header is a material of the look, so the app passes it).
 pub fn header_tint(glass: bool, style: GlassStyle) -> [u8; 4] {
     match (glass, style) {
-        (true, GlassStyle::Default) => near_black::HEADER_TINT,
+        (true, GlassStyle::Default) => shell::NEAR_BLACK_HEADER_TINT,
         _ => shell::HEADER_TINT,
     }
 }
@@ -535,15 +535,16 @@ mod theme_tests {
     fn the_header_tint_follows_the_theme_in_use() {
         assert_eq!(
             header_tint(true, GlassStyle::Default),
-            near_black::HEADER_TINT
+            shell::NEAR_BLACK_HEADER_TINT
         );
+        assert_eq!(shell::NEAR_BLACK_HEADER_TINT, [0xFF, 0xFF, 0xFF, 0x10]);
         for style in LIQUID {
             assert_eq!(header_tint(true, style), shell::HEADER_TINT, "{style:?}");
         }
         for style in GlassStyle::ALL.iter().copied() {
             assert_eq!(header_tint(false, style), shell::HEADER_TINT, "{style:?}");
         }
-        assert_ne!(near_black::HEADER_TINT, shell::HEADER_TINT);
+        assert_ne!(shell::NEAR_BLACK_HEADER_TINT, shell::HEADER_TINT);
     }
 
     #[test]

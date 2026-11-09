@@ -53,6 +53,11 @@ pub const DIALOG_FILL: [u8; 4] = [16, 16, 16, 235];
 /// the header layer is a material of the app's preset, so the app passes it). Lunegit's look; the
 /// near-black look passes its own (`render::header_tint`).
 pub const HEADER_TINT: [u8; 4] = [0x00, 0x00, 0x00, 0x24];
+/// The header's wash under the near-black look: a 6% white wash (luneui-rs's own `near_black::HEADER_TINT`
+/// is 4% and leaves the header 6 levels or less from the title band over a dark backdrop, 3 at
+/// `#30`, and the two cross over a mid one; the tint is the app's, D131). Director, step 13 round 1:
+/// band against header 12 / 8 / 3 over `#10` / `#30` / `#60`, header against card about 14.
+pub const NEAR_BLACK_HEADER_TINT: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x10];
 
 /// What differs per OS in the chrome: whether the app draws the caption buttons (a borderless
 /// window) and how far the centred title keeps clear of the native or drawn buttons.
