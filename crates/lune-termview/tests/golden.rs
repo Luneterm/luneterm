@@ -961,6 +961,23 @@ fn nerd_fallback_scene() -> Scene {
     sc
 }
 
+/// RznMono's italics overhang the 600 cell (capitals `W` to 658, `X` from -31): the capitals that
+/// overhang most, so the cut at the cell edge can be seen. Rows 1 and 3 have non-blank neighbours
+/// (no spill allowance), row 5 a blank between each letter. Clip and `fit_scale` are unchanged.
+fn italic_overhang_scene() -> Scene {
+    const LETTERS: &str = "WTVXK7M";
+    let mut sc = Scene::new(16, 7);
+    let g = &mut sc.grid;
+    put(g, 1, 0, LETTERS, s().attr(Attrs::ITALIC));
+    put(g, 3, 0, LETTERS, s().attr(Attrs::BOLD | Attrs::ITALIC));
+    let mut c = 0;
+    for ch in LETTERS.chars() {
+        c = cluster(g, 5, c, &ch.to_string(), 1, s().attr(Attrs::ITALIC));
+        c = cluster(g, 5, c, " ", 1, s());
+    }
+    sc
+}
+
 fn links_scene() -> Scene {
     let mut sc = Scene::new(40, 5);
     let g = &mut sc.grid;
@@ -1164,6 +1181,16 @@ fn nerd_powerline() {
 #[test]
 fn nerd_fallback() {
     golden_scene("nerd_fallback", 2.0, &mut nerd_fallback_scene());
+}
+
+#[test]
+fn italic_overhang() {
+    golden_scene("italic_overhang", 2.0, &mut italic_overhang_scene());
+}
+
+#[test]
+fn italic_overhang_1x() {
+    golden_scene("italic_overhang", 1.0, &mut italic_overhang_scene());
 }
 
 #[test]
