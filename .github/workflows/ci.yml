@@ -15,7 +15,8 @@ on:
 #             serves only those labels, so a job that asks for `luneterm-win` would queue forever).
 #             Each job runs as the non-admin local user `ghrunner` in a fresh runner directory, at most
 #             2 at once, with no desktop session (nothing here drives a window). Tools installed on the
-#             VM persist between jobs; the jobs install the pinned Rust toolchain if it is missing.
+#             VM persist between jobs; the jobs install the pinned Rust toolchain if it is missing. The VM has
+#             Windows PowerShell 5.1 and no `pwsh`: its steps say `shell: powershell`.
 #             Back on 2026-11-09; the last green Windows CI before that was e35e540.
 #   macOS   - no runner: scripts/check-macos.sh is the local gate (fmt, clippy, tests, check-ffi.sh).
 # The repo is private. A Windows job stays off pull requests from forks (the `if` conditions below);
@@ -62,8 +63,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain
-        shell: pwsh
+        shell: powershell
         run: |
+          # The VM has Windows PowerShell 5.1 only (no pwsh): TLS 1.2 is asked for by hand.
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           $bin = Join-Path $HOME ".cargo\bin"
           $env:PATH = "$bin;$env:PATH"
           if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
@@ -97,8 +100,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain
-        shell: pwsh
+        shell: powershell
         run: |
+          # The VM has Windows PowerShell 5.1 only (no pwsh): TLS 1.2 is asked for by hand.
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           $bin = Join-Path $HOME ".cargo\bin"
           $env:PATH = "$bin;$env:PATH"
           if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
@@ -114,18 +119,18 @@ jobs:
       - run: cargo build --release --locked -p luneterm
       # M8 D4: the C ABI library is built only with the ffi-release profile (unwinding).
       - run: cargo build --locked -p luneterm-ffi --profile ffi-release
-      - shell: pwsh
+      - shell: powershell
         run: |
           $dll = (Get-Item target/ffi-release/luneterm_ffi.dll).Length
           "luneterm_ffi.dll=$dll"
-      - shell: pwsh
+      - shell: powershell
         run: |
           $spawn = (Get-Item target/release/examples/spawn.exe).Length
           $app = (Get-Item target/release/luneterm.exe).Length
           "luneterm.exe=$app spawn.exe=$spawn"
       # The exe and the licences it must travel with (M10 step 10): luneterm.exe stays at the
       # artifact's root, licenses/ beside it.
-      - shell: pwsh
+      - shell: powershell
         run: |
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item target/release/luneterm.exe dist/luneterm.exe
