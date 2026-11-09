@@ -24,7 +24,7 @@ impl Raster for Red {
 
 #[test]
 fn atlas_flush_uploads_and_regrows() {
-    let Some((device, queue, _)) = common::device() else {
+    let Some((_gpu, device, queue, _)) = common::device() else {
         return;
     };
     let mut atlas = Atlas::new(&device);
