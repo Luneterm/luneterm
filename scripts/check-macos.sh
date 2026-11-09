@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The macOS gate, run locally (there is no macOS CI runner since 2026-11-09, when hosted runners
-# were blocked by billing; CI covers Linux and Windows on self-hosted runners). It is what the
-# macOS job of .github/workflows/ci.yml ran: fmt, clippy, the workspace tests, the C ABI header
+# were blocked by billing; CI covers Linux on the self-hosted autoscaler, Windows is disabled). It is
+# what the macOS job of .github/workflows/ci.yml ran: fmt, clippy, the workspace tests, the C ABI header
 # check (needs clang and nm), the lune-pty soak and the lune-termview probe, every cargo call
 # with --locked. Stops at the first failure; exit 0 only when every step passed.
 set -euo pipefail
