@@ -14,6 +14,8 @@
 //! own threads; this thread only sends commands and takes the Updates, one per tab per frame
 //! (D1, D2).
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, mpsc};
@@ -25,7 +27,7 @@ use winit::event::{
     ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::ModifiersState;
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{UserAttentionType, Window, WindowId};
 
 use lune_pty::PortablePtyBackend;
@@ -36,6 +38,7 @@ use lune_ui::input::{
     ClipboardRequest, OutputState, Translator, WindowCommand, control_flow, keymap,
 };
 use lune_ui::material::{self, Material};
+use lune_ui::paint::Rect;
 use lune_ui::surface::{Acquired, WindowSurface};
 use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
@@ -59,7 +62,7 @@ use crate::palettes;
 use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, snapshot,
 };
-use crate::render::{Content, MenuDraw, Placed, Renderer};
+use crate::render::{Content, LinkTip, MenuDraw, Placed, Renderer};
 use crate::session::{
     Command, CopyResult, HostPalette, MAX_COPY_BYTES, Scroll, SelectCmd, Session, SessionConfig,
     UpdateModes, view_range,
@@ -363,6 +366,79 @@ const RESTORE_CHECK_WAIT: Duration = Duration::from_millis(500);
 /// How far (logical px) the pointer may move with a link pressed before it is a drag.
 const LINK_DRAG_SLOP: f32 = 4.0;
 
+/// Where the pointer is. A pointer that leaves the window with a button down keeps its last
+/// position until the button is up: the release (which the window system still delivers) then
+/// ends what the press started (a selection, a program's press, the scroll thumb), instead of
+/// being dropped for want of a position and leaving the hold set.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Pointer {
+    /// The last position, logical px.
+    pos: Option<(f32, f32)>,
+    /// The pointer left the window while a button was held.
+    gone: bool,
+}
+
+impl Pointer {
+    fn moved(&mut self, pos: (f32, f32)) {
+        *self = Pointer {
+            pos: Some(pos),
+            gone: false,
+        };
+    }
+
+    /// The pointer left the window; `held` is whether a press of ours is still down.
+    fn left(&mut self, held: bool) {
+        if held && self.pos.is_some() {
+            self.gone = true;
+        } else {
+            *self = Pointer::default();
+        }
+    }
+
+    /// A button went up; `held` is whether a press of ours is still down after it. Returns whether
+    /// the pointer, which had left, is now forgotten.
+    fn released(&mut self, held: bool) -> bool {
+        let forget = self.gone && !held;
+        if forget {
+            *self = Pointer::default();
+        }
+        forget
+    }
+
+    /// The position the next press or release is at (the last one, also after leaving).
+    fn last(&self) -> Option<(f32, f32)> {
+        self.pos
+    }
+
+    /// The position while the pointer is in the window: what hover reads.
+    fn over(&self) -> Option<(f32, f32)> {
+        if self.gone { None } else { self.pos }
+    }
+}
+
+/// A key that is only a modifier: holding Cmd or Shift to open a link is not typing.
+fn is_modifier_key(key: &Key) -> bool {
+    matches!(
+        key,
+        Key::Named(
+            NamedKey::Shift
+                | NamedKey::Control
+                | NamedKey::Alt
+                | NamedKey::AltGraph
+                | NamedKey::Super
+                | NamedKey::Meta
+                | NamedKey::Hyper
+                | NamedKey::CapsLock
+                | NamedKey::Fn
+                | NamedKey::FnLock
+                | NamedKey::NumLock
+                | NamedKey::ScrollLock
+                | NamedKey::Symbol
+                | NamedKey::SymbolLock
+        )
+    )
+}
+
 /// A press on a link, waiting for its release.
 #[derive(Debug)]
 struct PendingLink {
@@ -434,7 +510,10 @@ struct App {
     shortcuts_no_copy: AppShortcuts,
     mods: ModifiersState,
     /// The pointer in logical px, `None` outside the window.
-    pointer: Option<(f32, f32)>,
+    pointer: Pointer,
+    /// The link tooltip was hidden by a key, a press, a tab switch or the window losing focus; it
+    /// stays hidden until the pointer moves.
+    tip_hidden: bool,
     mouse: MouseState,
     /// A mouse press went to the program: so do its moves and its release.
     mouse_captured: bool,
@@ -496,7 +575,8 @@ impl App {
             shortcuts: AppShortcuts::standard(cfg!(target_os = "macos")),
             shortcuts_no_copy: AppShortcuts::standard(cfg!(target_os = "macos")).without_copy(),
             mods: ModifiersState::empty(),
-            pointer: None,
+            pointer: Pointer::default(),
+            tip_hidden: false,
             mouse: MouseState::default(),
             mouse_captured: false,
             selecting: false,
@@ -606,7 +686,7 @@ impl App {
 
     /// The cell under the pointer when it is over the grid.
     fn cell_under_pointer(&self) -> Option<(usize, usize)> {
-        let pos = self.pointer?;
+        let pos = self.pointer.over()?;
         let ctx = self.mouse_ctx()?;
         if self.overlay_open() || !self.over_body(pos) {
             return None;
@@ -614,16 +694,48 @@ impl App {
         ctx.layout.cell_at(pos, ctx.cols, ctx.rows)
     }
 
-    /// Shows the link under the pointer as hovered while the link modifier is held, and stops
-    /// showing it otherwise. Redraws when it changed.
+    /// Whether a press of ours is down: the pointer leaving the window must not forget where it was.
+    fn button_held(&self) -> bool {
+        self.selecting
+            || self.mouse_captured
+            || self.thumb_drag.is_some()
+            || self.pending_link.is_some()
+    }
+
+    /// Shows the link under the pointer as hovered (underlined, tooltip), and stops showing it when
+    /// the pointer is off it, outside the window, dragging a selection or under an overlay. It
+    /// reads the one row under the pointer. Redraws when it changed.
     fn refresh_hover(&mut self) {
-        let at = (self.link_modifier_held() && !self.selecting)
+        let at = (!self.selecting && !self.overlay_open())
             .then(|| self.cell_under_pointer())
             .flatten();
         if let Some(tab) = self.tabs.active_item_mut()
             && tab.set_link_hover(at)
         {
             self.request_redraw();
+        }
+    }
+
+    /// After output: looks again at the pointer's row only when an update hid a hover that was
+    /// shown (its cells are put back first), so a flood costs no scan and a link that is gone, or
+    /// changed, under a still pointer leaves no stale underline or tooltip.
+    fn refresh_hover_after_output(&mut self) {
+        if self.tabs.active_item_mut().is_some_and(Tab::take_rehover) {
+            self.refresh_hover();
+        }
+    }
+
+    /// Hides the link tooltip until the pointer moves.
+    fn hide_tip(&mut self) {
+        let showing = self
+            .tabs
+            .active_item()
+            .is_some_and(|t| t.hover_span().is_some());
+        if !self.tip_hidden {
+            self.tip_hidden = true;
+            if showing {
+                self.request_redraw();
+            }
         }
     }
 
@@ -1123,6 +1235,10 @@ impl App {
         self.mouse_captured = false;
         self.selecting = false;
         self.pending_link = None;
+        self.tip_hidden = true;
+        if let Some(tab) = before.and_then(|id| self.tabs.get_mut(id)) {
+            tab.hide_link_hover();
+        }
         self.clicks.reset();
         self.thumb_drag = None;
         self.mouse = MouseState::default();
@@ -1406,7 +1522,7 @@ impl App {
             worth_a_frame = true;
         }
         // An update hid the hovered link's cells; show the link again if it is still there.
-        self.refresh_hover();
+        self.refresh_hover_after_output();
         worth_a_frame
     }
 
@@ -1448,6 +1564,11 @@ impl App {
         if event_loop.exiting() || self.tabs.is_empty() {
             return;
         }
+        // The hovered link: underlined, and while the modifier is held a hand. (Read before the
+        // window and the renderer are borrowed.)
+        let overlay = self.overlay_open();
+        let hover_id = self.tabs.active_item().map_or(0, |t| t.hover_id);
+        let link_hand = !overlay && hover_id != 0 && self.link_modifier_held();
         let (Some(win), Some(stack)) = (self.win.as_mut(), self.stack.as_mut()) else {
             return;
         };
@@ -1559,6 +1680,22 @@ impl App {
             let busy = active.is_some_and(|t| t.busy(self.settings.outline_full_screen));
             (busy, cue, active.and_then(Tab::progress_tone))
         };
+        // The hovered link's tooltip hangs from the link's cells and is shown only when nothing
+        // covers the terminal and no key, press, tab switch or focus loss hid it since the
+        // pointer last moved.
+        let tip: Option<(Rect, String, u64)> = (!overlay && !self.tip_hidden)
+            .then(|| {
+                let span = self.tabs.active_item()?.hover_span()?;
+                let url = links::tip_url(&span.uri)?;
+                let rect =
+                    placed
+                        .grid_layout()
+                        .cell_rect(span.row, span.start, span.end + 1 - span.start);
+                let mut h = DefaultHasher::new();
+                (span.row, span.start, span.end, &span.uri).hash(&mut h);
+                Some((rect, url, h.finish()))
+            })
+            .flatten();
         let mut edited = self.settings.clone();
         let Some(tab) = self.tabs.active_item_mut() else {
             return;
@@ -1584,7 +1721,13 @@ impl App {
             maximized: win.window.is_maximized(),
             grid: &mut tab.grid,
             selection: &ranges,
-            hover_link: tab.hover_id,
+            hover_link: if overlay { 0 } else { tab.hover_id },
+            link_hand,
+            link_tip: tip.as_ref().map(|(rect, url, key)| LinkTip {
+                rect: *rect,
+                url,
+                key: *key,
+            }),
             toasts: Some(&mut self.toasts),
             cursor,
             blink_on: self.blink.on(),
@@ -1710,6 +1853,9 @@ impl App {
     /// (unless a dialog is open: then the toolkit takes the keyboard, see `window_event`).
     fn on_key(&mut self, event: &KeyEvent, synthetic: bool, event_loop: &ActiveEventLoop) {
         let input = key_input(event, self.mods, synthetic);
+        if input.pressed && !is_modifier_key(&input.logical) {
+            self.hide_tip();
+        }
         let route_with = |shortcuts: &AppShortcuts| {
             let ctx = RouteCtx {
                 macos: cfg!(target_os = "macos"),
@@ -1831,7 +1977,8 @@ impl App {
     }
 
     fn on_cursor_moved(&mut self, pos: (f32, f32)) {
-        self.pointer = Some(pos);
+        self.pointer.moved(pos);
+        self.tip_hidden = false;
         if self.overlay_open() {
             return;
         }
@@ -1868,10 +2015,22 @@ impl App {
     }
 
     fn on_mouse_button(&mut self, state: ElementState, button: MouseButton) {
+        if state.is_pressed() {
+            self.hide_tip();
+        }
+        self.mouse_button(state, button);
+        // A release after the pointer left the window ended the hold above, from the last
+        // position; now the pointer is simply outside.
+        if !state.is_pressed() && self.pointer.released(self.button_held()) {
+            self.refresh_hover();
+        }
+    }
+
+    fn mouse_button(&mut self, state: ElementState, button: MouseButton) {
         if self.overlay_open() {
             return;
         }
-        let (Some(pos), Some(placed)) = (self.pointer, self.placed) else {
+        let (Some(pos), Some(placed)) = (self.pointer.last(), self.placed) else {
             return;
         };
         if button == MouseButton::Left {
@@ -1990,7 +2149,7 @@ impl App {
         if self.overlay_open() {
             return;
         }
-        let (Some(pos), Some(placed)) = (self.pointer, self.placed) else {
+        let (Some(pos), Some(placed)) = (self.pointer.over(), self.placed) else {
             return;
         };
         if !self.has_session() || !placed.layout.body.contains(pos) {
@@ -2172,11 +2331,14 @@ impl ApplicationHandler<UserEvent> for App {
                     tab.set_focus(*focused);
                 }
                 if !focused {
+                    self.tip_hidden = true;
                     self.pending_link = None;
                     self.thumb_drag = None;
                     if std::mem::take(&mut self.selecting) {
                         self.send(Command::Select(SelectCmd::End));
                     }
+                    let held = self.button_held();
+                    self.pointer.released(held);
                 }
             }
             WindowEvent::Resized(size) => {
@@ -2196,7 +2358,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::CursorLeft { .. } => {
-                self.pointer = None;
+                let held = self.button_held();
+                self.pointer.left(held);
                 self.refresh_hover();
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -2216,6 +2379,63 @@ impl ApplicationHandler<UserEvent> for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A drag that ends outside the window: the pointer leaves with the button down, and the
+    /// release still arrives. It must be handled from the last position, and only then is the
+    /// pointer forgotten. (Before: the position was dropped on leaving, the release returned
+    /// early, and the selection stayed "down", so later moves dragged it.) The class: every hold
+    /// a press sets (selection, program press, scroll thumb, link press) is ended by a release
+    /// that needs no pointer position.
+    #[test]
+    fn a_release_after_the_pointer_left_the_window_is_still_at_the_last_position() {
+        let mut p = Pointer::default();
+        p.moved((10.0, 20.0));
+        // Left with the button down: hover sees nothing, the release sees the last position.
+        p.left(true);
+        assert_eq!(p.over(), None);
+        assert_eq!(p.last(), Some((10.0, 20.0)));
+        // Still held (a second button): not forgotten yet.
+        assert!(!p.released(true));
+        assert_eq!(p.last(), Some((10.0, 20.0)));
+        // The last button up: forgotten, and the caller refreshes hover.
+        assert!(p.released(false));
+        assert_eq!((p.over(), p.last()), (None, None));
+        // Nothing to forget a second time.
+        assert!(!p.released(false));
+    }
+
+    #[test]
+    fn leaving_with_no_button_down_forgets_the_pointer_and_moving_back_finds_it() {
+        let mut p = Pointer::default();
+        p.moved((1.0, 2.0));
+        p.left(false);
+        assert_eq!((p.over(), p.last()), (None, None));
+        // Leaving with a button down, then entering again before the release.
+        p.moved((3.0, 4.0));
+        p.left(true);
+        p.moved((5.0, 6.0));
+        assert_eq!(p.over(), Some((5.0, 6.0)));
+        assert!(!p.released(false), "it never left for good");
+        // A leave with no position known is nothing to keep.
+        let mut none = Pointer::default();
+        none.left(true);
+        assert_eq!(none, Pointer::default());
+    }
+
+    #[test]
+    fn a_modifier_alone_is_not_a_key_that_hides_the_tooltip() {
+        for key in [
+            NamedKey::Shift,
+            NamedKey::Super,
+            NamedKey::Control,
+            NamedKey::Alt,
+        ] {
+            assert!(is_modifier_key(&Key::Named(key)), "{key:?}");
+        }
+        assert!(!is_modifier_key(&Key::Named(NamedKey::Enter)));
+        assert!(!is_modifier_key(&Key::Named(NamedKey::Escape)));
+        assert!(!is_modifier_key(&Key::Character("a".into())));
+    }
 
     #[test]
     fn the_earlier_flow_wins() {

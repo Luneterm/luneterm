@@ -106,6 +106,8 @@
     "menu.selectAll": "Select All",
     "menu.clear": "Clear",
     "menu.more": "More",
+    "link.hint.open.mac": "Cmd+click to open",
+    "link.hint.open": "Shift+click to open",
     "settings.terminal.session.shellIntegration.title": "Shell integration",
     "settings.terminal.session.shellIntegration.desc": "Starts new zsh, bash and PowerShell sessions through small scripts Luneterm writes to its own folder. They report the working directory and when a command starts and ends, which tabs and the running outline use. Your own startup files run as usual. Turn off to start the shell exactly as the terminal would without them. Applies to new terminal tabs."
   }

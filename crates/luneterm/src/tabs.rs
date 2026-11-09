@@ -223,6 +223,9 @@ pub struct Tab {
     /// The link shown as hovered, and the id the termview underlines for it (0: none).
     hover: Option<Hover>,
     pub hover_id: u32,
+    /// An update hid a shown hover: the app looks again at what is under the pointer (and at
+    /// nothing otherwise, so output costs no scan).
+    rehover: bool,
     /// The terminal colours in force (the session palette on the base theme).
     pub theme: TermTheme,
     /// The geometry the session was last told.
@@ -264,6 +267,7 @@ impl Tab {
             link_uris: UriTable::new(),
             hover: None,
             hover_id: 0,
+            rehover: false,
             theme,
             sent_geometry: None,
             cwd: None,
@@ -352,8 +356,20 @@ impl Tab {
         self.hover_id = 0;
     }
 
-    /// Shows the link at cell (`row`, `col`) as hovered, or none when there is none there.
-    /// Returns whether what is shown changed.
+    /// The link shown as hovered.
+    pub fn hover_span(&self) -> Option<&LinkSpan> {
+        self.hover.as_ref().map(|h| &h.span)
+    }
+
+    /// Whether an update hid a shown hover since the last call (and so the pointer's cell is to
+    /// be read again).
+    pub fn take_rehover(&mut self) -> bool {
+        std::mem::take(&mut self.rehover)
+    }
+
+    /// Shows the link at cell (`row`, `col`) as hovered, or none when there is none there. A span
+    /// is only ever a URI that passed [`links::open::check_url`] (the scanner's rule), so what is
+    /// underlined is what would open. Returns whether what is shown changed.
     pub fn set_link_hover(&mut self, at: Option<(usize, usize)>) -> bool {
         let span = at.and_then(|(row, col)| self.link_at(row, col));
         if span.as_ref() == self.hover.as_ref().map(|h| &h.span) {
@@ -373,6 +389,7 @@ impl Tab {
         let mut fx = Effects::default();
         // The hovered link's cells are put back first: the update may rewrite them. The app shows
         // the hover again after the update.
+        self.rehover |= self.hover.is_some();
         self.hide_link_hover();
         apply_update(&mut self.grid, &update);
         self.cursor = cursor_of(&update.cursor, self.grid.cols());
@@ -907,5 +924,99 @@ mod tests {
             }
         };
         assert_eq!(state, CwdState::Done(None));
+    }
+
+    /// A tab whose mirror shows `text` on row 0 (40 columns, 2 rows).
+    fn tab_showing(text: &str) -> Tab {
+        let mut t = Tab::empty(TermTheme::lunegit_one_dark());
+        t.grid = Grid::new(40, 2);
+        for (x, ch) in text.chars().enumerate() {
+            let mut cell = lune_termview::Cell::default();
+            cell.set_char(ch);
+            t.grid.set(0, x, cell);
+        }
+        t
+    }
+
+    /// An Update that changes nothing but carries the grid's size.
+    fn empty_update() -> Update {
+        Update {
+            seq: 1,
+            cols: 40,
+            rows: 2,
+            full: false,
+            rows_changed: Vec::new(),
+            cursor: lune_vt::ViewportCursor::default(),
+            viewport_top: 0,
+            base_y: 0,
+            total_lines: 2,
+            is_at_bottom: true,
+            alt_screen: false,
+            modes: UpdateModes::default(),
+            title: None,
+            bells: 0,
+            clipboard_write: None,
+            palette: None,
+            cwd: None,
+            progress: None,
+            marks: Vec::new(),
+            sync_update_in_command: false,
+            foreground: None,
+            command: None,
+            link_uris: Vec::new(),
+            selection: None,
+            selection_text: None,
+            exited: None,
+        }
+    }
+
+    #[test]
+    fn only_a_link_that_would_open_is_hovered() {
+        // A good bare URL is underlined; userinfo and a file: OSC 8 URI are not links the user
+        // can open, so they get no underline and no tooltip.
+        let mut t = tab_showing("see https://example.com/a ok");
+        assert!(t.set_link_hover(Some((0, 6))));
+        assert_eq!(
+            t.hover_span().map(|s| s.uri.as_str()),
+            Some("https://example.com/a")
+        );
+        assert_ne!(t.hover_id, 0);
+        assert!(
+            !t.set_link_hover(Some((0, 7))),
+            "the same link: nothing changed"
+        );
+        assert!(t.set_link_hover(Some((0, 0))), "off the link: hidden");
+        assert!(t.hover_span().is_none() && t.hover_id == 0);
+
+        let mut bad = tab_showing("http://trusted.example@evil.example/x");
+        assert!(!bad.set_link_hover(Some((0, 3))), "userinfo: not hovered");
+        assert!(bad.hover_span().is_none() && bad.hover_id == 0);
+        let mut file = tab_showing("evil");
+        for cell in file.grid.row_mut(0).expect("row").iter_mut().take(4) {
+            cell.link = 5;
+        }
+        file.link_uris.insert(5, "file:///etc/passwd".to_owned());
+        assert!(
+            file.link_at(0, 1).is_none(),
+            "the scanner makes no span of a refused URI"
+        );
+        assert!(!file.set_link_hover(Some((0, 1))));
+        assert!(file.hover_span().is_none());
+    }
+
+    #[test]
+    fn an_update_over_a_shown_hover_asks_for_one_look_and_a_quiet_one_asks_for_none() {
+        let mut t = tab_showing("https://example.com/a");
+        assert!(!t.take_rehover());
+        // No hover shown: output costs no rehover.
+        t.apply(empty_update());
+        assert!(!t.take_rehover());
+        assert!(t.set_link_hover(Some((0, 2))));
+        t.apply(empty_update());
+        assert!(t.hover_span().is_none(), "the update put the cells back");
+        // A second update before the app looked must not lose the request.
+        t.apply(empty_update());
+        assert!(t.take_rehover());
+        assert!(!t.take_rehover(), "asked once");
     }
 }
