@@ -829,7 +829,7 @@ impl App {
                     self.glass = apply_material(&win.window, &self.settings);
                 }
                 if let Some(stack) = &mut self.stack {
-                    stack.renderer.set_glass(self.glass);
+                    stack.renderer.set_glass(self.glass, self.settings.glass);
                 }
             }
             Effect::MenuBlur => {

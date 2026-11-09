@@ -11,6 +11,7 @@ use lune_ui::gpu::Gpu;
 use lune_ui::input::{FrameOutput, keymap};
 use lune_ui::lunegit_dark::THEME;
 use lune_ui::motion::MotionTier;
+use lune_ui::near_black;
 use lune_ui::paint::Rect;
 use lune_ui::scene::{FrameParams, LayerId};
 use lune_ui::shortcuts::Shortcuts;
@@ -26,7 +27,7 @@ use lune_ui::widgets::tone::Tone;
 use crate::fonts;
 use crate::links;
 use crate::session::Geometry;
-use crate::settings::Settings;
+use crate::settings::{GlassStyle, Settings};
 use crate::settings_page::{self, PageOut, PageView};
 use crate::shell::{
     self, Chrome, GridPlacement, Layout, Modal, ModalOut, ScrollView, ShellView, StripTab,
@@ -36,12 +37,24 @@ use crate::shell::{
 const BACKDROP_SATURATION: f32 = 1.8;
 
 /// The toolkit theme for a window with or without OS glass: without it (Linux, or a material the
-/// OS refused) every glass layer is opaque.
-pub fn theme(glass: bool) -> Theme {
-    if glass {
-        THEME
-    } else {
-        THEME.with_acrylic(AcrylicLevel::Opaque)
+/// OS refused) every glass layer is opaque. With it, the default style is the near-black look (the
+/// toolkit's `near_black::THEME`, whole, so floating surfaces take it too) and the liquid styles
+/// keep Lunegit's layers.
+pub fn theme(glass: bool, style: GlassStyle) -> Theme {
+    match (glass, style) {
+        (true, GlassStyle::Default) => near_black::THEME,
+        (true, _) => THEME,
+        (false, _) => THEME.with_acrylic(AcrylicLevel::Opaque),
+    }
+}
+
+/// The tab header's wash over the card, for the theme [`theme`] returns for the same arguments: the
+/// near-black look's own with its theme, the app's otherwise (luneui-rs D8: the header is a material
+/// of the look, so the app passes it).
+pub fn header_tint(glass: bool, style: GlassStyle) -> [u8; 4] {
+    match (glass, style) {
+        (true, GlassStyle::Default) => near_black::HEADER_TINT,
+        _ => shell::HEADER_TINT,
     }
 }
 
@@ -195,6 +208,7 @@ pub struct Renderer {
     strings: StringTable,
     shortcuts: Shortcuts,
     theme: Theme,
+    header_tint: [u8; 4],
     tier: MotionTier,
     blur_sigma: f32,
     term_theme: TermTheme,
@@ -230,7 +244,8 @@ impl Renderer {
             store: UiStore::default(),
             strings: crate::strings::english(),
             shortcuts: Shortcuts::default(),
-            theme: theme(glass),
+            theme: theme(glass, settings.glass),
+            header_tint: header_tint(glass, settings.glass),
             tier: settings.tier(),
             blur_sigma: settings.menu_blur.sigma(),
             term_theme,
@@ -245,8 +260,9 @@ impl Renderer {
     }
 
     /// Whether OS glass is behind the window: the glass theme, or the opaque one (P22).
-    pub fn set_glass(&mut self, glass: bool) {
-        self.theme = theme(glass);
+    pub fn set_glass(&mut self, glass: bool, style: GlassStyle) {
+        self.theme = theme(glass, style);
+        self.header_tint = header_tint(glass, style);
     }
 
     /// The menu and dialog blur of the setting.
@@ -354,6 +370,7 @@ impl Renderer {
             busy_tone: content.busy_tone,
             menu_extra: content.tab_menu_extra,
             overflow_name: self.strings.tr("menu.more"),
+            header_tint: self.header_tint,
         };
         let shell_out = shell::draw(&mut ui, view);
         let mut page_out = None;
@@ -471,5 +488,75 @@ impl Renderer {
             cols: placement.cols,
             rows: placement.rows,
         })
+    }
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    const LIQUID: [GlassStyle; 2] = [GlassStyle::LiquidClear, GlassStyle::LiquidRegular];
+
+    #[test]
+    fn default_glass_is_the_near_black_theme_whole() {
+        // Floating surfaces fill from `menu_glass`: the whole theme, not only its layers.
+        let t = theme(true, GlassStyle::Default);
+        assert_eq!(t, near_black::THEME);
+        assert_eq!(t.glass, near_black::GLASS);
+        assert_eq!(t.menu_glass, near_black::MENU_GLASS);
+        assert_ne!(t.glass, THEME.glass);
+        assert_ne!(t.menu_glass, THEME.menu_glass);
+    }
+
+    #[test]
+    fn liquid_styles_keep_lunegits_layers() {
+        for style in LIQUID {
+            let t = theme(true, style);
+            assert_eq!(t, THEME, "{style:?}");
+            assert_eq!(t.glass, THEME.glass, "{style:?}");
+            assert_eq!(t.menu_glass, THEME.menu_glass, "{style:?}");
+        }
+    }
+
+    #[test]
+    fn no_glass_is_opaque_whatever_the_style() {
+        // Linux, `Off`, a refused material: opaque layers, never `with_acrylic` on the near-black
+        // theme (its layer would come out a lighter grey).
+        let opaque = THEME.with_acrylic(AcrylicLevel::Opaque);
+        for style in GlassStyle::ALL.iter().copied() {
+            let t = theme(false, style);
+            assert_eq!(t, opaque, "{style:?}");
+            assert_eq!(t.glass, opaque.glass, "{style:?}");
+            assert_eq!(t.menu_glass, opaque.menu_glass, "{style:?}");
+        }
+    }
+
+    #[test]
+    fn the_header_tint_follows_the_theme_in_use() {
+        assert_eq!(
+            header_tint(true, GlassStyle::Default),
+            near_black::HEADER_TINT
+        );
+        for style in LIQUID {
+            assert_eq!(header_tint(true, style), shell::HEADER_TINT, "{style:?}");
+        }
+        for style in GlassStyle::ALL.iter().copied() {
+            assert_eq!(header_tint(false, style), shell::HEADER_TINT, "{style:?}");
+        }
+        assert_ne!(near_black::HEADER_TINT, shell::HEADER_TINT);
+    }
+
+    #[test]
+    fn a_style_change_with_the_same_glass_changes_theme_and_tint() {
+        // `Effect::Glass` hands the renderer the glass bool and the style; the pair is the whole
+        // input, so a Default <-> Liquid switch cannot be a no-op.
+        assert_ne!(
+            theme(true, GlassStyle::Default),
+            theme(true, GlassStyle::LiquidRegular)
+        );
+        assert_ne!(
+            header_tint(true, GlassStyle::Default),
+            header_tint(true, GlassStyle::LiquidRegular)
+        );
     }
 }

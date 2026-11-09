@@ -4,6 +4,27 @@ Source of truth: Lunegit `src/Lunegit.Desktop/` — `MainWindow.axaml`, `Views/T
 `Themes/DarkTheme.axaml`, `Controls/Terminal/TerminalView.cs`, `TerminalChromeGeometry.cs`,
 `TerminalChromeAnimation.cs`. The constants live in the `lunegit_dark` module of luneui-rs's `lune-ui-core` theme (`lune_ui::lunegit_dark`; the pinned rev's `src/theme.rs`): `THEME` for the widget tokens, `WINDOW`, `PANEL` and `CARD` for the glass layers.
 
+## The default look is near-black (since M10 step 13, 2026-11-09)
+
+The layer stack below is **Lunegit's**; Luneterm shows it only under the liquid styles. The default
+style (`GlassStyle::Default`, persisted as `default`) is luneui-rs's `near_black` look (pin `5be5dbe`,
+`crates/lune-ui-core/src/theme/near_black.rs`, the user-approved test build), as one value:
+
+| What | Value |
+|---|---|
+| Window material | `near_black::MATERIAL`: macOS `UltraDark` vibrancy, state `Active`; Windows acrylic, tint `#A0000000`, dark (the tint is honoured on builds 17763 to 22522 only) |
+| Theme | the whole `near_black::THEME`, never `theme.glass = GLASS` alone: menus, dropdowns, popovers, tooltips, toasts and dialogs fill from `menu_glass` (`near_black::MENU_GLASS`, `#0A0A0A9D`) |
+| Layers | tint black, tint opacity 1, material opacity 0.1; luminosity `black_max` 0.60 window, 0.55 panel, 0.65 card |
+| Header tint | `near_black::HEADER_TINT`, a 4% white wash (`#FFFFFF0A`): over black glass a black wash shows nothing, so the header is a lighter band and the active tab is punched out of it |
+
+The app chooses all three by the pair (glass behind the window, style): `render::theme` and
+`render::header_tint`. No glass (Linux, `Off`, a refused material) is Lunegit's theme with
+`with_acrylic(Opaque)` for every style; the near-black theme is never made opaque with
+`with_acrylic` (its material opacity of 1 would give a light grey layer). Liquid styles keep Lunegit's
+theme and header tint. The glass does not depend on the window's active state, so the look is the same
+active and inactive. `shell::DIALOG_FILL` (`[16,16,16,235]`) is the dialog card's own fill and is judged
+on the near-black dumps.
+
 ## Layer stack (back to front)
 
 1. **OS backdrop.** Transparent window, blur requested with fallback
@@ -21,7 +42,7 @@ Source of truth: Lunegit `src/Lunegit.Desktop/` — `MainWindow.axaml`, `Views/T
 
 Header strip 32 px. Tabs: radius `8,8,0,0`, width 108–270, spacing 5.
 
-## Inactive window
+## Inactive window (Lunegit)
 
 All acrylic layers hidden; solid `#333333` (tint lightened 20%) instead. In Lunegit this works around
 Avalonia#5440 (macOS draws inactive material flat gray). In Luneterm, first try keeping the
