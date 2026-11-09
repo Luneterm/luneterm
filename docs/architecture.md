@@ -1027,8 +1027,8 @@ icons RznMono does not have until its stage 4, and a terminal font option) and R
 Medium, with their licences. luneui-rs's `TextCache` loads no system fonts, so the app loads them once at start
 (`fonts::text_cache`, 59 to 64 ms on the Apple M1 Pro) for emoji and CJK fallback. Cell
 height is `ceil(natural_line_height)`: 17 px at scale 1 and 34 at scale 2 for the bundled face at
-13 px. At 1040 x 660 the body is 1000 x 596 at (20, 44), a 125 x 35 grid. Glass: `Material::Vibrancy`
-for the default Lunegit style; Windows draws its own caption buttons.
+13 px. At 1040 x 660 the body is 1000 x 596 at (20, 44), a 125 x 35 grid. Glass: `near_black::MATERIAL`
+(UltraDark vibrancy, near-black layers; `docs/glass-styling.md`) for the default style, Lunegit's layers under the liquid styles; Windows draws its own caption buttons.
 
 **Windows (D17).** `main` hardens the DLL search before any winit or wgpu object ("lune-pty", above),
 the release build uses the GUI subsystem (`windows_subsystem = "windows"`), and CI uploads

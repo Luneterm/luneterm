@@ -210,6 +210,15 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_default_glass_loads_as_the_default_style_with_no_migration() {
+        // M10 D6: the name `default` outlived the change of what the default looks like (step 13).
+        let doc = parse_settings(br#"{"version":1,"glass":"default"}"#).expect("parses");
+        assert_eq!(doc.settings.glass, GlassStyle::Default);
+        let text = render_settings(&doc).expect("writes");
+        assert!(text.contains("\"glass\":\"default\""), "{text}");
+    }
+
+    #[test]
     fn a_wrong_typed_field_takes_its_default_and_keeps_the_rest() {
         let doc = parse_settings(
             br#"{"version":1,"font_size":"big","glass":7,"motion":"warp","scrollback":12.5,

@@ -6,8 +6,8 @@ A gap is recorded here with its evidence and worked around app-side through publ
 is a luneui-rs task, and Luneterm then bumps the pin (`Cargo.toml` and `scripts/check-deps.sh`, one
 reviewed change). Flipping a Class B entry to `done` is a luneui-rs commit.
 
-- Toolkit read: `~/Projects/luneui-rs` at `5216931d8ae06f01cbf38e3408bc43b1096dceed` (`main`, "Merge
-  branch 'orch/library-pass'"), the rev Luneterm pins. Paths marked `L:` are in that repo at that rev.
+- Toolkit read: `~/Projects/luneui-rs` at `5be5dbea92b8994b1b088942da36b77f40469c0e` (`main`, "Merge
+  branch 'near-black-menu-glass'"), the rev Luneterm pins since M10 step 13 (it was `5216931d8ae06f01cbf38e3408bc43b1096dceed`, "Merge branch 'orch/library-pass'"; the rows below were read at that rev). Paths marked `L:` are in that repo (at `5216931` for the rows below unless they say otherwise).
 - Luneterm at `b535456` (M9 step 8) for the CI runs below. Written 2026-11-08; the Windows section was extended on 2026-11-09 (M10 step 8).
 - Not yet run: the hands-on macOS run (the user's stop after M9's last step) and any Windows or Linux
   window. Every item that waits on them says so; nothing below is rounded up to a pass.
@@ -27,6 +27,7 @@ Lunegit). The owner line in luneui-rs still says "M9 to M11"; M11 no longer exis
 | The inactive window | Not run. The toolkit no longer draws an inactive solid, so `VibrancyFollowsWindow` changes nothing in the fills; the app maps the Lunegit style to `Vibrancy` (M9 step 4 note). | M10 |
 | Liquid Glass on macOS versions without it | Not run. | M10 |
 | Blur and noise against Avalonia's defaults | Not run. | M10 |
+| Dark glass (`near_black`, D285/D288) | Landed in luneui-rs `main` and pinned at `5be5dbe` in M10 step 13. The app maps `GlassStyle::Default` to `near_black::MATERIAL` and uses `near_black::THEME` and `near_black::HEADER_TINT` (`crates/luneterm/src/render.rs` `theme`, `header_tint`; `settings.rs` `material`). The API range `5216931..5be5dbe` was additive for Luneterm (`Material::Custom`, the `near_black` module, the theme file's `glass` section); no gap found. **Not yet seen on a real window:** the offscreen dumps show the layers over a transparent backdrop; the user judges the blur and the near-black look at step 14. luneui-rs's own note: the macOS `UltraDark` look under a Light system appearance and the Windows tint on builds 22523 and later are unverified. | M10 step 14 |
 
 ### `render.surface` (L: `docs/components/render/surface.md`, owner "consumer's window run")
 

@@ -50,7 +50,8 @@ pub const OVERFLOW_SIZE: f32 = 24.0;
 /// that matches the spike's dialog (director, step 2). Step 13 re-checks it on the dark preset.
 pub const DIALOG_FILL: [u8; 4] = [16, 16, 16, 235];
 /// The header's darker band, punched out by the tab outline (luneui-rs D131: the gallery's value;
-/// the header layer is a material of the app's preset, so the app passes it).
+/// the header layer is a material of the app's preset, so the app passes it). Lunegit's look; the
+/// near-black look passes its own (`render::header_tint`).
 pub const HEADER_TINT: [u8; 4] = [0x00, 0x00, 0x00, 0x24];
 
 /// What differs per OS in the chrome: whether the app draws the caption buttons (a borderless
@@ -296,6 +297,8 @@ pub struct ShellView<'a> {
     pub menu_extra: &'a [&'a str],
     /// The accessible name of the `⋯` button.
     pub overflow_name: &'a str,
+    /// The wash over the card that makes the tab header: the look's own (`render::header_tint`).
+    pub header_tint: [u8; 4],
 }
 
 /// What the dialog of a frame asked.
@@ -493,7 +496,7 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
             card: layout.card,
             menu_extra: view.menu_extra,
             name: "Terminal sessions",
-            header_tint: Some(HEADER_TINT),
+            header_tint: Some(view.header_tint),
         };
         tab_events = ui.tab_strip("strip", layout.strip, &tabs, &opts).events;
 
@@ -873,6 +876,7 @@ mod tests {
             busy_tone: Tone::Neutral,
             menu_extra: &[],
             overflow_name: "More",
+            header_tint: HEADER_TINT,
         };
         let mut ui = Ui::begin(store, &input, config, text);
         let out = draw(&mut ui, view);

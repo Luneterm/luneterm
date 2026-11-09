@@ -30,7 +30,7 @@ use crate::fonts;
 use crate::links;
 use crate::menus::{self, MenuKind, MenuModel};
 use crate::render::{Content, LinkTip, MenuDraw, Renderer};
-use crate::settings::Settings;
+use crate::settings::{GlassStyle, Settings};
 use crate::settings_page::{PageState, PageView, Section};
 use crate::shell::{HOST, Layout, Modal, ScrollView, StripTab};
 use crate::spawn::SpawnFailure;
@@ -127,6 +127,8 @@ struct Scene {
     failed: bool,
     /// OS glass is behind the window; `false` is the opaque look (P22).
     glass: bool,
+    /// The glass style the theme and tab header follow (only matters with `glass`).
+    style: GlassStyle,
     page: Option<PageScene>,
     menu: MenuScene,
     /// The terminal palette, by name.
@@ -165,6 +167,7 @@ const BASE: Scene = Scene {
     overlay: Overlay::None,
     failed: false,
     glass: true,
+    style: GlassStyle::Default,
     page: None,
     menu: MenuScene::None,
     palette: "One Dark",
@@ -186,7 +189,7 @@ const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
-const SCENES: [Scene; 34] = [
+const SCENES: [Scene; 35] = [
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -376,6 +379,13 @@ const SCENES: [Scene; 34] = [
         palette: "Dracula",
         ..BASE
     },
+    // Lunegit's layers under a liquid style: the proof the near-black look did not move them.
+    Scene {
+        name: "liquid@2x.png",
+        tabs: FOUR,
+        style: GlassStyle::LiquidRegular,
+        ..BASE
+    },
     // The opaque look (no OS glass: Linux, or Off).
     Scene {
         name: "opaque@2x.png",
@@ -459,7 +469,7 @@ const FRAME_TIMES_MS: [u64; 4] = [0, 800, 1600, 2400];
 /// the last frame.
 fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String> {
     r.reset_ui();
-    r.set_glass(scene.glass);
+    r.set_glass(scene.glass, scene.style);
     r.set_term_theme(crate::palettes::theme_of(scene.palette));
     let scale = scene.scale as f32;
     let size = (SIZE.0 as u32 * scene.scale, SIZE.1 as u32 * scene.scale);
@@ -768,6 +778,7 @@ mod tests {
         for n in [
             "palette@2x.png",
             "opaque@2x.png",
+            "liquid@2x.png",
             "menu-app@2x.png",
             "menu-tab@2x.png",
             "settings-appearance@2x.png",

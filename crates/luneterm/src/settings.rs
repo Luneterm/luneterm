@@ -5,6 +5,7 @@
 
 use lune_ui::material::Material;
 use lune_ui::motion::MotionTier;
+use lune_ui::near_black;
 use lune_ui::widgets::tab_strip::BusyCue;
 
 use crate::session::MAX_SCROLLBACK;
@@ -15,8 +16,8 @@ pub const MAX_FONT_SIZE: u32 = 32;
 pub const DEFAULT_FONT_SIZE: u32 = 13;
 
 /// The glass behind the window. The persisted name of the default is `default` (plan M10 D6), so
-/// a later change of what the default looks like (the dark preset, step 13) changes a mapping and
-/// not the file format.
+/// the change of what the default looks like (Lunegit's light vibrancy to the near-black look, step
+/// 13) was a mapping and not a file format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlassStyle {
     Default,
@@ -201,7 +202,7 @@ impl Settings {
     /// go with it here (and `keep_glass_inactive` is gone: the glass is always active, D8).
     pub fn material(&self) -> Material {
         match self.glass {
-            GlassStyle::Default => Material::Vibrancy,
+            GlassStyle::Default => near_black::MATERIAL,
             GlassStyle::LiquidClear => Material::LiquidClear,
             GlassStyle::LiquidRegular => Material::LiquidRegular,
             GlassStyle::Off => Material::Opaque,
@@ -469,12 +470,18 @@ mod tests {
             glass,
             ..Settings::default()
         };
-        assert_eq!(with(GlassStyle::Default).material(), Material::Vibrancy);
+        assert_eq!(with(GlassStyle::Default).material(), near_black::MATERIAL);
         assert_eq!(with(GlassStyle::Off).material(), Material::Opaque);
         assert_eq!(
             with(GlassStyle::LiquidClear).material(),
             Material::LiquidClear
         );
+        assert_eq!(
+            with(GlassStyle::LiquidRegular).material(),
+            Material::LiquidRegular
+        );
+        // The default is the near-black material, a glass the app applies (not `Opaque`).
+        assert!(with(GlassStyle::Default).material().is_glass());
         let motion = |motion| Settings {
             motion,
             ..Settings::default()
