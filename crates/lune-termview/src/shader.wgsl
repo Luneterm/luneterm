@@ -4,7 +4,10 @@
 
 struct Globals {
     size: vec2<f32>,
-    _pad: vec2<f32>,
+    // The whole grid's opacity (1 draws it as it is): every fragment is premultiplied, so scaling
+    // the output scales colour and alpha together. A tab-switch crossfade draws two grids.
+    opacity: f32,
+    _pad: f32,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -43,7 +46,7 @@ fn vs_rect(@builtin(vertex_index) vi: u32, r: RectIn) -> RectOut {
 
 @fragment
 fn fs_rect(in: RectOut) -> @location(0) vec4<f32> {
-    return in.color;
+    return in.color * g.opacity;
 }
 
 // -- Glyphs --------------------------------------------------------------------------------
@@ -88,7 +91,7 @@ fn fs_glyph_mask(in: GlyphOut) -> @location(0) vec4<f32> {
         discard;
     }
     let t = textureLoad(mask_page, texel(in), 0);
-    return in.color * t.r;
+    return in.color * t.r * g.opacity;
 }
 
 @fragment
@@ -98,7 +101,7 @@ fn fs_glyph_color(in: GlyphOut) -> @location(0) vec4<f32> {
     }
     // the page holds premultiplied colour; the instance alpha carries DIM
     let t = textureLoad(color_page, texel(in), 0);
-    return t * in.color.a;
+    return t * in.color.a * g.opacity;
 }
 
 // -- Decorations -----------------------------------------------------------------------------
@@ -156,5 +159,5 @@ fn fs_deco(in: DecoOut) -> @location(0) vec4<f32> {
         let d = abs(in.pos.y - yc) / sqrt(1.0 + slope * slope);
         cov = clamp(lw * 0.5 + 0.5 - d, 0.0, 1.0);
     }
-    return in.color * cov;
+    return in.color * cov * g.opacity;
 }

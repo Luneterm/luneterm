@@ -50,6 +50,7 @@ use lune_vt::{CursorStyle, MouseEncoding, MouseTracking, TerminalMouseButton, Vi
 
 use crate::cwd;
 use crate::dump;
+use crate::fade::{self, Fade};
 use crate::fonts;
 use crate::input::{
     AppCommand, AppShortcuts, ClickCounter, KeyRoute, MouseCtx, MouseState, PointerEvent, RouteCtx,
@@ -62,7 +63,7 @@ use crate::palettes;
 use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, snapshot,
 };
-use crate::render::{Content, LinkTip, MenuDraw, Placed, Renderer};
+use crate::render::{Content, FadingGrid, LinkTip, MenuDraw, Placed, Renderer};
 use crate::session::{
     Command, CopyResult, HostPalette, MAX_COPY_BYTES, Scroll, SelectCmd, Session, SessionConfig,
     UpdateModes, view_range,
@@ -514,6 +515,10 @@ struct App {
     /// The link tooltip was hidden by a key, a press, a tab switch or the window losing focus; it
     /// stays hidden until the pointer moves.
     tip_hidden: bool,
+    /// The tab-switch crossfade in progress, if any (`crate::fade`).
+    fade: Fade,
+    /// The workspace is being restored: its tab switches do not fade.
+    restoring: bool,
     mouse: MouseState,
     /// A mouse press went to the program: so do its moves and its release.
     mouse_captured: bool,
@@ -577,6 +582,8 @@ impl App {
             mods: ModifiersState::empty(),
             pointer: Pointer::default(),
             tip_hidden: false,
+            fade: Fade::default(),
+            restoring: false,
             mouse: MouseState::default(),
             mouse_captured: false,
             selecting: false,
@@ -1153,12 +1160,15 @@ impl App {
             .ok()
             .and_then(|_| rx.recv_timeout(RESTORE_CHECK_WAIT).ok())
             .unwrap_or_else(|| vec![None; saved.len()]);
+        // Restoring a workspace is a batch of programmatic switches: none of them fades.
+        self.restoring = true;
         for (state, dir) in saved.iter().zip(dirs) {
             self.open_tab(dir, Some(state));
         }
         let before = self.tabs.active();
         self.tabs.activate_index(workspace.active);
         self.active_changed(before);
+        self.restoring = false;
         // What was restored is what the file says: nothing to write yet.
         self.ws_dirty = false;
     }
@@ -1230,6 +1240,25 @@ impl App {
         let now = self.tabs.active();
         if now == before {
             return;
+        }
+        // The crossfade between the old tab's content and the new one's. The first tab and a
+        // restored workspace do not fade; a tab that was closed has nothing to fade out, so the
+        // new one fades in alone (Lunegit's `ApplyCarouselVisibility`).
+        if let Some(new) = now
+            && before.is_some()
+            && !self.restoring
+        {
+            let old = before.filter(|id| self.tabs.get(*id).is_some());
+            self.fade.switch(
+                Instant::now(),
+                fade::duration(self.settings.motion),
+                old,
+                new,
+            );
+            if let Some(tab) = old.and_then(|id| self.tabs.get_mut(id)) {
+                // Its grid is drawn by a view of its own from here on: every row again.
+                tab.grid.mark_all_dirty();
+            }
         }
         self.preedit = None;
         self.mouse_captured = false;
@@ -1569,6 +1598,12 @@ impl App {
         let overlay = self.overlay_open();
         let hover_id = self.tabs.active_item().map_or(0, |t| t.hover_id);
         let link_hand = !overlay && hover_id != 0 && self.link_modifier_held();
+        // The tab-switch crossfade at this instant: drawn while it runs, and asked for again only
+        // while it runs (an idle window stays idle).
+        let (alphas, fading) = {
+            let tabs = &self.tabs;
+            self.fade.tick(Instant::now(), |id| tabs.get(id).is_some())
+        };
         let (Some(win), Some(stack)) = (self.win.as_mut(), self.stack.as_mut()) else {
             return;
         };
@@ -1697,7 +1732,23 @@ impl App {
             })
             .flatten();
         let mut edited = self.settings.clone();
-        let Some(tab) = self.tabs.active_item_mut() else {
+        // The active tab and the ones fading out under it, borrowed together.
+        let mut active_tab_ref = None;
+        let mut fading_grids: Vec<FadingGrid<'_>> = Vec::new();
+        for (id, t) in self.tabs.iter_mut() {
+            if Some(id) == active_tab {
+                active_tab_ref = Some(t);
+            } else if let Some((_, alpha)) = alphas.outgoing.iter().find(|(i, _)| *i == id) {
+                fading_grids.push(FadingGrid {
+                    id,
+                    grid: &mut t.grid,
+                    cursor: t.cursor,
+                    theme: &t.theme,
+                    alpha: *alpha,
+                });
+            }
+        }
+        let Some(tab) = active_tab_ref else {
             return;
         };
         let cursor = tab.cursor;
@@ -1751,6 +1802,8 @@ impl App {
             busy: busy.then_some(outline_cue).flatten(),
             busy_tone: busy_tone.unwrap_or_default(),
             tab_menu_extra: &extra,
+            grid_alpha: alphas.incoming,
+            fading: fading_grids,
         };
         let drawn = match stack.renderer.draw(&input, content, &view, size) {
             Ok(d) => d,
@@ -1788,7 +1841,7 @@ impl App {
         let (flow, redraw) = control_flow(out.repaint, self.start);
         let blink_flow = next_blink.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         let base_flow = merge_flow(flow, blink_flow);
-        if redraw {
+        if redraw || fading {
             win.window.request_redraw();
         }
 

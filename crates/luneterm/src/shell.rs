@@ -37,7 +37,8 @@ pub const CARD_MARGIN: f32 = 10.0;
 pub const BODY_PAD: f32 = 10.0;
 /// The scrollbar thumb's opacity (accent colour).
 pub const THUMB_ALPHA: f32 = 0.55;
-/// The slot of the terminal in the frame's custom-draw list.
+/// The slot of the active tab's terminal in the frame's custom-draw list; grids fading out in a
+/// tab-switch crossfade are the slots after it.
 pub const TERM_SLOT: usize = 0;
 /// The strip's height: the toolkit's.
 pub const STRIP_HEIGHT: f32 = tab_strip::HEIGHT;
@@ -304,6 +305,9 @@ pub struct ShellView<'a> {
     pub overflow_name: &'a str,
     /// The wash over the card that makes the tab header: the look's own (`render::header_tint`).
     pub header_tint: [u8; 4],
+    /// Grids fading out under the terminal's (a tab-switch crossfade): custom slots
+    /// `TERM_SLOT + 1 ..= TERM_SLOT + fading_slots`, drawn first so the active grid is over them.
+    pub fading_slots: usize,
 }
 
 /// What the dialog of a frame asked.
@@ -424,6 +428,9 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         p.set_clip(None);
 
         if !view.page_open {
+            for slot in 1..=view.fading_slots {
+                p.custom(TERM_SLOT + slot, layout.body);
+            }
             p.custom(TERM_SLOT, layout.body);
             if let Some(thumb) = view
                 .scroll
@@ -864,6 +871,7 @@ mod tests {
             menu_extra: &[],
             overflow_name: "More",
             header_tint: HEADER_TINT,
+            fading_slots: 0,
         };
         let mut ui = Ui::begin(store, &input, config, text);
         let out = draw(&mut ui, view);

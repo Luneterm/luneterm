@@ -1231,6 +1231,8 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
             busy: None,
             busy_tone: lune_ui::widgets::tone::Tone::Neutral,
             tab_menu_extra: &[],
+            grid_alpha: 1.0,
+            fading: Vec::new(),
         };
         r.draw(&input, content, &view, size)?;
         r.gpu.end_frame(&mut r.text);

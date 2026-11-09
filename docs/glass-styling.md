@@ -66,6 +66,12 @@ Drawn on the tab chrome in accent colour (error/warning colours on failure):
 - **Comet:** 14% dash. **Breath:** opacity 0.38–1.0 over 1800 ms.
 
 Tab switch: 0.25 s sine ease-in-out crossfade.
+Implemented in `crates/luneterm/src/fade.rs` (pure rules, unit-tested) and drawn by `lune-termview`'s
+`TermView::set_opacity`: the outgoing tab's grid draws in a second view under the incoming one, each
+at its opacity (the glass and the chrome do not fade). As in Lunegit's `TerminalPanelViewModel`:
+every layer animates from the opacity it has now, so a quick second switch continues from where the
+first was (the generation rule); `Full` is 250 ms, `Reduced` 180 ms, `None` a hard cut; the first tab
+and a restored workspace do not fade; redraws are requested only while it runs.
 
 ## Open items
 
