@@ -1,6 +1,6 @@
 //! The settings model. It mirrors Lunegit's `TerminalSettings` and keeps its shipped defaults; it
-//! is the spike's `Settings` (`spikes/glass-ui/src/state.rs`) without the spike's UI plumbing and
-//! without serde (the file reader and writer are `persist`'s). Every field has a [`SettingId`] and
+//! began as the glass UI spike's `Settings` (the spike was retired in M10 step 12) without its UI
+//! plumbing and without serde (the file reader and writer are `persist`'s). Every field has a [`SettingId`] and
 //! an [`Effect`] (plan M10 step 6): what changing it does, live or at the next spawn.
 
 use lune_ui::material::Material;

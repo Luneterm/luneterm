@@ -2,13 +2,13 @@
 
 Deterministic `pyftsubset` subsets used only by `lune-termview` tests, so results do not depend on
 installed fonts. **They are test data and are never bundled in the app** (the app bundles the full
-faces from `crates/luneterm/assets`), so `licenses/` is unaffected. Each licence sits beside the
+faces from the app's `assets` directory), so `licenses/` is unaffected. Each licence sits beside the
 fonts: `RznMono.OFL.txt`, `RobotoMonoNerdFont.LICENSE.txt`, `NotoSansSymbols2.OFL.txt`,
 `TwemojiLunegit.LICENSE.md`.
 
 Tool: fontTools 4.58.0 (`pyftsubset`). Re-running a command reproduces the committed file
 byte for byte (checked for the RznMono Regular subset). `$LF` is Lunegit's
-`src/Lunegit.Desktop/Assets/Fonts`; `$A` is `crates/luneterm/assets`, the app's bundled copies of
+`src/Lunegit.Desktop/Assets/Fonts`; `$A` is the app crate's `assets` directory, with its bundled copies of
 RznMono 0.007 (`RznMono-{Regular,Bold,Italic,BoldItalic}.ttf`, from `fonts/rznmono/desktop` in the
 RznSans repository) and RobotoMono Nerd Font Mono (see `THIRD_PARTY_NOTICES.md`).
 

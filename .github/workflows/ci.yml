@@ -88,7 +88,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # rust-toolchain.toml pins the toolchain; rustup installs it on first cargo call.
-      - run: cargo build --release --locked -p glass-ui
       # M3 step 0 (P7/P8): the spawn example's size, for the portable-pty cost record.
       - run: cargo build --release --locked -p lune-pty --example spawn
       # M9 step 7: the app. GUI subsystem in release; the artifact below is this file.
@@ -103,8 +102,7 @@ jobs:
         run: |
           $spawn = (Get-Item target/release/examples/spawn.exe).Length
           $app = (Get-Item target/release/luneterm.exe).Length
-          $glass = (Get-Item target/release/glass-ui.exe).Length
-          "luneterm.exe=$app glass-ui.exe=$glass spawn.exe=$spawn"
+          "luneterm.exe=$app spawn.exe=$spawn"
       # The exe and the licences it must travel with (M10 step 10): luneterm.exe stays at the
       # artifact's root, licenses/ beside it.
       - shell: pwsh

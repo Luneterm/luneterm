@@ -463,7 +463,7 @@ mod tests {
         // zeroes their advance: the cluster is one cell wide and the marks draw on the base.
         // (RobotoMono Nerd's GDEF has no mark class, so there every mark advances like a letter;
         // that premise of D4 (iii) is pinned for the app's second bundled font in
-        // `luneterm::fonts`, and the fit-on-base rule stays for it.) HarfBuzz composes a +
+        // the app's own font tests, and the fit-on-base rule stays for it.) HarfBuzz composes a +
         // U+0301 into the font's single "a acute" glyph, so the cluster is [a acute, tilde].
         let mut r = rig();
         let f = fonts(&r, false);
