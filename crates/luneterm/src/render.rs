@@ -69,7 +69,7 @@ pub const DEFAULT_GLASS_THEME: Theme = Theme {
 /// what is under them, so the three share one value and the seams between window, panel and card
 /// stay invisible, as iTerm's single flat layer. Raise it for a blacker window with less of the
 /// desktop showing; lower it for more transparency.
-pub const FLAT_BLACK: f64 = 0.72;
+pub const FLAT_BLACK: f64 = 0.65;
 
 /// One flat layer: black, no material (grey) layer, `black` opacity.
 const fn flat_layer(black: f64) -> GlassLayer {
