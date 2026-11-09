@@ -8,6 +8,7 @@ pub mod app;
 pub mod cwd;
 pub mod demo;
 pub mod dump;
+pub mod fade;
 pub mod fonts;
 pub mod input;
 pub mod links;

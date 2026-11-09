@@ -3,9 +3,11 @@
 //! frame dumps call the same [`Renderer::draw`], so a dump shows what the window shows.
 
 use lune_termview::{
-    CellMetrics, Cursor, Grid, GridLayout, SelectionRange, TermTheme, TermView, ViewState,
+    CellMetrics, Cursor, Grid, GridLayout, SelectionRange, TermFonts, TermTheme, TermView,
+    ViewState,
 };
 use lune_ui::color::premul;
+use lune_ui::custom::CustomDraw;
 use lune_ui::frame::FrameRenderer;
 use lune_ui::gpu::Gpu;
 use lune_ui::input::{FrameOutput, keymap};
@@ -32,6 +34,7 @@ use crate::settings_page::{self, PageOut, PageView};
 use crate::shell::{
     self, Chrome, GridPlacement, Layout, Modal, ModalOut, ScrollView, ShellView, StripTab,
 };
+use crate::tabs::TabId;
 
 /// The saturation the backdrop blur applies (Luneium's menu glass; no backdrop is requested in M9).
 const BACKDROP_SATURATION: f32 = 1.8;
@@ -100,6 +103,23 @@ pub struct Content<'a> {
     pub busy_tone: Tone,
     /// The rows after the toolkit's four on a tab's context menu.
     pub tab_menu_extra: &'a [&'a str],
+    /// The opacity `grid` is drawn at: 1 outside a tab-switch crossfade ([`crate::fade`]).
+    pub grid_alpha: f32,
+    /// The grids of the tabs still fading out under `grid`, back to front.
+    pub fading: Vec<FadingGrid<'a>>,
+}
+
+/// A tab's grid fading out under the active tab's during a tab-switch crossfade. It draws as the
+/// tab last showed it: no selection, no link hover, an unfocused cursor.
+#[derive(Debug)]
+pub struct FadingGrid<'a> {
+    pub id: TabId,
+    pub grid: &'a mut Grid,
+    pub cursor: Cursor,
+    /// The tab's own terminal colours.
+    pub theme: &'a TermTheme,
+    /// 0..=1.
+    pub alpha: f32,
 }
 
 /// What the hovered link's tooltip says and where it hangs.
@@ -204,6 +224,11 @@ pub struct Renderer {
     pub text: TextCache,
     frame: FrameRenderer,
     term: TermView,
+    /// Views for the grids fading out in a tab-switch crossfade, made when first needed.
+    fading: Vec<FadingView>,
+    /// The colour format the views render into, and the terminal font, for making more views.
+    format: wgpu::TextureFormat,
+    term_fonts: TermFonts,
     store: UiStore,
     strings: StringTable,
     shortcuts: Shortcuts,
@@ -213,6 +238,13 @@ pub struct Renderer {
     blur_sigma: f32,
     term_theme: TermTheme,
     font_size: f32,
+}
+
+/// A [`TermView`] that draws one fading tab's grid, and which tab and colours it holds.
+struct FadingView {
+    view: TermView,
+    owner: Option<TabId>,
+    theme: TermTheme,
 }
 
 impl std::fmt::Debug for Renderer {
@@ -235,12 +267,15 @@ impl Renderer {
         let term_fonts = fonts::term_fonts(&mut text, settings);
         let term_theme = TermTheme::lunegit_one_dark();
         let font_size = term_fonts.size;
-        let term = TermView::new(&gpu.device, format, term_fonts, term_theme.clone());
+        let term = TermView::new(&gpu.device, format, term_fonts.clone(), term_theme.clone());
         Renderer {
             gpu,
             text,
             frame,
             term,
+            fading: Vec::new(),
+            format,
+            term_fonts,
             store: UiStore::default(),
             strings: crate::strings::english(),
             shortcuts: Shortcuts::default(),
@@ -280,7 +315,63 @@ impl Renderer {
     pub fn set_fonts(&mut self, settings: &Settings) {
         let fonts = fonts::term_fonts(&mut self.text, settings);
         self.font_size = fonts.size;
+        for v in &mut self.fading {
+            v.view.set_fonts(fonts.clone());
+            v.owner = None;
+        }
+        self.term_fonts = fonts.clone();
         self.term.set_fonts(fonts);
+    }
+
+    /// Gives each fading layer a view: the one that already holds that tab, else a free one
+    /// (made when the pool is short), whose rows are then rebuilt from the tab's grid. Returns the
+    /// view index per layer. The pool never shrinks (a fade is 250 ms; the views are cheap to keep).
+    fn assign_fading(&mut self, layers: &mut [FadingGrid<'_>]) -> Vec<usize> {
+        while self.fading.len() < layers.len() {
+            let theme = layers
+                .get(self.fading.len())
+                .map_or_else(|| self.term_theme.clone(), |l| l.theme.clone());
+            let view = TermView::new(
+                &self.gpu.device,
+                self.format,
+                self.term_fonts.clone(),
+                theme.clone(),
+            );
+            self.fading.push(FadingView {
+                view,
+                owner: None,
+                theme,
+            });
+        }
+        let mut used = vec![false; self.fading.len()];
+        let mut slots = vec![usize::MAX; layers.len()];
+        for (i, l) in layers.iter().enumerate() {
+            if let Some(j) = self.fading.iter().position(|v| v.owner == Some(l.id)) {
+                slots[i] = j;
+                used[j] = true;
+            }
+        }
+        for (i, l) in layers.iter_mut().enumerate() {
+            if slots[i] != usize::MAX {
+                continue;
+            }
+            let Some(j) = used.iter().position(|u| !*u) else {
+                continue;
+            };
+            used[j] = true;
+            slots[i] = j;
+            self.fading[j].owner = Some(l.id);
+            l.grid.mark_all_dirty();
+        }
+        for (l, &j) in layers.iter().zip(&slots) {
+            if let Some(fv) = self.fading.get_mut(j)
+                && fv.theme != *l.theme
+            {
+                fv.view.set_theme(l.theme.clone());
+                fv.theme = l.theme.clone();
+            }
+        }
+        slots
     }
 
     /// The app's string table (the page, the menus and the toolkit's own texts).
@@ -371,6 +462,7 @@ impl Renderer {
             menu_extra: content.tab_menu_extra,
             overflow_name: self.strings.tr("menu.more"),
             header_tint: self.header_tint,
+            fading_slots: content.fading.len(),
         };
         let shell_out = shell::draw(&mut ui, view);
         let mut page_out = None;
@@ -456,6 +548,7 @@ impl Renderer {
             selection: content.selection,
             hover_link: content.hover_link,
         };
+        self.term.set_opacity(content.grid_alpha);
         self.term.update(
             &mut self.text.fonts,
             content.grid,
@@ -463,6 +556,28 @@ impl Renderer {
             placement.origin,
             scale,
         );
+        // The tabs fading out under it (a tab-switch crossfade), each in a view of its own.
+        let slots = self.assign_fading(&mut content.fading);
+        for (layer, slot) in content.fading.iter_mut().zip(slots) {
+            let Some(fv) = self.fading.get_mut(slot) else {
+                continue;
+            };
+            fv.view.set_opacity(layer.alpha);
+            let faded = ViewState {
+                cursor: layer.cursor,
+                focused: false,
+                blink_on: content.blink_on,
+                selection: &[],
+                hover_link: 0,
+            };
+            fv.view.update(
+                &mut self.text.fonts,
+                layer.grid,
+                &faded,
+                placement.origin,
+                scale,
+            );
+        }
         let params = FrameParams {
             size,
             scale,
@@ -470,13 +585,21 @@ impl Renderer {
             saturation: BACKDROP_SATURATION,
             ..FrameParams::default()
         };
+        // Slot 0 is the active tab's grid, the rest are the fading ones (`shell::TERM_SLOT`).
+        let mut customs: Vec<&mut dyn CustomDraw> = Vec::with_capacity(1 + self.fading.len());
+        customs.push(&mut self.term);
+        customs.extend(
+            self.fading
+                .iter_mut()
+                .map(|fv| &mut fv.view as &mut dyn CustomDraw),
+        );
         self.frame.draw_with(
             &mut self.gpu,
             &mut self.text,
             &scene,
             target,
             params,
-            &mut [&mut self.term],
+            &mut customs,
         )?;
         Ok(Drawn {
             output,

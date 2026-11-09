@@ -647,6 +647,8 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             busy: None,
             busy_tone: Tone::Neutral,
             tab_menu_extra: &extra,
+            grid_alpha: 1.0,
+            fading: Vec::new(),
         };
         r.draw(&input, content, &view, size)?;
         r.gpu.end_frame(&mut r.text);
