@@ -981,9 +981,11 @@ U+2066 to U+2069), trims, caps at 80 characters, and uses "Luneterm" when empty;
 the window title and the title band (a 10 MB title takes under 10 ms in the test). A bell asks for
 user attention (`Informational`) only while the window is unfocused, at most every 2 s.
 
-**Fonts and look (D15, D16).** The four bundled faces live in `crates/luneterm/assets` (RobotoMono
-Nerd Font Mono Regular and Bold until M10's RznMono gate, RznSans Regular and Medium, with their
-licences). luneui-rs's `TextCache` loads no system fonts, so the app loads them once at start
+**Fonts and look (D15, D16; M10 D9a).** The eight bundled faces live in `crates/luneterm/assets`:
+RznMono 0.007 Regular, Bold, Italic and Bold Italic (the terminal font, real faces for every
+style termview asks for), RobotoMono Nerd Font Mono Regular and Bold (the fallback for the Nerd
+icons RznMono does not have until its stage 4, and a terminal font option) and RznSans Regular and
+Medium, with their licences. luneui-rs's `TextCache` loads no system fonts, so the app loads them once at start
 (`fonts::text_cache`, 59 to 64 ms on the Apple M1 Pro) for emoji and CJK fallback. Cell
 height is `ceil(natural_line_height)`: 17 px at scale 1 and 34 at scale 2 for the bundled face at
 13 px. At 1040 x 660 the body is 1000 x 596 at (20, 44), a 125 x 35 grid. Glass: `Material::Vibrancy`

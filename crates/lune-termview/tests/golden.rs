@@ -22,8 +22,15 @@ use lune_termview::{
 };
 use lune_ui::custom::{CustomDraw, CustomFrame};
 
-const REGULAR: &[u8] = include_bytes!("fonts/RobotoMonoNerdFontMono-Regular.subset.ttf");
-const BOLD: &[u8] = include_bytes!("fonts/RobotoMonoNerdFontMono-Bold.subset.ttf");
+const REGULAR: &[u8] = include_bytes!("fonts/RznMono-Regular.subset.ttf");
+const BOLD: &[u8] = include_bytes!("fonts/RznMono-Bold.subset.ttf");
+const ITALIC: &[u8] = include_bytes!("fonts/RznMono-Italic.subset.ttf");
+const BOLD_ITALIC: &[u8] = include_bytes!("fonts/RznMono-BoldItalic.subset.ttf");
+// Private-use icons only (U+F000-F02F, U+F07B): the app's fallback face for the Nerd icons
+// RznMono does not have. A Latin character missing from the RznMono subset shows as tofu here and
+// cannot pass quietly through this face.
+const NERD_REGULAR: &[u8] = include_bytes!("fonts/RobotoMonoNerdFontMono-Regular.pua.subset.ttf");
+const NERD_BOLD: &[u8] = include_bytes!("fonts/RobotoMonoNerdFontMono-Bold.pua.subset.ttf");
 const SYMBOLS: &[u8] = include_bytes!("fonts/NotoSansSymbols2.subset.ttf");
 const TWEMOJI: &[u8] = include_bytes!("fonts/TwemojiLunegit.subset.ttf");
 
@@ -215,7 +222,7 @@ fn family_of(db: &fontdb::Database, id: fontdb::ID) -> String {
         .expect("test font has a family name")
 }
 
-/// Loads the four test fonts into `db`; returns (mono family, emoji family).
+/// Loads the test fonts into `db`; returns (mono family, emoji family).
 fn load_test_fonts(db: &mut fontdb::Database) -> (String, String) {
     let mut load = |bytes: &'static [u8]| {
         let ids = db.load_font_source(fontdb::Source::Binary(Arc::new(bytes)));
@@ -223,6 +230,10 @@ fn load_test_fonts(db: &mut fontdb::Database) -> (String, String) {
     };
     let mono = load(REGULAR);
     load(BOLD);
+    load(ITALIC);
+    load(BOLD_ITALIC);
+    load(NERD_REGULAR);
+    load(NERD_BOLD);
     load(SYMBOLS);
     let emoji = load(TWEMOJI);
     (family_of(db, mono), family_of(db, emoji))
@@ -928,6 +939,28 @@ fn nerd_scene() -> Scene {
     sc
 }
 
+/// The fallback proof (M10 step 11, D9a): Nerd icons are not in RznMono and draw from the
+/// bundled RobotoMono Nerd face. `A`, icon, `B` have non-blank neighbours, so an icon that
+/// overflowed its cell would show as ink on the letters or past the slot.
+fn nerd_fallback_scene() -> Scene {
+    let mut sc = Scene::new(14, 5);
+    let g = &mut sc.grid;
+    for (row, st) in [(0, s()), (2, s().attr(Attrs::BOLD))] {
+        let mut c = 0;
+        for text in [
+            "A", "\u{F015}", "B", " ", "A", "\u{F07B}", "B", " ", "A", "\u{F013}", "B",
+        ] {
+            c = cluster(g, row, c, text, 1, st);
+        }
+    }
+    // the same icons with blanks between
+    let mut c = 0;
+    for text in ["\u{F015}", " ", "\u{F07B}", " ", "\u{F013}"] {
+        c = cluster(g, 4, c, text, 1, s());
+    }
+    sc
+}
+
 fn links_scene() -> Scene {
     let mut sc = Scene::new(40, 5);
     let g = &mut sc.grid;
@@ -1129,6 +1162,11 @@ fn nerd_powerline() {
 }
 
 #[test]
+fn nerd_fallback() {
+    golden_scene("nerd_fallback", 2.0, &mut nerd_fallback_scene());
+}
+
+#[test]
 fn links() {
     golden_scene("links", 2.0, &mut links_scene());
 }
@@ -1148,7 +1186,7 @@ fn system_fallback() {
     golden("system_fallback-macos@2x", &frame);
 }
 
-/// D3 numbers for 13 px / line 17 on the RobotoMono subset (no GPU needed).
+/// D3 numbers for 13 px / line 17 on the RznMono subset (no GPU needed).
 #[test]
 fn cell_metrics_match_decision_d3() {
     let (mut fs, fonts) = test_fonts();

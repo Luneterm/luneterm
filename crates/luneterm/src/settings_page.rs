@@ -251,7 +251,7 @@ pub fn groups(section: Section) -> &'static [Group] {
 }
 
 /// The notices of the About section: `(name key, licence key)`. Only what this build carries.
-const NOTICES: [(&str, &str); 6] = [
+const NOTICES: [(&str, &str); 7] = [
     (
         "settings.about.notice.xtermjs",
         "settings.about.notice.xtermjs.license",
@@ -263,6 +263,10 @@ const NOTICES: [(&str, &str); 6] = [
     (
         "settings.about.notice.xtermnet",
         "settings.about.notice.xtermnet.license",
+    ),
+    (
+        "settings.about.notice.rznmono",
+        "settings.about.notice.rznmono.license",
     ),
     (
         "settings.about.notice.roboto",
@@ -1164,10 +1168,9 @@ mod tests {
         let names: Vec<&str> = NOTICES.iter().map(|(n, _)| strings.tr(n)).collect();
         assert!(names.iter().any(|n| n.starts_with("xterm.js")));
         assert!(names.iter().any(|n| n.contains("RznSans")));
-        assert!(
-            !names.iter().any(|n| n.contains("RznMono")),
-            "not shipped yet"
-        );
+        // RznMono ships since M10 step 11, above RobotoMono (still bundled: the icon fallback)
+        let at = |what: &str| names.iter().position(|n| n.contains(what));
+        assert!(at("RznMono").is_some_and(|i| Some(i + 1) == at("RobotoMono")));
         for (_, l) in NOTICES {
             assert!(!strings.tr(l).is_empty());
         }

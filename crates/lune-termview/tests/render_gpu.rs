@@ -11,8 +11,8 @@ use lune_termview::{
 };
 use lune_ui::custom::{CustomDraw, CustomFrame};
 
-const REGULAR: &[u8] = include_bytes!("fonts/RobotoMonoNerdFontMono-Regular.subset.ttf");
-const BOLD: &[u8] = include_bytes!("fonts/RobotoMonoNerdFontMono-Bold.subset.ttf");
+const REGULAR: &[u8] = include_bytes!("fonts/RznMono-Regular.subset.ttf");
+const BOLD: &[u8] = include_bytes!("fonts/RznMono-Bold.subset.ttf");
 
 const CLEAR: [u8; 4] = [10, 20, 30, 255];
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;

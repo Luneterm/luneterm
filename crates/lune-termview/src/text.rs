@@ -294,9 +294,8 @@ mod tests {
     use cosmic_text::SwashCache;
     use cosmic_text::SwashContent;
 
-    const REGULAR: &[u8] =
-        include_bytes!("../tests/fonts/RobotoMonoNerdFontMono-Regular.subset.ttf");
-    const BOLD: &[u8] = include_bytes!("../tests/fonts/RobotoMonoNerdFontMono-Bold.subset.ttf");
+    const REGULAR: &[u8] = include_bytes!("../tests/fonts/RznMono-Regular.subset.ttf");
+    const BOLD: &[u8] = include_bytes!("../tests/fonts/RznMono-Bold.subset.ttf");
     const SYMBOLS: &[u8] = include_bytes!("../tests/fonts/NotoSansSymbols2.subset.ttf");
     const TWEMOJI: &[u8] = include_bytes!("../tests/fonts/TwemojiLunegit.subset.ttf");
 
@@ -459,11 +458,13 @@ mod tests {
     }
 
     #[test]
-    fn marks_in_a_gdef_less_font_keep_a_full_advance() {
-        // the shipped mono face has no mark class: every mark advances like a letter. This pins
-        // the premise of D4 (iii); if it ever reads 0, the fit-on-base rule has nothing to fix.
-        // (HarfBuzz composes a + U+0301 into the font's single "a acute" glyph, so the cluster
-        // is [a acute, tilde]: two glyphs, not three.)
+    fn marks_in_rznmono_have_no_advance_and_stay_on_the_base() {
+        // RznMono has no GDEF table, so HarfBuzz classes its marks by Unicode category and
+        // zeroes their advance: the cluster is one cell wide and the marks draw on the base.
+        // (RobotoMono Nerd's GDEF has no mark class, so there every mark advances like a letter;
+        // that premise of D4 (iii) is pinned for the app's second bundled font in
+        // `luneterm::fonts`, and the fit-on-base rule stays for it.) HarfBuzz composes a +
+        // U+0301 into the font's single "a acute" glyph, so the cluster is [a acute, tilde].
         let mut r = rig();
         let f = fonts(&r, false);
         let mut sh = Shaper::new();
@@ -473,10 +474,10 @@ mod tests {
         assert_eq!(s.glyphs.len(), 2, "{s:?}");
         let (base, mark) = (s.glyphs[0], s.glyphs[1]);
         assert!((base.advance - 7.8).abs() < 0.01, "{}", base.advance);
-        assert!((mark.advance - 7.8).abs() < 0.01, "{}", mark.advance);
+        assert_eq!(mark.advance, 0.0, "{mark:?}");
         assert_eq!(base.pen_x, 0.0);
         assert!((mark.pen_x - 7.8).abs() < 0.01, "{}", mark.pen_x);
-        assert!((s.advance - 15.6).abs() < 0.02, "{}", s.advance);
+        assert!((s.advance - 7.8).abs() < 0.02, "{}", s.advance);
     }
 
     #[test]
