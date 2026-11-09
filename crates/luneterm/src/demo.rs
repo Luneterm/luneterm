@@ -1,6 +1,6 @@
 //! A static demo screen for frame dumps (`LUNETERM_DUMP_FRAMES`): prompt text, the 16 colours,
-//! bold, underline, a wide CJK pair and an emoji. The window no longer draws it (M9 step 6 wired
-//! the session in); the dump scenes still do.
+//! bold, underline, a wide CJK pair, an emoji and a row of Nerd icons. The window no longer draws
+//! it (M9 step 6 wired the session in); the dump scenes still do.
 
 use lune_termview::{Attrs, Cell, Color, Cursor, CursorShape, Grid, UnderlineStyle};
 
@@ -109,6 +109,18 @@ pub fn demo_grid(cols: usize, rows: usize) -> Grid {
 
     put(&mut g, 11, 0, "luneterm", Color::Palette(2), Attrs::BOLD);
     put(&mut g, 11, 8, " ~ % ", Color::Palette(4), plain);
+
+    // Nerd icons (private use: not in RznMono, drawn from the fallback face), a powerline branch
+    // glyph and a prompt arrow RznMono has. A free row, clear of the link scenes' (row 13).
+    let c = put(
+        &mut g,
+        16,
+        0,
+        "\u{F015} \u{F07B} \u{F013} \u{E0A0} main",
+        Color::Palette(5),
+        plain,
+    );
+    put(&mut g, 16, c, " \u{276F} ls", Color::Default, plain);
     g
 }
 
