@@ -26,7 +26,7 @@ vt	ctrl-h	08	08
 vt	esc	1b	1b
 vt	ctrl-c	03	03
 vt	ctrl-d	04	04
-vt	ctrl-z	1a	[read0]
+vt	ctrl-z	1a	[read0] | 1a
 vt	ctrl-space	00	00
 vt	ctrl-backslash	1c	1c
 vt	ctrl-]	1d	1d
