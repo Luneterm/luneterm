@@ -67,7 +67,7 @@ use crate::session::{
     Command, CopyResult, HostPalette, MAX_COPY_BYTES, Scroll, SelectCmd, Session, SessionConfig,
     UpdateModes, view_range,
 };
-use crate::settings::{Effect, GlassStyle, Settings, effects};
+use crate::settings::{Effect, Settings, effects};
 use crate::settings_page::{PageState, PageView, Section};
 use crate::shell::{self, HOST, Modal, ModalOut, ScrollView, StripTab, ThumbDrag};
 use crate::spawn::{self, SpawnFailure};
@@ -317,15 +317,7 @@ fn apply_material(window: &Window, settings: &Settings) -> bool {
     } else {
         Material::Opaque
     };
-    if shell::HOST_GLASS && shell::DEFAULT_GLASS_IS_CLEAR && settings.glass == GlassStyle::Default {
-        // No OS material (macOS): the window is created transparent, so clearing any effect view
-        // leaves a plain clear window, and the toolkit's flat black layers (`render::FLAT_GLASS_THEME`)
-        // are the whole look. `Material::Custom` with no macOS form would be an `Err` here.
-        match material::apply(window, Material::Opaque) {
-            Ok(()) => return true,
-            Err(e) => eprintln!("glass: {e}; continuing opaque"),
-        }
-    } else if wanted.is_glass() {
+    if wanted.is_glass() {
         match material::apply(window, wanted) {
             Ok(()) => return true,
             Err(e) => eprintln!("glass: {e}; continuing opaque"),

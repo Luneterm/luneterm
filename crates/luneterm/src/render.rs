@@ -5,6 +5,7 @@
 use lune_termview::{
     CellMetrics, Cursor, Grid, GridLayout, SelectionRange, TermTheme, TermView, ViewState,
 };
+use lune_ui::GlassLayer;
 use lune_ui::color::premul;
 use lune_ui::frame::FrameRenderer;
 use lune_ui::gpu::Gpu;
@@ -23,7 +24,6 @@ use lune_ui::widgets::menu::{MenuOptions, MenuPlace, MenuResponse, MenuRow};
 use lune_ui::widgets::tab_strip::BusyCue;
 use lune_ui::widgets::toast::Toasts;
 use lune_ui::widgets::tone::Tone;
-use lune_ui::{GlassLayer, LuminosityCurve};
 
 use crate::fonts;
 use crate::links;
@@ -64,45 +64,12 @@ pub const DEFAULT_GLASS_THEME: Theme = Theme {
     ..near_black::THEME
 };
 
-/// Where the default style has no OS material (`shell::DEFAULT_GLASS_IS_CLEAR`, macOS): the one
-/// opacity of black every glass layer draws, with no grey material layer under it. The layers replace
-/// what is under them, so the three share one value and the seams between window, panel and card
-/// stay invisible, as iTerm's single flat layer. Raise it for a blacker window with less of the
-/// desktop showing; lower it for more transparency.
-pub const FLAT_BLACK: f64 = 0.72;
-
-/// One flat layer: black, no material (grey) layer, `black` opacity.
-const fn flat_layer(black: f64) -> GlassLayer {
-    GlassLayer {
-        tint: near_black::TINT,
-        tint_opacity: 1.0,
-        material_opacity: 0.0,
-        curve: LuminosityCurve {
-            black_max_opacity: black,
-            ..near_black::WINDOW.curve
-        },
-    }
-}
-
-/// The default style's theme where there is no OS material: [`DEFAULT_GLASS_THEME`] with the three
-/// layers replaced by [`flat_layer`]`(`[`FLAT_BLACK`]`)`. Floating surfaces (`MENU_GLASS`) and the
-/// other tokens are the toolkit's `near_black::THEME`'s.
-pub const FLAT_GLASS_THEME: Theme = Theme {
-    glass: ThemeGlass {
-        window: flat_layer(FLAT_BLACK),
-        panel: flat_layer(FLAT_BLACK),
-        card: flat_layer(FLAT_BLACK),
-    },
-    ..DEFAULT_GLASS_THEME
-};
-
 /// The toolkit theme for a window with or without OS glass: without it (Linux, or a material the
 /// OS refused) every glass layer is opaque. With it, the default style is the near-black look
-/// ([`DEFAULT_GLASS_THEME`], or [`FLAT_GLASS_THEME`] where there is no OS material: the toolkit's `near_black::THEME`, whole, so floating surfaces take it
+/// ([`DEFAULT_GLASS_THEME`]: the toolkit's `near_black::THEME`, whole, so floating surfaces take it
 /// too, with more transparent layers) and the liquid styles keep Lunegit's layers.
 pub fn theme(glass: bool, style: GlassStyle) -> Theme {
     match (glass, style) {
-        (true, GlassStyle::Default) if shell::DEFAULT_GLASS_IS_CLEAR => FLAT_GLASS_THEME,
         (true, GlassStyle::Default) => DEFAULT_GLASS_THEME,
         (true, _) => THEME,
         (false, _) => THEME.with_acrylic(AcrylicLevel::Opaque),

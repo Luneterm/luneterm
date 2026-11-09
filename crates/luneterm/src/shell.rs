@@ -96,14 +96,6 @@ pub const HOST_GLASS: bool = true;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub const HOST_GLASS: bool = false;
 
-/// Whether the default glass style draws over a clear window with no OS material: macOS, where the
-/// `NSVisualEffectView` blurs and desaturates the desktop (the user's eye-check against iTerm, 2026-11-09:
-/// iTerm is plain black at partial alpha, the desktop's hue kept). Windows keeps its acrylic.
-#[cfg(target_os = "macos")]
-pub const DEFAULT_GLASS_IS_CLEAR: bool = true;
-#[cfg(not(target_os = "macos"))]
-pub const DEFAULT_GLASS_IS_CLEAR: bool = false;
-
 /// The rects of a window of a given size, logical px.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
