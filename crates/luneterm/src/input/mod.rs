@@ -10,8 +10,9 @@ pub mod shortcuts;
 
 pub use keys::{KeyInput, KeyRoute, RouteCtx, key_input, route_key, terminal_mods, toolkit_mods};
 pub use pointer::{
-    MouseCtx, MouseState, PointerEvent, WheelAction, WheelCtx, WheelDelta, WheelState,
-    mouse_to_terminal, pointer_event, wheel, wheel_delta, wheel_report,
+    ClickCounter, MouseCtx, MouseState, PointerEvent, WheelAction, WheelCtx, WheelDelta,
+    WheelState, mouse_to_terminal, pointer_event, selection_position, selection_scroll, wheel,
+    wheel_delta, wheel_report,
 };
 pub use shortcuts::{AppCommand, AppShortcuts};
 

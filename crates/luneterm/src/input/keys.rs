@@ -348,7 +348,7 @@ pub fn route_key(k: &KeyInput, ctx: &RouteCtx<'_>) -> KeyRoute {
         ctx.shortcuts
             .matching(&toolkit_key(&k.logical), toolkit_mods(k.mods), &ctx.keymap)
     {
-        if cmd == AppCommand::Paste && k.repeat {
+        if cmd.once_per_press() && k.repeat {
             return KeyRoute::Ignore;
         }
         return KeyRoute::Shortcut(cmd);
@@ -543,9 +543,12 @@ mod tests {
                 press(ch("A"), KeyCode::KeyA, Some("A"), ALT | SHIFT),
                 chr('a', '\0', 'a', or(S, A), true),
             ),
-            ("Alt+1", press(ch("1"), KeyCode::Digit1, Some("1"), ALT), {
-                chr('1', '!', '\0', A, true)
-            }),
+            // D13: Alt+1..9 select a tab (it was meta+digit before the tabs).
+            (
+                "Alt+1",
+                press(ch("1"), KeyCode::Digit1, Some("1"), ALT),
+                KeyRoute::Shortcut(AppCommand::SelectTab(0)),
+            ),
             // Ctrl+Alt+letter on a US layout is a chord (R:59).
             (
                 "Ctrl+Alt+a US",
@@ -740,6 +743,12 @@ mod tests {
                 press(ch("V"), KeyCode::KeyV, Some("\u{16}"), CTRL | SHIFT),
                 KeyRoute::Shortcut(AppCommand::Paste),
             ),
+            // Ctrl+Shift+C copies a selection (M10): the shortcut route.
+            (
+                "Ctrl+Shift+C",
+                press(ch("C"), KeyCode::KeyC, Some("\u{3}"), CTRL | SHIFT),
+                KeyRoute::Shortcut(AppCommand::Copy),
+            ),
             // Plain Ctrl+V is the shell's literal-next (TerminalView.cs:1807).
             (
                 "Ctrl+V",
@@ -761,6 +770,14 @@ mod tests {
         for (name, input, want) in cases {
             assert_eq!(route_key(&input, &win), want, "{name}");
         }
+        // With nothing selected the app asks the table without Copy: Ctrl+Shift+C is then the
+        // terminal's key, as before M10.
+        let no_copy = AppShortcuts::standard(false).without_copy();
+        let ctrl_shift_c = press(ch("C"), KeyCode::KeyC, Some("\u{3}"), CTRL | SHIFT);
+        assert!(matches!(
+            route_key(&ctrl_shift_c, &ctx(false, false, &no_copy)),
+            KeyRoute::Terminal(_)
+        ));
     }
 
     #[test]
@@ -797,14 +814,23 @@ mod tests {
         assert_eq!(route_key(&opt1, &off), text("¡"));
         let opt1_meta = press(ch("1"), KeyCode::Digit1, Some("1"), ALT);
         assert_eq!(route_key(&opt1_meta, &on), chr('1', '!', '\0', A, true));
-        // Cmd+V pastes; Cmd+C and other Cmd chords are not the shell's in M9.
+        // Cmd+V pastes and Cmd+C copies (M10); other Cmd chords are not the shell's. With nothing
+        // selected the app asks the table without Copy, and Cmd+C is then nobody's.
         let cmd_v = press(ch("v"), KeyCode::KeyV, Some("v"), SUPER);
         assert_eq!(
             route_key(&cmd_v, &off),
             KeyRoute::Shortcut(AppCommand::Paste)
         );
         let cmd_c = press(ch("c"), KeyCode::KeyC, Some("c"), SUPER);
-        assert_eq!(route_key(&cmd_c, &off), KeyRoute::Ignore);
+        assert_eq!(
+            route_key(&cmd_c, &off),
+            KeyRoute::Shortcut(AppCommand::Copy)
+        );
+        let no_copy = AppShortcuts::standard(true).without_copy();
+        assert_eq!(
+            route_key(&cmd_c, &ctx(true, false, &no_copy)),
+            KeyRoute::Ignore
+        );
         let cmd_shift_v = press(ch("V"), KeyCode::KeyV, Some("V"), SUPER | SHIFT);
         assert_eq!(route_key(&cmd_shift_v, &off), KeyRoute::Ignore);
         // Ctrl+V on macOS is the shell's.

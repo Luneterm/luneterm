@@ -8,6 +8,7 @@
 
 mod engine;
 mod host;
+mod selection;
 mod threads;
 mod update;
 
@@ -26,8 +27,17 @@ use lune_pty::{Pty, PtySize};
 use lune_vt::services::options_service::WindowsPty;
 use lune_vt::{TerminalKeyEvent, TerminalMouseEvent};
 
+pub use crate::outline::CommandState;
 pub use host::HostPalette;
-pub use update::{Exit, MARKS_CAP, Update, UpdateModes, apply_update};
+pub use selection::{
+    CopyError, CopyResult, DRAG_SCROLL_INTERVAL, DRAG_SCROLL_MAX_SPEED, DRAG_SCROLL_MAX_THRESHOLD,
+    MAX_COPY_BYTES, Pos, SelectCmd, Selection, SelectionMode, SelectionModel, SelectionView,
+    drag_scroll_amount, edge_of, selection_text, view_range,
+};
+pub use update::{
+    Exit, ForegroundState, LINK_URIS_CAP, MARKS_CAP, MAX_LINK_URI, Update, UpdateModes,
+    apply_update,
+};
 
 use engine::{EngineCore, RealClock, build_terminal};
 use threads::{Shared, Stats, WriteQueue, engine_loop, reader_loop, writer_loop};
@@ -104,6 +114,17 @@ pub enum Command {
     Resize(Geometry),
     /// The OSC 52 engine gate.
     SetClipboardWrite(bool),
+    /// Scrollback lines, capped at [`MAX_SCROLLBACK`] (a setting changed live).
+    SetScrollback(u32),
+    /// Selection: a press, a drag, a release, a clear (the buffer is the engine's; plan M10 D2).
+    Select(SelectCmd),
+    /// Copy the selected text: the answer is `Update.selection_text`.
+    CopySelection,
+    /// A new theme (a setting changed live): the colours the child has not set itself follow it,
+    /// the ones it set (OSC 4/10/11/12) stay, and a later restore returns to the new theme.
+    SetTheme(Box<HostPalette>),
+    /// Clears the scrollback and the screen, keeping the prompt line (xterm.js `clear()`).
+    ClearBuffer,
 }
 
 impl fmt::Debug for Command {
@@ -119,6 +140,11 @@ impl fmt::Debug for Command {
             Command::Scroll(s) => write!(f, "Scroll({s:?})"),
             Command::Resize(g) => write!(f, "Resize({g:?})"),
             Command::SetClipboardWrite(b) => write!(f, "SetClipboardWrite({b})"),
+            Command::SetScrollback(n) => write!(f, "SetScrollback({n})"),
+            Command::Select(c) => write!(f, "Select({c:?})"),
+            Command::CopySelection => f.write_str("CopySelection"),
+            Command::SetTheme(_) => f.write_str("SetTheme"),
+            Command::ClearBuffer => f.write_str("ClearBuffer"),
         }
     }
 }
@@ -276,6 +302,12 @@ impl Session {
             }
             thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    /// Signals shutdown without waiting or consuming: the threads stop and the child is killed
+    /// in the background. Idempotent; [`Session::close`] after it only waits.
+    pub fn begin_close(&self) {
+        self.signal_shutdown();
     }
 
     fn signal_shutdown(&self) {

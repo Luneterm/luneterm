@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "spikes/*"]
+members = ["crates/*"]
 default-members = ["crates/luneterm"]
 
 [workspace.package]
@@ -13,7 +13,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 lune-vt = { path = "crates/lune-vt" }
 lune-pty = { path = "crates/lune-pty" }
-lune-ui = { git = "https://github.com/lune-rs/luneui-rs", rev = "5216931d8ae06f01cbf38e3408bc43b1096dceed" }
+lune-ui = { git = "https://github.com/lune-rs/luneui-rs", rev = "32d19048684745b54ab542e5dc886bea43326e08" }
 lune-termview = { path = "crates/lune-termview" }
 
 [workspace.lints.rust]

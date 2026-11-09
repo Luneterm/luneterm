@@ -1,0 +1,18 @@
+# Source: Lunegit's TerminalShellIntegrator.cs (integration version 5), identity changed to Luneterm.
+# Luneterm shell integration — do not edit. Sources the user's real ~/.zshenv, keeping ZDOTDIR
+# pointed at Luneterm's dir so .zprofile/.zshrc (which install the OSC 7 cwd hook) still run.
+LUNETERM_USER_ZDOTDIR=${LUNETERM_USER_ZDOTDIR:-$HOME}
+# Pin a sane HISTFILE floor at the user's real history location before any user config runs, so a
+# user relying on zsh's implicit "$ZDOTDIR/.zsh_history" doesn't get history redirected into
+# Luneterm's integration dir. Only-if-unset, so the user's own config (sourced below / in .zshrc)
+# still overrides it. LUNETERM_USER_ZDOTDIR is set on the line above and resolves to the user's
+# real ZDOTDIR or $HOME — matching what a correctly-scoped /etc/zshrc would use.
+: ${HISTFILE:=$LUNETERM_USER_ZDOTDIR/.zsh_history}
+if [[ -f $LUNETERM_USER_ZDOTDIR/.zshenv ]]; then
+	_luneterm_zdotdir=$ZDOTDIR
+	ZDOTDIR=$LUNETERM_USER_ZDOTDIR
+	. "$LUNETERM_USER_ZDOTDIR/.zshenv"
+	LUNETERM_USER_ZDOTDIR=$ZDOTDIR
+	ZDOTDIR=$_luneterm_zdotdir
+	unset _luneterm_zdotdir
+fi

@@ -1,3 +1,5 @@
 # Goldens and corpus files are read byte-exact on every OS; keep LF on checkout.
 crates/lune-vt-conformance/goldens/** text eol=lf
 crates/lune-vt-conformance/corpus/** text eol=lf
+# The shell-integration scripts are sourced by zsh and bash and compared byte for byte: LF on every OS.
+crates/luneterm/src/shell_integration/scripts/** text eol=lf

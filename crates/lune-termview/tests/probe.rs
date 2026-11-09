@@ -7,7 +7,7 @@ use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache, Swash
 
 #[test]
 fn gpu_adapter_probe() {
-    if let Some((_device, _queue, info)) = common::device() {
+    if let Some((_gpu, _device, _queue, info)) = common::device() {
         println!("P6 adapter: {info}");
     }
 }

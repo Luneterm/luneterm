@@ -17,14 +17,15 @@ use lune_ui::gpu::{self, Gpu};
 use lune_ui::input::RawInput;
 use lune_vt::services::options_service::OptionValue;
 use lune_vt::{
-    CellColor, StandardExtensions, Terminal, UnderlineStyle as VtUnderline, Viewport, ViewportCell,
-    ViewportCursor,
+    CellColor, CommandMarkKind, StandardExtensions, Terminal, UnderlineStyle as VtUnderline,
+    Viewport, ViewportCell, ViewportCursor,
 };
 use luneterm::app::cursor_of;
+use luneterm::links::{LinkKind, UriTable, scan_row};
 use luneterm::render::{Content, Renderer};
 use luneterm::session::{
-    Command, Exit, Geometry, HostPalette, Session, SessionConfig, SessionStats, UpdateModes,
-    apply_update,
+    Command, CopyResult, Exit, Geometry, HostPalette, SelectCmd, Session, SessionConfig,
+    SessionStats, UpdateModes, apply_update,
 };
 use luneterm::settings::Settings;
 use luneterm::shell::HOST;
@@ -98,6 +99,26 @@ pub(crate) const CASES: &[Case] = &[
         id: "E9",
         name: "environment",
         run: e9_env,
+    },
+    Case {
+        id: "E10",
+        name: "tabs are isolated",
+        run: e10_tabs,
+    },
+    Case {
+        id: "E11",
+        name: "selection and copy",
+        run: e11_copy,
+    },
+    Case {
+        id: "E12",
+        name: "links",
+        run: e12_links,
+    },
+    Case {
+        id: "E13",
+        name: "shell integration",
+        run: e13_shell_integration,
     },
 ];
 
@@ -243,6 +264,14 @@ struct Seen {
     exited: Option<Exit>,
     modes: UpdateModes,
     cursor: ViewportCursor,
+    /// What `CopySelection` answered, in order.
+    copied: Vec<CopyResult>,
+    /// The OSC 8 ids and URIs the Updates carried.
+    link_uris: Vec<(u32, String)>,
+    /// The directories the shell reported (OSC 7 or OSC 9;9), in order.
+    cwds: Vec<String>,
+    /// The OSC 133 marks the Updates carried, in order.
+    marks: Vec<CommandMarkKind>,
 }
 
 /// A running session and the UI side of it: the wake-up, the mirrored grid, what was seen.
@@ -276,6 +305,10 @@ impl Rig {
                 exited: None,
                 modes: UpdateModes::default(),
                 cursor: ViewportCursor::default(),
+                copied: Vec::new(),
+                link_uris: Vec::new(),
+                cwds: Vec::new(),
+                marks: Vec::new(),
             },
         })
     }
@@ -311,6 +344,12 @@ impl Rig {
         }
         self.seen.modes = update.modes;
         self.seen.cursor = update.cursor;
+        if let Some(copied) = update.selection_text {
+            self.seen.copied.push(copied);
+        }
+        self.seen.link_uris.extend(update.link_uris);
+        self.seen.cwds.extend(update.cwd);
+        self.seen.marks.extend(update.marks.iter().map(|m| m.kind));
         true
     }
 
@@ -1168,9 +1207,17 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
     grid.mark_all_dirty();
     for _ in 0..2 {
         let content = Content {
-            title: "Luneterm",
+            title: None,
+            tabs: &[],
+            active_tab: None,
+            modal: None,
             maximized: false,
             grid,
+            selection: &[],
+            hover_link: 0,
+            link_hand: false,
+            link_tip: None,
+            toasts: None,
             cursor: cursor_of(cursor, COLS),
             blink_on: true,
             scroll: None,
@@ -1179,6 +1226,13 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
             preedit: None,
             clipboard_write: None,
             clipboard_read: false,
+            page: None,
+            menu: None,
+            busy: None,
+            busy_tone: lune_ui::widgets::tone::Tone::Neutral,
+            tab_menu_extra: &[],
+            grid_alpha: 1.0,
+            fading: Vec::new(),
         };
         r.draw(&input, content, &view, size)?;
         r.gpu.end_frame(&mut r.text);
@@ -1280,4 +1334,384 @@ fn e9_env() -> CaseResult {
         format!("the child printed {row:?}, wanted {wanted:?} (via {program})")
     })?;
     ok("TERM, COLORTERM and TERM_PROGRAM as set")
+}
+
+// ------------------------------------------------------------------------------- E10
+
+/// A shell that names itself, then answers each line it reads with `<name>-got:<line>`.
+fn named_shell(name: &str) -> Result<Rig, String> {
+    let script =
+        format!(r#"printf '{name}-READY\n'; while read l; do printf '{name}-got:%s\n' "$l"; done"#);
+    let pty = spawn_pty(Path::new("/bin/sh"), &strs(&["-c", &script]))?;
+    let mut rig = Rig::start(pty, config(true))?;
+    let ready = format!("{name}-READY");
+    rig.wait(&format!("{name}'s READY"), WAIT, |r| r.contains(&ready))?;
+    Ok(rig)
+}
+
+/// Pumps `rigs` (every tab's Updates are taken, as the app's pump does) until `pred` holds.
+fn wait_all(
+    rigs: &mut [&mut Rig],
+    what: &str,
+    pred: impl Fn(&[&mut Rig]) -> bool,
+) -> Result<(), String> {
+    let t0 = Instant::now();
+    loop {
+        if pred(rigs) {
+            return Ok(());
+        }
+        ensure(t0.elapsed() < WAIT, || {
+            format!(
+                "timed out waiting for {what}; screens:\n{}",
+                rigs.iter()
+                    .map(|r| r.screen())
+                    .collect::<Vec<_>>()
+                    .join("\n---\n")
+            )
+        })?;
+        for r in rigs.iter_mut() {
+            r.pump(Duration::from_millis(5));
+        }
+    }
+}
+
+/// Two real sessions side by side (two tabs): what one is sent and prints never reaches the
+/// other; closing one leaves the other running; a flood in a hidden tab (visible = false, as the
+/// app sets it) keeps the other tab's keys answered and the hidden one's queues within the I3
+/// bounds.
+fn e10_tabs() -> CaseResult {
+    if let Some(s) = unix_only() {
+        return s;
+    }
+    let mut a = named_shell("ALPHA")?;
+    let mut b = named_shell("BRAVO")?;
+
+    // Input to A reaches A only.
+    a.type_text("one\r");
+    wait_all(&mut [&mut a, &mut b], "ALPHA's answer", |r| {
+        r[0].contains("ALPHA-got:one")
+    })?;
+    let mut both = [&mut a, &mut b];
+    for r in both.iter_mut() {
+        r.pump_for(Duration::from_millis(300));
+    }
+    ensure(!b.contains("one") && !b.contains("ALPHA"), || {
+        format!("ALPHA's line reached BRAVO:\n{}", b.screen())
+    })?;
+    // And B's reaches B only.
+    b.type_text("two\r");
+    wait_all(&mut [&mut a, &mut b], "BRAVO's answer", |r| {
+        r[1].contains("BRAVO-got:two")
+    })?;
+    let mut both = [&mut a, &mut b];
+    for r in both.iter_mut() {
+        r.pump_for(Duration::from_millis(300));
+    }
+    ensure(!a.contains("two") && !a.contains("BRAVO"), || {
+        format!("BRAVO's line reached ALPHA:\n{}", a.screen())
+    })?;
+
+    // Close A: B goes on.
+    ensure(a.close(), || "closing ALPHA timed out".to_owned())?;
+    b.type_text("three\r");
+    b.wait("BRAVO after ALPHA closed", WAIT, |r| {
+        r.contains("BRAVO-got:three")
+    })?;
+
+    // A flood in a hidden tab: C floods while hidden, B keeps answering.
+    let bytes: usize = 4 << 30;
+    let pty = spawn_child("flood", &[bytes.to_string(), "plain".to_owned()])?;
+    let mut c = Rig::start(pty, config(true))?;
+    c.session().set_visible(false);
+    c.pump_for(Duration::from_millis(300));
+    let started = Instant::now();
+    let mut worst = Duration::ZERO;
+    for i in 0..10 {
+        let line = format!("k{i}");
+        let sent = Instant::now();
+        b.type_text(&format!("{line}\r"));
+        let want = format!("BRAVO-got:{line}");
+        wait_all(&mut [&mut b, &mut c], "BRAVO's answer mid-flood", |r| {
+            r[0].contains(&want)
+        })?;
+        worst = worst.max(sent.elapsed());
+    }
+    let stats = c.stats();
+    check_bounds(&stats)?;
+    ensure(stats.bytes_read > 1 << 20, || {
+        format!("the flood barely ran: {} bytes read", stats.bytes_read)
+    })?;
+    ensure(c.close(), || {
+        "closing the hidden flood timed out".to_owned()
+    })?;
+    ensure(b.close(), || "closing BRAVO timed out".to_owned())?;
+    ok(format!(
+        "isolated both ways; B outlived A; 10 keys in {} ms (worst {} ms) beside a hidden flood (inbox {} KiB)",
+        ms(started.elapsed()),
+        ms(worst),
+        stats.inbox_high_water >> 10
+    ))
+}
+
+// ------------------------------------------------------------------------------- E11
+
+fn click(rig: &Rig, row: usize, col: usize, clicks: u8) {
+    rig.send(Command::Select(SelectCmd::Start {
+        cell: (row, col),
+        top: 0,
+        clicks,
+        extend: false,
+        column: false,
+    }));
+}
+
+/// Asks for a copy and waits for its answer; the text.
+fn copy_text(rig: &mut Rig) -> Result<String, String> {
+    let before = rig.seen.copied.len();
+    rig.send(Command::CopySelection);
+    rig.wait("the copy's answer", WAIT, |r| r.seen.copied.len() > before)?;
+    match rig.seen.copied.last() {
+        Some(CopyResult::Text(t)) => Ok(t.clone()),
+        other => Err(format!("copy answered {other:?}")),
+    }
+}
+
+/// Selection and copy over a real PTY child: a word, a line, a drag across lines, a wrapped line
+/// copied without its soft break, and a copy with nothing selected answering nothing.
+fn e11_copy() -> CaseResult {
+    if let Some(s) = unix_only() {
+        return s;
+    }
+    let long = "0123456789".repeat(10); // 100 chars: wraps at 80 columns
+    let script = format!(r#"printf 'hello world\r\nsecond line\r\n%s\r\n' '{long}'; read l"#);
+    let pty = spawn_pty(Path::new("/bin/sh"), &strs(&["-c", &script]))?;
+    let mut rig = Rig::start(pty, config(true))?;
+    rig.wait("the printed lines", WAIT, |r| r.contains("789"))?;
+
+    // Nothing selected: a copy answers nothing.
+    rig.send(Command::CopySelection);
+    rig.pump_for(Duration::from_millis(300));
+    ensure(rig.seen.copied.is_empty(), || {
+        format!("a copy with no selection answered {:?}", rig.seen.copied)
+    })?;
+
+    // A double click selects the word under it.
+    click(&rig, 0, 7, 2);
+    let word = copy_text(&mut rig)?;
+    ensure(word == "world", || format!("double click copied {word:?}"))?;
+
+    // A triple click selects the line.
+    click(&rig, 1, 3, 3);
+    let line = copy_text(&mut rig)?;
+    ensure(line == "second line", || {
+        format!("triple click copied {line:?}")
+    })?;
+
+    // A drag across two lines.
+    click(&rig, 0, 6, 1);
+    rig.send(Command::Select(SelectCmd::Drag {
+        cell: (1, 6),
+        top: 0,
+        scroll: 0,
+    }));
+    rig.send(Command::Select(SelectCmd::End));
+    let drag = copy_text(&mut rig)?;
+    ensure(drag == "world\nsecond", || {
+        format!("a drag copied {drag:?}")
+    })?;
+
+    // The wrapped line comes whole, with no break where it wrapped.
+    click(&rig, 2, 5, 3);
+    let wrapped = copy_text(&mut rig)?;
+    ensure(wrapped == long, || {
+        format!("a wrapped line copied {} chars: {wrapped:?}", wrapped.len())
+    })?;
+    ensure(rig.close(), || "close timed out".to_owned())?;
+    ok("word, line, drag and wrapped line copied from a real shell; no selection answers nothing")
+}
+
+// ------------------------------------------------------------------------------- E12
+
+/// Links over a real PTY child: an OSC 8 hyperlink (its URI arrives in an Update and its cells
+/// carry the id) and a bare URL in the same row, found by the scanner on the mirror; a hostile OSC
+/// 8 URI is carried but is not a link.
+fn e12_links() -> CaseResult {
+    if let Some(s) = unix_only() {
+        return s;
+    }
+    let script = r#"printf '\033]8;;https://example.com/osc\033\\click\033]8;;\033\\ and https://example.org/bare ok\r\n\033]8;;file:///etc/passwd\033\\evil\033]8;;\033\\ http://user@host/x\r\n'; read l"#;
+    let pty = spawn_pty(Path::new("/bin/sh"), &strs(&["-c", script]))?;
+    let mut rig = Rig::start(pty, config(true))?;
+    rig.wait("the printed rows", WAIT, |r| r.contains("evil"))?;
+    ensure(
+        rig.seen
+            .link_uris
+            .iter()
+            .any(|(_, u)| u == "https://example.com/osc"),
+        || {
+            format!(
+                "the OSC 8 URI did not reach the Update: {:?}",
+                rig.seen.link_uris
+            )
+        },
+    )?;
+    let uris: UriTable = rig.seen.link_uris.iter().cloned().collect();
+    let scan = |row: usize| {
+        let mut out = Vec::new();
+        scan_row(rig.grid.row(row).expect("row"), row, &uris, &mut out);
+        out
+    };
+    let first = scan(0);
+    let kinds: Vec<_> = first
+        .iter()
+        .map(|s| (s.uri.as_str(), matches!(s.kind, LinkKind::Osc8(_))))
+        .collect();
+    ensure(
+        kinds
+            == [
+                ("https://example.com/osc", true),
+                ("https://example.org/bare", false),
+            ],
+        || format!("row 0 spans: {first:?}"),
+    )?;
+    // `click` is columns 0..=4.
+    ensure((first[0].start, first[0].end) == (0, 4), || {
+        format!("OSC 8 columns {first:?}")
+    })?;
+    // The hostile ones: a file: hyperlink and userinfo in plain text give nothing to click.
+    let second = scan(1);
+    ensure(second.is_empty(), || {
+        format!("row 1 should have no link: {second:?}")
+    })?;
+    ensure(rig.close(), || "close timed out".to_owned())?;
+    ok("an OSC 8 link and a bare URL found on a real session's rows; file: and userinfo refused")
+}
+
+// ------------------------------------------------------------------------------- E13
+
+/// A directory this run creates (it must not exist): the user's real home and config directory
+/// are never touched.
+fn scratch_dir(tag: &str) -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir().join(format!("luneterm-e13-{}-{tag}", std::process::id()));
+    ensure(!dir.exists(), || {
+        format!("{} already exists", dir.display())
+    })?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create scratch: {:?}", e.kind()))?;
+    // The shell reports the real path (macOS's temp dir is behind a symlink).
+    std::fs::canonicalize(&dir).map_err(|e| format!("canonicalize: {:?}", e.kind()))
+}
+
+/// The path of `name` on `PATH`, or `None`.
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
+}
+
+/// One real shell started through the integration, with a scratch home (so none of the user's own
+/// rc files, history or config is read or written), a scratch config directory for the scripts,
+/// and a scratch working directory. It must report its directory and the command marks.
+fn shell_reports(shell: &Path, name: &str) -> Result<String, String> {
+    let home = scratch_dir(&format!("{name}-home"))?;
+    let cfg = scratch_dir(&format!("{name}-cfg"))?;
+    let sub = home.join("sub");
+    std::fs::create_dir(&sub).map_err(|e| format!("create sub: {:?}", e.kind()))?;
+    // A minimal rc file: a short prompt and no history, nothing else.
+    let rc = if name == "zsh" { ".zshrc" } else { ".bashrc" };
+    let text = if name == "zsh" {
+        "PROMPT='%# '\nunsetopt BEEP\n"
+    } else {
+        "PS1='$ '\n"
+    };
+    std::fs::write(home.join(rc), text).map_err(|e| format!("write rc: {:?}", e.kind()))?;
+
+    let settings = Settings {
+        shell: shell.display().to_string(),
+        ..Settings::default()
+    };
+    let home_text = home.display().to_string();
+    let mut env = spawn::env(&settings, &|k| std::env::var(k).ok());
+    env.push(("HOME".to_owned(), home_text.clone()));
+    let var = |k: &str| match k {
+        "HOME" => luneterm::shell_integration::Var::Set(home_text.clone()),
+        _ => luneterm::shell_integration::Var::Unset,
+    };
+    let mut install = || luneterm::shell_integration::install(&cfg).ok();
+    let list = spawn::spawn_list(
+        &settings,
+        spawn::Os::HOST,
+        &env,
+        Some(&home),
+        &var,
+        &mut install,
+    );
+    ensure(
+        list.len() == 1 && (list[0].env.len() > env.len() || !list[0].args.is_empty()),
+        || format!("{name}: integration did not change the spawn"),
+    )?;
+    let (pty, _) = spawn::first_spawned(&list, |o| {
+        lune_pty::PortablePtyBackend::new().spawn(o, pty_size())
+    })
+    .map_err(|f| format!("{name}: spawn {:?}", f.kind))?;
+    let mut rig = Rig::start(pty, config(true))?;
+    let wanted = home.display().to_string();
+    // The first prompt: the directory, then D and A.
+    rig.wait(&format!("{name}'s first directory report"), WAIT, |r| {
+        r.seen.cwds.last().is_some_and(|c| c == &wanted)
+            && r.seen.marks.contains(&CommandMarkKind::PromptStart)
+    })?;
+    // A command: C at its start, D and A at its end, the directory after a cd.
+    rig.type_text("echo integrated-ok\r");
+    rig.wait(&format!("{name}'s output mark"), WAIT, |r| {
+        r.seen.marks.contains(&CommandMarkKind::OutputStart) && r.contains("integrated-ok")
+    })?;
+    rig.type_text("cd sub\r");
+    let want_sub = sub.display().to_string();
+    rig.wait(&format!("{name}'s directory after cd"), WAIT, |r| {
+        r.seen.cwds.last().is_some_and(|c| c == &want_sub)
+    })?;
+    let kinds = rig.seen.marks.clone();
+    for k in [
+        CommandMarkKind::OutputStart,
+        CommandMarkKind::CommandFinished,
+        CommandMarkKind::PromptStart,
+    ] {
+        ensure(kinds.contains(&k), || {
+            format!("{name}: no {k:?} mark in {kinds:?}")
+        })?;
+    }
+    ensure(rig.close(), || format!("{name}: close timed out"))?;
+    // Only our own scratch directories are removed.
+    for d in [home, cfg] {
+        std::fs::remove_dir_all(&d).map_err(|e| format!("remove scratch: {:?}", e.kind()))?;
+    }
+    Ok(format!(
+        "{name}: cwd and C/D/A marks seen ({} marks)",
+        kinds.len()
+    ))
+}
+
+/// A real zsh and a real bash, started through the integration scripts, report the directory
+/// (OSC 7) and the command marks (OSC 133) the app reads; skipped, with the reason printed, for a
+/// shell that is not installed.
+fn e13_shell_integration() -> CaseResult {
+    if let Some(s) = unix_only() {
+        return s;
+    }
+    let mut done = Vec::new();
+    let mut absent = Vec::new();
+    for name in ["zsh", "bash"] {
+        match find_on_path(name) {
+            Some(path) => done.push(shell_reports(&path, name)?),
+            None => absent.push(name),
+        }
+    }
+    if done.is_empty() {
+        return skipped(format!("no zsh or bash on PATH ({absent:?})"));
+    }
+    if !absent.is_empty() {
+        eprintln!("E13: not run, shell absent: {absent:?}");
+    }
+    ok(done.join("; "))
 }

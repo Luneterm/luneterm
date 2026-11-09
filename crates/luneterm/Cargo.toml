@@ -16,6 +16,17 @@ lune-termview.workspace = true
 winit = "0.30"
 wgpu = "30"
 pollster = "0.4"
+# The platform config directory for settings.json and workspace.json (plan M10 D17).
+dirs = "6"
+
+# `geteuid` for the shell-integration directory's owner check (shell_integration/mod.rs); already
+# in the lock through winit and the toolkit.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# `ShellExecuteW` to open a link (links/open.rs, D4): the one Windows API the app calls itself.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 # The DLL-search test (tests/dll_search_gpu.rs) loads and inspects modules.
 [target.'cfg(windows)'.dev-dependencies]

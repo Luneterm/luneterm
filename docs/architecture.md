@@ -10,16 +10,14 @@ crates/
                   parser-trace and screen runners for lune-vt. See "lune-vt parser".
   lune-pty        Pty / PtyBackend traits; PortablePtyBackend (portable-pty 0.9.0: ConPTY on Windows,
                   openpty on Unix) with raw-mode and foreground-process queries. See "lune-pty".
-  lune-ui         The glass UI toolkit. For luneterm and lune-termview this is the luneui-rs facade
-                  (0.2.0), a git dependency pinned at one rev in the root `Cargo.toml` (and in
-                  `scripts/check-deps.sh`). The in-tree 0.1.0 in this directory serves only
-                  `spikes/glass-ui` until M10 retires both. See "lune-ui (toolkit)".
   lune-termview   Engine-agnostic cell grid renderer: glyph atlas, instanced quads, GPU-drawn inside
-                  a lune-ui frame. Depends on lune-ui. See "lune-termview".
+                  a lune-ui frame. Depends on lune-ui (luneui-rs, below). See "lune-termview".
   luneterm-ffi    C ABI over lune-vt for Lunegit (header `include/luneterm.h`). See "luneterm-ffi (C ABI)".
-  luneterm        The app (lib + bin): window, frame loop, one session per terminal, input routing,
-                  spawn, settings. See "luneterm app".
-spikes/glass-ui   Reference consumer of the in-tree lune-ui (mock terminal, settings, menus) and its pixel gate.
+  luneterm        The app (lib + bin): window, frame loop, tabs (one session per tab), selection,
+                  links, input routing, spawn, settings and their files, shell integration.
+                  See "luneterm app".
+(no lune-ui crate: the toolkit is luneui-rs, a git dependency pinned at one rev in the root
+ `Cargo.toml` and in `scripts/check-deps.sh`; see "lune-ui (toolkit)")
 tools/xterm-oracle  Real xterm.js 6.0.0, used to generate differential-test expectations.
 scripts/          Dev scripts (xterm.js reference, Linux check, library boundary check, dependency
                   source check).
@@ -29,10 +27,8 @@ docs/             Decisions, porting guide, styling spec, bug ledger.
 ## Dependency direction
 
 `luneterm` → `lune-termview` → `lune-ui` (luneui-rs, git rev); `luneterm` → `lune-ui` (luneui-rs),
-`lune-vt`, `lune-pty`; `luneterm-ffi` → `lune-vt`; `glass-ui` → the in-tree `lune-ui` 0.1.0. The
-engine depends on nothing, so it can be tested, fuzzed and embedded on its own. No `lune-*` crate
-depends on an app crate (`luneterm*`, `glass-ui`). Two packages named `lune-ui` are in the lock
-until M10, so a bare `cargo ... -p lune-ui` is ambiguous: use `-p lune-ui@0.1.0` or `@0.2.0`.
+`lune-vt`, `lune-pty`; `luneterm-ffi` → `lune-vt`. The engine depends on nothing, so it can be
+tested, fuzzed and embedded on its own. No `lune-*` crate depends on an app crate (`luneterm*`).
 `scripts/check-deps.sh` reads `cargo metadata --locked` and fails on any package outside the
 workspace, crates.io and that one luneui-rs rev (`[patch]`, source replacement and branch or tag
 pins included); CI runs it and builds with `--locked`.
@@ -46,25 +42,12 @@ its first real consumer, and the two components it owes evidence for, is in
 `docs/luneui-rs-handoff.md`. Luneterm never patches the toolkit (roadmap D23): a gap is recorded
 there and worked around app-side.
 
-**In-tree `crates/lune-ui` (0.1.0, spike only)** keeps the M1 module split below until M10 retires it with the spike:
-
-| Module | Holds |
-|---|---|
-| `color` | `Rgba = [u8; 4]` (straight alpha), premultiply and blend helpers |
-| `theme` | `Theme` (tokens widgets read) and the `lunegit_dark` preset: `THEME` plus the glass layers `WINDOW`, `PANEL`, `CARD` |
-| `acrylic` | Avalonia acrylic colour math (tested) and the noise opacity |
-| `paint` | `Painter<H>`: immediate-mode layers, hit regions (`H` is the app's hit type), clip, transform |
-| `widgets` | Controls generic over `H`; `widgets::menu`, `dropdown` and `dialog` for the overlays |
-| `text`, `icon` | Shaped-text cache over glyphon (the app registers its fonts), Codicon glyphs |
-| `gpu`, `blur`, `frame` | wgpu setup and pipelines, the Avalonia noise texture (`assets/acrylic-noise.png`), backdrop blur, and the scene → blur → target pass sequence (`FrameRenderer`) |
-| `dump` | Offscreen targets and GPU readback to PNG (no screen capture) |
-| `chrome` | Tab chrome loop geometry |
-| `material` | `Material` and `apply(window, Material)`: OS backdrop per platform in `#[cfg]` submodules (the only `unsafe` is `material/macos.rs`) |
-| `window` | Glass window attributes, `edge_at`, `DoubleClick`, `caption_buttons` |
-
-The app owns the winit event loop. The toolkit never starts a loop or reads the clock or the
-environment: the app passes time, sizes, fonts, theme and hit values in, which keeps frames
-deterministic.
+The in-tree toolkit (the first `lune-ui` package, 0.1.0) and its reference consumer, the glass UI spike, were
+retired in M10 step 12: nothing imported them but each other (`cargo tree -i lune-ui@0.1.0` listed
+only the spike), and the pieces the app still needed (the palettes, the settings model, the
+menus) had moved into `crates/luneterm` in step 6. The app owns the winit event loop; the toolkit
+never starts a loop or reads the clock or the environment: the app passes time, sizes, fonts,
+theme and hit values in, which keeps frames deterministic.
 
 ## lune-termview
 
@@ -88,7 +71,9 @@ the grid (in the app, `session::apply_update` from the engine thread's Updates; 
   strikethrough, overline), cursor, selection, link hover. Glass, scrollbar and chrome are drawn by
   the app around the grid.
 - **Text:** one-line cosmic-text shaping per cluster (`Shaping::Advanced`, with fallback),
-  cached by (text, bold, italic). Clusters with U+FE0F try `TermFonts.emoji_family` first. Glyphs
+  cached by (text, bold, italic). Clusters with U+FE0F try `TermFonts.emoji_family` first; a
+  private-use code point the terminal's own family lacks comes from `TermFonts.icon_family`, ahead
+  of the platform's fallback list. Glyphs
   sit in an etagere atlas (a mask page and a colour page) keyed by cosmic `CacheKey` (font id,
   glyph id, size, subpixel bin, weight, flags) or, for procedural glyphs, `AtlasKey::Custom`.
   Ligatures (ledger 15) are not shaped yet; whole-row shaping can reuse the same key later.
@@ -262,6 +247,24 @@ XTVERSION name `ExtensionError::InvalidXtversion` (nothing is registered then).
 - Send paste text only through `Terminal::paste` / `paste_bytes`; never write clipboard text to the
   PTY directly. **Done:** `Command::Paste` is the only path from the clipboard to the PTY
   (`session/engine.rs` runs `Terminal::paste`; e2e E3 checks the bytes).
+- Selection (M10 step 3): the model and the word, line and wrapped-line rules are a port of
+  xterm.js's `SelectionModel` and `SelectionService` in `crates/luneterm/src/session/selection.rs`,
+  on the engine thread (the UI never holds a `Terminal`). The UI sends `Command::Select` with
+  viewport cells and `Command::CopySelection`; an Update carries `selection` (buffer coordinates,
+  only when it changed) and `selection_text` (at most 32 MiB, else `CopyResult::TooLarge` and a
+  toast). A marker on the anchor line follows trim (`Terminal::dispose_marker` frees it); a
+  vertical resize, a buffer switch and typing clear the selection.
+- Links (M10 step 4): `crates/luneterm/src/links/`. `scan.rs` ports Lunegit's link scanner (OSC 8
+  runs by the engine's link id plus bare `http(s)://` text) and runs on demand over the row under
+  the pointer; `open.rs` is the only code that opens anything: a closed URL grammar (`check_url`)
+  applied at open, then one argv element to `/usr/bin/open`, `xdg-open` or `ShellExecuteW`
+  (`unsafe` lives in that Windows module). Hovering a link `check_url` accepts underlines it and,
+  after the toolkit's tooltip delay (`Ui::tooltip` over a hover-only region on the link's cells),
+  shows `tip_url` (the checked URI, shortened for display only: the host is never cut at its start)
+  and the hint "Cmd+click to open" (macOS) or "Shift+click to open"; a refused link has neither.
+  The pointer is a hand only while the modifier is held. A Cmd-click (macOS) or Shift-click opens
+  (Shift also on macOS), a drag selects. The row under the pointer is read on pointer moves and
+  once after output that hid a shown hover, never on output alone.
 - Own the clipboard setting: `StandardExtensions::clipboard_write` and `set_clipboard_write`
   (default `false`). `ClipboardWrite` arrives only while it is on; the host decides what to do
   with the text (no query is ever answered). **Done:** `Settings.osc_clipboard` (default on, as
@@ -272,10 +275,18 @@ XTVERSION name `ExtensionError::InvalidXtversion` (nothing is registered then).
   `build_terminal`).
 - Route `CwdChanged` (new-tab directory), `Progress` and `CommandMark` / `SyncUpdateInCommand` to
   the UI; validate a cwd before using it (the engine only guarantees no control characters, at most
-  4096 bytes and a non-empty text). **Partly:** the session puts all four in the `Update`
-  (`session/update.rs`, marks capped at 64 per Update), unvalidated; nothing in the app consumes
-  them yet. M10 (tabs, new-tab directory, run indicators) validates and uses them.
-- Call `reset_keyboard_protocol()` when the foreground process changes (M10 wires it).
+  4096 bytes and a non-empty text). **Done (M10):** the session puts all four in the `Update`
+  (`session/update.rs`, marks capped at 64 per Update). A reported directory is checked by
+  `cwd::syntax` (no filesystem call; a path that begins with two separators is refused on every
+  OS, because a `stat` of `\\host\share` on Windows would start an SMB handshake with a host the
+  session chose) and `cwd::validated` (stats, so only off the UI thread) before a tab starts in
+  it; it feeds the new-tab directory, `workspace.json` and "Copy Working Directory". Progress
+  and the marks feed the running-outline cue (`outline.rs`, "Tabs" below).
+- Call `reset_keyboard_protocol()` when the foreground process changes. **Done (M10 step 1,
+  ledger 11):** the engine thread probes the PTY (`session/engine.rs`, `ForegroundWatch`) and
+  calls it on the transition from "something else is foreground" to "the shell is" (on Windows,
+  where the foreground is unknown, on the shell's next prompt mark); flags set while a program
+  runs are never touched.
 - Not done in `lune-vt`: win32-input-mode, kitty flags 2, 8 and 16, mouse wheel to arrow keys in the
   alternate screen (the browser layer's job in xterm.js; **done by the app**, D7: one arrow per
   wheel event by DECCKM, `Command::WheelArrows`), OSC 133 options beyond the mark letter and `D`'s
@@ -793,7 +804,7 @@ The Lunegit-side swap (P/Invoke, deleting the V8 host) is not part of M8.
   slot and pool, on top of whatever the buffer already holds. The security ledger's REP chain
   construction (`rep-scroll-bottom-chain-memory`, premise "K is bounded by the display") is bounded by
   the column cap; the example's case (b) at 4096 columns peaks at 5.8 MiB. The ledger's 77 MB figure is settled by
-  the M8 security review round 10: that construction (normal buffer, Windows mode) is unreachable
+  the M8 security review round 10 (the orchestration task's `m08-ffi/security-review.md`, round 10): that construction (normal buffer, Windows mode) is unreachable
   through ABI 1, and at the caps the REP chain adds at most 0.2 MiB over the screen fill. Time is bounded by
   the column cap too: at 4096 columns narrowed to 5, an odd-width REP over rows of strings costs up
   to ~1.13 ms per input byte (41 ms for the first pair); this is user-accepted (Q28) and recorded
@@ -833,8 +844,8 @@ foreground process changes; serialize calls per handle.
 ## luneterm app
 
 `crates/luneterm` is lib + bin (`#![forbid(unsafe_code)]`; the Windows calls live in `lune-pty`). The
-bin is `luneterm::app::run()` after `lune_pty::restrict_dll_search()`. One session per terminal and
-no global state, so M10's tabs multiply sessions without a rewrite. Modules:
+bin is `luneterm::app::run()` after `lune_pty::restrict_dll_search()`. One session per tab and no
+global state (M10: a `Tab` owns a session and everything that used to be per-session on `App`). Modules:
 
 | Module | Holds |
 |---|---|
@@ -844,7 +855,13 @@ no global state, so M10's tabs multiply sessions without a rewrite. Modules:
 | `session` | The three-thread session below, `Update`, `apply_update`, the fake PTY and the protocol tests |
 | `input` | `keys` (winit `KeyEvent` to `KeyRoute`), `shortcuts`, `pointer` (mouse, wheel) |
 | `spawn` | Shell candidates, cwd, environment, `WindowsPty` |
-| `title`, `settings`, `fonts`, `dump`, `demo` | Title sanitizer; the settings model (Lunegit's `TerminalSettings` defaults, in memory only, no file and no UI until M10); the four bundled faces plus system fonts; `LUNETERM_DUMP_FRAMES`; the dump mode's placeholder grid |
+| `shell_integration` | The scripts the user's shell sources (OSC 7, OSC 133), their checked install under the config directory, and what they add to a spawn (see "Shell integration" above) |
+| `tabs` | `Tab` (one session plus its UI-side state), `TabSet` (order, active, next focus after a close: pure list logic), the close rules (`asks_on_close`, `ClosePlan`), tab names |
+| `links` | `scan` (OSC 8 runs and bare `http(s)://` text), `open` (the closed URL grammar and the only code that opens anything), hover state |
+| `persist` | `settings.json` and `workspace.json`: bounded JSON reader and writer, atomic 0600 writes, versioned, `.bak` on a file it cannot read, `SaveGuard` (ledger 12) |
+| `cwd` | The host's check of a directory a shell reported (`syntax`, `validated`) |
+| `outline`, `menus`, `palettes`, `settings_page` | The running-outline gate and command tracker; the app and terminal menus as data; the ten palettes (saved by name); the settings page model and its one draw function |
+| `title`, `settings`, `fonts`, `dump`, `demo` | Title sanitizer; the settings model (Lunegit's `TerminalSettings` defaults; every field has a `SettingId` and an `Effect`); the eight bundled faces plus system fonts; `LUNETERM_DUMP_FRAMES`; the dump mode's placeholder grid |
 
 **Threads (D1).** Each session runs three: `luneterm-reader` blocks on the PTY and fills the inbox;
 `luneterm-engine` owns the `Terminal` and the `Box<dyn Pty>`; `luneterm-writer` owns one `PtyWriter`
@@ -931,6 +948,39 @@ build comes from `RtlGetVersion`, `lune_pty::conpty_build()`). Window reports ar
 xterm.js's format, but window options stay at the xterm.js and Lunegit defaults (all off), so in M9
 they are never emitted; tools that want pixel sizes read `TIOCGWINSZ`, which the PTY size fills.
 
+**Tabs (M10 step 2, D1, D7, D13).** The strip is the toolkit's; the app decides cues and when to ask.
+New, close, close others, switch, rename, reorder and duplicate go through `TabSet`, which is tested
+without a window. Shortcuts (`input/shortcuts.rs`): macOS Cmd+T, Cmd+W, Cmd+Shift+[ and ], Cmd+1 to
+9, Cmd+C, Cmd+, ; elsewhere Ctrl+Shift+T, Ctrl+Shift+W, Ctrl+Tab, Ctrl+Shift+Tab, Alt+1 to 9,
+Ctrl+Shift+C, Ctrl+, . Closing a tab asks only when something would be lost (`tabs::asks_on_close`):
+when the foreground probe knows, if a program other than the shell runs; when it cannot (Windows),
+only if the shell-integration marks say a command runs (D7), so an idle tab never asks. The
+engine thread probes the foreground process and the line discipline (`raw_mode`) at most every
+second when idle and every 250 ms while output flows or a command runs, and publishes the result in an `Update` only
+when it changed (D3); the UI never touches the `Pty`. The running-outline cue is
+`outline::should_show` (a port of Lunegit's `TerminalRunningOutlineGate`) over `CommandTracker`,
+which follows the OSC 133 marks and whether the program consumes keystrokes; progress (OSC 9;4)
+sets the cue's tone. `scripts/cpu-sample.sh` samples a process's CPU for the outline's budget
+(ledger 16).
+
+**Persistence (M10 step 5, D5, D17, ledger 12).** `<config dir>/Luneterm` (`dirs::config_dir()`;
+`LUNETERM_CONFIG_DIR` overrides it, as the dump mode and the trial runs do) is created 0700 on
+Unix and holds `settings.json` and `workspace.json`, both `{"version": 1, ...}`. Both are read
+through the toolkit's bounded JSON reader and written by `persist/json_write.rs`; a write creates a
+uniquely named 0600 file with `create_new`, syncs and renames it over the target, so a symlink or a
+file already at the temporary name is never followed. A missing file is the defaults and writes
+nothing; a file that is not JSON, over the limits, not an object or of an unknown version is copied
+to `<name>.bak` (a backup is never overwritten), the defaults run, and the file stays until the user
+changes something; a file over the size cap or not a regular file is not read and not saved over.
+Enums, the font and the palette are saved by name, never by index. Nothing read from either file is
+executed; the one value that names a program, `shell`, is the user's own setting, and the workspace
+holds directories and titles only (each directory goes through `cwd::validated` before a tab
+starts in it, at most 32 tabs). `SaveGuard` is ledger 12: no workspace write while any tab shows
+a failed start, nor after a tab that died within 3 s of its start until the user acts on the tabs.
+
+**Selection and links** are described with the host duties above (engine-thread selection
+model; the closed URL grammar and the argv or `ShellExecuteW` open).
+
 **Spawn (D11, D12).** Shell: the setting if set, else the Unix login shell (`program: None`, as
 Lunegit's `$SHELL -l`); on Windows `pwsh.exe`, then `powershell.exe`, then `%ComSpec%`. A candidate
 that is not found moves on to the next; any other error stops. cwd: the setting if it is an existing
@@ -940,19 +990,47 @@ unset) `LC_CTYPE=UTF-8` on macOS or `C.UTF-8` on Linux, because a Finder-launche
 otherwise run in the C locale. When the child exits the window closes and the app quits; if no
 candidate spawns the grid shows "Failed to start terminal" with the error kind and stays open.
 
+**Shell integration (M10 step 7, D12).** With the `shell_integration` setting on (the default) and a
+config directory, `spawn::launch_with` writes `<config dir>/shell-integration` (scripts ported from
+Lunegit's `TerminalShellIntegrator`, text constant) and starts a zsh, bash or PowerShell through them,
+so the shell reports its directory (OSC 7, OSC 9;9) and command marks (OSC 133). This changes the
+spawn, so the paragraph above holds only with it off or for any other shell: zsh gets `ZDOTDIR`
+(ours) and `LUNETERM_USER_ZDOTDIR` (the user's) added to the environment; a bash with no arguments or
+`-l` runs as `bash --rcfile <ours> -i` (for the login shell, with `$SHELL` as the program, since
+arguments need one); PowerShell with no arguments gets `-NoExit -Command <read our script>` (the
+script's path single-quoted, every quote doubled). On Unix the directory, its three subdirectories
+and each script are `lstat`-checked before use (real, owned by the effective user, no group or other
+write); a failed check, or any error, skips integration for that spawn and the shell starts as
+without it. The directory is created 0700 and the scripts 0600, written through a temporary name and
+renamed. On Windows the directory is under `%APPDATA%`, whose user-only default ACL is assumed
+(plan assumption A3), and only PowerShell is integrated. `shell_integration = false` leaves the
+environment and argv exactly as before (a test pins it).
+
+**Environment (M10).** Read by the app: `LUNETERM_CONFIG_DIR` (replaces the platform config
+directory; read once, in `app::run`), `LUNETERM_DUMP_FRAMES` (dump mode, no window) with
+`LUNE_REQUIRE_GPU` (a missing adapter becomes a failure), `SHELL` (the login shell's name when
+integration needs one), `ZDOTDIR` and `HOME` (where the user's zsh files are), `LC_ALL`, `LC_CTYPE`
+and `LANG` (the locale fallback). Added to the child's inherited environment: `TERM=xterm-256color`,
+`COLORTERM=truecolor`, `TERM_PROGRAM` and `TERM_PROGRAM_VERSION` (`Luneterm` and the crate version,
+or `iTerm.app` and `3.6.11` behind `report_iterm2`), `LC_CTYPE` when no locale variable is set, and,
+for zsh with shell integration on, `ZDOTDIR` (ours) and `LUNETERM_USER_ZDOTDIR` (the user's). The
+Windows child gets the inherited environment plus these, not portable-pty's registry merge (Q7).
+
 **Title and bell (D13, D14).** The engine keeps titles up to 10 MB; the app scans at most 4,096
 characters, drops Unicode Cc and the bidi controls (U+061C, U+200E, U+200F, U+202A to U+202E,
 U+2066 to U+2069), trims, caps at 80 characters, and uses "Luneterm" when empty; the result goes to
 the window title and the title band (a 10 MB title takes under 10 ms in the test). A bell asks for
 user attention (`Informational`) only while the window is unfocused, at most every 2 s.
 
-**Fonts and look (D15, D16).** The four bundled faces live in `crates/luneterm/assets` (RobotoMono
-Nerd Font Mono Regular and Bold until M10's RznMono gate, RznSans Regular and Medium, with their
-licences). luneui-rs's `TextCache` loads no system fonts, so the app loads them once at start
+**Fonts and look (D15, D16; M10 D9a).** The eight bundled faces live in `crates/luneterm/assets`:
+RznMono 0.007 Regular, Bold, Italic and Bold Italic (the terminal font, real faces for every
+style termview asks for), RobotoMono Nerd Font Mono Regular and Bold (the fallback for the Nerd
+icons RznMono does not have until its stage 4, and a terminal font option) and RznSans Regular and
+Medium, with their licences. luneui-rs's `TextCache` loads no system fonts, so the app loads them once at start
 (`fonts::text_cache`, 59 to 64 ms on the Apple M1 Pro) for emoji and CJK fallback. Cell
 height is `ceil(natural_line_height)`: 17 px at scale 1 and 34 at scale 2 for the bundled face at
-13 px. At 1040 x 660 the body is 1000 x 596 at (20, 44), a 125 x 35 grid. Glass: `Material::Vibrancy`
-for the default Lunegit style; Windows draws its own caption buttons.
+13 px. At 1040 x 660 the body is 1000 x 596 at (20, 44), a 125 x 35 grid. Glass: `near_black::MATERIAL`
+(UltraDark vibrancy, near-black layers; `docs/glass-styling.md`) for the default style, Lunegit's layers under the liquid styles; Windows draws its own caption buttons.
 
 **Windows (D17).** `main` hardens the DLL search before any winit or wgpu object ("lune-pty", above),
 the release build uses the GUI subsystem (`windows_subsystem = "windows"`), and CI uploads
@@ -988,10 +1066,10 @@ bounds are 5x the debug median, not a product claim.
 - *Windows CI* (run 42477613074 at b535456): the e2e harness ran 10 cases with 0 failures; E2 to E5
   and E9 need a Unix tty (`stty`) and skip there; the GPU initialized on the runner.
 
-**Not in M9, for M10:** tabs and the tab strip, selection and copy, a settings file and UI, wiring
-`reset_keyboard_protocol()` and the consumers of cwd, progress and marks, a GUI run on Windows (the
-VM run of roadmap P15 and P20 is pending M10), and real IME typing (verified only by the hands-on
-run).
+**M10 closed what M9 left:** tabs, selection and copy, the settings file and page, the kitty reset
+and the consumers of cwd, progress and marks, and the Windows GUI run (claude-vm-win, step 8; the
+results are in `docs/luneui-rs-handoff.md`). Real IME typing is still verified only by hand (no
+input method was installed on the VM).
 
 ## Extension points
 
@@ -1013,10 +1091,9 @@ Where the repo can be cut later (nothing is split yet):
   takes `tools/xterm-oracle`, the goldens and the conformance harness with it.
 - `lune-ui` moved to its own project, `~/Projects/luneui-rs` (decided 2026-11-03). Luneterm
   consumes it as a git dependency pinned at one rev (M9, roadmap D22; the app and `lune-termview`
-  use it). The in-tree `crates/lune-ui` 0.1.0 stays only for `spikes/glass-ui` until M10 retires
-  both; a toolkit bump edits the rev in the root `Cargo.toml` and in
-  `scripts/check-deps.sh` in one reviewed change. `lune-termview` stays in Luneterm (luneui-rs D8).
-  `luneterm` is lib + bin so M10's tabs build on the same `session`, `input` and `shell` modules.
+  use it). The in-tree toolkit and the spike were retired in M10 step 12; a toolkit bump edits
+  the rev in the root `Cargo.toml` and in `scripts/check-deps.sh` in one reviewed change. `lune-termview` stays in Luneterm (luneui-rs D8).
+  `luneterm` is lib + bin: the tabs, settings and links build on the same `session`, `input` and `shell` modules.
   Where `lune-pty` goes is undecided.
 
 Invariants that keep a split cheap:
@@ -1027,9 +1104,9 @@ Invariants that keep a split cheap:
 4. Every crate sets `license` (inherited from the workspace: MIT OR Apache-2.0).
 
 `scripts/check-lib-boundaries.sh` enforces them with grep rules: no `luneterm` in `lune-*`
-manifests or files; no app or terminal words in `lune-ui` (the allow list is
-`scripts/lib-boundaries.allow`); no clock or environment reads in `lune-ui/src` or `lune-termview/src` (rule 4; tests and
-examples may); every manifest inherits the licence. It runs locally and on the Linux CI job.
+manifests or files (the allow list is `scripts/lib-boundaries.allow`); no clock or environment
+reads in `lune-termview/src` (rule 3; tests and examples may); every manifest inherits the
+licence. It runs locally and on the Linux CI job.
 
 ## Threading
 

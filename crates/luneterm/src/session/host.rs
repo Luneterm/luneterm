@@ -69,6 +69,42 @@ impl ColorState {
         &self.current
     }
 
+    /// A new theme: every colour the child has not changed (it still equals the old theme's)
+    /// becomes the new theme's; a colour the child set stays, and a restore returns to the new
+    /// theme. Returns whether the live palette changed.
+    pub(crate) fn set_theme(&mut self, theme: HostPalette) -> bool {
+        let old = std::mem::replace(&mut self.theme, theme);
+        let before = self.current.clone();
+        for (cur, (old, new)) in self
+            .current
+            .ansi
+            .iter_mut()
+            .zip(old.ansi.iter().zip(&self.theme.ansi))
+        {
+            if cur == old {
+                *cur = *new;
+            }
+        }
+        for (cur, old, new) in [
+            (
+                &mut self.current.foreground,
+                old.foreground,
+                self.theme.foreground,
+            ),
+            (
+                &mut self.current.background,
+                old.background,
+                self.theme.background,
+            ),
+            (&mut self.current.cursor, old.cursor, self.theme.cursor),
+        ] {
+            if *cur == old {
+                *cur = new;
+            }
+        }
+        self.current != before
+    }
+
     /// Applies one request: a report returns its reply bytes; a set or a restore changes the
     /// palette and returns `None` (`changed` is set).
     pub(crate) fn apply(&mut self, request: ColorRequest, changed: &mut bool) -> Option<Vec<u8>> {

@@ -1,0 +1,6 @@
+The *.txt files here are the standard licence and exception texts of the SPDX License List,
+verbatim from https://github.com/spdx/license-list-data (tag v3.29.0, directory `text/`).
+They are used by scripts/gen-licenses.py for a crate that ships no licence file of its own; the
+copyright line of a template (MIT, BSD) is the template's placeholder, not a claim about the crate.
+An SPDX id that appears in a crate's licence expression and has no file here fails
+`scripts/gen-licenses.py --check`: add the text from the list, never write one by hand.

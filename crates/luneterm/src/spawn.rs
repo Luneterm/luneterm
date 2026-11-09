@@ -10,6 +10,7 @@ use lune_pty::{Pty, PtyBackend, PtySize, SpawnOptions};
 use lune_vt::services::options_service::{PtyBackendKind, WindowsPty};
 
 use crate::settings::Settings;
+use crate::shell_integration;
 
 /// The version the app reports (`TERM_PROGRAM_VERSION`, XTVERSION).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -177,12 +178,110 @@ pub fn launch(
     settings: &Settings,
     size: PtySize,
 ) -> Result<(Box<dyn Pty>, String), SpawnFailure> {
+    launch_in(backend, settings, size, None)
+}
+
+/// [`launch`] in `cwd` when given (a directory the caller already checked, see `cwd::validated`),
+/// else in the settings' directory. No shell integration (see [`launch_with`]).
+pub fn launch_in(
+    backend: &dyn PtyBackend,
+    settings: &Settings,
+    size: PtySize,
+    cwd: Option<&Path>,
+) -> Result<(Box<dyn Pty>, String), SpawnFailure> {
+    launch_with(backend, settings, size, cwd, None)
+}
+
+/// [`launch_in`] with shell integration when the setting is on and `config_dir` (the app's
+/// config directory) is given: the scripts are installed under it on first need, and a shell
+/// that has them is started through them. Any problem with them leaves the spawn as it would be
+/// without integration.
+pub fn launch_with(
+    backend: &dyn PtyBackend,
+    settings: &Settings,
+    size: PtySize,
+    cwd: Option<&Path>,
+    config_dir: Option<&Path>,
+) -> Result<(Box<dyn Pty>, String), SpawnFailure> {
     let env = env(settings, &|k| std::env::var(k).ok());
-    let mut list = candidates(settings, Os::HOST);
-    for options in &mut list {
-        options.env.clone_from(&env);
-    }
+    let mut installed: Option<Option<shell_integration::Install>> = None;
+    let mut install = || {
+        installed
+            .get_or_insert_with(|| {
+                let dir = config_dir?;
+                match shell_integration::install(dir) {
+                    Ok(i) => Some(i),
+                    Err(skip) => {
+                        // The reason only: never a path.
+                        eprintln!("luneterm: shell integration skipped: {skip:?}");
+                        None
+                    }
+                }
+            })
+            .clone()
+    };
+    let list = spawn_list(
+        settings,
+        Os::HOST,
+        &env,
+        cwd,
+        &shell_integration::process_var,
+        &mut install,
+    );
     first_spawned(&list, |options| backend.spawn(options, size))
+}
+
+/// The programs to try, each with its environment, directory and, when `install` gives the
+/// scripts, shell integration. `install` is asked only when the setting is on and a candidate is
+/// a shell it integrates, so with the setting off the list is exactly [`candidates`] with `env`
+/// and `cwd` (a test pins it).
+pub fn spawn_list(
+    settings: &Settings,
+    os: Os,
+    env: &[(String, String)],
+    cwd: Option<&Path>,
+    var: &dyn Fn(&str) -> shell_integration::Var,
+    install: &mut dyn FnMut() -> Option<shell_integration::Install>,
+) -> Vec<SpawnOptions> {
+    let mut list = candidates(settings, os);
+    for options in &mut list {
+        options.env = env.to_vec();
+        if let Some(dir) = cwd {
+            options.cwd = Some(dir.to_path_buf());
+        }
+        if !settings.shell_integration {
+            continue;
+        }
+        let program = options.program.as_deref().and_then(Path::to_str);
+        if options.program.is_some() && program.is_none() {
+            continue;
+        }
+        // Only a shell it knows asks for the scripts to be written at all.
+        let name = match program {
+            Some(p) => p.to_owned(),
+            None => match var("SHELL") {
+                shell_integration::Var::Set(s) if os != Os::Windows => s,
+                _ => continue,
+            },
+        };
+        if matches!(
+            shell_integration::detect_kind(&name, os),
+            shell_integration::ShellKind::Fish
+                | shell_integration::ShellKind::Cmd
+                | shell_integration::ShellKind::Unknown
+        ) {
+            continue;
+        }
+        let Some(scripts) = install() else { continue };
+        if let Some(aug) = shell_integration::augment(&scripts, program, &options.args, var, os) {
+            if let Some(p) = aug.program {
+                options.program = Some(p);
+            }
+            options.args = aug.args;
+            options.env.extend(aug.env);
+        }
+    }
+    list
 }
 
 /// The lines the grid shows when nothing started.
@@ -412,5 +511,146 @@ mod tests {
         });
         assert_eq!(lines[0], "Failed to start terminal");
         assert_eq!(lines[1], "NotFound: pwsh.exe");
+    }
+
+    // ------------------------------------------------------------------ shell integration
+
+    fn fake_scripts() -> shell_integration::Install {
+        // Only its text is used; nothing here touches a disk.
+        shell_integration::install_for_tests("/cfg/shell-integration")
+    }
+
+    fn var_of<'a>(set: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> shell_integration::Var + 'a {
+        move |k| {
+            set.iter()
+                .find(|(name, _)| *name == k)
+                .map_or(shell_integration::Var::Unset, |(_, v)| {
+                    shell_integration::Var::Set((*v).to_owned())
+                })
+        }
+    }
+
+    /// With the setting off, the spawn list is exactly the candidates with the app's environment
+    /// and directory: the scripts are never asked for, whatever shell and arguments.
+    #[test]
+    fn with_integration_off_the_spawn_is_identical_to_one_without_it() {
+        let env = vec![("TERM".to_owned(), "xterm-256color".to_owned())];
+        let cwd = std::env::temp_dir();
+        for os in [Os::Macos, Os::Linux, Os::Windows] {
+            for (shell, args) in [
+                ("", ""),
+                ("/bin/zsh", "-l"),
+                ("/bin/bash", ""),
+                ("/bin/bash", "-l"),
+                ("pwsh.exe", ""),
+                ("/usr/bin/fish", ""),
+            ] {
+                let off = Settings {
+                    shell: shell.into(),
+                    shell_args: args.into(),
+                    shell_integration: false,
+                    ..Settings::default()
+                };
+                let mut never = || -> Option<shell_integration::Install> {
+                    panic!("integration is off: the scripts must not be asked for")
+                };
+                let got = spawn_list(
+                    &off,
+                    os,
+                    &env,
+                    Some(&cwd),
+                    &var_of(&[("SHELL", "/bin/zsh"), ("HOME", "/h")]),
+                    &mut never,
+                );
+                let mut want = candidates(&off, os);
+                for o in &mut want {
+                    o.env.clone_from(&env);
+                    o.cwd = Some(cwd.clone());
+                }
+                let fields = |l: &[SpawnOptions]| -> Vec<_> {
+                    l.iter()
+                        .map(|o| {
+                            (
+                                o.program.clone(),
+                                o.args.clone(),
+                                o.cwd.clone(),
+                                o.env.clone(),
+                            )
+                        })
+                        .collect()
+                };
+                assert_eq!(fields(&got), fields(&want), "{shell:?} {args:?} on {os:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn with_integration_on_a_known_shell_gets_its_scripts_and_the_rest_is_unchanged() {
+        let env = vec![("TERM".to_owned(), "xterm-256color".to_owned())];
+        let scripts = fake_scripts();
+        let on = |shell: &str, args: &str| Settings {
+            shell: shell.into(),
+            shell_args: args.into(),
+            ..Settings::default()
+        };
+        let home = if cfg!(windows) {
+            "C:\\Users\\ann".to_owned()
+        } else {
+            "/Users/ann".to_owned()
+        };
+        let vars = [("SHELL", "/bin/zsh"), ("HOME", home.as_str())];
+        let var = var_of(&vars);
+        let mut asked = 0;
+        let mut install = || {
+            asked += 1;
+            Some(scripts.clone())
+        };
+        // The login shell is zsh: ZDOTDIR and the user's directory join the environment.
+        let list = spawn_list(&on("", ""), Os::Macos, &env, None, &var, &mut install);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].program, None);
+        assert!(list[0].args.is_empty());
+        assert_eq!(value(&list[0].env, "TERM"), Some("xterm-256color"));
+        assert!(value(&list[0].env, "ZDOTDIR").is_some());
+        assert_eq!(
+            value(&list[0].env, "LUNETERM_USER_ZDOTDIR"),
+            Some(home.as_str())
+        );
+        // An explicit bash with the default arguments gets the rc file.
+        let list = spawn_list(
+            &on("/bin/bash", "-l"),
+            Os::Linux,
+            &env,
+            None,
+            &var,
+            &mut install,
+        );
+        assert_eq!(list[0].program.as_deref(), Some(Path::new("/bin/bash")));
+        assert_eq!(list[0].args[0], "--rcfile");
+        assert_eq!(list[0].args[2], "-i");
+        assert_eq!(list[0].env, env, "bash needs no environment");
+        // Windows tries pwsh, then powershell, then cmd: the first two get the script, cmd none.
+        let list = spawn_list(&on("", ""), Os::Windows, &env, None, &var, &mut install);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].args[0], "-NoExit");
+        assert_eq!(list[1].args[0], "-NoExit");
+        assert!(list[2].args.is_empty() && list[2].env == env);
+        assert!(asked >= 3);
+        // fish is not integrated, and does not even write the scripts.
+        let mut never = || -> Option<shell_integration::Install> { panic!("fish: no scripts") };
+        let list = spawn_list(
+            &on("/usr/bin/fish", ""),
+            Os::Linux,
+            &env,
+            None,
+            &var,
+            &mut never,
+        );
+        assert_eq!(list[0].env, env);
+        assert!(list[0].args.is_empty());
+        // The scripts could not be installed: every candidate is as without integration.
+        let mut none = || None;
+        let list = spawn_list(&on("", ""), Os::Macos, &env, None, &var, &mut none);
+        assert_eq!(list[0].env, env);
     }
 }
