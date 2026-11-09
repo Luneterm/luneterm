@@ -13,6 +13,7 @@ use lune_ui::custom::{CustomDraw, CustomFrame};
 
 const REGULAR: &[u8] = include_bytes!("fonts/RznMono-Regular.subset.ttf");
 const BOLD: &[u8] = include_bytes!("fonts/RznMono-Bold.subset.ttf");
+const TWEMOJI: &[u8] = include_bytes!("fonts/TwemojiLunegit.subset.ttf");
 
 const CLEAR: [u8; 4] = [10, 20, 30, 255];
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -364,4 +365,68 @@ fn opacity_scales_every_pipeline_and_a_default_view_is_opaque() {
     assert_eq!(over, full, "above 1 is 1");
     let (nan, _) = drawn_at(Some(f32::NAN));
     assert_eq!(nan, full, "NaN is 1");
+}
+
+/// A rig of its own: the other cases' fallback stays the mono faces only.
+fn colour_fonts() -> (FontSystem, TermFonts) {
+    let (mut fs, mut fonts) = test_fonts();
+    let id = fs
+        .db_mut()
+        .load_font_source(fontdb::Source::Binary(Arc::new(TWEMOJI)));
+    let family = fs.db().face(id[0]).expect("face").families[0].0.clone();
+    fonts.emoji_family = Some(family);
+    (fs, fonts)
+}
+
+/// One colour glyph, alone in the grid, at `opacity`.
+fn colour_glyph_at(opacity: f32) -> Vec<u8> {
+    let (device, queue, _) = common::device().expect("a device (checked by the caller)");
+    let (mut fs, fonts) = colour_fonts();
+    let mut tv = TermView::new(&device, FORMAT, fonts, TermTheme::lunegit_one_dark());
+    tv.set_opacity(opacity);
+    let mut grid = Grid::new(4, 1);
+    grid.set(
+        0,
+        0,
+        cell(|c| {
+            c.set_char('\u{1F600}');
+            c.width = 2;
+        }),
+    );
+    grid.set(0, 1, cell(|c| c.width = 0));
+    tv.update(&mut fs, &mut grid, &view(), (0.0, 0.0), 2.0);
+    let m = tv.metrics(&mut fs, 2.0);
+    draw(&device, &queue, &mut tv, (4 * m.cell_w, m.cell_h), 2.0)
+}
+
+/// The colour-glyph path (`fs_glyph_color`): the page already holds premultiplied colour, so the
+/// opacity is applied in its own place. A colour glyph has channels a mask glyph's single tint
+/// cannot, which is what proves this path drew it.
+#[test]
+fn opacity_scales_a_colour_glyph() {
+    if common::device().is_none() {
+        return;
+    }
+    let full = colour_glyph_at(1.0);
+    let inked = full
+        .chunks_exact(4)
+        .filter(|p| {
+            let spread = |a: u8, b: u8| a.abs_diff(b) > 40;
+            p[..3] != CLEAR[..3] && (spread(p[0], p[2]) || spread(p[1], p[2]))
+        })
+        .count();
+    assert!(inked > 50, "{inked} coloured pixels: no colour glyph drawn");
+    let half = colour_glyph_at(0.5);
+    for (i, (h, f)) in half.chunks_exact(4).zip(full.chunks_exact(4)).enumerate() {
+        for k in 0..3 {
+            let want = CLEAR[k] as f32 + (f[k] as f32 - CLEAR[k] as f32) * 0.5;
+            assert!(
+                (h[k] as f32 - want).abs() <= 2.0,
+                "pixel {i} channel {k}: {} vs {want}",
+                h[k]
+            );
+        }
+    }
+    let none = colour_glyph_at(0.0);
+    assert!(none.chunks_exact(4).all(|p| p == CLEAR), "opacity 0");
 }
