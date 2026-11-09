@@ -2311,10 +2311,17 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        // A `Repaint::At` or blink deadline came due.
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        // A `Repaint::At`, blink, workspace or settings deadline came due.
         if matches!(cause, StartCause::ResumeTimeReached { .. }) {
-            self.request_redraw();
+            if self.occluded {
+                // No frame will replace the deadline while the window is hidden (`redraw` returns
+                // at once), and a `WaitUntil` in the past makes the loop spin. `Occluded(false)`
+                // asks for a frame, which sets the deadlines again.
+                event_loop.set_control_flow(ControlFlow::Wait);
+            } else {
+                self.request_redraw();
+            }
         }
     }
 
