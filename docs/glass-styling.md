@@ -22,7 +22,7 @@ desaturates the desktop and the 0.1 grey material layer adds grey, so the window
 brown-grey where iTerm is plain black at partial alpha with the desktop's hue kept. On macOS the
 default style therefore applies no OS material (`app::apply_material` clears any effect view; the
 window is created transparent) and draws `render::FLAT_GLASS_THEME`: all three layers black with
-material opacity 0 and `render::FLAT_BLACK` = 0.65 opacity (iTerm profile: black, transparency 0.347) (layers replace what is under them, so one
+material opacity 0 and `render::FLAT_BLACK` = 0.72 opacity (layers replace what is under them, so one
 value keeps the seams invisible). Menus and dialogs (`MENU_GLASS`) and the header tint are as above.
 Windows keeps `near_black::MATERIAL` and `render::DEFAULT_GLASS_THEME` (0.42 / 0.38 / 0.48). Not seen
 on a real window yet.
