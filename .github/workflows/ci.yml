@@ -6,18 +6,20 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Runners (2026-11-09: GitHub-hosted runners are blocked by account billing, so CI is self-hosted):
-#   linux   - the gha-autoscaler (infra/runners): one single-use Debian container per job, labels
-#             self-hosted, linux, x64. The image has git, python3 and curl but no Rust or C toolchain,
-#             so the job installs them. Local equivalent: scripts/check-linux.sh (Docker).
-#   windows - DISABLED. There is no Windows runner (user decision 2026-11-09: nothing is installed
-#             on claude-vm-win), so check-windows and windows-exe are `if: false` below rather than
-#             queued forever. The last green Windows CI was e35e540. Local check on any host with the
-#             target installed: cargo clippy --workspace --all-targets --locked --target
-#             x86_64-pc-windows-msvc -- -D warnings.
+# Runners (2026-11-09: GitHub-hosted runners are blocked by account billing, so CI is self-hosted;
+# infra/runners/README.md has both autoscalers):
+#   linux   - the gha-autoscaler: one single-use Debian container per job, labels self-hosted, linux,
+#             x64. The image has git, python3 and curl but no Rust or C toolchain, so the job installs
+#             them. Local equivalent: scripts/check-linux.sh (Docker).
+#   windows - the second autoscaler (claude-win-vm, labels self-hosted, windows, x64; the autoscaler
+#             serves only those labels, so a job that asks for `luneterm-win` would queue forever).
+#             Each job runs as the non-admin local user `ghrunner` in a fresh runner directory, at most
+#             2 at once, with no desktop session (nothing here drives a window). Tools installed on the
+#             VM persist between jobs; the jobs install the pinned Rust toolchain if it is missing.
+#             Back on 2026-11-09; the last green Windows CI before that was e35e540.
 #   macOS   - no runner: scripts/check-macos.sh is the local gate (fmt, clippy, tests, check-ffi.sh).
-# The repo is private. A Windows job returns only with a runner and a rule that keeps it off pull
-# requests from forks (the `if` conditions below already do); the Linux containers are single-use.
+# The repo is private. A Windows job stays off pull requests from forks (the `if` conditions below);
+# the Linux containers are single-use.
 jobs:
   check-linux:
     runs-on: [self-hosted, linux, x64]
@@ -54,15 +56,24 @@ jobs:
       # cargo test captures stdout; --nocapture puts the P6 adapter / P4 emoji probe lines in the log.
       - run: cargo test -p lune-termview --locked --test probe -- --nocapture
 
-  # Disabled: no Windows runner (see the header). To bring it back, replace `false` with the
-  # condition that follows it and give runs-on a runner that exists.
   check-windows:
-    # if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    if: false
-    runs-on: [self-hosted, windows, x64, luneterm-win]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, windows, x64]
     steps:
       - uses: actions/checkout@v4
-      # rust-toolchain.toml pins the toolchain; the runner machine has it installed.
+      - name: Rust toolchain
+        shell: pwsh
+        run: |
+          $bin = Join-Path $HOME ".cargo\bin"
+          $env:PATH = "$bin;$env:PATH"
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+            Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+            .\rustup-init.exe -y --default-toolchain none --profile minimal
+            Remove-Item rustup-init.exe
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          # rust-toolchain.toml pins the version; rustup 1.28+ installs it only when asked.
+          rustup toolchain install
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
@@ -81,13 +92,22 @@ jobs:
 
   # Windows build for testing on real hardware: the app, luneterm.exe (M9).
   windows-exe:
-    # Disabled: no Windows runner (see the header). Condition to restore:
-    # if: github.event_name != 'pull_request'
-    if: false
-    runs-on: [self-hosted, windows, x64, luneterm-win]
+    if: github.event_name != 'pull_request'
+    runs-on: [self-hosted, windows, x64]
     steps:
       - uses: actions/checkout@v4
-      # rust-toolchain.toml pins the toolchain; rustup installs it on first cargo call.
+      - name: Rust toolchain
+        shell: pwsh
+        run: |
+          $bin = Join-Path $HOME ".cargo\bin"
+          $env:PATH = "$bin;$env:PATH"
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+            Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+            .\rustup-init.exe -y --default-toolchain none --profile minimal
+            Remove-Item rustup-init.exe
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          rustup toolchain install
       # M3 step 0 (P7/P8): the spawn example's size, for the portable-pty cost record.
       - run: cargo build --release --locked -p lune-pty --example spawn
       # M9 step 7: the app. GUI subsystem in release; the artifact below is this file.
