@@ -20,6 +20,7 @@ use lune_ui::dump::{read_rgba, target, write_png};
 use lune_ui::gpu::{self, Gpu};
 use lune_ui::input::{Event, Modifiers, PointerButton, RawInput, ScrollDelta};
 use lune_ui::paint::Rect;
+use lune_ui::text::TextRendering;
 use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
 use lune_ui::widgets::tone::Tone;
@@ -28,11 +29,11 @@ use crate::app::failure_grid;
 use crate::demo::{demo_cursor, demo_grid};
 use crate::fonts;
 use crate::links;
-use crate::menus::{self, MenuKind, MenuModel};
+use crate::menus::{MenuKind, MenuModel};
 use crate::render::{Content, LinkTip, MenuDraw, Renderer};
-use crate::settings::{GlassStyle, Settings};
+use crate::settings::{Settings, Theme};
 use crate::settings_page::{PageState, PageView, Section};
-use crate::shell::{HOST, Layout, Modal, ScrollView, StripTab};
+use crate::shell::{HOST, Layout, Modal, ScrollView, StripTab, TAB_CLOSABLE};
 use crate::spawn::SpawnFailure;
 use crate::tabs::confirm_message;
 
@@ -61,7 +62,8 @@ struct PageScene {
     restart: bool,
 }
 
-/// An open menu, forced by the dump (the tab's own menu is the toolkit's: scripted input).
+/// An open menu, forced by the dump. The tab's own menu is not forced: the scripted right-click
+/// makes the frame report the request and the dump opens the menu then, as the app does.
 #[derive(Debug, Clone, Copy)]
 enum MenuScene {
     None,
@@ -127,8 +129,8 @@ struct Scene {
     failed: bool,
     /// OS glass is behind the window; `false` is the opaque look (P22).
     glass: bool,
-    /// The glass style the theme and tab header follow (only matters with `glass`).
-    style: GlassStyle,
+    /// The look whose layers and header tint the scene draws with.
+    look: Theme,
     page: Option<PageScene>,
     menu: MenuScene,
     /// The terminal palette, by name.
@@ -167,7 +169,7 @@ const BASE: Scene = Scene {
     overlay: Overlay::None,
     failed: false,
     glass: true,
-    style: GlassStyle::Default,
+    look: Theme::Luneterm,
     page: None,
     menu: MenuScene::None,
     palette: "One Dark",
@@ -189,7 +191,7 @@ const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
-const SCENES: [Scene; 35] = [
+const SCENES: [Scene; 37] = [
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -379,11 +381,26 @@ const SCENES: [Scene; 35] = [
         palette: "Dracula",
         ..BASE
     },
-    // Lunegit's layers under a liquid style: the proof the near-black look did not move them.
+    // The Lunegit look: its layers and header tint, with glass (the proof the near-black look did
+    // not move them), and with the app menu open (its floating-surface fill is its own).
     Scene {
-        name: "liquid@2x.png",
+        name: "lunegit@2x.png",
         tabs: FOUR,
-        style: GlassStyle::LiquidRegular,
+        look: Theme::Lunegit,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-menu@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        menu: MenuScene::App,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-opaque@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        glass: false,
         ..BASE
     },
     // The opaque look (no OS glass: Linux, or Off).
@@ -435,13 +452,40 @@ pub enum DumpError {
     Failed(String),
 }
 
-/// Renders the scenes into `dir` (created if absent) and returns the files written.
+/// Renders the scenes into `dir` (created if absent) and returns the files written, with the
+/// app's text setting (smoothed glyphs).
 pub fn dump_frames(dir: &Path) -> Result<Vec<PathBuf>, DumpError> {
-    dump_frames_gated(dir).map(|v| v.into_iter().map(|(p, _)| p).collect())
+    dump_frames_text(dir, TextRendering::SMOOTH)
+}
+
+/// [`dump_frames`] at an explicit text setting.
+pub fn dump_frames_text(dir: &Path, text: TextRendering) -> Result<Vec<PathBuf>, DumpError> {
+    dump_frames_gated_text(dir, text).map(|v| v.into_iter().map(|(p, _)| p).collect())
 }
 
 /// [`dump_frames`] with the least alpha of each frame (an opaque scene must have 255 everywhere).
 pub fn dump_frames_gated(dir: &Path) -> Result<Vec<(PathBuf, u8)>, DumpError> {
+    dump_frames_gated_text(dir, TextRendering::SMOOTH)
+}
+
+/// The environment variable that picks the dump's text setting.
+pub const DUMP_TEXT_VAR: &str = "LUNETERM_DUMP_TEXT";
+
+/// Reads [`DUMP_TEXT_VAR`]'s value: unset or `on` is smoothed glyphs (what the app draws), `off`
+/// the unsmoothed look. Anything else is an error that names the variable and nothing else.
+pub fn parse_dump_text(value: Option<&str>) -> Result<TextRendering, String> {
+    match value {
+        None | Some("on") => Ok(TextRendering::SMOOTH),
+        Some("off") => Ok(TextRendering::OFF),
+        Some(_) => Err(format!("{DUMP_TEXT_VAR} must be `on` or `off`")),
+    }
+}
+
+/// [`dump_frames_gated`] at an explicit text setting.
+pub fn dump_frames_gated_text(
+    dir: &Path,
+    text_rendering: TextRendering,
+) -> Result<Vec<(PathBuf, u8)>, DumpError> {
     let gpu = pollster::block_on(Gpu::new(gpu::instance(None), None)).map_err(DumpError::NoGpu)?;
     std::fs::create_dir_all(dir)
         .map_err(|e| DumpError::Failed(format!("create {}: {e}", dir.display())))?;
@@ -449,6 +493,7 @@ pub fn dump_frames_gated(dir: &Path) -> Result<Vec<(PathBuf, u8)>, DumpError> {
     eprintln!("system fonts loaded in {} ms", took.as_millis());
     let settings = Settings::default().clamped();
     let mut renderer = Renderer::new(gpu, text, FORMAT, &settings, true);
+    renderer.set_text_rendering(text_rendering);
     let mut written = Vec::new();
     for scene in SCENES {
         let path = dir.join(scene.name);
@@ -469,7 +514,7 @@ const FRAME_TIMES_MS: [u64; 4] = [0, 800, 1600, 2400];
 /// the last frame.
 fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String> {
     r.reset_ui();
-    r.set_glass(scene.glass, scene.style);
+    r.set_glass(scene.glass, scene.look);
     r.set_term_theme(crate::palettes::theme_of(scene.palette));
     let scale = scene.scale as f32;
     let size = (SIZE.0 as u32 * scene.scale, SIZE.1 as u32 * scene.scale);
@@ -545,7 +590,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         kind: SelectionKind::Linear,
     }];
     let strings = crate::strings::english();
-    let model = match scene.menu {
+    let mut model = match scene.menu {
         MenuScene::None => None,
         MenuScene::App => Some(MenuModel::new(
             MenuKind::App,
@@ -558,7 +603,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             cfg!(target_os = "macos"),
         )),
     };
-    let place = match scene.menu {
+    let mut place = match scene.menu {
         MenuScene::App => MenuPlace::Anchor {
             rect: Layout::new(Rect::new(0.0, 0.0, SIZE.0, SIZE.1)).overflow,
             side: Side::Bottom,
@@ -567,8 +612,6 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         },
         _ => MenuPlace::At(TERMINAL_MENU_AT),
     };
-    let extra = menus::tab_extra(&strings);
-    let extra: [&str; 2] = [extra[0].as_str(), extra[1].as_str()];
 
     for (k, ms) in FRAME_TIMES_MS.iter().enumerate() {
         let mut events: Vec<Event> = scene
@@ -646,11 +689,21 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             }),
             busy: None,
             busy_tone: Tone::Neutral,
-            tab_menu_extra: &extra,
             grid_alpha: 1.0,
             fading: Vec::new(),
         };
-        r.draw(&input, content, &view, size)?;
+        let drawn = r.draw(&input, content, &view, size)?;
+        // The app opens the tab menu from the request the strip reports (the next frame shows it).
+        if let Some(ctx) = drawn.tab_context {
+            model = Some(MenuModel::new(
+                MenuKind::Tab {
+                    closable: TAB_CLOSABLE,
+                },
+                &strings,
+                cfg!(target_os = "macos"),
+            ));
+            place = MenuPlace::At(ctx.at);
+        }
         r.gpu.end_frame(&mut r.text);
     }
     let rgba = read_rgba(&r.gpu.device, &r.gpu.queue, &texture)?;
@@ -679,7 +732,20 @@ fn exit_for(result: &Result<Vec<PathBuf>, DumpError>, require_gpu: bool) -> (u8,
 
 /// Runs the dump for `LUNETERM_DUMP_FRAMES` and prints the written files.
 pub fn run(dir: &Path) -> ExitCode {
-    let result = dump_frames(dir);
+    // Checked before anything is written; a value that is not UTF-8 is as wrong as any other.
+    let var = match std::env::var(DUMP_TEXT_VAR) {
+        Ok(v) => Some(v),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => Some(String::new()),
+    };
+    let text = match parse_dump_text(var.as_deref()) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(2);
+        }
+    };
+    let result = dump_frames_text(dir, text);
     if let Ok(files) = &result {
         for f in files {
             println!("{}", f.display());
@@ -721,6 +787,46 @@ mod tests {
         assert_eq!(exit_for(&failed, false).0, 1);
     }
 
+    #[test]
+    fn the_dump_text_value_is_on_off_or_an_error_naming_the_variable() {
+        assert_eq!(parse_dump_text(None), Ok(TextRendering::SMOOTH));
+        assert_eq!(parse_dump_text(Some("on")), Ok(TextRendering::SMOOTH));
+        assert_eq!(parse_dump_text(Some("off")), Ok(TextRendering::OFF));
+        for bad in ["", "ON", "bogus", "1", "off "] {
+            let e = parse_dump_text(Some(bad)).expect_err(bad);
+            assert!(e.contains(DUMP_TEXT_VAR), "{e}");
+            assert!(bad.is_empty() || !e.contains(bad), "{e}");
+        }
+    }
+
+    /// The text setting changes the glyph pixels and nothing else: the same sizes, and the
+    /// smoothed frame differs from the unsmoothed one.
+    #[test]
+    fn the_text_setting_changes_pixels_not_geometry() {
+        let (on, off) = (scratch("text-on"), scratch("text-off"));
+        let a = match dump_frames_text(&on, TextRendering::SMOOTH) {
+            Ok(f) => f,
+            Err(DumpError::NoGpu(e)) if !require_gpu() => {
+                eprintln!("SKIPPED: no wgpu adapter: {e}");
+                return;
+            }
+            Err(e) => panic!("dump: {e:?}"),
+        };
+        let b = dump_frames_text(&off, TextRendering::OFF).expect("off dump");
+        assert_eq!(a.len(), b.len());
+        let mut changed = 0;
+        for (x, y) in a.iter().zip(&b) {
+            let (bx, by) = (
+                std::fs::read(x).expect("read"),
+                std::fs::read(y).expect("read"),
+            );
+            let dims = |bytes: &[u8]| (bytes[16..24].to_vec(), bytes.len() > 24);
+            assert_eq!(dims(&bx).0, dims(&by).0, "{} changed size", x.display());
+            changed += usize::from(bx != by);
+        }
+        assert!(changed > 0, "no dump differs between on and off");
+    }
+
     /// Every scene is written, is the right size, is not blank, and two runs give byte-identical
     /// files.
     #[test]
@@ -739,7 +845,7 @@ mod tests {
             let opaque = path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("opaque"));
+                .is_some_and(|n| n.contains("opaque"));
             if opaque {
                 assert_eq!(*alpha, 255, "{} has a transparent pixel", path.display());
             }
@@ -749,7 +855,7 @@ mod tests {
                 .iter()
                 .filter(|(p, _)| p.to_string_lossy().contains("opaque"))
                 .count(),
-            5
+            6
         );
         let first: Vec<PathBuf> = gated.into_iter().map(|(p, _)| p).collect();
         let second = dump_frames(&b).expect("second dump");
@@ -780,7 +886,9 @@ mod tests {
         for n in [
             "palette@2x.png",
             "opaque@2x.png",
-            "liquid@2x.png",
+            "lunegit@2x.png",
+            "lunegit-menu@2x.png",
+            "lunegit-opaque@2x.png",
             "menu-app@2x.png",
             "menu-tab@2x.png",
             "settings-appearance@2x.png",

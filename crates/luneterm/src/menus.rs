@@ -1,13 +1,15 @@
-//! The app's menus (plan M10 step 6): the `⋯` app menu and the terminal's context menu, as plain
-//! data (what rows, which action each picks, which shortcut hint it shows) that the renderer
-//! turns into the toolkit's menu. The tab's own context menu is the toolkit's; its two extra rows
-//! come from [`tab_extra`].
+//! The app's menus (plan M10 step 6): the `⋯` app menu, the terminal's context menu and the tab's
+//! context menu, as plain data (what rows, which action each picks, which shortcut hint it shows)
+//! that the renderer turns into the toolkit's menu. The tab strip owns no menu since luneui-rs
+//! 0.3.0: it reports the right-click and the app opens [`MenuKind::Tab`], whose picks act on the
+//! tab it was opened on ([`tab_op`]).
 
 use lune_ui::icon;
 use lune_ui::strings::StringTable;
 use lune_ui::widgets::menu::{MenuItem, MenuRow};
 
 use crate::input::{AppCommand, AppShortcuts};
+use crate::tabs::TabId;
 
 /// What a picked row asks of the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,22 +61,31 @@ impl MenuAction {
         }
     }
 
+    /// The row's icon. Within one menu no two rows show the same icon (a test checks it); the
+    /// codicon names are those of the Nerd Font the toolkit draws icons from.
     fn glyph(self) -> Option<&'static str> {
         match self {
             MenuAction::NewTab => Some(icon::ADD),
-            MenuAction::Close => Some(icon::CHROME_CLOSE),
+            MenuAction::Close => Some(icon::CLOSE),
+            MenuAction::CloseOthers => Some(icon::CLOSE_ALL),
+            MenuAction::CloseAll | MenuAction::Clear => Some(icon::CLEAR_ALL),
             MenuAction::Rename => Some(icon::EDIT),
             MenuAction::Duplicate => Some(ICON_TERMINAL),
             MenuAction::CopyCwd | MenuAction::Copy => Some(icon::COPY),
             MenuAction::Settings => Some(icon::GEAR),
             MenuAction::About => Some(icon::INFO),
-            _ => None,
+            MenuAction::Paste => Some(ICON_CLIPPY),
+            MenuAction::SelectAll => Some(ICON_LIST_SELECTION),
         }
     }
 }
 
 /// The codicon `terminal` (the toolkit's icon list has no app glyphs).
 const ICON_TERMINAL: &str = "\u{ea85}";
+/// The codicon `clippy`.
+const ICON_CLIPPY: &str = "\u{eac0}";
+/// The codicon `list-selection`.
+const ICON_LIST_SELECTION: &str = "\u{eb85}";
 
 /// The shortcut hint of `action` on this OS, empty when it has no shortcut. The text is the chord
 /// as the table binds it (D13).
@@ -102,6 +113,9 @@ pub enum MenuKind {
     App,
     /// The terminal's context menu; `selection` is whether text is selected (Copy needs it).
     Terminal { selection: bool },
+    /// A tab's context menu; `closable` is whether the tab can be closed (Close is only for a
+    /// closable tab). It has no shortcut hints and no separators.
+    Tab { closable: bool },
 }
 
 /// One row of a menu.
@@ -150,12 +164,24 @@ fn actions(kind: MenuKind) -> Vec<Option<MenuAction>> {
             SEPARATOR,
             Some(NewTab),
         ],
+        MenuKind::Tab { closable } => closable
+            .then_some(Some(Close))
+            .into_iter()
+            .chain([
+                Some(CloseOthers),
+                Some(CloseAll),
+                Some(Rename),
+                Some(Duplicate),
+                Some(CopyCwd),
+            ])
+            .collect(),
     }
 }
 
 impl MenuModel {
     /// The rows of `kind` with their texts from `strings` and the hints of this OS.
     pub fn new(kind: MenuKind, strings: &StringTable, macos: bool) -> MenuModel {
+        let is_tab = matches!(kind, MenuKind::Tab { .. });
         let entries = actions(kind)
             .into_iter()
             .map(|action| match action {
@@ -170,7 +196,11 @@ impl MenuModel {
                     action,
                     glyph: a.glyph(),
                     text: strings.tr(a.key()).to_owned(),
-                    shortcut: hint(a, macos).to_owned(),
+                    shortcut: if is_tab {
+                        String::new()
+                    } else {
+                        hint(a, macos).to_owned()
+                    },
                     disabled: a == MenuAction::Copy
                         && kind == (MenuKind::Terminal { selection: false }),
                 },
@@ -209,35 +239,55 @@ impl MenuModel {
         match self.kind {
             MenuKind::App => "menu.app.name",
             MenuKind::Terminal { .. } => "menu.terminal.name",
+            MenuKind::Tab { .. } => "menu.tab.name",
         }
     }
 }
 
-/// The two rows the tab's own menu gets after the toolkit's four: Duplicate Tab and Copy Working
-/// Directory, in the order of [`tab_extra_action`].
-pub fn tab_extra(strings: &StringTable) -> [String; 2] {
-    [
-        strings.tr("menu.duplicate").to_owned(),
-        strings.tr("menu.copyCwd").to_owned(),
-    ]
+/// What a pick of the tab menu does, to the tab the menu was opened on (not the active one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabOp {
+    /// Close this tab.
+    Close(TabId),
+    /// Close every tab but this one.
+    CloseOthers(TabId),
+    CloseAll,
+    /// Rename this tab.
+    Rename(TabId),
+    /// Make this tab the active one, then run the action as if picked from the `⋯` menu (it acts
+    /// on the active tab).
+    ActivateThen(TabId, MenuAction),
 }
 
-/// The action of row `index` of the tab menu's extra rows.
-pub fn tab_extra_action(index: usize) -> Option<MenuAction> {
-    match index {
-        0 => Some(MenuAction::Duplicate),
-        1 => Some(MenuAction::CopyCwd),
+/// The effect of `action` picked from the tab menu opened on `target`; `None` for an action the
+/// tab menu has no row for.
+pub fn tab_op(action: MenuAction, target: TabId) -> Option<TabOp> {
+    match action {
+        MenuAction::Close => Some(TabOp::Close(target)),
+        MenuAction::CloseOthers => Some(TabOp::CloseOthers(target)),
+        MenuAction::CloseAll => Some(TabOp::CloseAll),
+        MenuAction::Rename => Some(TabOp::Rename(target)),
+        MenuAction::Duplicate | MenuAction::CopyCwd => Some(TabOp::ActivateThen(target, action)),
         _ => None,
     }
 }
 
 /// Every string key the menus ask for.
 pub fn required_keys() -> Vec<String> {
-    let mut keys: Vec<String> = ["menu.app.name", "menu.terminal.name", "menu.more"]
-        .iter()
-        .map(|k| (*k).to_owned())
-        .collect();
-    for kind in [MenuKind::App, MenuKind::Terminal { selection: true }] {
+    let mut keys: Vec<String> = [
+        "menu.app.name",
+        "menu.terminal.name",
+        "menu.tab.name",
+        "menu.more",
+    ]
+    .iter()
+    .map(|k| (*k).to_owned())
+    .collect();
+    for kind in [
+        MenuKind::App,
+        MenuKind::Terminal { selection: true },
+        MenuKind::Tab { closable: true },
+    ] {
         for a in actions(kind).into_iter().flatten() {
             keys.push(a.key().to_owned());
         }
@@ -348,11 +398,125 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_menu_extras_are_duplicate_and_copy_working_directory() {
-        let extra = tab_extra(&crate::strings::english());
-        assert_eq!(extra, ["Duplicate Tab", "Copy Working Directory"]);
-        assert_eq!(tab_extra_action(0), Some(MenuAction::Duplicate));
-        assert_eq!(tab_extra_action(1), Some(MenuAction::CopyCwd));
-        assert_eq!(tab_extra_action(2), None);
+    fn the_tab_menu_rows_for_a_closable_tab_and_for_one_that_is_not() {
+        let closable = model(MenuKind::Tab { closable: true }, true);
+        let texts: Vec<&str> = closable.entries.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "Close",
+                "Close Others",
+                "Close All",
+                "Rename\u{2026}",
+                "Duplicate Tab",
+                "Copy Working Directory"
+            ]
+        );
+        let fixed = model(MenuKind::Tab { closable: false }, true);
+        let texts: Vec<&str> = fixed.entries.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "Close Others",
+                "Close All",
+                "Rename\u{2026}",
+                "Duplicate Tab",
+                "Copy Working Directory"
+            ]
+        );
+        for m in [&closable, &fixed] {
+            assert!(
+                m.entries.iter().all(|e| e.action.is_some()),
+                "no separators"
+            );
+            assert!(m.entries.iter().all(|e| e.shortcut.is_empty()), "no hints");
+            assert!(
+                m.entries.iter().all(|e| e.glyph.is_some()),
+                "every row has an icon"
+            );
+            assert!(m.entries.iter().all(|e| !e.disabled));
+            assert_eq!(m.rows().len(), m.entries.len());
+            assert_eq!(m.name_key(), "menu.tab.name");
+        }
+        assert_eq!(closable.action_at(0), Some(MenuAction::Close));
+        assert_eq!(fixed.action_at(0), Some(MenuAction::CloseOthers));
+        assert_eq!(closable.action_at(5), Some(MenuAction::CopyCwd));
+        assert_eq!(closable.action_at(6), None);
+    }
+
+    #[test]
+    fn the_tab_menu_name_is_a_string_and_every_required_key_resolves() {
+        let strings = crate::strings::english();
+        assert_eq!(strings.tr("menu.tab.name"), "Tab menu");
+        for key in required_keys() {
+            assert_ne!(strings.tr(&key), key, "{key} has no text");
+        }
+    }
+
+    /// Icons that draw the same shape count as one (the toolkit's `CLOSE` and `CHROME_CLOSE` are both
+    /// an X).
+    fn visible_icon(glyph: &str) -> &str {
+        if glyph == icon::CHROME_CLOSE {
+            icon::CLOSE
+        } else {
+            glyph
+        }
+    }
+
+    /// No two rows of one menu show the same icon (an empty slot, `None`, may repeat).
+    #[test]
+    fn no_menu_shows_the_same_icon_twice() {
+        let kinds = [
+            MenuKind::App,
+            MenuKind::Terminal { selection: true },
+            MenuKind::Terminal { selection: false },
+            MenuKind::Tab { closable: true },
+            MenuKind::Tab { closable: false },
+        ];
+        for kind in kinds {
+            let m = model(kind, true);
+            let icons: Vec<&str> = m
+                .entries
+                .iter()
+                .filter_map(|e| e.glyph)
+                .map(visible_icon)
+                .collect();
+            for (i, a) in icons.iter().enumerate() {
+                assert!(!icons[..i].contains(a), "{kind:?}: {a:?} appears twice");
+            }
+        }
+        // the equivalence the test relies on: the two X glyphs fold to one
+        assert_eq!(visible_icon(icon::CHROME_CLOSE), visible_icon(icon::CLOSE));
+    }
+
+    /// A tab-menu pick acts on the tab the menu was opened on (here 7), whichever is active.
+    #[test]
+    fn a_tab_menu_pick_acts_on_its_target_tab() {
+        use MenuAction::*;
+        assert_eq!(tab_op(Close, 7), Some(TabOp::Close(7)));
+        assert_eq!(tab_op(CloseOthers, 7), Some(TabOp::CloseOthers(7)));
+        assert_eq!(tab_op(CloseAll, 7), Some(TabOp::CloseAll));
+        assert_eq!(tab_op(Rename, 7), Some(TabOp::Rename(7)));
+        assert_eq!(
+            tab_op(Duplicate, 7),
+            Some(TabOp::ActivateThen(7, Duplicate))
+        );
+        assert_eq!(tab_op(CopyCwd, 7), Some(TabOp::ActivateThen(7, CopyCwd)));
+        for other in [NewTab, Settings, About, Copy, Paste, SelectAll, Clear] {
+            assert_eq!(
+                tab_op(other, 7),
+                None,
+                "{other:?} is no row of the tab menu"
+            );
+        }
+        // every row of the menu maps
+        for kind in [
+            MenuKind::Tab { closable: true },
+            MenuKind::Tab { closable: false },
+        ] {
+            for a in actions(kind).into_iter().flatten() {
+                assert!(tab_op(a, 7).is_some(), "{a:?}");
+            }
+        }
     }
 }

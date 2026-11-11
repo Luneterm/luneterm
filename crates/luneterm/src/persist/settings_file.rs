@@ -13,7 +13,7 @@ use lune_ui::json::{self, Value};
 
 use super::json_write::{Json, WriteError};
 use super::{Reject, read_version};
-use crate::settings::{BlurLevel, GlassStyle, Motion, OutlineAnim, Settings};
+use crate::settings::{BlurLevel, GlassStyle, Motion, OutlineAnim, Settings, Theme};
 
 /// The version this build writes and reads.
 pub const SETTINGS_VERSION: i64 = 1;
@@ -27,12 +27,14 @@ pub struct SettingsDoc {
 }
 
 /// The names this build writes, in the order it writes them.
-const KEYS: [&str; 18] = [
+const KEYS: [&str; 20] = [
+    "theme",
     "glass",
     "menu_blur",
     "motion",
     "font",
     "font_size",
+    "font_smoothing",
     "palette",
     "animate_outline",
     "outline",
@@ -95,11 +97,13 @@ pub fn parse_settings(bytes: &[u8]) -> Result<SettingsDoc, Reject> {
     };
     read_version(members, SETTINGS_VERSION)?;
     let mut s = Settings::default();
+    named(members, "theme", &mut s.theme, Theme::from_name);
     named(members, "glass", &mut s.glass, GlassStyle::from_name);
     named(members, "menu_blur", &mut s.menu_blur, BlurLevel::from_name);
     named(members, "motion", &mut s.motion, Motion::from_name);
     text(members, "font", &mut s.font);
     number(members, "font_size", &mut s.font_size);
+    flag(members, "font_smoothing", &mut s.font_smoothing);
     text(members, "palette", &mut s.palette);
     flag(members, "animate_outline", &mut s.animate_outline);
     named(members, "outline", &mut s.outline, OutlineAnim::from_name);
@@ -130,11 +134,13 @@ pub fn render_settings(doc: &SettingsDoc) -> Result<String, WriteError> {
     let int = |n: u32| Json::Int(i64::from(n));
     let mut members: Vec<(String, Json)> = vec![
         ("version".into(), Json::Int(SETTINGS_VERSION)),
+        ("theme".into(), Json::Str(s.theme.name().into())),
         ("glass".into(), Json::Str(s.glass.name().into())),
         ("menu_blur".into(), Json::Str(s.menu_blur.name().into())),
         ("motion".into(), Json::Str(s.motion.name().into())),
         ("font".into(), Json::Str(s.font)),
         ("font_size".into(), int(s.font_size)),
+        ("font_smoothing".into(), Json::Bool(s.font_smoothing)),
         ("palette".into(), Json::Str(s.palette)),
         ("animate_outline".into(), Json::Bool(s.animate_outline)),
         ("outline".into(), Json::Str(s.outline.name().into())),
@@ -162,11 +168,13 @@ mod tests {
 
     fn all_changed() -> Settings {
         Settings {
+            theme: Theme::Lunegit,
             glass: GlassStyle::LiquidRegular,
             menu_blur: BlurLevel::High,
             motion: Motion::Reduced,
             font: "Some Mono".into(),
             font_size: 17,
+            font_smoothing: false,
             palette: "Nord".into(),
             animate_outline: false,
             outline: OutlineAnim::Comet,
@@ -203,6 +211,7 @@ mod tests {
         })
         .expect("writes");
         assert!(text.starts_with("{\"version\":1,"), "{text}");
+        assert!(text.contains("\"theme\":\"lunegit\""), "{text}");
         assert!(text.contains("\"glass\":\"liquid-regular\""));
         assert!(text.contains("\"font\":\"Some Mono\""));
         assert!(text.contains("\"palette\":\"Nord\""));
@@ -241,6 +250,66 @@ mod tests {
         // The fields that were fine are kept.
         assert!(!doc.settings.osc_clipboard);
         assert_eq!(doc.settings.palette, "Nord");
+    }
+
+    /// A file from before the setting has no `theme`, and one with a value this build does not know
+    /// (or of the wrong type) has none either: both load as Luneterm and keep the rest of the file.
+    /// `lunegit` is read and written back.
+    #[test]
+    fn theme_defaults_to_luneterm_reads_lunegit_and_ignores_what_it_does_not_know() {
+        let read = |json: &str| parse_settings(json.as_bytes()).expect("parses").settings;
+        assert_eq!(
+            read(r#"{"version":1,"palette":"Nord"}"#).theme,
+            Theme::Luneterm
+        );
+        for bad in [
+            r#""Lunegit""#,
+            r#""dark""#,
+            "7",
+            "true",
+            "null",
+            r#"["lunegit"]"#,
+        ] {
+            let s = read(&format!(
+                r#"{{"version":1,"theme":{bad},"glass":"off","palette":"Nord"}}"#
+            ));
+            assert_eq!(s.theme, Theme::Luneterm, "{bad}");
+            assert_eq!(s.glass, GlassStyle::Off, "{bad}: the rest is kept");
+            assert_eq!(s.palette, "Nord", "{bad}: the rest is kept");
+        }
+        let lunegit = read(r#"{"version":1,"theme":"lunegit","glass":"off"}"#);
+        assert_eq!(
+            (lunegit.theme, lunegit.glass),
+            (Theme::Lunegit, GlassStyle::Off)
+        );
+        let doc = SettingsDoc {
+            settings: lunegit,
+            unknown: Vec::new(),
+        };
+        let text = render_settings(&doc).expect("writes");
+        assert!(text.contains("\"theme\":\"lunegit\""), "{text}");
+        assert_eq!(parse_settings(text.as_bytes()), Ok(doc));
+    }
+
+    /// A file from before the setting has no `font_smoothing`: smoothing is on. A value of the
+    /// wrong type is on too, and the other fields are kept.
+    #[test]
+    fn font_smoothing_defaults_to_on_and_reads_off() {
+        let read = |json: &str| parse_settings(json.as_bytes()).expect("parses").settings;
+        assert!(read(r#"{"version":1,"palette":"Nord"}"#).font_smoothing);
+        let wrong = read(r#"{"version":1,"font_smoothing":"off","palette":"Nord"}"#);
+        assert!(wrong.font_smoothing, "a string is no bool");
+        assert_eq!(wrong.palette, "Nord");
+        assert!(!read(r#"{"version":1,"font_smoothing":false}"#).font_smoothing);
+        let doc = SettingsDoc {
+            settings: Settings {
+                font_smoothing: false,
+                ..Settings::default()
+            },
+            unknown: Vec::new(),
+        };
+        let text = render_settings(&doc).expect("writes");
+        assert!(text.contains("\"font_smoothing\":false"), "{text}");
     }
 
     #[test]

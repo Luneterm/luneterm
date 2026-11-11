@@ -35,7 +35,7 @@ pins included); CI runs it and builds with `--locked`.
 
 ## lune-ui (toolkit)
 
-The app and `lune-termview` use **luneui-rs** (`~/Projects/luneui-rs`, `lune-ui` 0.2.0: `core`,
+The app and `lune-termview` use **luneui-rs** (`~/Projects/luneui-rs`, `lune-ui` 0.4.0, tag `v0.4.0`: `core`,
 `wgpu`, `winit`, `platform` crates behind one facade): its module map and component catalogue are in
 that repo's `docs/architecture.md` and `docs/components/INDEX.md`. What Luneterm found while being
 its first real consumer, and the two components it owes evidence for, is in
@@ -75,7 +75,17 @@ the grid (in the app, `session::apply_update` from the engine thread's Updates; 
   private-use code point the terminal's own family lacks comes from `TermFonts.icon_family`, ahead
   of the platform's fallback list. Glyphs
   sit in an etagere atlas (a mask page and a colour page) keyed by cosmic `CacheKey` (font id,
-  glyph id, size, subpixel bin, weight, flags) or, for procedural glyphs, `AtlasKey::Custom`.
+  glyph id, size, subpixel bin, weight, flags) **and** the toolkit's `GlyphParams` (hinting and
+  stem darkening, from `TextRendering::glyph_params` at the glyph's own size) or, for procedural
+  glyphs, `AtlasKey::Custom`. Glyphs are rasterized by the toolkit's `GlyphRasterizer`.
+- **Text rendering:** one `TextRendering` (`SMOOTH`, the toolkit's look since luneui-rs D296, or
+  `OFF` when the `font_smoothing` setting is off; `Effect::TextRendering` applies a change live
+  through `Renderer::set_text_rendering`) is held by the app's `Renderer` and handed both to the frame (`FrameParams.text`) and to
+  every `TermView::update` (the active grid and the fading ones), so the UI text and the grid
+  draw alike. It is part of the builder's `BuildKey`: a change rebuilds every row, and the atlas
+  keeps the entries of the setting not in use, so a toggle never serves a glyph rasterized under
+  the other one. Procedural glyphs are not font outlines and ignore it. Frame dumps take
+  `LUNETERM_DUMP_TEXT=on|off` (default `on`).
   Ligatures (ledger 15) are not shaped yet; whole-row shaping can reuse the same key later.
 - **Containment** (`contain`): Lunegit's rule with two deviations. A width-1 non-colour glyph
   followed by a blank cell may spill one cell. Anything wider is fitted to its slot by
@@ -903,6 +913,24 @@ scrollback 0), cursor, scroll state from `Terminal::viewport_state()` (O(1), D3)
 changed (`Arc<str>`), bells, the last OSC 52 write, palette changes, cwd, progress and marks.
 `apply_update` writes rows into the termview `Grid`, so the renderer rebuilds only dirty rows.
 
+**Frame scheduling (`App::redraw`, `pace_frame`).** A frame is drawn on a redraw request: every
+window event, a visible Update (`UserEvent::Wake`), a clipboard read, a deadline that came due
+(`Repaint::At`, the cursor blink, the settings and workspace debounces), and while the tab
+crossfade runs. The toolkit's `Repaint::Now` (an animation in progress) is the one ask that is
+paced: when the frame took no input event and no crossfade runs, the next frame waits until the
+frame's start + 1/`IDLE_ANIMATION_HZ` (30 Hz) instead of drawing at once; an earlier deadline still
+wins, and any other request draws at once. The case it exists for is the tab strip's progress shine,
+which asks `Now` every frame while any tab, a hidden one too, shows progress (OSC 9;4): at 60 fps
+every such frame blocked ~15 ms in the surface's acquire (Fifo, frame latency 2, the toolkit's
+configuration), so a click waited for the frame in flight and the new tab's first frame for one
+more (plan step 4, user decision D12; measured on the ink demo, release, M1 Pro: 60 to ~40
+redraws/s, UI busy ~1000 to ~300 ms/s, t0 to the new tab's first frame 18-34 ms to 1-4 ms while
+the busy tab is hidden). The cost: any toolkit animation in a frame without input (the shine, a
+hover fade after the pointer stops, a toast, a menu opening) runs at 30 fps at its own speed. A
+stopgap until luneui-rs offers a shine cadence and a surface that does not block the UI thread
+(luneui-rs `docs/tasks/frame-pacing.md`, requested 2026-11-11). Switching away from a *visible*
+busy tab is not helped: its own output keeps every frame in acquire.
+
 **Mode 2026 (D10, ledger 14).** While the mode is set the engine publishes nothing, until the mode
 is reset or 1000 ms after it was first seen (xterm.js `RenderService.ts`). Unlike xterm.js the
 session does not clear the engine's mode on timeout, because that needs bytes injected into the
@@ -1028,8 +1056,9 @@ style termview asks for), RobotoMono Nerd Font Mono Regular and Bold (the fallba
 icons RznMono does not have until its stage 4, and a terminal font option) and RznSans Regular and
 Medium, with their licences. luneui-rs's `TextCache` loads no system fonts, so the app loads them once at start
 (`fonts::text_cache`, 59 to 64 ms on the Apple M1 Pro) for emoji and CJK fallback. Cell
-height is `ceil(natural_line_height)`: 17 px at scale 1 and 34 at scale 2 for the bundled face at
-13 px. At 1040 x 660 the body is 1000 x 596 at (20, 44), a 125 x 35 grid. Glass: `near_black::MATERIAL`
+height is `ceil(natural_line_height)`: 18 px at scale 1 and 37 at scale 2 for the bundled face at
+14 px, the default size since the luneui-rs 0.4.0 work (13 px gave 17 and 34). At 1040 x 660 the dump
+scenes' grid is 125 x 31 at scale 1 and 117 x 30 at scale 2 (read from `Renderer::grid_size`). Glass: `near_black::MATERIAL`
 (UltraDark vibrancy, near-black layers; `docs/glass-styling.md`) for the default style, Lunegit's layers under the liquid styles; Windows draws its own caption buttons.
 
 **Windows (D17).** `main` hardens the DLL search before any winit or wgpu object ("lune-pty", above),

@@ -61,7 +61,7 @@ use crate::input::{
     selection_position, selection_scroll, terminal_mods, wheel, wheel_delta, wheel_report,
 };
 use crate::links::{self, open::OpenError};
-use crate::menus::{self, MenuAction, MenuKind, MenuModel};
+use crate::menus::{self, MenuAction, MenuKind, MenuModel, TabOp};
 use crate::palettes;
 use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, snapshot,
@@ -73,7 +73,7 @@ use crate::session::{
 };
 use crate::settings::{Effect, Settings, effects};
 use crate::settings_page::{PageState, PageView, Section};
-use crate::shell::{self, HOST, Modal, ModalOut, ScrollView, StripTab, ThumbDrag};
+use crate::shell::{self, HOST, Modal, ModalOut, ScrollView, StripTab, TAB_CLOSABLE, ThumbDrag};
 use crate::spawn::{self, SpawnFailure};
 use crate::tabs::{
     ClosePlan, CwdCheck, CwdState, PasteState, Tab, TabId, TabSet, confirm_message, plan_close,
@@ -97,6 +97,9 @@ const CLOSE_WAIT: Duration = Duration::from_millis(500);
 pub enum UserEvent {
     /// The session has an Update for the UI: draw a frame.
     Wake,
+    /// `LUNETERM_TRACE_SWITCH_AUTO`: switch to the next tab, as the shortcut does; posted at the
+    /// instant it carries, so the trace sees how long the event loop took to get to it.
+    TraceSwitch(Instant),
 }
 
 /// The cursor blink phase. It runs only while the window is focused and the cursor blinks; when it
@@ -149,6 +152,42 @@ pub fn merge_flow(a: ControlFlow, b: ControlFlow) -> ControlFlow {
         (ControlFlow::WaitUntil(t), ControlFlow::Wait)
         | (ControlFlow::Wait, ControlFlow::WaitUntil(t)) => ControlFlow::WaitUntil(t),
         (ControlFlow::Wait, ControlFlow::Wait) => ControlFlow::Wait,
+    }
+}
+
+/// The frame rate of a toolkit animation that runs while nothing else happens: no input in the
+/// frame and no tab crossfade (the tab strip's progress shine above all, which asks for a frame
+/// every frame for as long as any tab shows progress, a hidden one too). At 60 fps every such frame
+/// blocked ~15 ms in the surface's acquire, so a click waited for the frame in flight and the new
+/// tab's first frame for one more (plan step 4, D12: the user chose this cap). The animation keeps
+/// its speed; only its frame rate drops.
+///
+/// A stopgap until luneui-rs offers a shine cadence API and a surface that does not block the UI
+/// thread: luneui-rs docs/tasks/frame-pacing.md (requested 2026-11-11).
+pub const IDLE_ANIMATION_HZ: u32 = 30;
+/// Rounded up, so a second never holds more than `IDLE_ANIMATION_HZ` such frames.
+const IDLE_ANIMATION_INTERVAL: Duration =
+    Duration::from_nanos(1_000_000_000_u64.div_ceil(IDLE_ANIMATION_HZ as u64));
+
+/// When the next frame is drawn, after a frame that started at `start`: `flow` and `redraw` are
+/// the toolkit's ask ([`control_flow`] of its `Repaint`), `fading` whether the tab crossfade runs
+/// and `had_input` whether the frame took an input event. Returns the flow to merge and whether
+/// to request a redraw now. A `Repaint::Now` with no input and no fade waits until
+/// `start + 1/IDLE_ANIMATION_HZ` instead of drawing at once; an earlier deadline in `flow` still
+/// wins, and input, a fade, PTY output and a resize ask for their own frame and are never held.
+/// Reads no clock.
+pub fn pace_frame(
+    flow: ControlFlow,
+    redraw: bool,
+    fading: bool,
+    had_input: bool,
+    start: Instant,
+) -> (ControlFlow, bool) {
+    if redraw && !fading && !had_input {
+        let due = ControlFlow::WaitUntil(start + IDLE_ANIMATION_INTERVAL);
+        (merge_flow(flow, due), false)
+    } else {
+        (flow, redraw || fading)
     }
 }
 
@@ -268,6 +307,43 @@ fn run_window() -> ExitCode {
         start.notices,
         config_dir,
     );
+    // The tab-switch trace (this is the only place the variable is read).
+    if std::env::var_os("LUNETERM_TRACE_SWITCH").is_some_and(|v| v == "1") {
+        app.trace = Some(Box::default());
+        // A switch every <ms>, posted from a thread of its own like a session's wake (measures
+        // the loop's latency without a hand on the mouse). Only read while the trace is on.
+        if let Some(v) = std::env::var_os("LUNETERM_TRACE_SWITCH_AUTO") {
+            match v.to_str().and_then(|v| v.parse::<u64>().ok()) {
+                Some(ms @ 200..=60_000) => {
+                    let proxy = event_loop.create_proxy();
+                    let _ = std::thread::Builder::new()
+                        .name("luneterm-trace-switch".into())
+                        .spawn(move || {
+                            loop {
+                                std::thread::sleep(Duration::from_millis(ms));
+                                let at = Instant::now();
+                                if proxy.send_event(UserEvent::TraceSwitch(at)).is_err() {
+                                    return;
+                                }
+                            }
+                        });
+                }
+                _ => eprintln!("luneterm: LUNETERM_TRACE_SWITCH_AUTO must be ms in 200..=60000"),
+            }
+        }
+        // A synthetic left click into the window every <ms> (macOS), posted into the app's own
+        // event queue from a thread: the known answer for the OS-timestamp ages (os_event.rs).
+        if let Some(v) = std::env::var_os("LUNETERM_TRACE_SWITCH_CLICK") {
+            match v.to_str().and_then(|v| v.parse::<u64>().ok()) {
+                Some(ms @ 50..=60_000) => {
+                    if let Some(t) = &mut app.trace {
+                        t.click_every = Some(Duration::from_millis(ms));
+                    }
+                }
+                _ => eprintln!("luneterm: LUNETERM_TRACE_SWITCH_CLICK must be ms in 50..=60000"),
+            }
+        }
+    }
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop: {e}");
         return ExitCode::from(1);
@@ -296,6 +372,7 @@ impl Stack {
         settings: &Settings,
         glass: bool,
         theme: &TermTheme,
+        trace: bool,
     ) -> Result<Stack, String> {
         let instance = gpu::instance(Some(Box::new(event_loop.owned_display_handle())));
         let surface = instance
@@ -309,6 +386,7 @@ impl Stack {
         if renderer.term_theme() != theme {
             renderer.set_term_theme(theme.clone());
         }
+        renderer.set_phase_trace(trace);
         Ok(Stack { surface, renderer })
     }
 }
@@ -357,6 +435,9 @@ enum ModalState {
 struct OpenMenu {
     kind: MenuKind,
     place: MenuPlace,
+    /// The tab a tab menu was opened on (its picks act on it, not on the active tab); `None` for
+    /// the other menus.
+    tab: Option<TabId>,
 }
 
 /// The settings file is written this long after the last change (typing in a field changes it
@@ -542,6 +623,9 @@ struct App {
     occluded: bool,
     shown: bool,
     exit_code: u8,
+    /// `LUNETERM_TRACE_SWITCH=1`: where a tab switch's time goes; `None` (the default) costs one
+    /// check per hook.
+    trace: Option<Box<SwitchTrace>>,
 }
 
 impl App {
@@ -602,6 +686,7 @@ impl App {
             occluded: false,
             shown: false,
             exit_code: 0,
+            trace: None,
         }
     }
 
@@ -642,7 +727,15 @@ impl App {
             .tabs
             .active_item()
             .map_or_else(|| self.base_theme(), |t| t.theme.clone());
-        match Stack::build(event_loop, &window, &self.settings, self.glass, &theme) {
+        let trace = self.trace.is_some();
+        match Stack::build(
+            event_loop,
+            &window,
+            &self.settings,
+            self.glass,
+            &theme,
+            trace,
+        ) {
             Ok(stack) => {
                 self.stack = Some(stack);
                 if let Some(tab) = self.tabs.active_item_mut() {
@@ -910,7 +1003,7 @@ impl App {
                     self.glass = apply_material(&win.window, &self.settings);
                 }
                 if let Some(stack) = &mut self.stack {
-                    stack.renderer.set_glass(self.glass, self.settings.glass);
+                    stack.renderer.set_glass(self.glass, self.settings.theme);
                 }
             }
             Effect::MenuBlur => {
@@ -924,6 +1017,13 @@ impl App {
                 }
             }
             Effect::Font => self.apply_font(),
+            Effect::TextRendering => {
+                if let Some(stack) = &mut self.stack {
+                    stack
+                        .renderer
+                        .set_text_rendering(self.settings.text_rendering());
+                }
+            }
             Effect::Palette => self.apply_palette(),
             Effect::Scrollback => {
                 let lines = self.settings.scrollback;
@@ -1321,6 +1421,9 @@ impl App {
         if now == before {
             return;
         }
+        if let (Some(t), Some(new)) = (&mut self.trace, now) {
+            t.switched(new, Instant::now());
+        }
         // Every way of leaving a tab comes through here. A tab that was closed has nobody to tell.
         if let Some(id) = before.filter(|id| self.tabs.get(*id).is_some()) {
             self.end_holds_of(id);
@@ -1450,25 +1553,41 @@ impl App {
                 self.tabs.reorder(from, to);
                 self.workspace_changed(true);
             }
-            TabEvent::CloseOthers(key) => {
+        }
+        self.request_redraw();
+    }
+
+    /// A pick of the tab menu opened on `target`: it acts on that tab, not on the active one.
+    fn run_tab_menu_action(
+        &mut self,
+        action: MenuAction,
+        target: TabId,
+        event_loop: &ActiveEventLoop,
+    ) {
+        // The tab may be gone since the menu opened.
+        if self.tabs.get(target).is_none() {
+            return;
+        }
+        let before = self.tabs.active();
+        match menus::tab_op(action, target) {
+            Some(TabOp::Close(id)) => self.request_close(vec![id], event_loop),
+            Some(TabOp::CloseOthers(keep)) => {
                 let ids = self
                     .tabs
                     .ids()
                     .into_iter()
-                    .filter(|id| *id != key.0)
+                    .filter(|id| *id != keep)
                     .collect();
                 self.request_close(ids, event_loop);
             }
-            TabEvent::CloseAll => self.request_close(self.tabs.ids(), event_loop),
-            TabEvent::Rename(key) => self.open_rename(key.0),
-            TabEvent::MenuExtra(key, i) => {
-                // The extra rows act on the tab the menu was opened on.
-                if let Some(action) = menus::tab_extra_action(i) {
-                    self.tabs.activate(key.0);
-                    self.active_changed(before);
-                    self.run_menu_action(action, event_loop);
-                }
+            Some(TabOp::CloseAll) => self.request_close(self.tabs.ids(), event_loop),
+            Some(TabOp::Rename(id)) => self.open_rename(id),
+            Some(TabOp::ActivateThen(id, action)) => {
+                self.tabs.activate(id);
+                self.active_changed(before);
+                self.run_menu_action(action, event_loop);
             }
+            None => {}
         }
         self.request_redraw();
     }
@@ -1663,6 +1782,14 @@ impl App {
         if self.occluded {
             return;
         }
+        let frame_start = Instant::now();
+        if let Some(t) = &mut self.trace {
+            t.taken = None;
+            t.frame = FrameStamps {
+                start: Some(Instant::now()),
+                ..FrameStamps::default()
+            };
+        }
         if self
             .stack
             .as_ref()
@@ -1672,6 +1799,9 @@ impl App {
             return;
         }
         self.pump(event_loop);
+        if let Some(t) = &mut self.trace {
+            t.frame.pump = Some(Instant::now());
+        }
         self.flush_workspace(false);
         self.flush_settings(false);
         if event_loop.exiting() || self.tabs.is_empty() {
@@ -1708,12 +1838,21 @@ impl App {
                 return;
             }
         };
+        if let Some(t) = &mut self.trace {
+            t.frame.acquire = Some(Instant::now());
+            t.frame.fading = fading;
+        }
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let size = stack.surface.size();
         let scale = win.window.scale_factor() as f32;
         let input = win.translator.take(self.start.elapsed());
+        if let Some(t) = &mut self.trace {
+            // The press this frame takes is what a switch it asks for started from.
+            t.taken = t.pending.take();
+            t.press_taken();
+        }
 
         // The clipboard's answer to a paste goes to the tab that asked, as a paste, nowhere else.
         for event in &input.events {
@@ -1762,6 +1901,9 @@ impl App {
             })
             .collect();
         let active_tab = self.tabs.active();
+        if let Some(t) = &mut self.trace {
+            t.frame.slot0 = active_tab;
+        }
         let label = self
             .tabs
             .active_item()
@@ -1785,14 +1927,20 @@ impl App {
         };
 
         let macos = cfg!(target_os = "macos");
+        // A tab menu closes with its tab.
+        if self
+            .menu
+            .and_then(|m| m.tab)
+            .is_some_and(|id| self.tabs.get(id).is_none())
+        {
+            self.menu = None;
+        }
         let menu_model = self
             .menu
             .map(|m| (m, MenuModel::new(m.kind, stack.renderer.strings(), macos)));
         let menu_name = menu_model
             .as_ref()
             .map(|(_, m)| stack.renderer.strings().tr(m.name_key()).to_owned());
-        let extra = menus::tab_extra(stack.renderer.strings());
-        let extra: [&str; 2] = [extra[0].as_str(), extra[1].as_str()];
         let (busy, outline_cue, busy_tone) = {
             let cue = self.settings.busy_cue();
             let active = self.tabs.active_item();
@@ -1885,7 +2033,6 @@ impl App {
             }),
             busy: busy.then_some(outline_cue).flatten(),
             busy_tone: busy_tone.unwrap_or_default(),
-            tab_menu_extra: &extra,
             grid_alpha: alphas.incoming,
             fading: fading_grids,
         };
@@ -1899,6 +2046,7 @@ impl App {
         let mut out = drawn.output;
         let (tab_events, modal_out) = (drawn.tab_events, drawn.modal);
         let (page_out, menu_out, overflow) = (drawn.page, drawn.menu, drawn.overflow);
+        let tab_context = drawn.tab_context;
         // Closing the window is closing every tab: it asks like they do.
         let close_asked = out
             .commands
@@ -1919,13 +2067,19 @@ impl App {
         }
         win.window.pre_present_notify();
         stack.surface.present(&stack.renderer.gpu, frame);
+        if let Some(t) = &mut self.trace {
+            t.frame.present = Some(Instant::now());
+            t.frame.phases = stack.renderer.phases().copied();
+        }
         let Stack { renderer, .. } = stack;
         renderer.gpu.end_frame(&mut renderer.text);
 
         let (flow, redraw) = control_flow(out.repaint, self.start);
+        let (flow, redraw_now) =
+            pace_frame(flow, redraw, fading, !input.events.is_empty(), frame_start);
         let blink_flow = next_blink.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         let base_flow = merge_flow(flow, blink_flow);
-        if redraw || fading {
+        if redraw_now {
             win.window.request_redraw();
         }
 
@@ -1944,12 +2098,26 @@ impl App {
         }
         if let Some(r) = menu_out {
             let action = r.picked.and_then(|i| menu_model.as_ref()?.1.action_at(i));
+            let target = menu_model.as_ref().and_then(|(m, _)| m.tab);
             if r.picked.is_some() || r.dismissed {
                 self.menu = None;
             }
             if let Some(action) = action {
-                self.run_menu_action(action, event_loop);
+                match target {
+                    Some(tab) => self.run_tab_menu_action(action, tab, event_loop),
+                    None => self.run_menu_action(action, event_loop),
+                }
             }
+        }
+        if let Some(ctx) = tab_context {
+            self.menu = Some(OpenMenu {
+                kind: MenuKind::Tab {
+                    closable: TAB_CLOSABLE,
+                },
+                place: MenuPlace::At(ctx.at),
+                tab: Some(ctx.id),
+            });
+            self.request_redraw();
         }
         if let Some(rect) = overflow {
             self.menu = Some(OpenMenu {
@@ -1960,6 +2128,7 @@ impl App {
                     align: PlaceAlign::End,
                     gap: 4.0,
                 },
+                tab: None,
             });
             self.request_redraw();
         }
@@ -1974,6 +2143,9 @@ impl App {
             }
         }
         event_loop.set_control_flow(merge_flow(base_flow, self.pending_flow()));
+        if let Some(line) = self.trace.as_mut().and_then(|t| t.frame_done()) {
+            eprintln!("{line}");
+        }
         self.show_once();
         if self
             .stack
@@ -2206,6 +2378,7 @@ impl App {
                     selection: self.has_selection(),
                 },
                 place: MenuPlace::At(pos),
+                tab: None,
             });
             self.request_redraw();
             return;
@@ -2347,6 +2520,14 @@ impl ApplicationHandler<UserEvent> for App {
             use winit::platform::macos::WindowExtMacOS;
             window.set_option_as_alt(crate::input::option_as_alt(self.settings.option_as_meta));
         }
+        if let Some(t) = &mut self.trace {
+            if let Some(every) = t.click_every {
+                t.synth = crate::os_event::start_synth_clicks(&window, every);
+                if t.synth.is_none() {
+                    eprintln!("luneterm: LUNETERM_TRACE_SWITCH_CLICK: no synthetic clicks here");
+                }
+            }
+        }
         self.glass = apply_material(&window, &self.settings);
         let stack = match Stack::build(
             event_loop,
@@ -2354,6 +2535,7 @@ impl ApplicationHandler<UserEvent> for App {
             &self.settings,
             self.glass,
             &self.base_theme(),
+            self.trace.is_some(),
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -2383,18 +2565,31 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
-        match event {
-            UserEvent::Wake => {
-                if event_loop.exiting() {
-                    return;
-                }
-                // Every tab's Update is taken here (a hidden tab's too), and a frame is asked
-                // for only when something the window shows changed.
-                let worth_a_frame = self.pump(event_loop);
-                if worth_a_frame && !self.occluded {
-                    self.request_redraw();
-                }
-            }
+        if let Some(t) = &mut self.trace {
+            t.callback_begin();
+        }
+        let kind = match event {
+            UserEvent::Wake => Callback::Wake,
+            UserEvent::TraceSwitch(_) => Callback::Auto,
+        };
+        self.user_event_inner(event_loop, event);
+        if let Some(t) = &mut self.trace {
+            t.callback_end(kind);
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(t) = &mut self.trace {
+            t.callback_begin();
+        }
+        let kind = if matches!(event, WindowEvent::RedrawRequested) {
+            Callback::Redraw
+        } else {
+            Callback::Window
+        };
+        self.window_event_inner(event_loop, id, event);
+        if let Some(t) = &mut self.trace {
+            t.callback_end(kind);
         }
     }
 
@@ -2424,11 +2619,47 @@ impl ApplicationHandler<UserEvent> for App {
             eprintln!("luneterm: the config files were not all written in time");
         }
     }
+}
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+impl App {
+    fn user_event_inner(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::Wake => {
+                if event_loop.exiting() {
+                    return;
+                }
+                // Every tab's Update is taken here (a hidden tab's too), and a frame is asked
+                // for only when something the window shows changed.
+                let worth_a_frame = self.pump(event_loop);
+                if worth_a_frame && !self.occluded {
+                    self.request_redraw();
+                }
+            }
+            UserEvent::TraceSwitch(at) => {
+                if event_loop.exiting() || self.modal.is_some() {
+                    return;
+                }
+                if let Some(t) = &mut self.trace {
+                    t.pending = Some(at);
+                    t.press_arrived(at);
+                }
+                self.app_command(AppCommand::NextTab, event_loop);
+            }
+        }
+    }
+
+    fn window_event_inner(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _id: WindowId,
+        event: WindowEvent,
+    ) {
         // After `exit()` winit still delivers queued events; ignore them so no frame is acquired.
         if event_loop.exiting() {
             return;
+        }
+        if let Some(t) = &mut self.trace {
+            t.event(&event);
         }
         match &event {
             WindowEvent::CloseRequested => {
@@ -2526,6 +2757,387 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
+/// `LUNETERM_TRACE_SWITCH=1` (plan D11): one stderr line per frame from a tab switch until its
+/// crossfade ends, every time in ms since `t0`, the arrival of the press or key that asked for the
+/// switch (the switch itself when nothing did: a tab closing on its own). It prints numbers and
+/// tab ids only: no terminal content, no paths, no environment.
+#[derive(Debug, Default)]
+struct SwitchTrace {
+    /// The latest press (mouse button or key) no frame has taken yet.
+    pending: Option<Instant>,
+    /// The press the frame in progress took: a switch its output asks for started there.
+    taken: Option<Instant>,
+    switches: u32,
+    run: Option<SwitchRun>,
+    /// The frame in progress.
+    frame: FrameStamps,
+    /// The event loop's health over the current second.
+    lp: LoopStats,
+    /// `LUNETERM_TRACE_SWITCH_CLICK`: post a synthetic click this often once the window exists.
+    click_every: Option<Duration>,
+    /// The synthetic clicks' posting times (the known answer for the OS ages).
+    synth: Option<std::sync::Arc<crate::os_event::SynthClicks>>,
+}
+
+/// Which `ApplicationHandler` callback ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Callback {
+    Redraw,
+    Window,
+    Wake,
+    Auto,
+}
+
+impl Callback {
+    fn name(self) -> &'static str {
+        match self {
+            Callback::Redraw => "redraw",
+            Callback::Window => "window",
+            Callback::Wake => "wake",
+            Callback::Auto => "auto",
+        }
+    }
+}
+
+/// What the event loop did over one window of about a second: how many callbacks of each kind,
+/// how long they kept the UI thread, the longest one, the longest quiet gap between two, and how
+/// long the presses (or auto switches) waited for the frame that took them.
+#[derive(Debug, Clone, Copy, Default)]
+struct LoopStats {
+    since: Option<Instant>,
+    begun: Option<Instant>,
+    last_end: Option<Instant>,
+    redraws: u32,
+    windows: u32,
+    wakes: u32,
+    autos: u32,
+    busy: Duration,
+    wake_busy: Duration,
+    max_cb: Duration,
+    max_cb_kind: Option<Callback>,
+    max_gap: Duration,
+    /// Presses that arrived and wait for a frame to take them (the first one's arrival).
+    press_waiting: Option<Instant>,
+    presses: u32,
+    max_press_to_frame: Duration,
+    /// OS timestamp → winit handing it over, real input (motion, presses, keys): count, sum, max.
+    os: AgeStats,
+    /// The same for the trace's synthetic clicks, and the largest disagreement between their
+    /// OS-timestamp age and their `Instant` age (the instrument's own error).
+    syn: AgeStats,
+    syn_clock_err: f64,
+}
+
+/// Count, sum and largest of a set of ages in ms.
+#[derive(Debug, Clone, Copy, Default)]
+struct AgeStats {
+    n: u32,
+    sum: f64,
+    max: f64,
+}
+
+impl AgeStats {
+    fn add(&mut self, ms: f64) {
+        self.n += 1;
+        self.sum += ms;
+        self.max = self.max.max(ms);
+    }
+
+    fn mean(&self) -> f64 {
+        if self.n == 0 {
+            f64::NAN
+        } else {
+            self.sum / f64::from(self.n)
+        }
+    }
+}
+
+/// One switch being traced.
+#[derive(Debug, Clone, Copy)]
+struct SwitchRun {
+    n: u32,
+    t0: Instant,
+    new: TabId,
+    /// Frames printed so far.
+    frame: u32,
+    /// A frame drawing `new` in slot 0 was presented.
+    shown: bool,
+}
+
+/// When each part of one frame ended.
+#[derive(Debug, Default, Clone, Copy)]
+struct FrameStamps {
+    start: Option<Instant>,
+    pump: Option<Instant>,
+    acquire: Option<Instant>,
+    present: Option<Instant>,
+    /// The crossfade was running when the frame began.
+    fading: bool,
+    /// The tab drawn in slot 0 (the active one).
+    slot0: Option<TabId>,
+    phases: Option<crate::render::DrawPhases>,
+}
+
+/// `t` in ms after `t0` (negative before it), or NaN when the frame never got there.
+fn ms_since(t0: Instant, t: Option<Instant>) -> f64 {
+    match t {
+        Some(t) if t >= t0 => (t - t0).as_secs_f64() * 1e3,
+        Some(t) => -((t0 - t).as_secs_f64() * 1e3),
+        None => f64::NAN,
+    }
+}
+
+impl SwitchTrace {
+    /// A window event arrived: a press is what a switch may start from.
+    fn event(&mut self, event: &WindowEvent) {
+        let press = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            }
+        );
+        use crate::os_event::{InputKind, current_age};
+        let kind = match event {
+            WindowEvent::MouseInput { .. } if press => Some(InputKind::Press),
+            WindowEvent::KeyboardInput { .. } if press => Some(InputKind::Key),
+            WindowEvent::CursorMoved { .. } => Some(InputKind::Motion),
+            _ => None,
+        };
+        let age = kind.and_then(current_age);
+        let now = Instant::now();
+        // A synthetic click's ages by both clocks (its press; its motions are not counted).
+        let synthetic = age.and_then(|a| {
+            let by_instant = self.synth.as_ref()?.posted_ms_ago(a.stamp, now)?;
+            Some((a.ms, by_instant))
+        });
+        match (age, synthetic) {
+            (Some(a), None) => self.lp.os.add(a.ms),
+            (Some(_), Some((ms, by_instant))) if kind == Some(InputKind::Press) => {
+                self.lp.syn.add(ms);
+                self.lp.syn_clock_err = self.lp.syn_clock_err.max((ms - by_instant).abs());
+            }
+            _ => {}
+        }
+        if press {
+            self.pending = Some(now);
+            self.press_arrived(now);
+            let what = if kind == Some(InputKind::Key) {
+                "key"
+            } else {
+                "mouse"
+            };
+            match age {
+                Some(a) => eprintln!(
+                    "press: kind={what} os_age_ms={:.2} synthetic={}",
+                    a.ms,
+                    u8::from(synthetic.is_some())
+                ),
+                // The event AppKit dispatches is not this one (winit queued it), or no OS stamp.
+                None => eprintln!("press: kind={what} os_age_ms=NaN"),
+            }
+        }
+    }
+
+    /// A press (or an auto switch posted at `at`) reached the app.
+    fn press_arrived(&mut self, at: Instant) {
+        self.lp.presses += 1;
+        self.lp.press_waiting.get_or_insert(at);
+    }
+
+    /// The frame in progress took the input that was waiting.
+    fn press_taken(&mut self) {
+        if let (Some(at), Some(start)) = (self.lp.press_waiting.take(), self.frame.start) {
+            let waited = start.saturating_duration_since(at);
+            self.lp.max_press_to_frame = self.lp.max_press_to_frame.max(waited);
+        }
+    }
+
+    /// An `ApplicationHandler` callback starts.
+    fn callback_begin(&mut self) {
+        let now = Instant::now();
+        if let Some(end) = self.lp.last_end {
+            self.lp.max_gap = self.lp.max_gap.max(now.saturating_duration_since(end));
+        }
+        self.lp.since.get_or_insert(now);
+        self.lp.begun = Some(now);
+    }
+
+    /// The callback begun last ended; about once a second, one `loop:` line.
+    fn callback_end(&mut self, kind: Callback) {
+        let now = Instant::now();
+        let lp = &mut self.lp;
+        let took = lp
+            .begun
+            .map_or(Duration::ZERO, |b| now.saturating_duration_since(b));
+        lp.busy += took;
+        match kind {
+            Callback::Redraw => lp.redraws += 1,
+            Callback::Window => lp.windows += 1,
+            Callback::Wake => {
+                lp.wakes += 1;
+                lp.wake_busy += took;
+            }
+            Callback::Auto => lp.autos += 1,
+        }
+        if took > lp.max_cb {
+            lp.max_cb = took;
+            lp.max_cb_kind = Some(kind);
+        }
+        lp.last_end = Some(now);
+        let Some(since) = lp.since else { return };
+        let span = now.saturating_duration_since(since);
+        if span < Duration::from_secs(1) {
+            return;
+        }
+        let ms = |d: Duration| d.as_secs_f64() * 1e3;
+        eprintln!(
+            "loop: span={:.0} redraws={} window_events={} wakes={} autos={} presses={} \
+             busy={:.1} wake_busy={:.1} max_cb={:.2} max_cb_kind={} max_gap={:.1} \
+             max_press_to_frame={:.1} os_n={} os_mean={:.2} os_max={:.2} syn_n={} \
+             syn_mean={:.2} syn_max={:.2} syn_clock_err={:.2}",
+            ms(span),
+            lp.redraws,
+            lp.windows,
+            lp.wakes,
+            lp.autos,
+            lp.presses,
+            ms(lp.busy),
+            ms(lp.wake_busy),
+            ms(lp.max_cb),
+            lp.max_cb_kind.map_or("none", Callback::name),
+            ms(lp.max_gap),
+            ms(lp.max_press_to_frame),
+            lp.os.n,
+            lp.os.mean(),
+            lp.os.max,
+            lp.syn.n,
+            lp.syn.mean(),
+            lp.syn.max,
+            lp.syn_clock_err,
+        );
+        *lp = LoopStats {
+            last_end: lp.last_end,
+            press_waiting: lp.press_waiting,
+            ..LoopStats::default()
+        };
+    }
+
+    /// The active tab became `new` at `now`.
+    fn switched(&mut self, new: TabId, now: Instant) {
+        let t0 = self.taken.or_else(|| self.pending.take()).unwrap_or(now);
+        self.switches += 1;
+        if let Some(old) = self.run.take() {
+            eprintln!("switch: n={} superseded after {} frames", old.n, old.frame);
+        }
+        let build = if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        };
+        eprintln!(
+            "switch: n={} begin build={build} to=tab{new} asked_at=-{:.2}",
+            self.switches,
+            ms_since(t0, Some(now)),
+        );
+        self.run = Some(SwitchRun {
+            n: self.switches,
+            t0,
+            new,
+            frame: 0,
+            shown: false,
+        });
+    }
+
+    /// The frame in progress is done: its line, while a switch is being traced.
+    fn frame_done(&mut self) -> Option<TraceLine> {
+        self.taken = None;
+        let run = self.run.as_mut()?;
+        let f = self.frame;
+        let first_new = !run.shown && f.present.is_some() && f.slot0 == Some(run.new);
+        run.shown |= first_new;
+        let end = run.shown && !f.fading;
+        let line = TraceLine {
+            n: run.n,
+            f: run.frame,
+            t0: run.t0,
+            stamps: f,
+            first_new,
+            end,
+        };
+        run.frame += 1;
+        if end {
+            self.run = None;
+        }
+        Some(line)
+    }
+}
+
+/// One frame of a traced switch.
+#[derive(Debug, Clone, Copy)]
+struct TraceLine {
+    n: u32,
+    f: u32,
+    t0: Instant,
+    stamps: FrameStamps,
+    /// The first presented frame with the new tab in slot 0.
+    first_new: bool,
+    /// The crossfade is over: the trace of this switch ends here.
+    end: bool,
+}
+
+impl std::fmt::Display for TraceLine {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let f = &self.stamps;
+        let ms = |t| ms_since(self.t0, t);
+        let p = f.phases;
+        let at = |d: fn(&crate::render::DrawPhases) -> Duration| p.map(|p| p.start + d(&p));
+        write!(
+            out,
+            "switch: n={} f={} start={:.2} pump={:.2} acquire={:.2} ui={:.2} active={:.2} \
+             assign={:.2} fading={:.2} draw_with={:.2} present={:.2}",
+            self.n,
+            self.f,
+            ms(f.start),
+            ms(f.pump),
+            ms(f.acquire),
+            ms(at(|p| p.ui)),
+            ms(at(|p| p.active)),
+            ms(at(|p| p.assign)),
+            ms(at(|p| p.fading)),
+            ms(at(|p| p.draw_with)),
+            ms(f.present),
+        )?;
+        if let Some(p) = p {
+            write!(
+                out,
+                " views_created={} rows_active={} full={} rows_fading={} rasters_font={} \
+                 rasters_custom={}",
+                p.views_created,
+                p.active_rows,
+                u8::from(p.active_full),
+                p.fading_rows,
+                p.font_rasters,
+                p.custom_rasters,
+            )?;
+        }
+        write!(out, " fade_running={}", u8::from(f.fading))?;
+        if self.first_new {
+            out.write_str(" FIRST_NEW_PRESENTED")?;
+        }
+        if self.end {
+            out.write_str(" FADE_END")?;
+        }
+        Ok(())
+    }
+}
+
 /// What the presses of ours that are down hold (see [`App::holds`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Holds {
@@ -2610,6 +3222,115 @@ fn end_left_tab_holds(
 mod tests {
     use super::*;
     use lune_vt::TerminalMouseEventType;
+
+    /// One frame of the app's loop as the trace sees it: begun, its input taken, drawn with
+    /// `slot0` active, presented, done.
+    fn traced_frame(t: &mut SwitchTrace, slot0: TabId, fading: bool) -> Option<TraceLine> {
+        t.taken = None;
+        let now = Instant::now();
+        t.frame = FrameStamps {
+            start: Some(now),
+            pump: Some(now),
+            acquire: Some(now),
+            present: Some(now),
+            fading,
+            slot0: Some(slot0),
+            phases: None,
+        };
+        t.taken = t.pending.take();
+        t.frame_done()
+    }
+
+    #[test]
+    fn a_click_switch_starts_at_the_press_the_frame_took_and_ends_with_the_fade() {
+        let mut t = SwitchTrace::default();
+        let press = Instant::now();
+        t.pending = Some(press);
+        // The frame that takes the press draws the old tab; its output asks for the switch.
+        t.taken = None;
+        t.frame = FrameStamps {
+            start: Some(press),
+            present: Some(press),
+            slot0: Some(1),
+            ..FrameStamps::default()
+        };
+        t.taken = t.pending.take();
+        t.switched(2, press + Duration::from_millis(5));
+        assert_eq!(t.run.map(|r| r.t0), Some(press), "t0 is the press");
+        let f0 = t.frame_done().expect("traced");
+        assert_eq!((f0.f, f0.first_new, f0.end), (0, false, false));
+        let f1 = traced_frame(&mut t, 2, true).expect("traced");
+        assert_eq!((f1.f, f1.first_new, f1.end), (1, true, false));
+        let f2 = traced_frame(&mut t, 2, true).expect("traced");
+        assert_eq!((f2.f, f2.first_new, f2.end), (2, false, false));
+        let f3 = traced_frame(&mut t, 2, false).expect("traced");
+        assert_eq!((f3.f, f3.first_new, f3.end), (3, false, true));
+        assert!(t.run.is_none());
+        assert!(traced_frame(&mut t, 2, false).is_none(), "idle: no line");
+    }
+
+    #[test]
+    fn a_key_switch_starts_at_the_key_and_a_switch_of_its_own_at_itself() {
+        let mut t = SwitchTrace::default();
+        let key = Instant::now();
+        t.pending = Some(key);
+        let now = key + Duration::from_millis(1);
+        t.switched(2, now);
+        assert_eq!(t.run.map(|r| r.t0), Some(key));
+        assert_eq!(t.pending, None, "the key is used up");
+        // A tab that closes on its own: no press asked for it.
+        t.switched(1, now);
+        assert_eq!(t.run.map(|r| (r.n, r.t0)), Some((2, now)));
+        // No fade (motion off): the first frame of the new tab is also the last.
+        let f = traced_frame(&mut t, 1, false).expect("traced");
+        assert!(f.first_new && f.end);
+    }
+
+    #[test]
+    fn age_stats_count_sum_and_max() {
+        let mut a = AgeStats::default();
+        assert!(a.mean().is_nan());
+        for ms in [2.0, 6.0, 1.0] {
+            a.add(ms);
+        }
+        assert_eq!((a.n, a.max), (3, 6.0));
+        assert!((a.mean() - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_trace_line_is_numbers_and_markers_only() {
+        let t0 = Instant::now();
+        let at = |ms| Some(t0 + Duration::from_millis(ms));
+        let line = TraceLine {
+            n: 3,
+            f: 1,
+            t0,
+            stamps: FrameStamps {
+                start: at(10),
+                pump: at(11),
+                acquire: at(20),
+                present: at(30),
+                fading: true,
+                slot0: Some(7),
+                phases: None,
+            },
+            first_new: true,
+            end: false,
+        };
+        let text = line.to_string();
+        assert!(
+            text.starts_with("switch: n=3 f=1 start=10.00 pump=11.00 acquire=20.00 ui=NaN"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("present=30.00 fade_running=1 FIRST_NEW_PRESENTED"),
+            "{text}"
+        );
+        assert!(
+            text.chars().all(|c| c.is_ascii_graphic() || c == ' '),
+            "{text}"
+        );
+    }
 
     fn left_tab_ctx(cols: usize, rows: usize) -> MouseCtx {
         let m = lune_termview::CellMetrics {
@@ -2767,6 +3488,81 @@ mod tests {
         assert_eq!(
             merge_flow(until(soon), ControlFlow::Poll),
             ControlFlow::Poll
+        );
+    }
+
+    /// A simulated event loop over `pace_frame` for a frame that asks `Repaint::Now` every time
+    /// (the strip's progress shine of a hidden tab): each frame costs one 60 Hz refresh (every
+    /// frame blocks in acquire), and the next one starts when it is done or at the flow's
+    /// deadline, whichever is later. Frames counted over one simulated second; no wall clock.
+    fn frames_in_a_second(fading: bool, had_input: bool) -> usize {
+        let refresh = Duration::from_nanos(16_666_667);
+        let t0 = Instant::now();
+        let (mut t, mut frames) = (t0, 0);
+        while t < t0 + Duration::from_secs(1) {
+            frames += 1;
+            let (flow, now) = pace_frame(ControlFlow::Wait, true, fading, had_input, t);
+            let done = t + refresh;
+            t = if now {
+                done
+            } else {
+                match flow {
+                    ControlFlow::WaitUntil(due) => due.max(done),
+                    ControlFlow::Poll => done,
+                    ControlFlow::Wait => panic!("a Repaint::Now never drew again"),
+                }
+            };
+        }
+        frames
+    }
+
+    #[test]
+    fn an_animation_with_nothing_else_happening_draws_at_most_idle_animation_hz() {
+        let frames = frames_in_a_second(false, false);
+        assert!(
+            frames <= IDLE_ANIMATION_HZ as usize,
+            "{frames} frames in a simulated second, cap {IDLE_ANIMATION_HZ}"
+        );
+        assert!(frames >= IDLE_ANIMATION_HZ as usize - 1, "{frames}");
+        // Input and the tab crossfade are never held: every refresh draws.
+        assert_eq!(frames_in_a_second(false, true), 60);
+        assert_eq!(frames_in_a_second(true, false), 60);
+        assert_eq!(frames_in_a_second(true, true), 60);
+    }
+
+    #[test]
+    fn pacing_keeps_an_earlier_deadline_and_leaves_other_frames_alone() {
+        let start = Instant::now();
+        let until = ControlFlow::WaitUntil;
+        let soon = start + Duration::from_millis(5);
+        let capped = start + IDLE_ANIMATION_INTERVAL;
+        // `Repaint::Now`, nothing else: wait for the cap's deadline, no redraw now.
+        assert_eq!(
+            pace_frame(ControlFlow::Wait, true, false, false, start),
+            (until(capped), false)
+        );
+        // An earlier deadline from the toolkit still wins.
+        assert_eq!(
+            pace_frame(until(soon), true, false, false, start),
+            (until(soon), false)
+        );
+        // `Repaint::At` and `Idle` are untouched.
+        assert_eq!(
+            pace_frame(until(soon), false, false, false, start),
+            (until(soon), false)
+        );
+        assert_eq!(
+            pace_frame(ControlFlow::Wait, false, false, false, start),
+            (ControlFlow::Wait, false)
+        );
+        // A fade asks for the next frame now, with or without the toolkit.
+        assert_eq!(
+            pace_frame(ControlFlow::Wait, false, true, false, start),
+            (ControlFlow::Wait, true)
+        );
+        assert_eq!(
+            pace_frame(ControlFlow::Wait, true, false, true, start),
+            (ControlFlow::Wait, true)
         );
     }
 

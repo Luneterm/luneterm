@@ -299,8 +299,6 @@ pub struct ShellView<'a> {
     /// The outline's colour while it runs: the active tab's progress tone (error, warning), else
     /// neutral.
     pub busy_tone: Tone,
-    /// The rows after the toolkit's four on a tab's context menu.
-    pub menu_extra: &'a [&'a str],
     /// The accessible name of the `⋯` button.
     pub overflow_name: &'a str,
     /// The wash over the card that makes the tab header: the look's own (`render::header_tint`).
@@ -332,7 +330,22 @@ pub struct ShellOut {
     pub ime_area: Option<Rect>,
     /// The `⋯` button was pressed: its rect, to anchor the app menu to.
     pub overflow: Option<Rect>,
+    /// A tab asked for its context menu (a right-click or the assistive "show menu" action).
+    pub tab_context: Option<TabContext>,
 }
+
+/// A tab's request for its context menu: the app opens the menu (the strip owns none).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabContext {
+    /// The tab the menu is for.
+    pub id: u64,
+    /// Where the menu's top left goes, logical px: the pointer when it is over the tab, else the
+    /// tab's bottom-left (a request that did not come from a pointer).
+    pub at: (f32, f32),
+}
+
+/// Whether the tabs can be closed (the strip's Close button and the tab menu's Close row).
+pub const TAB_CLOSABLE: bool = true;
 
 /// The cursor for resizing from `edge`.
 pub fn resize_cursor(edge: ResizeEdge) -> CursorIcon {
@@ -483,6 +496,7 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
     let header_id = ui.id("strip-drag");
     let mut tab_events = Vec::new();
     let mut overflow = None;
+    let mut tab_context = None;
     if !view.page_open {
         // Since the luneui-rs pin 32d1904 (D290) the strip's viewport is as wide as its tabs and the
         // `+` follows the last tab, so the empty space is no region of the strip and a press there
@@ -500,7 +514,7 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
             .map(|t| StripItem {
                 key: TabKey(t.id),
                 title: t.title,
-                closable: true,
+                closable: TAB_CLOSABLE,
                 progress: t.progress,
             })
             .collect();
@@ -510,11 +524,18 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
             busy: view.busy,
             busy_tone: view.busy_tone,
             card: layout.card,
-            menu_extra: view.menu_extra,
             name: "Terminal sessions",
             header_tint: Some(view.header_tint),
         };
-        tab_events = ui.tab_strip("strip", layout.strip, &tabs, &opts).events;
+        let strip = ui.tab_strip("strip", layout.strip, &tabs, &opts);
+        tab_events = strip.events;
+        tab_context = strip.context.map(|(key, rect)| TabContext {
+            id: key.0,
+            at: ui
+                .pointer_pos()
+                .filter(|q| rect.contains(*q))
+                .unwrap_or((rect.x, rect.bottom())),
+        });
 
         let more = IconButton {
             glyph: icon::ELLIPSIS,
@@ -545,6 +566,7 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         modal,
         ime_area,
         overflow,
+        tab_context,
     }
 }
 
@@ -868,7 +890,6 @@ mod tests {
             page_open: false,
             busy: None,
             busy_tone: Tone::Neutral,
-            menu_extra: &[],
             overflow_name: "More",
             header_tint: HEADER_TINT,
             fading_slots: 0,

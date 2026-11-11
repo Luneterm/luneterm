@@ -6,8 +6,13 @@ Source of truth: Lunegit `src/Lunegit.Desktop/` — `MainWindow.axaml`, `Views/T
 
 ## The default look is near-black (since M10 step 13, 2026-11-09)
 
-The layer stack below is **Lunegit's**; Luneterm shows it only under the liquid styles. The default
-style (`GlassStyle::Default`, persisted as `default`) is luneui-rs's `near_black` look (landed at luneui-rs `5be5dbe`; the pin is now `32d1904`,
+The layer stack below is **Lunegit's**. Which layers the window uses is the **Theme** setting
+(Settings > Appearance, key `theme`, `luneterm` by default or `lunegit`, applied live like Glass; a
+missing or unknown value reads as `luneterm`), under every glass style: Luneterm is the near-black
+look, Lunegit is the layer stack below. The glass style picks only the OS material, and its
+`default` follows the theme: `near_black::MATERIAL` for Luneterm, `Material::Vibrancy` (light
+vibrancy, acrylic on Windows) for Lunegit; the liquid styles and Off are the same under both. The
+near-black look is luneui-rs's `near_black` (landed at luneui-rs `5be5dbe`; the pin is now v0.4.0,
 `crates/lune-ui-core/src/theme/near_black.rs`, the user-approved test build), as one value:
 
 | What | Value |
@@ -17,11 +22,12 @@ style (`GlassStyle::Default`, persisted as `default`) is luneui-rs's `near_black
 | Layers | tint black, tint opacity 1, material opacity 0.1; luminosity `black_max` 0.60 window, 0.55 panel, 0.65 card |
 | Header tint | the app's own `shell::NEAR_BLACK_HEADER_TINT`, a 6% white wash (`#FFFFFF10`), not luneui-rs's 4% `near_black::HEADER_TINT`: over black glass a black wash shows nothing, and at 4% the header was within 6 levels of the title band over a dark backdrop (3 at `#30`, crossing over a mid one); at 6% band against header is 12 / 8 / 3 levels over `#10` / `#30` / `#60` and header against card about 14. The header is a lighter band and the active tab is punched out of it |
 
-The app chooses all three by the pair (glass behind the window, style): `render::theme` and
-`render::header_tint`. No glass (Linux, `Off`, a refused material) is Lunegit's theme with
-`with_acrylic(Opaque)` for every style; the near-black theme is never made opaque with
-`with_acrylic` (its material opacity of 1 would give a light grey layer). Liquid styles keep Lunegit's
-theme and header tint. The glass does not depend on the window's active state, so the look is the same
+The app chooses all three by the pair (glass behind the window, theme): `render::theme(glass, look)`
+and `render::header_tint(look)`; the glass style is no input. No glass (Linux, `Off`, a refused
+material) is the look's own theme with `with_acrylic(Opaque)`, the near-black one included: the
+step-7 dump of `opaque@2x.png` measures its body at `#101010` and Lunegit's (`lunegit-opaque@2x.png`)
+at `#161616`, not the light grey the earlier note feared (that note read the layer's material opacity
+without the opaque backdrop under it). The glass does not depend on the window's active state, so the look is the same
 active and inactive. `shell::DIALOG_FILL` (`[16,16,16,235]`) is the dialog card's own fill and is judged
 on the near-black dumps.
 
@@ -72,6 +78,16 @@ at its opacity (the glass and the chrome do not fade). As in Lunegit's `Terminal
 every layer animates from the opacity it has now, so a quick second switch continues from where the
 first was (the generation rule); `Full` is 250 ms, `Reduced` 180 ms, `None` a hard cut; the first tab
 and a restored workspace do not fade; redraws are requested only while it runs.
+
+## Text rendering
+
+Glyphs are smoothed (luneui-rs D296, variant A, `TextRendering::SMOOTH`: no hinting, stem
+darkening by size) in the UI text and in the terminal grid alike. Lunegit has no setting for
+it; Luneterm adds one (Settings > Terminal > Appearance, "Font smoothing", on by default, key
+`font_smoothing`, applied live): off gives `TextRendering::OFF`, the hinted look of before. The
+unsmoothed look is also reachable for dumps (`LUNETERM_DUMP_TEXT=off`) and in the termview goldens
+(`attributes-text-off@2x`). Box, block
+and powerline glyphs are drawn procedurally and look the same either way.
 
 ## Open items
 

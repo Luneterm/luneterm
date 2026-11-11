@@ -1,6 +1,7 @@
 //! Glyph atlas (plan step 4): one mask page (R8Unorm) and one colour page (Rgba8Unorm,
-//! premultiplied), keyed by [`AtlasKey`]: cosmic-text's [`CacheKey`] for font glyphs, or a
-//! [`CustomKey`] for the procedural box-drawing glyphs (plan step 6a).
+//! premultiplied), keyed by [`AtlasKey`]: cosmic-text's [`CacheKey`] and the [`GlyphParams`] it is
+//! rasterized with for font glyphs, or a [`CustomKey`] for the procedural box-drawing glyphs (plan
+//! step 6a).
 //!
 //! [`AtlasCore`] is the CPU half (allocators, entry maps, staged uploads, generations) and needs
 //! no GPU; [`Atlas`] wraps it with the two textures and their bind group.
@@ -13,8 +14,9 @@
 
 use std::collections::HashMap;
 
-use cosmic_text::{CacheKey, FontSystem, SwashCache, SwashContent};
+use cosmic_text::{CacheKey, FontSystem, SwashContent};
 use etagere::{AtlasAllocator, size2};
+use lune_ui::text::{GlyphParams, GlyphRasterizer};
 
 use crate::custom_glyphs::try_draw_custom_char;
 use crate::glyph_canvas::GlyphCanvas;
@@ -99,9 +101,13 @@ pub struct CustomKey {
 }
 
 /// Atlas key: a font glyph or a procedural (box drawing, block, powerline) glyph.
+///
+/// A font glyph is keyed by the [`GlyphParams`] it is rasterized with as well as its `CacheKey`:
+/// the same glyph under another text setting is another image, so a setting change never serves a
+/// stale one. A procedural glyph is not a font outline and has no such parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AtlasKey {
-    Font(CacheKey),
+    Font(CacheKey, GlyphParams),
     Custom(CustomKey),
 }
 
@@ -110,9 +116,10 @@ pub trait Raster {
     fn raster(&mut self, key: AtlasKey) -> Option<Image>;
 }
 
-/// [`Raster`] over cosmic-text's swash integration.
+/// [`Raster`] over the toolkit's [`GlyphRasterizer`] (cosmic-text's swash integration with the
+/// hinting and stem-darkening parameters of the frame's text setting).
 pub struct SwashRaster<'a> {
-    pub cache: &'a mut SwashCache,
+    pub glyphs: &'a mut GlyphRasterizer,
     pub fs: &'a mut FontSystem,
 }
 
@@ -124,12 +131,12 @@ impl std::fmt::Debug for SwashRaster<'_> {
 
 impl Raster for SwashRaster<'_> {
     fn raster(&mut self, key: AtlasKey) -> Option<Image> {
-        let key = match key {
-            AtlasKey::Font(k) => k,
+        let (key, params) = match key {
+            AtlasKey::Font(k, p) => (k, p),
             AtlasKey::Custom(k) => return raster_custom(k),
         };
         // uncached: the atlas map is the cache
-        let img = self.cache.get_image_uncached(self.fs, key)?;
+        let img = self.glyphs.image(self.fs, key, params)?;
         let (content, data) = match img.content {
             SwashContent::Mask => (Content::Mask, img.data),
             SwashContent::Color => (Content::Color, img.data),
@@ -218,6 +225,8 @@ pub struct AtlasCore {
     pages: [PageCore; 2],
     max_dim: u32,
     dropped: u64,
+    /// Rasterizer calls so far (atlas misses), font glyphs and procedural glyphs.
+    rasters: [u64; 2],
 }
 
 impl std::fmt::Debug for AtlasCore {
@@ -251,7 +260,14 @@ impl AtlasCore {
             pages: [PageCore::new(start), PageCore::new(start)],
             max_dim,
             dropped: 0,
+            rasters: [0; 2],
         }
+    }
+
+    /// Rasterizer calls so far, `(font glyphs, procedural glyphs)`: one per atlas miss, never
+    /// reset (a counter for the app's tab-switch trace).
+    pub fn rasters(&self) -> (u64, u64) {
+        (self.rasters[0], self.rasters[1])
     }
 
     pub fn size(&self, page: Page) -> u32 {
@@ -291,6 +307,22 @@ impl AtlasCore {
         self.pages.iter().all(|p| p.map.is_empty())
     }
 
+    /// The font glyphs cached on both pages, with the params each was rasterized with.
+    #[cfg(test)]
+    pub(crate) fn font_keys(&self) -> Vec<(CacheKey, GlyphParams)> {
+        let mut v: Vec<_> = self
+            .pages
+            .iter()
+            .flat_map(|p| p.map.keys())
+            .filter_map(|k| match k {
+                AtlasKey::Font(k, p) => Some((*k, *p)),
+                AtlasKey::Custom(_) => None,
+            })
+            .collect();
+        v.sort_by_key(|(k, p)| (k.glyph_id, p.dilation()[0].to_bits(), p.hinting()));
+        v
+    }
+
     /// Uploads waiting for [`Atlas::flush`].
     pub fn staged(&self, page: Page) -> &[Upload] {
         &self.pages[page.index()].staging
@@ -315,6 +347,8 @@ impl AtlasCore {
         if let Some(hit) = self.cached(&key) {
             return Ok(hit);
         }
+        let kind = usize::from(matches!(key, AtlasKey::Custom(_)));
+        self.rasters[kind] = self.rasters[kind].saturating_add(1);
         let Some(img) = raster.raster(key) else {
             self.pages[Page::Mask.index()].map.insert(key, None);
             return Ok(None);
@@ -594,7 +628,7 @@ mod tests {
         fn raster(&mut self, key: AtlasKey) -> Option<Image> {
             self.calls += 1;
             let glyph_id = match key {
-                AtlasKey::Font(k) => k.glyph_id,
+                AtlasKey::Font(k, _) => k.glyph_id,
                 // a custom glyph: the whole cell, 1-byte mask
                 AtlasKey::Custom(k) => {
                     return Some(Image {
@@ -641,6 +675,10 @@ mod tests {
     }
 
     fn key(glyph: u16) -> AtlasKey {
+        key_with(glyph, GlyphParams::OFF)
+    }
+
+    fn key_with(glyph: u16, params: GlyphParams) -> AtlasKey {
         AtlasKey::Font(
             CacheKey::new(
                 fontdb::ID::dummy(),
@@ -651,6 +689,7 @@ mod tests {
                 CacheKeyFlags::empty(),
             )
             .0,
+            params,
         )
     }
 
@@ -839,12 +878,31 @@ mod tests {
     }
 
     #[test]
+    fn the_same_glyph_under_two_params_is_two_entries() {
+        let mut core = AtlasCore::new(256, 256);
+        let mut r = Fake::new(4, 4);
+        let smooth = GlyphParams::new(false, [0.1, 0.1]);
+        let a = core
+            .get(&mut r, key_with(1, GlyphParams::OFF))
+            .expect("room");
+        let b = core.get(&mut r, key_with(1, smooth)).expect("room");
+        assert_eq!(r.calls, 2);
+        assert_ne!(a, b);
+        assert_eq!(core.len(Page::Mask), 2);
+        // each is served from the map afterwards
+        core.get(&mut r, key_with(1, GlyphParams::OFF))
+            .expect("room");
+        core.get(&mut r, key_with(1, smooth)).expect("room");
+        assert_eq!(r.calls, 2);
+    }
+
+    #[test]
     fn swash_raster_serves_custom_keys_without_fonts() {
-        let mut cache = SwashCache::new();
+        let mut glyphs = GlyphRasterizer::new();
         let mut fs =
             FontSystem::new_with_locale_and_db("en-US".to_owned(), fontdb::Database::new());
         let mut r = SwashRaster {
-            cache: &mut cache,
+            glyphs: &mut glyphs,
             fs: &mut fs,
         };
         let img = r.raster(custom('─', 16, 34, 2.0, 13.0)).expect("image");

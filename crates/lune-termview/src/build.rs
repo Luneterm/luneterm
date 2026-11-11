@@ -10,8 +10,9 @@
 //! does not fit afterwards is dropped for this frame and the grid is rebuilt again next update.
 
 use bytemuck::{Pod, Zeroable};
-use cosmic_text::{CacheKey, CacheKeyFlags, FontSystem, SwashCache};
+use cosmic_text::{CacheKey, CacheKeyFlags, FontSystem};
 use lune_ui::color::Rgba;
+use lune_ui::text::{GlyphRasterizer, TextRendering};
 
 use crate::atlas::{AtlasCore, AtlasKey, CustomKey, Entry, Full, Page, SwashRaster};
 use crate::contain::{base_advance, glyph_x, is_blank, next_cell_blank, place};
@@ -121,12 +122,16 @@ struct BuildKey {
     theme_rev: u64,
     fonts_rev: u64,
     epoch: u64,
+    /// The text setting rows were built with ([`TextRendering::effective`]): another one gives
+    /// other glyph images, so every row is rebuilt.
+    text: TextRendering,
 }
 
 /// What the row builder needs besides the mutable caches.
 struct RowCtx<'a> {
     theme: &'a TermTheme,
     fonts: &'a TermFonts,
+    text: TextRendering,
     m: CellMetrics,
     layout: GridLayout,
     blink_on: bool,
@@ -149,14 +154,21 @@ pub struct Builder {
     fonts_rev: u64,
     theme_rev: u64,
     shaper: Shaper,
-    swash: SwashCache,
+    glyphs: GlyphRasterizer,
     metrics: Option<(u64, u32, CellMetrics)>,
     rows: Vec<RowInstances>,
     queued: Vec<bool>,
     overlay: Overlay,
     last: Option<BuildKey>,
+    /// The text setting of the latest update ([`TextRendering::effective`]).
+    text_seen: TextRendering,
     last_blink: Option<bool>,
     skip: bool,
+    /// Rows built so far (never reset), and by the latest update.
+    rows_built: u64,
+    last_rows: usize,
+    /// Whether the latest update rebuilt every row (its key changed).
+    last_full: bool,
 }
 
 impl std::fmt::Debug for Builder {
@@ -176,14 +188,18 @@ impl Builder {
             fonts_rev: 0,
             theme_rev: 0,
             shaper: Shaper::new(),
-            swash: SwashCache::new(),
+            glyphs: GlyphRasterizer::new(),
             metrics: None,
             rows: Vec::new(),
             queued: Vec::new(),
             overlay: Overlay::default(),
             last: None,
+            text_seen: TextRendering::OFF,
             last_blink: None,
             skip: true,
+            rows_built: 0,
+            last_rows: 0,
+            last_full: false,
         }
     }
 
@@ -208,6 +224,18 @@ impl Builder {
         self.fonts_rev += 1;
         self.shaper.clear();
         self.metrics = None;
+    }
+
+    /// The text setting the latest `update` was given ([`TextRendering::effective`]; OFF before
+    /// the first update). The app's tests use it to prove every view of a frame got one value.
+    pub fn text_rendering(&self) -> TextRendering {
+        self.text_seen
+    }
+
+    /// Rows built so far (never reset), rows built by the latest update, and whether that update
+    /// rebuilt every row. Counters only: the app's tab-switch trace reads them.
+    pub fn row_counts(&self) -> (u64, usize, bool) {
+        (self.rows_built, self.last_rows, self.last_full)
     }
 
     /// Cell metrics for the current fonts at `scale`, cached per (fonts, scale).
@@ -254,7 +282,10 @@ impl Builder {
         self.queued.fill(true);
     }
 
-    /// Rebuilds what changed, then the overlay, then clears the grid's dirty flags.
+    /// Rebuilds what changed, then the overlay, then clears the grid's dirty flags. `text` is how
+    /// glyphs are rasterized (the toolkit's frame setting); a change of it rebuilds every row, and
+    /// each glyph's atlas entry is keyed by the parameters it gives.
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         core: &mut AtlasCore,
@@ -263,6 +294,7 @@ impl Builder {
         view: &ViewState<'_>,
         origin: (f32, f32),
         scale: f32,
+        text: TextRendering,
     ) {
         if !(scale.is_finite() && scale > 0.0) {
             self.skip = true;
@@ -270,10 +302,13 @@ impl Builder {
             self.queued.clear();
             self.overlay = Overlay::default();
             self.last = None;
+            self.last_rows = 0;
+            self.last_full = false;
             grid.clear_dirty();
             return;
         }
         self.skip = false;
+        self.text_seen = text.effective();
         let m = self.metrics(fs, scale);
         let layout = GridLayout::new(origin, m);
         let (cols, nrows) = (grid.cols(), grid.rows());
@@ -285,6 +320,7 @@ impl Builder {
             theme_rev: self.theme_rev,
             fonts_rev: self.fonts_rev,
             epoch: core.epoch(),
+            text: text.effective(),
         };
         let all = self.last.as_ref() != Some(&key);
         let mut todo: Vec<usize> = if all {
@@ -304,6 +340,8 @@ impl Builder {
             v
         };
 
+        self.last_full = all;
+        self.last_rows = 0;
         let mut proto = Protocol::default();
         loop {
             let done = {
@@ -311,14 +349,16 @@ impl Builder {
                     fonts,
                     theme,
                     shaper,
-                    swash,
+                    glyphs,
                     rows,
                     queued,
+                    last_rows: built,
                     ..
                 } = &mut *self;
                 let ctx = RowCtx {
                     theme,
                     fonts,
+                    text: key.text,
                     m,
                     layout,
                     blink_on: view.blink_on,
@@ -327,7 +367,8 @@ impl Builder {
                 let mut done = true;
                 for &r in &todo {
                     let Some(row) = grid.row(r) else { continue };
-                    match build_row(&ctx, shaper, swash, fs, core, &mut proto, row, r) {
+                    *built += 1;
+                    match build_row(&ctx, shaper, glyphs, fs, core, &mut proto, row, r) {
                         Ok(inst) => {
                             rows[r] = inst;
                             queued[r] = true;
@@ -348,6 +389,7 @@ impl Builder {
             todo = (0..nrows).collect();
         }
 
+        self.rows_built = self.rows_built.saturating_add(self.last_rows as u64);
         self.last_blink = Some(view.blink_on);
         self.last = (!proto.dropped).then_some(BuildKey {
             epoch: core.epoch(),
@@ -408,7 +450,7 @@ fn clamp_i32(v: i64) -> i32 {
 fn build_row(
     ctx: &RowCtx<'_>,
     shaper: &mut Shaper,
-    swash: &mut SwashCache,
+    glyphs: &mut GlyphRasterizer,
     fs: &mut FontSystem,
     core: &mut AtlasCore,
     proto: &mut Protocol,
@@ -458,7 +500,7 @@ fn build_row(
             // Procedural glyph (box drawing, block, powerline): one cell-sized mask image, never
             // shaped, so bold and italic don't change it. A width-2 cell gets the one-cell image
             // at its leading cell, as xterm.js draws it.
-            let mut raster = SwashRaster { cache: swash, fs };
+            let mut raster = SwashRaster { glyphs, fs };
             let key = AtlasKey::Custom(CustomKey {
                 ch,
                 cell_w: m.cell_w,
@@ -492,7 +534,7 @@ fn build_row(
             if !shaped.glyphs.is_empty() {
                 let advance_px = base_advance(&shaped.glyphs) * scale;
                 let next_blank = next_cell_blank(row, c);
-                let mut raster = SwashRaster { cache: swash, fs };
+                let mut raster = SwashRaster { glyphs, fs };
                 let key_of = |i: usize, pl: &crate::contain::Placement| {
                     let g: &ShapedGlyph = &shaped.glyphs[i];
                     let rs = pl.raster_scale;
@@ -512,7 +554,9 @@ fn build_row(
                         g.weight,
                         flags,
                     );
-                    (AtlasKey::Font(key), xi, yi)
+                    // the glyph's own physical size, as the toolkit computes its ppem
+                    let params = ctx.text.glyph_params(f32::from_bits(key.font_size_bits));
+                    (AtlasKey::Font(key, params), xi, yi)
                 };
                 // Whether the glyph is colour is known only once it is rasterized: probe the
                 // first glyph as a mask glyph, then re-place if it turns out to be colour.
@@ -715,6 +759,7 @@ mod tests {
     use super::*;
     use crate::model::{Color, SelectionKind, SelectionRange};
     use cosmic_text::fontdb;
+    use lune_ui::text::GlyphParams;
     use std::sync::Arc;
 
     const REGULAR: &[u8] = include_bytes!("../tests/fonts/RznMono-Regular.subset.ttf");
@@ -727,6 +772,7 @@ mod tests {
         fs: FontSystem,
         core: AtlasCore,
         grid: Grid,
+        text: TextRendering,
     }
 
     fn rig(cols: usize, rows: usize) -> Rig {
@@ -748,6 +794,7 @@ mod tests {
             fs: FontSystem::new_with_locale_and_db("en-US".to_owned(), db),
             core: AtlasCore::new(512, 8192),
             grid: Grid::new(cols, rows),
+            text: TextRendering::OFF,
         }
     }
 
@@ -773,6 +820,7 @@ mod tests {
                 v,
                 (0.0, 0.0),
                 scale,
+                self.text,
             );
         }
         fn update(&mut self) {
@@ -1008,6 +1056,122 @@ mod tests {
         r.b.set_theme(TermTheme::lunegit_one_dark());
         r.update_with(&view(&[]), 1.0);
         assert_eq!(r.b.take_queued(), vec![0, 1, 2], "theme change");
+    }
+
+    fn put(r: &mut Rig, row: usize, col: usize, ch: char) {
+        let mut c = Cell::default();
+        c.set_char(ch);
+        assert!(r.grid.set(row, col, c));
+    }
+
+    fn rasters(r: &mut Rig) -> usize {
+        r.core.take_staged(Page::Mask).len() + r.core.take_staged(Page::Color).len()
+    }
+
+    #[test]
+    fn a_font_glyph_is_keyed_by_the_params_of_its_own_size() {
+        let mut r = rig(3, 1);
+        put(&mut r, 0, 0, 'W');
+        r.text = TextRendering::SMOOTH;
+        r.update();
+        let keys = r.core.font_keys();
+        assert_eq!(keys.len(), 1, "{keys:?}");
+        let (k, p) = keys[0];
+        let ppem = f32::from_bits(k.font_size_bits);
+        assert_eq!(ppem, 26.0, "13 px at 2x");
+        assert_eq!(p, TextRendering::SMOOTH.glyph_params(ppem));
+        assert!(!p.hinting() && p.dilation()[0] > 0.0, "{p:?}");
+        assert!(
+            k.flags.is_empty(),
+            "the rasterizer adds its own flags, not the key"
+        );
+    }
+
+    #[test]
+    fn the_same_glyph_under_off_and_smooth_is_two_entries_and_two_rasters() {
+        let mut r = rig(3, 1);
+        put(&mut r, 0, 0, 'W');
+        r.update();
+        assert_eq!(rasters(&mut r), 1);
+        r.text = TextRendering::SMOOTH;
+        r.update();
+        assert_eq!(rasters(&mut r), 1, "the same glyph again, once");
+        let keys = r.core.font_keys();
+        assert_eq!(keys.len(), 2, "{keys:?}");
+        assert_eq!(keys[0].0, keys[1].0, "one CacheKey");
+        assert_ne!(keys[0].1, keys[1].1, "two params");
+        assert!(keys.iter().any(|(_, p)| *p == GlyphParams::OFF));
+    }
+
+    #[test]
+    fn a_text_change_rebuilds_every_row_and_going_back_rasterizes_nothing() {
+        let mut r = rig(4, 3);
+        put(&mut r, 1, 1, 'W');
+        r.update();
+        assert_eq!(r.b.take_queued(), vec![0, 1, 2], "first");
+        rasters(&mut r);
+        r.update();
+        assert!(r.b.take_queued().is_empty(), "same setting: nothing");
+        r.text = TextRendering::SMOOTH;
+        r.update();
+        assert_eq!(r.b.take_queued(), vec![0, 1, 2], "OFF to SMOOTH");
+        assert_eq!(rasters(&mut r), 1);
+        r.text = TextRendering::OFF;
+        r.update();
+        assert_eq!(r.b.take_queued(), vec![0, 1, 2], "SMOOTH to OFF");
+        assert_eq!(
+            rasters(&mut r),
+            0,
+            "a setting already seen reuses its entries"
+        );
+        // a smoothing-off value that carries other fields is the same setting
+        r.text = TextRendering {
+            hinting: false,
+            ..TextRendering::OFF
+        };
+        r.update();
+        assert!(
+            r.b.take_queued().is_empty(),
+            "effective() equal: no rebuild"
+        );
+    }
+
+    #[test]
+    fn the_counters_count_rows_built_and_rasterizer_calls() {
+        let mut r = rig(4, 3);
+        put(&mut r, 0, 0, 'W');
+        put(&mut r, 1, 0, '\u{2500}');
+        r.update();
+        assert_eq!(r.b.row_counts(), (3, 3, true), "first update: every row");
+        assert_eq!(r.core.rasters(), (1, 1), "one font glyph, one procedural");
+        r.update();
+        assert_eq!(r.b.row_counts(), (3, 0, false), "nothing dirty");
+        put(&mut r, 2, 1, 'W');
+        r.update();
+        assert_eq!(r.b.row_counts(), (4, 1, false), "one dirty row");
+        assert_eq!(r.core.rasters(), (1, 1), "a glyph already in the atlas");
+        r.text = TextRendering::SMOOTH;
+        r.update();
+        assert_eq!(r.b.row_counts(), (7, 3, true), "a new key: every row");
+        assert_eq!(
+            r.core.rasters(),
+            (2, 1),
+            "the font glyph again under SMOOTH only"
+        );
+    }
+
+    #[test]
+    fn a_procedural_glyph_is_rasterized_once_whatever_the_setting() {
+        let mut r = rig(3, 1);
+        put(&mut r, 0, 0, '\u{2500}');
+        r.update();
+        assert_eq!(rasters(&mut r), 1);
+        r.text = TextRendering::SMOOTH;
+        r.update();
+        assert_eq!(rasters(&mut r), 0, "no second image");
+        assert!(r.core.font_keys().is_empty());
+        assert_eq!(r.core.len(Page::Mask), 1);
+        assert_eq!(r.b.rows()[0].mask.len(), 1, "still drawn");
     }
 
     #[test]
