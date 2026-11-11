@@ -155,6 +155,42 @@ pub fn merge_flow(a: ControlFlow, b: ControlFlow) -> ControlFlow {
     }
 }
 
+/// The frame rate of a toolkit animation that runs while nothing else happens: no input in the
+/// frame and no tab crossfade (the tab strip's progress shine above all, which asks for a frame
+/// every frame for as long as any tab shows progress, a hidden one too). At 60 fps every such frame
+/// blocked ~15 ms in the surface's acquire, so a click waited for the frame in flight and the new
+/// tab's first frame for one more (plan step 4, D12: the user chose this cap). The animation keeps
+/// its speed; only its frame rate drops.
+///
+/// A stopgap until luneui-rs offers a shine cadence API and a surface that does not block the UI
+/// thread: luneui-rs docs/tasks/frame-pacing.md (requested 2026-11-11).
+pub const IDLE_ANIMATION_HZ: u32 = 30;
+/// Rounded up, so a second never holds more than `IDLE_ANIMATION_HZ` such frames.
+const IDLE_ANIMATION_INTERVAL: Duration =
+    Duration::from_nanos(1_000_000_000_u64.div_ceil(IDLE_ANIMATION_HZ as u64));
+
+/// When the next frame is drawn, after a frame that started at `start`: `flow` and `redraw` are
+/// the toolkit's ask ([`control_flow`] of its `Repaint`), `fading` whether the tab crossfade runs
+/// and `had_input` whether the frame took an input event. Returns the flow to merge and whether
+/// to request a redraw now. A `Repaint::Now` with no input and no fade waits until
+/// `start + 1/IDLE_ANIMATION_HZ` instead of drawing at once; an earlier deadline in `flow` still
+/// wins, and input, a fade, PTY output and a resize ask for their own frame and are never held.
+/// Reads no clock.
+pub fn pace_frame(
+    flow: ControlFlow,
+    redraw: bool,
+    fading: bool,
+    had_input: bool,
+    start: Instant,
+) -> (ControlFlow, bool) {
+    if redraw && !fading && !had_input {
+        let due = ControlFlow::WaitUntil(start + IDLE_ANIMATION_INTERVAL);
+        (merge_flow(flow, due), false)
+    } else {
+        (flow, redraw || fading)
+    }
+}
+
 /// Rate-limits the bell's attention request (D13): while unfocused, at most one per 2 s; while
 /// focused, none.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1746,6 +1782,7 @@ impl App {
         if self.occluded {
             return;
         }
+        let frame_start = Instant::now();
         if let Some(t) = &mut self.trace {
             t.taken = None;
             t.frame = FrameStamps {
@@ -2038,9 +2075,11 @@ impl App {
         renderer.gpu.end_frame(&mut renderer.text);
 
         let (flow, redraw) = control_flow(out.repaint, self.start);
+        let (flow, redraw_now) =
+            pace_frame(flow, redraw, fading, !input.events.is_empty(), frame_start);
         let blink_flow = next_blink.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         let base_flow = merge_flow(flow, blink_flow);
-        if redraw || fading {
+        if redraw_now {
             win.window.request_redraw();
         }
 
@@ -3449,6 +3488,81 @@ mod tests {
         assert_eq!(
             merge_flow(until(soon), ControlFlow::Poll),
             ControlFlow::Poll
+        );
+    }
+
+    /// A simulated event loop over `pace_frame` for a frame that asks `Repaint::Now` every time
+    /// (the strip's progress shine of a hidden tab): each frame costs one 60 Hz refresh (every
+    /// frame blocks in acquire), and the next one starts when it is done or at the flow's
+    /// deadline, whichever is later. Frames counted over one simulated second; no wall clock.
+    fn frames_in_a_second(fading: bool, had_input: bool) -> usize {
+        let refresh = Duration::from_nanos(16_666_667);
+        let t0 = Instant::now();
+        let (mut t, mut frames) = (t0, 0);
+        while t < t0 + Duration::from_secs(1) {
+            frames += 1;
+            let (flow, now) = pace_frame(ControlFlow::Wait, true, fading, had_input, t);
+            let done = t + refresh;
+            t = if now {
+                done
+            } else {
+                match flow {
+                    ControlFlow::WaitUntil(due) => due.max(done),
+                    ControlFlow::Poll => done,
+                    ControlFlow::Wait => panic!("a Repaint::Now never drew again"),
+                }
+            };
+        }
+        frames
+    }
+
+    #[test]
+    fn an_animation_with_nothing_else_happening_draws_at_most_idle_animation_hz() {
+        let frames = frames_in_a_second(false, false);
+        assert!(
+            frames <= IDLE_ANIMATION_HZ as usize,
+            "{frames} frames in a simulated second, cap {IDLE_ANIMATION_HZ}"
+        );
+        assert!(frames >= IDLE_ANIMATION_HZ as usize - 1, "{frames}");
+        // Input and the tab crossfade are never held: every refresh draws.
+        assert_eq!(frames_in_a_second(false, true), 60);
+        assert_eq!(frames_in_a_second(true, false), 60);
+        assert_eq!(frames_in_a_second(true, true), 60);
+    }
+
+    #[test]
+    fn pacing_keeps_an_earlier_deadline_and_leaves_other_frames_alone() {
+        let start = Instant::now();
+        let until = ControlFlow::WaitUntil;
+        let soon = start + Duration::from_millis(5);
+        let capped = start + IDLE_ANIMATION_INTERVAL;
+        // `Repaint::Now`, nothing else: wait for the cap's deadline, no redraw now.
+        assert_eq!(
+            pace_frame(ControlFlow::Wait, true, false, false, start),
+            (until(capped), false)
+        );
+        // An earlier deadline from the toolkit still wins.
+        assert_eq!(
+            pace_frame(until(soon), true, false, false, start),
+            (until(soon), false)
+        );
+        // `Repaint::At` and `Idle` are untouched.
+        assert_eq!(
+            pace_frame(until(soon), false, false, false, start),
+            (until(soon), false)
+        );
+        assert_eq!(
+            pace_frame(ControlFlow::Wait, false, false, false, start),
+            (ControlFlow::Wait, false)
+        );
+        // A fade asks for the next frame now, with or without the toolkit.
+        assert_eq!(
+            pace_frame(ControlFlow::Wait, false, true, false, start),
+            (ControlFlow::Wait, true)
+        );
+        assert_eq!(
+            pace_frame(ControlFlow::Wait, true, false, true, start),
+            (ControlFlow::Wait, true)
         );
     }
 

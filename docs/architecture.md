@@ -913,6 +913,24 @@ scrollback 0), cursor, scroll state from `Terminal::viewport_state()` (O(1), D3)
 changed (`Arc<str>`), bells, the last OSC 52 write, palette changes, cwd, progress and marks.
 `apply_update` writes rows into the termview `Grid`, so the renderer rebuilds only dirty rows.
 
+**Frame scheduling (`App::redraw`, `pace_frame`).** A frame is drawn on a redraw request: every
+window event, a visible Update (`UserEvent::Wake`), a clipboard read, a deadline that came due
+(`Repaint::At`, the cursor blink, the settings and workspace debounces), and while the tab
+crossfade runs. The toolkit's `Repaint::Now` (an animation in progress) is the one ask that is
+paced: when the frame took no input event and no crossfade runs, the next frame waits until the
+frame's start + 1/`IDLE_ANIMATION_HZ` (30 Hz) instead of drawing at once; an earlier deadline still
+wins, and any other request draws at once. The case it exists for is the tab strip's progress shine,
+which asks `Now` every frame while any tab, a hidden one too, shows progress (OSC 9;4): at 60 fps
+every such frame blocked ~15 ms in the surface's acquire (Fifo, frame latency 2, the toolkit's
+configuration), so a click waited for the frame in flight and the new tab's first frame for one
+more (plan step 4, user decision D12; measured on the ink demo, release, M1 Pro: 60 to ~40
+redraws/s, UI busy ~1000 to ~300 ms/s, t0 to the new tab's first frame 18-34 ms to 1-4 ms while
+the busy tab is hidden). The cost: any toolkit animation in a frame without input (the shine, a
+hover fade after the pointer stops, a toast, a menu opening) runs at 30 fps at its own speed. A
+stopgap until luneui-rs offers a shine cadence and a surface that does not block the UI thread
+(luneui-rs `docs/tasks/frame-pacing.md`, requested 2026-11-11). Switching away from a *visible*
+busy tab is not helped: its own output keeps every frame in acquire.
+
 **Mode 2026 (D10, ledger 14).** While the mode is set the engine publishes nothing, until the mode
 is reset or 1000 ms after it was first seen (xterm.js `RenderService.ts`). Unlike xterm.js the
 session does not clear the engine's mode on timeout, because that needs bytes injected into the
