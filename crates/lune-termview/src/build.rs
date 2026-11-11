@@ -160,6 +160,8 @@ pub struct Builder {
     queued: Vec<bool>,
     overlay: Overlay,
     last: Option<BuildKey>,
+    /// The text setting of the latest update ([`TextRendering::effective`]).
+    text_seen: TextRendering,
     last_blink: Option<bool>,
     skip: bool,
 }
@@ -187,6 +189,7 @@ impl Builder {
             queued: Vec::new(),
             overlay: Overlay::default(),
             last: None,
+            text_seen: TextRendering::OFF,
             last_blink: None,
             skip: true,
         }
@@ -213,6 +216,12 @@ impl Builder {
         self.fonts_rev += 1;
         self.shaper.clear();
         self.metrics = None;
+    }
+
+    /// The text setting the latest `update` was given ([`TextRendering::effective`]; OFF before
+    /// the first update). The app's tests use it to prove every view of a frame got one value.
+    pub fn text_rendering(&self) -> TextRendering {
+        self.text_seen
     }
 
     /// Cell metrics for the current fonts at `scale`, cached per (fonts, scale).
@@ -283,6 +292,7 @@ impl Builder {
             return;
         }
         self.skip = false;
+        self.text_seen = text.effective();
         let m = self.metrics(fs, scale);
         let layout = GridLayout::new(origin, m);
         let (cols, nrows) = (grid.cols(), grid.rows());

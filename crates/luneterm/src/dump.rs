@@ -20,6 +20,7 @@ use lune_ui::dump::{read_rgba, target, write_png};
 use lune_ui::gpu::{self, Gpu};
 use lune_ui::input::{Event, Modifiers, PointerButton, RawInput, ScrollDelta};
 use lune_ui::paint::Rect;
+use lune_ui::text::TextRendering;
 use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
 use lune_ui::widgets::tone::Tone;
@@ -436,13 +437,40 @@ pub enum DumpError {
     Failed(String),
 }
 
-/// Renders the scenes into `dir` (created if absent) and returns the files written.
+/// Renders the scenes into `dir` (created if absent) and returns the files written, with the
+/// app's text setting (smoothed glyphs).
 pub fn dump_frames(dir: &Path) -> Result<Vec<PathBuf>, DumpError> {
-    dump_frames_gated(dir).map(|v| v.into_iter().map(|(p, _)| p).collect())
+    dump_frames_text(dir, TextRendering::SMOOTH)
+}
+
+/// [`dump_frames`] at an explicit text setting.
+pub fn dump_frames_text(dir: &Path, text: TextRendering) -> Result<Vec<PathBuf>, DumpError> {
+    dump_frames_gated_text(dir, text).map(|v| v.into_iter().map(|(p, _)| p).collect())
 }
 
 /// [`dump_frames`] with the least alpha of each frame (an opaque scene must have 255 everywhere).
 pub fn dump_frames_gated(dir: &Path) -> Result<Vec<(PathBuf, u8)>, DumpError> {
+    dump_frames_gated_text(dir, TextRendering::SMOOTH)
+}
+
+/// The environment variable that picks the dump's text setting.
+pub const DUMP_TEXT_VAR: &str = "LUNETERM_DUMP_TEXT";
+
+/// Reads [`DUMP_TEXT_VAR`]'s value: unset or `on` is smoothed glyphs (what the app draws), `off`
+/// the unsmoothed look. Anything else is an error that names the variable and nothing else.
+pub fn parse_dump_text(value: Option<&str>) -> Result<TextRendering, String> {
+    match value {
+        None | Some("on") => Ok(TextRendering::SMOOTH),
+        Some("off") => Ok(TextRendering::OFF),
+        Some(_) => Err(format!("{DUMP_TEXT_VAR} must be `on` or `off`")),
+    }
+}
+
+/// [`dump_frames_gated`] at an explicit text setting.
+pub fn dump_frames_gated_text(
+    dir: &Path,
+    text_rendering: TextRendering,
+) -> Result<Vec<(PathBuf, u8)>, DumpError> {
     let gpu = pollster::block_on(Gpu::new(gpu::instance(None), None)).map_err(DumpError::NoGpu)?;
     std::fs::create_dir_all(dir)
         .map_err(|e| DumpError::Failed(format!("create {}: {e}", dir.display())))?;
@@ -450,6 +478,7 @@ pub fn dump_frames_gated(dir: &Path) -> Result<Vec<(PathBuf, u8)>, DumpError> {
     eprintln!("system fonts loaded in {} ms", took.as_millis());
     let settings = Settings::default().clamped();
     let mut renderer = Renderer::new(gpu, text, FORMAT, &settings, true);
+    renderer.set_text_rendering(text_rendering);
     let mut written = Vec::new();
     for scene in SCENES {
         let path = dir.join(scene.name);
@@ -688,7 +717,20 @@ fn exit_for(result: &Result<Vec<PathBuf>, DumpError>, require_gpu: bool) -> (u8,
 
 /// Runs the dump for `LUNETERM_DUMP_FRAMES` and prints the written files.
 pub fn run(dir: &Path) -> ExitCode {
-    let result = dump_frames(dir);
+    // Checked before anything is written; a value that is not UTF-8 is as wrong as any other.
+    let var = match std::env::var(DUMP_TEXT_VAR) {
+        Ok(v) => Some(v),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => Some(String::new()),
+    };
+    let text = match parse_dump_text(var.as_deref()) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(2);
+        }
+    };
+    let result = dump_frames_text(dir, text);
     if let Ok(files) = &result {
         for f in files {
             println!("{}", f.display());
@@ -728,6 +770,46 @@ mod tests {
         assert_eq!(exit_for(&Ok(Vec::new()), true), (0, None));
         let failed = Err(DumpError::Failed("disk".into()));
         assert_eq!(exit_for(&failed, false).0, 1);
+    }
+
+    #[test]
+    fn the_dump_text_value_is_on_off_or_an_error_naming_the_variable() {
+        assert_eq!(parse_dump_text(None), Ok(TextRendering::SMOOTH));
+        assert_eq!(parse_dump_text(Some("on")), Ok(TextRendering::SMOOTH));
+        assert_eq!(parse_dump_text(Some("off")), Ok(TextRendering::OFF));
+        for bad in ["", "ON", "bogus", "1", "off "] {
+            let e = parse_dump_text(Some(bad)).expect_err(bad);
+            assert!(e.contains(DUMP_TEXT_VAR), "{e}");
+            assert!(bad.is_empty() || !e.contains(bad), "{e}");
+        }
+    }
+
+    /// The text setting changes the glyph pixels and nothing else: the same sizes, and the
+    /// smoothed frame differs from the unsmoothed one.
+    #[test]
+    fn the_text_setting_changes_pixels_not_geometry() {
+        let (on, off) = (scratch("text-on"), scratch("text-off"));
+        let a = match dump_frames_text(&on, TextRendering::SMOOTH) {
+            Ok(f) => f,
+            Err(DumpError::NoGpu(e)) if !require_gpu() => {
+                eprintln!("SKIPPED: no wgpu adapter: {e}");
+                return;
+            }
+            Err(e) => panic!("dump: {e:?}"),
+        };
+        let b = dump_frames_text(&off, TextRendering::OFF).expect("off dump");
+        assert_eq!(a.len(), b.len());
+        let mut changed = 0;
+        for (x, y) in a.iter().zip(&b) {
+            let (bx, by) = (
+                std::fs::read(x).expect("read"),
+                std::fs::read(y).expect("read"),
+            );
+            let dims = |bytes: &[u8]| (bytes[16..24].to_vec(), bytes.len() > 24);
+            assert_eq!(dims(&bx).0, dims(&by).0, "{} changed size", x.display());
+            changed += usize::from(bx != by);
+        }
+        assert!(changed > 0, "no dump differs between on and off");
     }
 
     /// Every scene is written, is the right size, is not blank, and two runs give byte-identical

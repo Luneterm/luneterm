@@ -167,6 +167,16 @@ no tab). Luneterm took them with the pin bump (M10 step 13) and changed no call:
   (the app keeps its groups 12 px clear of it); the restart banner is a full-width bar over the
   content's last rows rather than docked outside the scroll area.
 
+## Seen in luneui-rs 0.4.0 (font smoothing)
+
+- `TextRendering` is one value the frame carries (`FrameParams.text`, `CustomFrame.text`). A custom
+  draw that builds its own glyph images (the terminal grid) gets nothing for free: the app passes
+  the same value to its views' `update`, which key their atlas by `(CacheKey, GlyphParams)` and rasterize
+  through `text::GlyphRasterizer`. Had `FrameParams::default()` been left as it was, the UI text
+  would have turned smooth while the grid stayed unsmoothed. The gap, if any: a way for a custom
+  draw to read the setting when it builds, not only in `prepare` (the rows are built in `update`,
+  before the frame exists).
+
 ## Seen in M10 step 4 (link tooltip)
 
 - `Ui::tooltip` fits a link tooltip without a patch: the app registers a `Sense::HOVER` region over

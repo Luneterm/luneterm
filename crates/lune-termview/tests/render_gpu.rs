@@ -63,12 +63,24 @@ fn draw(
     size: (u32, u32),
     scale: f32,
 ) -> Vec<u8> {
+    draw_with(device, queue, tv, size, scale, TextRendering::OFF)
+}
+
+/// [`draw`] with the frame's text setting.
+fn draw_with(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    tv: &mut TermView,
+    size: (u32, u32),
+    scale: f32,
+    text: TextRendering,
+) -> Vec<u8> {
     let target = lune_ui::dump::target(device, FORMAT, size);
     let frame = CustomFrame {
         size,
         scale,
         format: FORMAT,
-        text: TextRendering::OFF,
+        text,
     };
     tv.prepare(device, queue, &frame);
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -460,4 +472,52 @@ fn opacity_scales_a_colour_glyph() {
     }
     let none = colour_glyph_at(0.0);
     assert!(none.chunks_exact(4).all(|p| p == CLEAR), "opacity 0");
+}
+
+/// One view drawn SMOOTH, then OFF, then SMOOTH again draws at each step what a fresh view
+/// draws at that setting: a toggle never serves a glyph rasterized under the other one. Also
+/// checks the two settings really differ on text (a guard against a test that proves nothing).
+#[test]
+fn no_stale_glyph_across_text_settings() {
+    let Some((_gpu, device, queue, _)) = common::device() else {
+        return;
+    };
+    let (mut fs, fonts) = test_fonts();
+    let theme = TermTheme::lunegit_one_dark();
+    let mut grid = Grid::new(24, 2);
+    fill(&mut grid, "The quick brown fox WAVE", 0);
+    fill(&mut grid, "jumps over 0123456789 ag", 1);
+    let v = view();
+    let mut tv = TermView::new(&device, FORMAT, fonts.clone(), theme.clone());
+    let m = tv.metrics(&mut fs, 2.0);
+    let size = (24 * m.cell_w, 2 * m.cell_h);
+    let fresh = |fs: &mut FontSystem, grid: &mut Grid, text: TextRendering| {
+        let mut other = TermView::new(&device, FORMAT, fonts.clone(), theme.clone());
+        grid.mark_all_dirty();
+        other.update(fs, grid, &v, (0.0, 0.0), 2.0, text);
+        draw_with(&device, &queue, &mut other, size, 2.0, text)
+    };
+    let mut seen = Vec::new();
+    for (step, text) in [
+        TextRendering::SMOOTH,
+        TextRendering::OFF,
+        TextRendering::SMOOTH,
+        TextRendering::OFF,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // the persistent view is updated WITHOUT marking the grid dirty: only the setting changed
+        tv.update(&mut fs, &mut grid, &v, (0.0, 0.0), 2.0, text);
+        let got = draw_with(&device, &queue, &mut tv, size, 2.0, text);
+        let want = fresh(&mut fs, &mut grid, text);
+        assert_eq!(
+            got, want,
+            "step {step} ({text:?}) differs from a fresh view"
+        );
+        seen.push(got);
+    }
+    assert_ne!(seen[0], seen[1], "SMOOTH and OFF draw the same pixels");
+    assert_eq!(seen[0], seen[2], "SMOOTH is not repeatable");
+    assert_eq!(seen[1], seen[3], "OFF is not repeatable");
 }
