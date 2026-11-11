@@ -97,6 +97,9 @@ const CLOSE_WAIT: Duration = Duration::from_millis(500);
 pub enum UserEvent {
     /// The session has an Update for the UI: draw a frame.
     Wake,
+    /// `LUNETERM_TRACE_SWITCH_AUTO`: switch to the next tab, as the shortcut does; posted at the
+    /// instant it carries, so the trace sees how long the event loop took to get to it.
+    TraceSwitch(Instant),
 }
 
 /// The cursor blink phase. It runs only while the window is focused and the cursor blinks; when it
@@ -271,6 +274,27 @@ fn run_window() -> ExitCode {
     // The tab-switch trace (this is the only place the variable is read).
     if std::env::var_os("LUNETERM_TRACE_SWITCH").is_some_and(|v| v == "1") {
         app.trace = Some(Box::default());
+        // A switch every <ms>, posted from a thread of its own like a session's wake (measures
+        // the loop's latency without a hand on the mouse). Only read while the trace is on.
+        if let Some(v) = std::env::var_os("LUNETERM_TRACE_SWITCH_AUTO") {
+            match v.to_str().and_then(|v| v.parse::<u64>().ok()) {
+                Some(ms @ 200..=60_000) => {
+                    let proxy = event_loop.create_proxy();
+                    let _ = std::thread::Builder::new()
+                        .name("luneterm-trace-switch".into())
+                        .spawn(move || {
+                            loop {
+                                std::thread::sleep(Duration::from_millis(ms));
+                                let at = Instant::now();
+                                if proxy.send_event(UserEvent::TraceSwitch(at)).is_err() {
+                                    return;
+                                }
+                            }
+                        });
+                }
+                _ => eprintln!("luneterm: LUNETERM_TRACE_SWITCH_AUTO must be ms in 200..=60000"),
+            }
+        }
     }
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop: {e}");
@@ -1778,6 +1802,7 @@ impl App {
         if let Some(t) = &mut self.trace {
             // The press this frame takes is what a switch it asks for started from.
             t.taken = t.pending.take();
+            t.press_taken();
         }
 
         // The clipboard's answer to a paste goes to the tab that asked, as a paste, nowhere else.
@@ -2481,18 +2506,31 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
-        match event {
-            UserEvent::Wake => {
-                if event_loop.exiting() {
-                    return;
-                }
-                // Every tab's Update is taken here (a hidden tab's too), and a frame is asked
-                // for only when something the window shows changed.
-                let worth_a_frame = self.pump(event_loop);
-                if worth_a_frame && !self.occluded {
-                    self.request_redraw();
-                }
-            }
+        if let Some(t) = &mut self.trace {
+            t.callback_begin();
+        }
+        let kind = match event {
+            UserEvent::Wake => Callback::Wake,
+            UserEvent::TraceSwitch(_) => Callback::Auto,
+        };
+        self.user_event_inner(event_loop, event);
+        if let Some(t) = &mut self.trace {
+            t.callback_end(kind);
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(t) = &mut self.trace {
+            t.callback_begin();
+        }
+        let kind = if matches!(event, WindowEvent::RedrawRequested) {
+            Callback::Redraw
+        } else {
+            Callback::Window
+        };
+        self.window_event_inner(event_loop, id, event);
+        if let Some(t) = &mut self.trace {
+            t.callback_end(kind);
         }
     }
 
@@ -2522,8 +2560,41 @@ impl ApplicationHandler<UserEvent> for App {
             eprintln!("luneterm: the config files were not all written in time");
         }
     }
+}
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+impl App {
+    fn user_event_inner(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::Wake => {
+                if event_loop.exiting() {
+                    return;
+                }
+                // Every tab's Update is taken here (a hidden tab's too), and a frame is asked
+                // for only when something the window shows changed.
+                let worth_a_frame = self.pump(event_loop);
+                if worth_a_frame && !self.occluded {
+                    self.request_redraw();
+                }
+            }
+            UserEvent::TraceSwitch(at) => {
+                if event_loop.exiting() || self.modal.is_some() {
+                    return;
+                }
+                if let Some(t) = &mut self.trace {
+                    t.pending = Some(at);
+                    t.press_arrived(at);
+                }
+                self.app_command(AppCommand::NextTab, event_loop);
+            }
+        }
+    }
+
+    fn window_event_inner(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _id: WindowId,
+        event: WindowEvent,
+    ) {
         // After `exit()` winit still delivers queued events; ignore them so no frame is acquired.
         if event_loop.exiting() {
             return;
@@ -2641,6 +2712,51 @@ struct SwitchTrace {
     run: Option<SwitchRun>,
     /// The frame in progress.
     frame: FrameStamps,
+    /// The event loop's health over the current second.
+    lp: LoopStats,
+}
+
+/// Which `ApplicationHandler` callback ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Callback {
+    Redraw,
+    Window,
+    Wake,
+    Auto,
+}
+
+impl Callback {
+    fn name(self) -> &'static str {
+        match self {
+            Callback::Redraw => "redraw",
+            Callback::Window => "window",
+            Callback::Wake => "wake",
+            Callback::Auto => "auto",
+        }
+    }
+}
+
+/// What the event loop did over one window of about a second: how many callbacks of each kind,
+/// how long they kept the UI thread, the longest one, the longest quiet gap between two, and how
+/// long the presses (or auto switches) waited for the frame that took them.
+#[derive(Debug, Clone, Copy, Default)]
+struct LoopStats {
+    since: Option<Instant>,
+    begun: Option<Instant>,
+    last_end: Option<Instant>,
+    redraws: u32,
+    windows: u32,
+    wakes: u32,
+    autos: u32,
+    busy: Duration,
+    wake_busy: Duration,
+    max_cb: Duration,
+    max_cb_kind: Option<Callback>,
+    max_gap: Duration,
+    /// Presses that arrived and wait for a frame to take them (the first one's arrival).
+    press_waiting: Option<Instant>,
+    presses: u32,
+    max_press_to_frame: Duration,
 }
 
 /// One switch being traced.
@@ -2695,8 +2811,93 @@ impl SwitchTrace {
             }
         );
         if press {
-            self.pending = Some(Instant::now());
+            let now = Instant::now();
+            self.pending = Some(now);
+            self.press_arrived(now);
+            if matches!(event, WindowEvent::MouseInput { .. }) {
+                // The wall clock, to pair with `scripts/os-press-times.py` (when the OS saw it).
+                let wall = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                eprintln!("press: wall_ms={:09}", wall.as_millis() % 1_000_000_000);
+            }
         }
+    }
+
+    /// A press (or an auto switch posted at `at`) reached the app.
+    fn press_arrived(&mut self, at: Instant) {
+        self.lp.presses += 1;
+        self.lp.press_waiting.get_or_insert(at);
+    }
+
+    /// The frame in progress took the input that was waiting.
+    fn press_taken(&mut self) {
+        if let (Some(at), Some(start)) = (self.lp.press_waiting.take(), self.frame.start) {
+            let waited = start.saturating_duration_since(at);
+            self.lp.max_press_to_frame = self.lp.max_press_to_frame.max(waited);
+        }
+    }
+
+    /// An `ApplicationHandler` callback starts.
+    fn callback_begin(&mut self) {
+        let now = Instant::now();
+        if let Some(end) = self.lp.last_end {
+            self.lp.max_gap = self.lp.max_gap.max(now.saturating_duration_since(end));
+        }
+        self.lp.since.get_or_insert(now);
+        self.lp.begun = Some(now);
+    }
+
+    /// The callback begun last ended; about once a second, one `loop:` line.
+    fn callback_end(&mut self, kind: Callback) {
+        let now = Instant::now();
+        let lp = &mut self.lp;
+        let took = lp
+            .begun
+            .map_or(Duration::ZERO, |b| now.saturating_duration_since(b));
+        lp.busy += took;
+        match kind {
+            Callback::Redraw => lp.redraws += 1,
+            Callback::Window => lp.windows += 1,
+            Callback::Wake => {
+                lp.wakes += 1;
+                lp.wake_busy += took;
+            }
+            Callback::Auto => lp.autos += 1,
+        }
+        if took > lp.max_cb {
+            lp.max_cb = took;
+            lp.max_cb_kind = Some(kind);
+        }
+        lp.last_end = Some(now);
+        let Some(since) = lp.since else { return };
+        let span = now.saturating_duration_since(since);
+        if span < Duration::from_secs(1) {
+            return;
+        }
+        let ms = |d: Duration| d.as_secs_f64() * 1e3;
+        eprintln!(
+            "loop: span={:.0} redraws={} window_events={} wakes={} autos={} presses={} \
+             busy={:.1} wake_busy={:.1} max_cb={:.2} max_cb_kind={} max_gap={:.1} \
+             max_press_to_frame={:.1}",
+            ms(span),
+            lp.redraws,
+            lp.windows,
+            lp.wakes,
+            lp.autos,
+            lp.presses,
+            ms(lp.busy),
+            ms(lp.wake_busy),
+            ms(lp.max_cb),
+            lp.max_cb_kind.map_or("none", Callback::name),
+            ms(lp.max_gap),
+            ms(lp.max_press_to_frame),
+        );
+        *lp = LoopStats {
+            last_end: lp.last_end,
+            press_waiting: lp.press_waiting,
+            ..LoopStats::default()
+        };
     }
 
     /// The active tab became `new` at `now`.
