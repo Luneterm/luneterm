@@ -61,22 +61,31 @@ impl MenuAction {
         }
     }
 
+    /// The row's icon. Within one menu no two rows show the same icon (a test checks it); the
+    /// codicon names are those of the Nerd Font the toolkit draws icons from.
     fn glyph(self) -> Option<&'static str> {
         match self {
             MenuAction::NewTab => Some(icon::ADD),
-            MenuAction::Close => Some(icon::CHROME_CLOSE),
+            MenuAction::Close => Some(icon::CLOSE),
+            MenuAction::CloseOthers => Some(icon::CLOSE_ALL),
+            MenuAction::CloseAll | MenuAction::Clear => Some(icon::CLEAR_ALL),
             MenuAction::Rename => Some(icon::EDIT),
             MenuAction::Duplicate => Some(ICON_TERMINAL),
             MenuAction::CopyCwd | MenuAction::Copy => Some(icon::COPY),
             MenuAction::Settings => Some(icon::GEAR),
             MenuAction::About => Some(icon::INFO),
-            _ => None,
+            MenuAction::Paste => Some(ICON_CLIPPY),
+            MenuAction::SelectAll => Some(ICON_LIST_SELECTION),
         }
     }
 }
 
 /// The codicon `terminal` (the toolkit's icon list has no app glyphs).
 const ICON_TERMINAL: &str = "\u{ea85}";
+/// The codicon `clippy`.
+const ICON_CLIPPY: &str = "\u{eac0}";
+/// The codicon `list-selection`.
+const ICON_LIST_SELECTION: &str = "\u{eb85}";
 
 /// The shortcut hint of `action` on this OS, empty when it has no shortcut. The text is the chord
 /// as the table binds it (D13).
@@ -185,9 +194,7 @@ impl MenuModel {
                 },
                 Some(a) => Entry {
                     action,
-                    // The tab menu has neither glyphs nor hints (its rows are the old toolkit
-                    // menu's).
-                    glyph: a.glyph().filter(|_| !is_tab),
+                    glyph: a.glyph(),
                     text: strings.tr(a.key()).to_owned(),
                     shortcut: if is_tab {
                         String::new()
@@ -423,7 +430,10 @@ mod tests {
                 "no separators"
             );
             assert!(m.entries.iter().all(|e| e.shortcut.is_empty()), "no hints");
-            assert!(m.entries.iter().all(|e| e.glyph.is_none()), "no glyphs yet");
+            assert!(
+                m.entries.iter().all(|e| e.glyph.is_some()),
+                "every row has an icon"
+            );
             assert!(m.entries.iter().all(|e| !e.disabled));
             assert_eq!(m.rows().len(), m.entries.len());
             assert_eq!(m.name_key(), "menu.tab.name");
@@ -441,6 +451,42 @@ mod tests {
         for key in required_keys() {
             assert_ne!(strings.tr(&key), key, "{key} has no text");
         }
+    }
+
+    /// Icons that draw the same shape count as one (the toolkit's `CLOSE` and `CHROME_CLOSE` are both
+    /// an X).
+    fn visible_icon(glyph: &str) -> &str {
+        if glyph == icon::CHROME_CLOSE {
+            icon::CLOSE
+        } else {
+            glyph
+        }
+    }
+
+    /// No two rows of one menu show the same icon (an empty slot, `None`, may repeat).
+    #[test]
+    fn no_menu_shows_the_same_icon_twice() {
+        let kinds = [
+            MenuKind::App,
+            MenuKind::Terminal { selection: true },
+            MenuKind::Terminal { selection: false },
+            MenuKind::Tab { closable: true },
+            MenuKind::Tab { closable: false },
+        ];
+        for kind in kinds {
+            let m = model(kind, true);
+            let icons: Vec<&str> = m
+                .entries
+                .iter()
+                .filter_map(|e| e.glyph)
+                .map(visible_icon)
+                .collect();
+            for (i, a) in icons.iter().enumerate() {
+                assert!(!icons[..i].contains(a), "{kind:?}: {a:?} appears twice");
+            }
+        }
+        // the equivalence the test relies on: the two X glyphs fold to one
+        assert_eq!(visible_icon(icon::CHROME_CLOSE), visible_icon(icon::CLOSE));
     }
 
     /// A tab-menu pick acts on the tab the menu was opened on (here 7), whichever is active.
