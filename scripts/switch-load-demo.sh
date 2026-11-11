@@ -5,11 +5,14 @@
 #
 # Starts Luneterm with LUNETERM_TRACE_SWITCH=1 on a throwaway config directory (made with mktemp,
 # printed, never your real settings) holding three tabs: the first runs scripts/tui-load.py
-# (<mode>: ink, tui, flood; default ink, unthrottled) and the other two are empty `/bin/sh`
-# shells. The window opens on an empty tab. Click between the two empty tabs (and to the busy one
-# and back) a few times, quit, and keep stderr: its `press:`, `os_press:`, `switch:` and `loop:`
-# lines are numbers only (`os_press` is when macOS saw the click, `press` when the app did).
-# Set LUNETERM_TRACE_SWITCH_AUTO=<ms> to have the app switch by itself every <ms> as well.
+# (<mode>: ink, tui, flood, or idle for the no-load baseline; default ink, unthrottled) and the
+# other two are empty `/bin/sh` shells. The window opens on an empty tab. Click between the two
+# empty tabs (and to the busy one and back) a few times, quit, and keep stderr: its `press:`,
+# `switch:` and `loop:` lines are numbers only. `press: os_age_ms` is how long the click waited
+# between the OS stamping it and the app getting it (macOS); `loop: os_*` is the same over every
+# pointer move and key in that second. Set LUNETERM_TRACE_SWITCH_AUTO=<ms> to have the app switch
+# by itself every <ms>, and LUNETERM_TRACE_SWITCH_CLICK=<ms> to have it post itself a synthetic
+# click into the terminal area every <ms> (`loop: syn_*`; the instrument's known answer).
 #
 # The generator writes generated text and escape sequences only: no network, no files, no real
 # work. Binary default: target/release/luneterm (build it with `cargo build --release`).
@@ -19,8 +22,8 @@ set -eu
 repo=$(cd "$(dirname "$0")/.." && pwd)
 bin=${1:-$repo/target/release/luneterm}
 mode=${2:-ink}
-case "$mode" in ink | tui | flood) ;; *)
-    echo "usage: $0 [<luneterm binary>] [ink|tui|flood]" >&2
+case "$mode" in ink | tui | flood | idle) ;; *)
+    echo "usage: $0 [<luneterm binary>] [ink|tui|flood|idle]" >&2
     exit 2
     ;;
 esac
@@ -53,10 +56,4 @@ cat >"$dir/workspace.json" <<EOF
 {"version":1,"active":1,"tabs":[{"cwd":"$dir","title":"busy"},{"cwd":"$dir","title":"empty 1"},{"cwd":"$dir","title":"empty 2"}]}
 EOF
 
-# When the OS saw each press (macOS), beside the trace's own `press:` lines.
-if [ "$(uname)" = Darwin ]; then
-    python3 "$repo/scripts/os-press-times.py" &
-    sidecar=$!
-    trap 'kill "$sidecar" 2>/dev/null' EXIT INT TERM
-fi
-LUNETERM_CONFIG_DIR=$dir LUNETERM_TRACE_SWITCH=1 "$bin"
+LUNETERM_CONFIG_DIR=$dir LUNETERM_TRACE_SWITCH=1 exec "$bin"
