@@ -164,6 +164,11 @@ pub struct Builder {
     text_seen: TextRendering,
     last_blink: Option<bool>,
     skip: bool,
+    /// Rows built so far (never reset), and by the latest update.
+    rows_built: u64,
+    last_rows: usize,
+    /// Whether the latest update rebuilt every row (its key changed).
+    last_full: bool,
 }
 
 impl std::fmt::Debug for Builder {
@@ -192,6 +197,9 @@ impl Builder {
             text_seen: TextRendering::OFF,
             last_blink: None,
             skip: true,
+            rows_built: 0,
+            last_rows: 0,
+            last_full: false,
         }
     }
 
@@ -222,6 +230,12 @@ impl Builder {
     /// the first update). The app's tests use it to prove every view of a frame got one value.
     pub fn text_rendering(&self) -> TextRendering {
         self.text_seen
+    }
+
+    /// Rows built so far (never reset), rows built by the latest update, and whether that update
+    /// rebuilt every row. Counters only: the app's tab-switch trace reads them.
+    pub fn row_counts(&self) -> (u64, usize, bool) {
+        (self.rows_built, self.last_rows, self.last_full)
     }
 
     /// Cell metrics for the current fonts at `scale`, cached per (fonts, scale).
@@ -288,6 +302,8 @@ impl Builder {
             self.queued.clear();
             self.overlay = Overlay::default();
             self.last = None;
+            self.last_rows = 0;
+            self.last_full = false;
             grid.clear_dirty();
             return;
         }
@@ -324,6 +340,8 @@ impl Builder {
             v
         };
 
+        self.last_full = all;
+        self.last_rows = 0;
         let mut proto = Protocol::default();
         loop {
             let done = {
@@ -334,6 +352,7 @@ impl Builder {
                     glyphs,
                     rows,
                     queued,
+                    last_rows: built,
                     ..
                 } = &mut *self;
                 let ctx = RowCtx {
@@ -348,6 +367,7 @@ impl Builder {
                 let mut done = true;
                 for &r in &todo {
                     let Some(row) = grid.row(r) else { continue };
+                    *built += 1;
                     match build_row(&ctx, shaper, glyphs, fs, core, &mut proto, row, r) {
                         Ok(inst) => {
                             rows[r] = inst;
@@ -369,6 +389,7 @@ impl Builder {
             todo = (0..nrows).collect();
         }
 
+        self.rows_built = self.rows_built.saturating_add(self.last_rows as u64);
         self.last_blink = Some(view.blink_on);
         self.last = (!proto.dropped).then_some(BuildKey {
             epoch: core.epoch(),
@@ -1112,6 +1133,30 @@ mod tests {
         assert!(
             r.b.take_queued().is_empty(),
             "effective() equal: no rebuild"
+        );
+    }
+
+    #[test]
+    fn the_counters_count_rows_built_and_rasterizer_calls() {
+        let mut r = rig(4, 3);
+        put(&mut r, 0, 0, 'W');
+        put(&mut r, 1, 0, '\u{2500}');
+        r.update();
+        assert_eq!(r.b.row_counts(), (3, 3, true), "first update: every row");
+        assert_eq!(r.core.rasters(), (1, 1), "one font glyph, one procedural");
+        r.update();
+        assert_eq!(r.b.row_counts(), (3, 0, false), "nothing dirty");
+        put(&mut r, 2, 1, 'W');
+        r.update();
+        assert_eq!(r.b.row_counts(), (4, 1, false), "one dirty row");
+        assert_eq!(r.core.rasters(), (1, 1), "a glyph already in the atlas");
+        r.text = TextRendering::SMOOTH;
+        r.update();
+        assert_eq!(r.b.row_counts(), (7, 3, true), "a new key: every row");
+        assert_eq!(
+            r.core.rasters(),
+            (2, 1),
+            "the font glyph again under SMOOTH only"
         );
     }
 

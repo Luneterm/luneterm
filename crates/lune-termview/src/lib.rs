@@ -22,7 +22,7 @@ pub use model::{
     Attrs, Cell, Color, Cursor, CursorShape, Grid, SelectionKind, SelectionRange, UnderlineStyle,
     ViewState,
 };
-pub use render::TermView;
+pub use render::{TermView, ViewStats};
 pub use text::{Shaped, ShapedGlyph, Shaper, TermFonts, cell_metrics, natural_line_height};
 pub use theme::{Resolved, TermTheme, resolve};
 

@@ -67,6 +67,22 @@ struct Pipelines {
     deco: wgpu::RenderPipeline,
 }
 
+/// A view's work counters ([`TermView::stats`]): plain counts, no clock, so the app's tab-switch
+/// trace can say what a frame cost besides how long it took.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ViewStats {
+    /// Rows built since the view was made.
+    pub rows_built: u64,
+    /// Rasterizer calls (atlas misses) since the view was made: font glyphs.
+    pub font_rasters: u64,
+    /// The same for procedural glyphs (box, block, powerline).
+    pub custom_rasters: u64,
+    /// Rows the latest `update` built.
+    pub last_rows: usize,
+    /// Whether the latest `update` rebuilt every row.
+    pub last_full: bool,
+}
+
 /// The terminal grid as a [`CustomDraw`]: call [`update`](Self::update) when the grid or view
 /// changes, then let the frame renderer call `prepare` and `render`.
 #[derive(Debug)]
@@ -185,6 +201,19 @@ impl TermView {
     ) {
         self.builder
             .update(self.atlas.core_mut(), fs, grid, view, origin, scale, text);
+    }
+
+    /// The view's work counters.
+    pub fn stats(&self) -> ViewStats {
+        let (rows_built, last_rows, last_full) = self.builder.row_counts();
+        let (font_rasters, custom_rasters) = self.atlas.core().rasters();
+        ViewStats {
+            rows_built,
+            font_rasters,
+            custom_rasters,
+            last_rows,
+            last_full,
+        }
     }
 
     pub fn builder(&self) -> &Builder {
