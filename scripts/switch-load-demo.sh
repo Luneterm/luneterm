@@ -5,9 +5,15 @@
 #
 # Starts Luneterm with LUNETERM_TRACE_SWITCH=1 on a throwaway config directory (made with mktemp,
 # printed, never your real settings) holding three tabs: the first runs scripts/tui-load.py
-# (<mode>: ink, tui, flood, or idle for the no-load baseline; default ink, unthrottled) and the
-# other two are empty `/bin/sh` shells. The window opens on an empty tab. Click between the two
-# empty tabs (and to the busy one and back) a few times, quit, and keep stderr: its `press:`,
+# (<mode>: ink, tui, flood, plain, or idle for the no-load baseline; default ink, unthrottled;
+# plain = ink without titles and progress reports, `--no-chrome`) and the other two are empty
+# `/bin/sh` shells. Each tab has its own directory under the throwaway one (`busy`, `e1`, `e2`),
+# and only the one in `busy` starts the load, so which tab is busy never depends on a race. The
+# window opens on an empty tab (`empty 1`); DEMO_ACTIVE=0 opens it on the busy one instead (1 and
+# 2 are the empty ones). DEMO_BLINK=1 makes the empty shells ask for a blinking cursor (DECSCUSR
+# 1), which gives an idle focused window one blink redraw per 600 ms: a known answer. Click
+# between the two empty tabs (and to the busy one and back) a few times, quit, and keep stderr:
+# its `press:`,
 # `switch:` and `loop:` lines are numbers only. `press: os_age_ms` is how long the click waited
 # between the OS stamping it and the app getting it (macOS); `loop: os_*` is the same over every
 # pointer move and key in that second. Set LUNETERM_TRACE_SWITCH_AUTO=<ms> to have the app switch
@@ -22,8 +28,20 @@ set -eu
 repo=$(cd "$(dirname "$0")/.." && pwd)
 bin=${1:-$repo/target/release/luneterm}
 mode=${2:-ink}
-case "$mode" in ink | tui | flood | idle) ;; *)
-    echo "usage: $0 [<luneterm binary>] [ink|tui|flood|idle]" >&2
+active=${DEMO_ACTIVE:-1}
+blink=
+[ "${DEMO_BLINK:-}" = 1 ] && blink="printf '\\033[1 q'"
+case "$active" in 0 | 1 | 2) ;; *)
+    echo "$0: DEMO_ACTIVE must be 0, 1 or 2" >&2
+    exit 2
+    ;;
+esac
+load_args="--mode $mode"
+case "$mode" in
+ink | tui | flood | idle) ;;
+plain) load_args="--mode ink --no-chrome" ;;
+*)
+    echo "usage: $0 [<luneterm binary>] [ink|tui|flood|plain|idle]" >&2
     exit 2
     ;;
 esac
@@ -39,12 +57,15 @@ command -v python3 >/dev/null || {
 dir=$(mktemp -d "${TMPDIR:-/tmp}/luneterm-switch-demo.XXXXXX")
 echo "config dir: $dir" >&2
 
-# The first tab to start takes the load; every later one is an empty shell.
+mkdir "$dir/busy" "$dir/e1" "$dir/e2"
+
+# The tab whose directory is `busy` takes the load; the others are empty shells.
 cat >"$dir/tab.sh" <<EOF
 #!/bin/sh
-if mkdir "$dir/busy" 2>/dev/null; then
-    exec python3 "$repo/scripts/tui-load.py" --mode $mode --fps 0
+if [ "\$(basename "\$PWD")" = busy ]; then
+    exec python3 "$repo/scripts/tui-load.py" $load_args --fps 0
 fi
+$blink
 exec /bin/sh
 EOF
 chmod 700 "$dir/tab.sh"
@@ -53,7 +74,7 @@ cat >"$dir/settings.json" <<EOF
 {"version":1,"shell":"$dir/tab.sh","shell_integration":false,"confirm_close":false}
 EOF
 cat >"$dir/workspace.json" <<EOF
-{"version":1,"active":1,"tabs":[{"cwd":"$dir","title":"busy"},{"cwd":"$dir","title":"empty 1"},{"cwd":"$dir","title":"empty 2"}]}
+{"version":1,"active":$active,"tabs":[{"cwd":"$dir/busy","title":"busy"},{"cwd":"$dir/e1","title":"empty 1"},{"cwd":"$dir/e2","title":"empty 2"}]}
 EOF
 
 LUNETERM_CONFIG_DIR=$dir LUNETERM_TRACE_SWITCH=1 exec "$bin"

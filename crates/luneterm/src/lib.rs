@@ -16,6 +16,7 @@ pub mod links;
 pub mod menus;
 mod os_event;
 pub mod outline;
+pub mod pacing;
 pub mod palettes;
 pub mod persist;
 pub mod render;

@@ -652,7 +652,7 @@ mod tests {
     use crate::fonts;
     use lune_ui::input::{Modifiers, RawInput, keymap};
     use lune_ui::lunegit_dark::THEME;
-    use lune_ui::motion::MotionTier;
+    use lune_ui::motion::{Cadence, MotionTier};
     use lune_ui::shortcuts::Shortcuts;
     use lune_ui::strings::{DisplayFormat, StringTable};
     use lune_ui::text::TextCache;
@@ -871,6 +871,7 @@ mod tests {
         let config = FrameConfig {
             theme: THEME,
             tier: MotionTier::Off,
+            busy_cadence: Cadence::BUSY,
             strings: &strings,
             arg_format: &DisplayFormat,
             keymap: keymap(),
