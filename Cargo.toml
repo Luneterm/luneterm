@@ -4,7 +4,7 @@ members = ["crates/*"]
 default-members = ["crates/luneterm"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
 publish = false
@@ -13,7 +13,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 lune-vt = { path = "crates/lune-vt" }
 lune-pty = { path = "crates/lune-pty" }
-lune-ui = { git = "https://github.com/lune-rs/luneui-rs", rev = "b767f51f0619d9905bba20f246d160b3fe6368ef" }
+lune-ui = { git = "https://github.com/lune-rs/luneui-rs", rev = "ec17ff0fbfa84d632214bbb7617be5a64140d07e" }
 lune-termview = { path = "crates/lune-termview" }
 
 [workspace.lints.rust]
