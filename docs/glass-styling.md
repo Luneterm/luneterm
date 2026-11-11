@@ -12,7 +12,7 @@ missing or unknown value reads as `luneterm`), under every glass style: Luneterm
 look, Lunegit is the layer stack below. The glass style picks only the OS material, and its
 `default` follows the theme: `near_black::MATERIAL` for Luneterm, `Material::Vibrancy` (light
 vibrancy, acrylic on Windows) for Lunegit; the liquid styles and Off are the same under both. The
-near-black look is luneui-rs's `near_black` (landed at luneui-rs `5be5dbe`; the pin is now v0.4.0,
+near-black look is luneui-rs's `near_black` (landed at luneui-rs `5be5dbe`; the pin is now v0.5.0,
 `crates/lune-ui-core/src/theme/near_black.rs`, the user-approved test build), as one value:
 
 | What | Value |

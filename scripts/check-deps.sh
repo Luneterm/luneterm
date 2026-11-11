@@ -21,7 +21,7 @@
 set -euo pipefail
 
 ALLOWED_REPO="https://github.com/lune-rs/luneui-rs"
-ALLOWED_REV="cebd7d7572ae7f0642cb7c7505fcfa467e0456fc"
+ALLOWED_REV="b767f51f0619d9905bba20f246d160b3fe6368ef"
 
 mode="check"
 case "${1:-}" in
