@@ -6,6 +6,7 @@
 use lune_ui::material::Material;
 use lune_ui::motion::MotionTier;
 use lune_ui::near_black;
+use lune_ui::text::TextRendering;
 use lune_ui::widgets::tab_strip::BusyCue;
 
 use crate::session::MAX_SCROLLBACK;
@@ -120,6 +121,10 @@ pub struct Settings {
     pub motion: Motion,
     pub font: String,
     pub font_size: u32,
+    /// Smoothed glyphs (the toolkit's `TextRendering::SMOOTH`, luneui-rs D296) in the UI text and
+    /// the terminal grid. Off: the hinted look of before (`TextRendering::OFF`). A Luneterm-only
+    /// setting: Lunegit has none.
+    pub font_smoothing: bool,
     pub palette: String,
     pub animate_outline: bool,
     pub outline: OutlineAnim,
@@ -145,6 +150,7 @@ impl Default for Settings {
             motion: Motion::Full,
             font: String::new(),
             font_size: DEFAULT_FONT_SIZE,
+            font_smoothing: true,
             palette: DEFAULT_PALETTE.to_owned(),
             animate_outline: true,
             outline: OutlineAnim::Sweep,
@@ -218,6 +224,15 @@ impl Settings {
         }
     }
 
+    /// How the toolkit and the terminal grid rasterize glyphs.
+    pub fn text_rendering(&self) -> TextRendering {
+        if self.font_smoothing {
+            TextRendering::SMOOTH
+        } else {
+            TextRendering::OFF
+        }
+    }
+
     /// Lunegit's `TerminalOutlineAnimationResolver`: the app-wide motion level wins.
     pub fn effective_outline(&self) -> Option<OutlineAnim> {
         if !self.animate_outline {
@@ -250,6 +265,7 @@ impl Settings {
             motion,
             font,
             font_size,
+            font_smoothing,
             palette,
             animate_outline,
             outline,
@@ -270,6 +286,10 @@ impl Settings {
             (SettingId::Motion, *motion != other.motion),
             (SettingId::Font, *font != other.font),
             (SettingId::FontSize, *font_size != other.font_size),
+            (
+                SettingId::FontSmoothing,
+                *font_smoothing != other.font_smoothing,
+            ),
             (SettingId::Palette, *palette != other.palette),
             (
                 SettingId::AnimateOutline,
@@ -320,6 +340,7 @@ pub enum SettingId {
     Motion,
     Font,
     FontSize,
+    FontSmoothing,
     Palette,
     AnimateOutline,
     Outline,
@@ -337,12 +358,13 @@ pub enum SettingId {
 
 impl SettingId {
     /// Every setting, in the order of the [`Settings`] fields.
-    pub const ALL: [SettingId; 18] = [
+    pub const ALL: [SettingId; 19] = [
         SettingId::Glass,
         SettingId::MenuBlur,
         SettingId::Motion,
         SettingId::Font,
         SettingId::FontSize,
+        SettingId::FontSmoothing,
         SettingId::Palette,
         SettingId::AnimateOutline,
         SettingId::Outline,
@@ -365,6 +387,7 @@ impl SettingId {
             SettingId::MenuBlur => Effect::MenuBlur,
             SettingId::Motion => Effect::Motion,
             SettingId::Font | SettingId::FontSize => Effect::Font,
+            SettingId::FontSmoothing => Effect::TextRendering,
             SettingId::Palette => Effect::Palette,
             SettingId::AnimateOutline | SettingId::Outline | SettingId::OutlineFullScreen => {
                 Effect::Outline
@@ -393,6 +416,9 @@ pub enum Effect {
     Motion,
     /// The renderer's terminal fonts, and the geometry sent again to every tab.
     Font,
+    /// The renderer's text setting: the UI text and every terminal view, on the next frame (no
+    /// restart).
+    TextRendering,
     /// Every tab's colours (`Command::SetTheme`); a colour the child set itself stays.
     Palette,
     /// Read each frame: the outline gate and the strip's `BusyCue`.
@@ -430,7 +456,7 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.glass, GlassStyle::Default);
         assert_eq!((s.font_size, s.scrollback), (13, 5000));
-        assert!(s.osc_clipboard && s.confirm_close);
+        assert!(s.osc_clipboard && s.confirm_close && s.font_smoothing);
         assert!(!s.report_iterm2 && !s.option_as_meta);
         assert_eq!(s.clone().clamped(), s);
     }
@@ -558,6 +584,7 @@ mod tests {
             (S::Motion, E::Motion),
             (S::Font, E::Font),
             (S::FontSize, E::Font),
+            (S::FontSmoothing, E::TextRendering),
             (S::Palette, E::Palette),
             (S::AnimateOutline, E::Outline),
             (S::Outline, E::Outline),
@@ -583,7 +610,7 @@ mod tests {
     #[test]
     fn changing_one_field_changes_exactly_its_id() {
         let d = Settings::default();
-        let cases: [(SettingId, Settings); 18] = [
+        let cases: [(SettingId, Settings); 19] = [
             (
                 SettingId::Glass,
                 Settings {
@@ -616,6 +643,13 @@ mod tests {
                 SettingId::FontSize,
                 Settings {
                     font_size: 20,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::FontSmoothing,
+                Settings {
+                    font_smoothing: false,
                     ..d.clone()
                 },
             ),
@@ -735,6 +769,23 @@ mod tests {
             effects(&Settings::default(), &two),
             vec![Effect::Scrollback, Effect::NextSpawn]
         );
+    }
+
+    #[test]
+    fn font_smoothing_picks_the_text_rendering_and_applies_live() {
+        let on = Settings::default();
+        let off = Settings {
+            font_smoothing: false,
+            ..on.clone()
+        };
+        assert_eq!(on.text_rendering(), TextRendering::SMOOTH);
+        assert_eq!(off.text_rendering(), TextRendering::OFF);
+        // Its own effect, not the next-spawn one: no restart notice, the renderer takes it live.
+        assert_eq!(effects(&on, &off), vec![Effect::TextRendering]);
+        assert_eq!(effects(&off, &on), vec![Effect::TextRendering]);
+        assert_ne!(SettingId::FontSmoothing.effect(), Effect::NextSpawn);
+        // Smoothing alone never changes the clamped value.
+        assert_eq!(off.clone().clamped(), off);
     }
 
     #[test]

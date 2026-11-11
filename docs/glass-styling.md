@@ -76,9 +76,11 @@ and a restored workspace do not fade; redraws are requested only while it runs.
 ## Text rendering
 
 Glyphs are smoothed (luneui-rs D296, variant A, `TextRendering::SMOOTH`: no hinting, stem
-darkening by size) in the UI text and in the terminal grid alike; Lunegit has no setting for it,
-and Luneterm has none either. The unsmoothed look (`TextRendering::OFF`) stays reachable for
-dumps (`LUNETERM_DUMP_TEXT=off`) and the termview goldens (`attributes-text-off@2x`). Box, block
+darkening by size) in the UI text and in the terminal grid alike. Lunegit has no setting for
+it; Luneterm adds one (Settings > Terminal > Appearance, "Font smoothing", on by default, key
+`font_smoothing`, applied live): off gives `TextRendering::OFF`, the hinted look of before. The
+unsmoothed look is also reachable for dumps (`LUNETERM_DUMP_TEXT=off`) and in the termview goldens
+(`attributes-text-off@2x`). Box, block
 and powerline glyphs are drawn procedurally and look the same either way.
 
 ## Open items
