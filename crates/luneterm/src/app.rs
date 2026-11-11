@@ -4,8 +4,10 @@
 //! Composition follows the toolkit's gallery (`apps/gallery/src/window.rs`): the app owns the event
 //! loop, the window, the GPU stack and the clock. The window is created hidden and shown after its
 //! first frame. A frame is `Translator::take` → [`Renderer::draw`] → `OutputState::apply` →
-//! `Clipboard::service` → present, and the frame's `Repaint` (merged with the cursor blink) sets
-//! the loop's control flow, so an idle window waits with no timer.
+//! `Clipboard::service` → present. Every frame ask (the frame's `Repaint`, the cursor blink, the
+//! crossfade, input, a session's Update) goes through the frame pacer (`crate::pacing`), and the
+//! loop's control flow is set from its deadline after every callback, so an idle window waits with
+//! no timer.
 //!
 //! The terminal owns the keyboard (D4): key and IME events go to the active tab's session (through
 //! the shortcut table and the key router) and never reach the toolkit's translator, so `Ui::begin`
@@ -34,10 +36,9 @@ use lune_pty::PortablePtyBackend;
 use lune_termview::{Cell, Cursor, CursorShape, Grid, SelectionRange, TermTheme};
 use lune_ui::clipboard::Clipboard;
 use lune_ui::gpu::{self, Gpu};
-use lune_ui::input::{
-    ClipboardRequest, OutputState, Translator, WindowCommand, control_flow, keymap,
-};
+use lune_ui::input::{ClipboardRequest, OutputState, Repaint, Translator, WindowCommand, keymap};
 use lune_ui::material::{self, Material};
+use lune_ui::motion::Cadence;
 use lune_ui::paint::Rect;
 use lune_ui::surface::{Acquired, SurfaceOptions, WindowSurface};
 use lune_ui::widgets::menu::MenuPlace;
@@ -62,7 +63,7 @@ use crate::input::{
 };
 use crate::links::{self, open::OpenError};
 use crate::menus::{self, MenuAction, MenuKind, MenuModel, TabOp};
-use crate::pacing::{self, PresentAsk};
+use crate::pacing::{self, EventKind, Pacer, PresentAsk};
 use crate::palettes;
 use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, snapshot,
@@ -156,39 +157,31 @@ pub fn merge_flow(a: ControlFlow, b: ControlFlow) -> ControlFlow {
     }
 }
 
-/// The frame rate of a toolkit animation that runs while nothing else happens: no input in the
-/// frame and no tab crossfade (the tab strip's progress shine above all, which asks for a frame
-/// every frame for as long as any tab shows progress, a hidden one too). At 60 fps every such frame
-/// blocked ~15 ms in the surface's acquire, so a click waited for the frame in flight and the new
-/// tab's first frame for one more (plan step 4, D12: the user chose this cap). The animation keeps
-/// its speed; only its frame rate drops.
-///
-/// A stopgap until luneui-rs offers a shine cadence API and a surface that does not block the UI
-/// thread: luneui-rs docs/tasks/frame-pacing.md (requested 2026-11-11).
-pub const IDLE_ANIMATION_HZ: u32 = 30;
-/// Rounded up, so a second never holds more than `IDLE_ANIMATION_HZ` such frames.
-const IDLE_ANIMATION_INTERVAL: Duration =
-    Duration::from_nanos(1_000_000_000_u64.div_ceil(IDLE_ANIMATION_HZ as u64));
-
-/// When the next frame is drawn, after a frame that started at `start`: `flow` and `redraw` are
-/// the toolkit's ask ([`control_flow`] of its `Repaint`), `fading` whether the tab crossfade runs
-/// and `had_input` whether the frame took an input event. Returns the flow to merge and whether
-/// to request a redraw now. A `Repaint::Now` with no input and no fade waits until
-/// `start + 1/IDLE_ANIMATION_HZ` instead of drawing at once; an earlier deadline in `flow` still
-/// wins, and input, a fade, PTY output and a resize ask for their own frame and are never held.
-/// Reads no clock.
-pub fn pace_frame(
-    flow: ControlFlow,
-    redraw: bool,
-    fading: bool,
-    had_input: bool,
+/// The control flow after a callback (I1): the pacer's deadline (app time, from `start`) merged
+/// with the app's own deadlines (`pending`); waiting while the window is hidden, where no frame
+/// would replace a deadline and a `WaitUntil` in the past makes the loop spin (un-occlusion asks
+/// a frame, which sets them again). Reads no clock.
+pub fn settled_flow(
+    deadline: Option<Duration>,
+    pending: ControlFlow,
+    occluded: bool,
     start: Instant,
-) -> (ControlFlow, bool) {
-    if redraw && !fading && !had_input {
-        let due = ControlFlow::WaitUntil(start + IDLE_ANIMATION_INTERVAL);
-        (merge_flow(flow, due), false)
-    } else {
-        (flow, redraw || fading)
+) -> ControlFlow {
+    if occluded {
+        return ControlFlow::Wait;
+    }
+    let paced = deadline
+        .and_then(|d| start.checked_add(d))
+        .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
+    merge_flow(paced, pending)
+}
+
+/// Whether `flow` waits for a moment at or before `now`.
+pub fn flow_due(flow: ControlFlow, now: Instant) -> bool {
+    match flow {
+        ControlFlow::Poll => true,
+        ControlFlow::WaitUntil(t) => t <= now,
+        ControlFlow::Wait => false,
     }
 }
 
@@ -381,6 +374,8 @@ struct Win {
 struct Stack {
     surface: WindowSurface,
     renderer: Renderer,
+    /// The concrete present mode the surface was given (never an `Auto*` mode).
+    mode: wgpu::PresentMode,
 }
 
 impl Stack {
@@ -407,9 +402,11 @@ impl Stack {
         };
         let surface =
             WindowSurface::with_options(&gpu, surface, (size.width, size.height), options)?;
-        // Mode names only: what was asked, what the surface lists and what it was given.
+        // Mode names and a rate only: what was asked, what the surface lists and what it was
+        // given, and the frame grid (D8).
+        let hz = pacing::grid_hz(mode, refresh_mhz(window));
         eprintln!(
-            "luneterm: present {mode:?} (asked {}), frames <= n/a/s, caps {caps:?}",
+            "luneterm: present {mode:?} (asked {}), frames <= {hz}/s, caps {caps:?}",
             present.name()
         );
         let (text, _took) = fonts::text_cache();
@@ -418,8 +415,19 @@ impl Stack {
             renderer.set_term_theme(theme.clone());
         }
         renderer.set_phase_trace(trace);
-        Ok(Stack { surface, renderer })
+        Ok(Stack {
+            surface,
+            renderer,
+            mode,
+        })
     }
+}
+
+/// The refresh rate of the display `window` is on, in mHz, when the OS says.
+fn refresh_mhz(window: &Window) -> Option<u32> {
+    window
+        .current_monitor()
+        .and_then(|m| m.refresh_rate_millihertz())
 }
 
 /// Puts the OS material the settings ask for on `window`. Returns whether the window has glass
@@ -659,6 +667,11 @@ struct App {
     trace: Option<Box<SwitchTrace>>,
     /// The present mode asked for (the knob or the default); the surface resolves it.
     present: PresentAsk,
+    /// When the frames asked for are drawn (D4); its deadline is the only frame deadline.
+    pacer: Pacer,
+    /// The callback in progress handles discrete input (or is the post-frame section of a frame
+    /// that took some): its asks draw at once.
+    urgent_scope: bool,
 }
 
 impl App {
@@ -721,6 +734,8 @@ impl App {
             exit_code: 0,
             trace: None,
             present: pacing::DEFAULT_PRESENT,
+            pacer: Pacer::new(Cadence::hz(60)),
+            urgent_scope: false,
         }
     }
 
@@ -773,9 +788,11 @@ impl App {
         ) {
             Ok(stack) => {
                 self.stack = Some(stack);
+                self.refresh_grid();
                 if let Some(tab) = self.tabs.active_item_mut() {
                     tab.grid.mark_all_dirty();
                 }
+                // Direct, as urgent: the frame lost with the device is drawn again at once.
                 window.request_redraw();
             }
             Err(e) => self.fail(event_loop, &format!("rebuild after device loss: {e}")),
@@ -792,11 +809,44 @@ impl App {
         }
     }
 
-    fn request_redraw(&self) {
-        if !self.occluded
-            && let Some(win) = &self.win
+    /// Asks for a frame now, through the pacer: drawn at once when the callback is urgent or the
+    /// grid slot is free, else at the pacer's deadline.
+    fn request_redraw(&mut self) {
+        self.ask_frame(Duration::ZERO);
+    }
+
+    /// Asks for a frame no earlier than `not_before` (app time). Nothing while the window is
+    /// hidden (I4) or before it exists.
+    fn ask_frame(&mut self, not_before: Duration) {
+        if self.occluded {
+            return;
+        }
+        let Some(win) = &self.win else { return };
+        if self
+            .pacer
+            .ask(self.start.elapsed(), not_before, self.urgent_scope)
         {
             win.window.request_redraw();
+        }
+    }
+
+    /// Sets the control flow from the pacer and the app's deadlines: the only setter after
+    /// start-up (I1), called at the end of every callback.
+    fn settle_flow(&self, event_loop: &ActiveEventLoop) {
+        event_loop.set_control_flow(settled_flow(
+            self.pacer.deadline(),
+            self.pending_flow(),
+            self.occluded,
+            self.start,
+        ));
+    }
+
+    /// Sets the frame grid's rate from the display the window is on now (D5); the surface is
+    /// not touched.
+    fn refresh_grid(&mut self) {
+        if let (Some(win), Some(stack)) = (&self.win, &self.stack) {
+            let hz = pacing::grid_hz(stack.mode, refresh_mhz(&win.window));
+            self.pacer.set_rate(Cadence::hz(hz));
         }
     }
 
@@ -1817,7 +1867,9 @@ impl App {
         if self.occluded {
             return;
         }
-        let frame_start = Instant::now();
+        // The frame serves every ask made so far; it starts in the pacer before the pump, so an
+        // ask the pump makes is the next frame's.
+        self.pacer.frame_started(self.start.elapsed());
         if let Some(t) = &mut self.trace {
             t.taken = None;
             t.frame = FrameStamps {
@@ -1865,11 +1917,12 @@ impl App {
             Ok(Acquired::Frame(frame)) => frame,
             Ok(Acquired::Skip) => {
                 // Nothing to draw and nothing to ask for: the platform redraws when it can.
-                event_loop.set_control_flow(ControlFlow::Wait);
+                self.pacer.clear();
                 self.show_once();
                 return;
             }
             Ok(Acquired::Redraw) => {
+                // Direct, as urgent: the surface was reconfigured, draw again at once.
                 win.window.request_redraw();
                 return;
             }
@@ -2098,13 +2151,10 @@ impl App {
         }
         // A write goes to the OS now; a read is answered with the next frame's input.
         win.clipboard.service(&out, &mut win.translator);
-        if out
+        let clipboard_read = out
             .clipboard
             .iter()
-            .any(|r| matches!(r, ClipboardRequest::Read))
-        {
-            win.window.request_redraw();
-        }
+            .any(|r| matches!(r, ClipboardRequest::Read));
         win.window.pre_present_notify();
         stack.surface.present(&stack.renderer.gpu, frame);
         if let Some(t) = &mut self.trace {
@@ -2114,13 +2164,21 @@ impl App {
         let Stack { renderer, .. } = stack;
         renderer.gpu.end_frame(&mut renderer.text);
 
-        let (flow, redraw) = control_flow(out.repaint, self.start);
-        let (flow, redraw_now) =
-            pace_frame(flow, redraw, fading, !input.events.is_empty(), frame_start);
-        let blink_flow = next_blink.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
-        let base_flow = merge_flow(flow, blink_flow);
-        if redraw_now {
-            win.window.request_redraw();
+        // The next frame, through the pacer: urgent only right after a frame that took discrete
+        // input (the click's tab switch, a menu opening); the window_event wrapper resets it.
+        // Every time-based ask is re-derived here, each frame (I3).
+        self.urgent_scope = pacing::follow_up(&input.events);
+        match out.repaint {
+            Repaint::Idle => {}
+            Repaint::Now => self.ask_frame(Duration::ZERO),
+            Repaint::At(t) => self.ask_frame(t),
+        }
+        // A read is answered with the next frame's input.
+        if clipboard_read || fading {
+            self.ask_frame(Duration::ZERO);
+        }
+        if let Some(b) = next_blink {
+            self.ask_frame(b.saturating_duration_since(self.start));
         }
 
         // What the frame asked of the page, the menu, the tabs and the dialog, now that the
@@ -2182,7 +2240,7 @@ impl App {
                 self.tab_event(event, event_loop);
             }
         }
-        event_loop.set_control_flow(merge_flow(base_flow, self.pending_flow()));
+        self.urgent_scope = false;
         if let Some(line) = self.trace.as_mut().and_then(|t| t.frame_done()) {
             eprintln!("{line}");
         }
@@ -2591,6 +2649,7 @@ impl ApplicationHandler<UserEvent> for App {
             window,
         });
         self.stack = Some(stack);
+        self.refresh_grid();
         self.start_tabs();
         let now = self.start.elapsed();
         for notice in std::mem::take(&mut self.startup_notices) {
@@ -2600,9 +2659,11 @@ impl ApplicationHandler<UserEvent> for App {
         // The first frame is drawn here, not on a redraw event a hidden window may never get;
         // the window is shown right after it.
         self.redraw(event_loop);
+        // Direct, as urgent: the frame after the first (the window is shown by now).
         if let Some(win) = &self.win {
             win.window.request_redraw();
         }
+        self.settle_flow(event_loop);
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
@@ -2613,7 +2674,13 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Wake => Callback::Wake,
             UserEvent::TraceSwitch(_) => Callback::Auto,
         };
+        self.urgent_scope = pacing::is_urgent(match event {
+            UserEvent::Wake => EventKind::Wake,
+            UserEvent::TraceSwitch(_) => EventKind::TraceSwitch,
+        });
         self.user_event_inner(event_loop, event);
+        self.urgent_scope = false;
+        self.settle_flow(event_loop);
         if let Some(t) = &mut self.trace {
             t.callback_end(kind);
         }
@@ -2628,23 +2695,27 @@ impl ApplicationHandler<UserEvent> for App {
         } else {
             Callback::Window
         };
+        self.urgent_scope = pacing::is_urgent(event_kind(&event));
         self.window_event_inner(event_loop, id, event);
+        self.urgent_scope = false;
+        self.settle_flow(event_loop);
         if let Some(t) = &mut self.trace {
             t.callback_end(kind);
         }
     }
 
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
-        // A `Repaint::At`, blink, workspace or settings deadline came due.
+        // A paced frame's moment, or a `Repaint::At`, blink, workspace, settings or new-tab
+        // deadline came due: one ask serves them all (a due pacer deadline means the slot is
+        // free). An app deadline (`pending_flow`) that is due asks at once: held for the slot,
+        // its past `WaitUntil` would spin the loop until the frame (D7: one frame per write).
+        // While the window is hidden nothing asks, and `settle_flow` waits.
         if matches!(cause, StartCause::ResumeTimeReached { .. }) {
-            if self.occluded {
-                // No frame will replace the deadline while the window is hidden (`redraw` returns
-                // at once), and a `WaitUntil` in the past makes the loop spin. `Occluded(false)`
-                // asks for a frame, which sets the deadlines again.
-                event_loop.set_control_flow(ControlFlow::Wait);
-            } else {
-                self.request_redraw();
-            }
+            self.urgent_scope = pacing::is_urgent(EventKind::Deadline)
+                || flow_due(self.pending_flow(), Instant::now());
+            self.request_redraw();
+            self.urgent_scope = false;
+            self.settle_flow(event_loop);
         }
     }
 
@@ -2716,6 +2787,9 @@ impl App {
             }
             WindowEvent::Occluded(occluded) => {
                 self.occluded = *occluded;
+                if *occluded {
+                    self.pacer.clear();
+                }
                 self.refresh_visibility();
                 if !occluded {
                     self.request_redraw();
@@ -2770,6 +2844,8 @@ impl App {
                         .resize(&stack.renderer.gpu, size.width, size.height);
                 }
             }
+            // The window may be on another display now: its refresh rate sets the grid (D5).
+            WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Moved(_) => self.refresh_grid(),
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(win) = &self.win {
                     let scale = win.window.scale_factor();
@@ -2792,9 +2868,33 @@ impl App {
         }
         let Some(win) = &mut self.win else { return };
         win.translator.window_event(&event);
-        if !self.occluded {
-            win.window.request_redraw();
-        }
+        self.request_redraw();
+    }
+}
+
+/// What pacing knows of a window event (D4).
+fn event_kind(event: &WindowEvent) -> EventKind {
+    match event {
+        WindowEvent::MouseInput { .. } => EventKind::MouseButton,
+        WindowEvent::KeyboardInput { .. } => EventKind::Key,
+        WindowEvent::Ime(_) => EventKind::Ime,
+        WindowEvent::Focused(_) => EventKind::Focus,
+        WindowEvent::Resized(_) => EventKind::Resized,
+        WindowEvent::ScaleFactorChanged { .. } => EventKind::ScaleFactorChanged,
+        WindowEvent::Occluded(false) => EventKind::Unoccluded,
+        WindowEvent::Occluded(true) => EventKind::Occluded,
+        WindowEvent::DroppedFile(_) => EventKind::DroppedFile,
+        WindowEvent::CloseRequested => EventKind::CloseRequested,
+        WindowEvent::CursorMoved { .. } => EventKind::CursorMoved,
+        WindowEvent::CursorEntered { .. } => EventKind::CursorEntered,
+        WindowEvent::CursorLeft { .. } => EventKind::CursorLeft,
+        WindowEvent::MouseWheel { .. } => EventKind::Wheel,
+        WindowEvent::ModifiersChanged(_) => EventKind::ModifiersChanged,
+        WindowEvent::HoveredFile(_) => EventKind::HoveredFile,
+        WindowEvent::HoveredFileCancelled => EventKind::HoveredFileCancelled,
+        WindowEvent::Moved(_) => EventKind::Moved,
+        WindowEvent::RedrawRequested => EventKind::Redraw,
+        _ => EventKind::Other,
     }
 }
 
@@ -3543,78 +3643,48 @@ mod tests {
         );
     }
 
-    /// A simulated event loop over `pace_frame` for a frame that asks `Repaint::Now` every time
-    /// (the strip's progress shine of a hidden tab): each frame costs one 60 Hz refresh (every
-    /// frame blocks in acquire), and the next one starts when it is done or at the flow's
-    /// deadline, whichever is later. Frames counted over one simulated second; no wall clock.
-    fn frames_in_a_second(fading: bool, had_input: bool) -> usize {
-        let refresh = Duration::from_nanos(16_666_667);
-        let t0 = Instant::now();
-        let (mut t, mut frames) = (t0, 0);
-        while t < t0 + Duration::from_secs(1) {
-            frames += 1;
-            let (flow, now) = pace_frame(ControlFlow::Wait, true, fading, had_input, t);
-            let done = t + refresh;
-            t = if now {
-                done
-            } else {
-                match flow {
-                    ControlFlow::WaitUntil(due) => due.max(done),
-                    ControlFlow::Poll => done,
-                    ControlFlow::Wait => panic!("a Repaint::Now never drew again"),
-                }
-            };
-        }
-        frames
-    }
-
     #[test]
-    fn an_animation_with_nothing_else_happening_draws_at_most_idle_animation_hz() {
-        let frames = frames_in_a_second(false, false);
-        assert!(
-            frames <= IDLE_ANIMATION_HZ as usize,
-            "{frames} frames in a simulated second, cap {IDLE_ANIMATION_HZ}"
-        );
-        assert!(frames >= IDLE_ANIMATION_HZ as usize - 1, "{frames}");
-        // Input and the tab crossfade are never held: every refresh draws.
-        assert_eq!(frames_in_a_second(false, true), 60);
-        assert_eq!(frames_in_a_second(true, false), 60);
-        assert_eq!(frames_in_a_second(true, true), 60);
-    }
-
-    #[test]
-    fn pacing_keeps_an_earlier_deadline_and_leaves_other_frames_alone() {
+    fn a_deferred_ask_is_in_the_settled_flow() {
+        // I1: a paced ask the pacer defers is the control flow's deadline after the callback.
         let start = Instant::now();
-        let until = ControlFlow::WaitUntil;
-        let soon = start + Duration::from_millis(5);
-        let capped = start + IDLE_ANIMATION_INTERVAL;
-        // `Repaint::Now`, nothing else: wait for the cap's deadline, no redraw now.
+        let ms = Duration::from_millis;
+        let mut p = Pacer::new(Cadence::hz(60));
+        p.frame_started(ms(0));
+        assert!(!p.ask(ms(1), Duration::ZERO, false));
+        let free_at = Cadence::hz(60).next_tick(ms(0)).expect("a tick");
+        assert_eq!(p.deadline(), Some(free_at));
         assert_eq!(
-            pace_frame(ControlFlow::Wait, true, false, false, start),
-            (until(capped), false)
+            settled_flow(p.deadline(), ControlFlow::Wait, false, start),
+            ControlFlow::WaitUntil(start + free_at)
         );
-        // An earlier deadline from the toolkit still wins.
+        // An earlier app deadline wins; a later one does not hide the pacer's.
+        let soon = start + ms(5);
+        let later = start + ms(500);
         assert_eq!(
-            pace_frame(until(soon), true, false, false, start),
-            (until(soon), false)
-        );
-        // `Repaint::At` and `Idle` are untouched.
-        assert_eq!(
-            pace_frame(until(soon), false, false, false, start),
-            (until(soon), false)
-        );
-        assert_eq!(
-            pace_frame(ControlFlow::Wait, false, false, false, start),
-            (ControlFlow::Wait, false)
-        );
-        // A fade asks for the next frame now, with or without the toolkit.
-        assert_eq!(
-            pace_frame(ControlFlow::Wait, false, true, false, start),
-            (ControlFlow::Wait, true)
+            settled_flow(p.deadline(), ControlFlow::WaitUntil(soon), false, start),
+            ControlFlow::WaitUntil(soon)
         );
         assert_eq!(
-            pace_frame(ControlFlow::Wait, true, false, true, start),
-            (ControlFlow::Wait, true)
+            settled_flow(p.deadline(), ControlFlow::WaitUntil(later), false, start),
+            ControlFlow::WaitUntil(start + free_at)
+        );
+        // Nothing deferred: the app's deadlines alone, or waiting.
+        assert_eq!(
+            settled_flow(None, ControlFlow::WaitUntil(later), false, start),
+            ControlFlow::WaitUntil(later)
+        );
+        assert_eq!(
+            settled_flow(None, ControlFlow::Wait, false, start),
+            ControlFlow::Wait
+        );
+        // An app deadline that has come asks its frame at once.
+        assert!(flow_due(ControlFlow::WaitUntil(soon), soon));
+        assert!(!flow_due(ControlFlow::WaitUntil(later), soon));
+        assert!(!flow_due(ControlFlow::Wait, later));
+        // Hidden: wait, whatever is deferred (I4).
+        assert_eq!(
+            settled_flow(p.deadline(), ControlFlow::WaitUntil(soon), true, start),
+            ControlFlow::Wait
         );
     }
 
