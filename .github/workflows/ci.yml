@@ -84,11 +84,16 @@ jobs:
       # skipped on Windows until a runner has a real GPU: lune-termview runs its unit tests only (its
       # golden, render_gpu and atlas_gpu tests and the adapter probe need a GPU), and luneterm skips the
       # tests that draw through the real Renderer. GPU coverage stays on macOS (scripts/check-macos.sh).
+      # The --skip flags go to luneterm's lib tests only: its harness = false targets (e2e,
+      # dll_search_gpu) take no libtest arguments (e2e fails on them with "0 cases").
+      - run: cargo test --workspace --locked --exclude lune-termview --exclude luneterm
       - run: >-
-          cargo test --workspace --locked --exclude lune-termview --
+          cargo test -p luneterm --locked --lib --
           --skip render::text_tests
           --skip dump::tests::the_text_setting_changes_pixels_not_geometry
           --skip dump::tests::two_dumps_are_byte_identical
+      - run: cargo test -p luneterm --locked --bins --test e2e --test dll_search_gpu --test switch_load
+      - run: cargo test -p luneterm --locked --doc
       - run: cargo test -p lune-termview --locked --lib
       # M8 D8: header == exported symbols (nm vs the clang AST): macOS only (scripts/check-macos.sh).
       # Windows checks the DLL builds (job windows-exe) and the Rust tests.
