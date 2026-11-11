@@ -268,6 +268,10 @@ fn run_window() -> ExitCode {
         start.notices,
         config_dir,
     );
+    // The tab-switch trace (this is the only place the variable is read).
+    if std::env::var_os("LUNETERM_TRACE_SWITCH").is_some_and(|v| v == "1") {
+        app.trace = Some(Box::default());
+    }
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop: {e}");
         return ExitCode::from(1);
@@ -296,6 +300,7 @@ impl Stack {
         settings: &Settings,
         glass: bool,
         theme: &TermTheme,
+        trace: bool,
     ) -> Result<Stack, String> {
         let instance = gpu::instance(Some(Box::new(event_loop.owned_display_handle())));
         let surface = instance
@@ -309,6 +314,7 @@ impl Stack {
         if renderer.term_theme() != theme {
             renderer.set_term_theme(theme.clone());
         }
+        renderer.set_phase_trace(trace);
         Ok(Stack { surface, renderer })
     }
 }
@@ -545,6 +551,9 @@ struct App {
     occluded: bool,
     shown: bool,
     exit_code: u8,
+    /// `LUNETERM_TRACE_SWITCH=1`: where a tab switch's time goes; `None` (the default) costs one
+    /// check per hook.
+    trace: Option<Box<SwitchTrace>>,
 }
 
 impl App {
@@ -605,6 +614,7 @@ impl App {
             occluded: false,
             shown: false,
             exit_code: 0,
+            trace: None,
         }
     }
 
@@ -645,7 +655,15 @@ impl App {
             .tabs
             .active_item()
             .map_or_else(|| self.base_theme(), |t| t.theme.clone());
-        match Stack::build(event_loop, &window, &self.settings, self.glass, &theme) {
+        let trace = self.trace.is_some();
+        match Stack::build(
+            event_loop,
+            &window,
+            &self.settings,
+            self.glass,
+            &theme,
+            trace,
+        ) {
             Ok(stack) => {
                 self.stack = Some(stack);
                 if let Some(tab) = self.tabs.active_item_mut() {
@@ -1331,6 +1349,9 @@ impl App {
         if now == before {
             return;
         }
+        if let (Some(t), Some(new)) = (&mut self.trace, now) {
+            t.switched(new, Instant::now());
+        }
         // Every way of leaving a tab comes through here. A tab that was closed has nobody to tell.
         if let Some(id) = before.filter(|id| self.tabs.get(*id).is_some()) {
             self.end_holds_of(id);
@@ -1689,6 +1710,13 @@ impl App {
         if self.occluded {
             return;
         }
+        if let Some(t) = &mut self.trace {
+            t.taken = None;
+            t.frame = FrameStamps {
+                start: Some(Instant::now()),
+                ..FrameStamps::default()
+            };
+        }
         if self
             .stack
             .as_ref()
@@ -1698,6 +1726,9 @@ impl App {
             return;
         }
         self.pump(event_loop);
+        if let Some(t) = &mut self.trace {
+            t.frame.pump = Some(Instant::now());
+        }
         self.flush_workspace(false);
         self.flush_settings(false);
         if event_loop.exiting() || self.tabs.is_empty() {
@@ -1734,12 +1765,20 @@ impl App {
                 return;
             }
         };
+        if let Some(t) = &mut self.trace {
+            t.frame.acquire = Some(Instant::now());
+            t.frame.fading = fading;
+        }
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let size = stack.surface.size();
         let scale = win.window.scale_factor() as f32;
         let input = win.translator.take(self.start.elapsed());
+        if let Some(t) = &mut self.trace {
+            // The press this frame takes is what a switch it asks for started from.
+            t.taken = t.pending.take();
+        }
 
         // The clipboard's answer to a paste goes to the tab that asked, as a paste, nowhere else.
         for event in &input.events {
@@ -1788,6 +1827,9 @@ impl App {
             })
             .collect();
         let active_tab = self.tabs.active();
+        if let Some(t) = &mut self.trace {
+            t.frame.slot0 = active_tab;
+        }
         let label = self
             .tabs
             .active_item()
@@ -1951,6 +1993,10 @@ impl App {
         }
         win.window.pre_present_notify();
         stack.surface.present(&stack.renderer.gpu, frame);
+        if let Some(t) = &mut self.trace {
+            t.frame.present = Some(Instant::now());
+            t.frame.phases = stack.renderer.phases().copied();
+        }
         let Stack { renderer, .. } = stack;
         renderer.gpu.end_frame(&mut renderer.text);
 
@@ -2021,6 +2067,9 @@ impl App {
             }
         }
         event_loop.set_control_flow(merge_flow(base_flow, self.pending_flow()));
+        if let Some(line) = self.trace.as_mut().and_then(|t| t.frame_done()) {
+            eprintln!("{line}");
+        }
         self.show_once();
         if self
             .stack
@@ -2402,6 +2451,7 @@ impl ApplicationHandler<UserEvent> for App {
             &self.settings,
             self.glass,
             &self.base_theme(),
+            self.trace.is_some(),
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -2477,6 +2527,9 @@ impl ApplicationHandler<UserEvent> for App {
         // After `exit()` winit still delivers queued events; ignore them so no frame is acquired.
         if event_loop.exiting() {
             return;
+        }
+        if let Some(t) = &mut self.trace {
+            t.event(&event);
         }
         match &event {
             WindowEvent::CloseRequested => {
@@ -2574,6 +2627,187 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
+/// `LUNETERM_TRACE_SWITCH=1` (plan D11): one stderr line per frame from a tab switch until its
+/// crossfade ends, every time in ms since `t0`, the arrival of the press or key that asked for the
+/// switch (the switch itself when nothing did: a tab closing on its own). It prints numbers and
+/// tab ids only: no terminal content, no paths, no environment.
+#[derive(Debug, Default)]
+struct SwitchTrace {
+    /// The latest press (mouse button or key) no frame has taken yet.
+    pending: Option<Instant>,
+    /// The press the frame in progress took: a switch its output asks for started there.
+    taken: Option<Instant>,
+    switches: u32,
+    run: Option<SwitchRun>,
+    /// The frame in progress.
+    frame: FrameStamps,
+}
+
+/// One switch being traced.
+#[derive(Debug, Clone, Copy)]
+struct SwitchRun {
+    n: u32,
+    t0: Instant,
+    new: TabId,
+    /// Frames printed so far.
+    frame: u32,
+    /// A frame drawing `new` in slot 0 was presented.
+    shown: bool,
+}
+
+/// When each part of one frame ended.
+#[derive(Debug, Default, Clone, Copy)]
+struct FrameStamps {
+    start: Option<Instant>,
+    pump: Option<Instant>,
+    acquire: Option<Instant>,
+    present: Option<Instant>,
+    /// The crossfade was running when the frame began.
+    fading: bool,
+    /// The tab drawn in slot 0 (the active one).
+    slot0: Option<TabId>,
+    phases: Option<crate::render::DrawPhases>,
+}
+
+/// `t` in ms after `t0` (negative before it), or NaN when the frame never got there.
+fn ms_since(t0: Instant, t: Option<Instant>) -> f64 {
+    match t {
+        Some(t) if t >= t0 => (t - t0).as_secs_f64() * 1e3,
+        Some(t) => -((t0 - t).as_secs_f64() * 1e3),
+        None => f64::NAN,
+    }
+}
+
+impl SwitchTrace {
+    /// A window event arrived: a press is what a switch may start from.
+    fn event(&mut self, event: &WindowEvent) {
+        let press = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            }
+        );
+        if press {
+            self.pending = Some(Instant::now());
+        }
+    }
+
+    /// The active tab became `new` at `now`.
+    fn switched(&mut self, new: TabId, now: Instant) {
+        let t0 = self.taken.or_else(|| self.pending.take()).unwrap_or(now);
+        self.switches += 1;
+        if let Some(old) = self.run.take() {
+            eprintln!("switch: n={} superseded after {} frames", old.n, old.frame);
+        }
+        let build = if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        };
+        eprintln!(
+            "switch: n={} begin build={build} to=tab{new} asked_at=-{:.2}",
+            self.switches,
+            ms_since(t0, Some(now)),
+        );
+        self.run = Some(SwitchRun {
+            n: self.switches,
+            t0,
+            new,
+            frame: 0,
+            shown: false,
+        });
+    }
+
+    /// The frame in progress is done: its line, while a switch is being traced.
+    fn frame_done(&mut self) -> Option<TraceLine> {
+        self.taken = None;
+        let run = self.run.as_mut()?;
+        let f = self.frame;
+        let first_new = !run.shown && f.present.is_some() && f.slot0 == Some(run.new);
+        run.shown |= first_new;
+        let end = run.shown && !f.fading;
+        let line = TraceLine {
+            n: run.n,
+            f: run.frame,
+            t0: run.t0,
+            stamps: f,
+            first_new,
+            end,
+        };
+        run.frame += 1;
+        if end {
+            self.run = None;
+        }
+        Some(line)
+    }
+}
+
+/// One frame of a traced switch.
+#[derive(Debug, Clone, Copy)]
+struct TraceLine {
+    n: u32,
+    f: u32,
+    t0: Instant,
+    stamps: FrameStamps,
+    /// The first presented frame with the new tab in slot 0.
+    first_new: bool,
+    /// The crossfade is over: the trace of this switch ends here.
+    end: bool,
+}
+
+impl std::fmt::Display for TraceLine {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let f = &self.stamps;
+        let ms = |t| ms_since(self.t0, t);
+        let p = f.phases;
+        let at = |d: fn(&crate::render::DrawPhases) -> Duration| p.map(|p| p.start + d(&p));
+        write!(
+            out,
+            "switch: n={} f={} start={:.2} pump={:.2} acquire={:.2} ui={:.2} active={:.2} \
+             assign={:.2} fading={:.2} draw_with={:.2} present={:.2}",
+            self.n,
+            self.f,
+            ms(f.start),
+            ms(f.pump),
+            ms(f.acquire),
+            ms(at(|p| p.ui)),
+            ms(at(|p| p.active)),
+            ms(at(|p| p.assign)),
+            ms(at(|p| p.fading)),
+            ms(at(|p| p.draw_with)),
+            ms(f.present),
+        )?;
+        if let Some(p) = p {
+            write!(
+                out,
+                " views_created={} rows_active={} full={} rows_fading={} rasters_font={} \
+                 rasters_custom={}",
+                p.views_created,
+                p.active_rows,
+                u8::from(p.active_full),
+                p.fading_rows,
+                p.font_rasters,
+                p.custom_rasters,
+            )?;
+        }
+        write!(out, " fade_running={}", u8::from(f.fading))?;
+        if self.first_new {
+            out.write_str(" FIRST_NEW_PRESENTED")?;
+        }
+        if self.end {
+            out.write_str(" FADE_END")?;
+        }
+        Ok(())
+    }
+}
+
 /// What the presses of ours that are down hold (see [`App::holds`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Holds {
@@ -2658,6 +2892,104 @@ fn end_left_tab_holds(
 mod tests {
     use super::*;
     use lune_vt::TerminalMouseEventType;
+
+    /// One frame of the app's loop as the trace sees it: begun, its input taken, drawn with
+    /// `slot0` active, presented, done.
+    fn traced_frame(t: &mut SwitchTrace, slot0: TabId, fading: bool) -> Option<TraceLine> {
+        t.taken = None;
+        let now = Instant::now();
+        t.frame = FrameStamps {
+            start: Some(now),
+            pump: Some(now),
+            acquire: Some(now),
+            present: Some(now),
+            fading,
+            slot0: Some(slot0),
+            phases: None,
+        };
+        t.taken = t.pending.take();
+        t.frame_done()
+    }
+
+    #[test]
+    fn a_click_switch_starts_at_the_press_the_frame_took_and_ends_with_the_fade() {
+        let mut t = SwitchTrace::default();
+        let press = Instant::now();
+        t.pending = Some(press);
+        // The frame that takes the press draws the old tab; its output asks for the switch.
+        t.taken = None;
+        t.frame = FrameStamps {
+            start: Some(press),
+            present: Some(press),
+            slot0: Some(1),
+            ..FrameStamps::default()
+        };
+        t.taken = t.pending.take();
+        t.switched(2, press + Duration::from_millis(5));
+        assert_eq!(t.run.map(|r| r.t0), Some(press), "t0 is the press");
+        let f0 = t.frame_done().expect("traced");
+        assert_eq!((f0.f, f0.first_new, f0.end), (0, false, false));
+        let f1 = traced_frame(&mut t, 2, true).expect("traced");
+        assert_eq!((f1.f, f1.first_new, f1.end), (1, true, false));
+        let f2 = traced_frame(&mut t, 2, true).expect("traced");
+        assert_eq!((f2.f, f2.first_new, f2.end), (2, false, false));
+        let f3 = traced_frame(&mut t, 2, false).expect("traced");
+        assert_eq!((f3.f, f3.first_new, f3.end), (3, false, true));
+        assert!(t.run.is_none());
+        assert!(traced_frame(&mut t, 2, false).is_none(), "idle: no line");
+    }
+
+    #[test]
+    fn a_key_switch_starts_at_the_key_and_a_switch_of_its_own_at_itself() {
+        let mut t = SwitchTrace::default();
+        let key = Instant::now();
+        t.pending = Some(key);
+        let now = key + Duration::from_millis(1);
+        t.switched(2, now);
+        assert_eq!(t.run.map(|r| r.t0), Some(key));
+        assert_eq!(t.pending, None, "the key is used up");
+        // A tab that closes on its own: no press asked for it.
+        t.switched(1, now);
+        assert_eq!(t.run.map(|r| (r.n, r.t0)), Some((2, now)));
+        // No fade (motion off): the first frame of the new tab is also the last.
+        let f = traced_frame(&mut t, 1, false).expect("traced");
+        assert!(f.first_new && f.end);
+    }
+
+    #[test]
+    fn a_trace_line_is_numbers_and_markers_only() {
+        let t0 = Instant::now();
+        let at = |ms| Some(t0 + Duration::from_millis(ms));
+        let line = TraceLine {
+            n: 3,
+            f: 1,
+            t0,
+            stamps: FrameStamps {
+                start: at(10),
+                pump: at(11),
+                acquire: at(20),
+                present: at(30),
+                fading: true,
+                slot0: Some(7),
+                phases: None,
+            },
+            first_new: true,
+            end: false,
+        };
+        let text = line.to_string();
+        assert!(
+            text.starts_with("switch: n=3 f=1 start=10.00 pump=11.00 acquire=20.00 ui=NaN"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("present=30.00 fade_running=1 FIRST_NEW_PRESENTED"),
+            "{text}"
+        );
+        assert!(
+            text.chars().all(|c| c.is_ascii_graphic() || c == ' '),
+            "{text}"
+        );
+    }
 
     fn left_tab_ctx(cols: usize, rows: usize) -> MouseCtx {
         let m = lune_termview::CellMetrics {

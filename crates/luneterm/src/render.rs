@@ -2,9 +2,11 @@
 //! grid into the shell's slot, and the frame renderer puts both into a target. The window and the
 //! frame dumps call the same [`Renderer::draw`], so a dump shows what the window shows.
 
+use std::time::{Duration, Instant};
+
 use lune_termview::{
     CellMetrics, Cursor, Grid, GridLayout, SelectionRange, TermFonts, TermTheme, TermView,
-    ViewState,
+    ViewState, ViewStats,
 };
 use lune_ui::color::premul;
 use lune_ui::custom::CustomDraw;
@@ -219,6 +221,53 @@ pub struct Drawn {
     pub rows: usize,
 }
 
+/// Where the time of one [`Renderer::draw`] went, and the grid work it did: recorded only while
+/// [`Renderer::set_phase_trace`] is on (the app's `LUNETERM_TRACE_SWITCH`). Times are from `start`,
+/// the entry of `draw`; each is the end of its phase.
+#[derive(Debug, Clone, Copy)]
+pub struct DrawPhases {
+    pub start: Instant,
+    /// The toolkit frame (shell, strip, page, menus) built.
+    pub ui: Duration,
+    /// The active tab's grid view updated.
+    pub active: Duration,
+    /// The fading views assigned (the pool grown, owners swapped).
+    pub assign: Duration,
+    /// The fading views updated.
+    pub fading: Duration,
+    /// `draw_with` returned (prepare, encode, submit).
+    pub draw_with: Duration,
+    /// Views made by `assign_fading` in this draw.
+    pub views_created: u32,
+    /// Rows the active view built, and whether that was every row.
+    pub active_rows: usize,
+    pub active_full: bool,
+    /// Rows the fading views built.
+    pub fading_rows: usize,
+    /// Rasterizer calls of every view in this draw: font glyphs, procedural glyphs.
+    pub font_rasters: u64,
+    pub custom_rasters: u64,
+}
+
+impl DrawPhases {
+    fn new() -> DrawPhases {
+        DrawPhases {
+            start: Instant::now(),
+            ui: Duration::ZERO,
+            active: Duration::ZERO,
+            assign: Duration::ZERO,
+            fading: Duration::ZERO,
+            draw_with: Duration::ZERO,
+            views_created: 0,
+            active_rows: 0,
+            active_full: false,
+            fading_rows: 0,
+            font_rasters: 0,
+            custom_rasters: 0,
+        }
+    }
+}
+
 /// The GPU, the fonts and everything built on them, for one device.
 pub struct Renderer {
     pub gpu: Gpu,
@@ -242,6 +291,8 @@ pub struct Renderer {
     /// How glyphs are rasterized: the one value the frame's `FrameParams.text` and every grid
     /// view's `update` get, so the UI text and the terminal draw the same look.
     text_rendering: TextRendering,
+    /// The latest draw's phases, while the trace is on; `None` costs one check per phase.
+    phases: Option<DrawPhases>,
 }
 
 /// Puts the item that holds each of `ids` at its own index in `pool` (items are swapped, so each
@@ -327,7 +378,27 @@ impl Renderer {
             term_theme,
             font_size,
             text_rendering: settings.text_rendering(),
+            phases: None,
         }
+    }
+
+    /// Records where each draw's time goes ([`DrawPhases`]); off by default.
+    pub fn set_phase_trace(&mut self, on: bool) {
+        self.phases = on.then(DrawPhases::new);
+    }
+
+    /// The latest draw's phases, while the trace is on.
+    pub fn phases(&self) -> Option<&DrawPhases> {
+        self.phases.as_ref()
+    }
+
+    /// Every grid view's counters summed: the rasterizer calls (font, procedural).
+    fn raster_totals(&self) -> (u64, u64) {
+        let views = std::iter::once(&self.term).chain(self.fading.iter().map(|f| &f.view));
+        views.fold((0, 0), |(f, c), v| {
+            let s: ViewStats = v.stats();
+            (f + s.font_rasters, c + s.custom_rasters)
+        })
     }
 
     /// Forgets the toolkit's retained state (focus, scroll offsets, open dialogs, animations). The
@@ -408,6 +479,9 @@ impl Renderer {
                 self.term_fonts.clone(),
                 theme.clone(),
             );
+            if let Some(p) = &mut self.phases {
+                p.views_created += 1;
+            }
             self.fading.push(FadingView {
                 view,
                 owner: None,
@@ -484,6 +558,12 @@ impl Renderer {
         target: &wgpu::TextureView,
         size: (u32, u32),
     ) -> Result<Drawn, String> {
+        let rasters_before = if self.phases.is_some() {
+            self.phases = Some(DrawPhases::new());
+            self.raster_totals()
+        } else {
+            (0, 0)
+        };
         let scale = input.scale;
         let placed = self.place(input.size, scale);
         let Placed {
@@ -595,6 +675,9 @@ impl Renderer {
             ui.clipboard_read();
         }
         let (scene, mut output) = ui.finish();
+        if let Some(p) = &mut self.phases {
+            p.ui = p.start.elapsed();
+        }
         output.commands.extend(shell_out.commands);
         let (tab_events, modal) = (shell_out.tab_events, shell_out.modal);
 
@@ -614,8 +697,16 @@ impl Renderer {
             scale,
             self.text_rendering,
         );
+        if let Some(p) = &mut self.phases {
+            p.active = p.start.elapsed();
+            let s = self.term.stats();
+            (p.active_rows, p.active_full) = (s.last_rows, s.last_full);
+        }
         // The tabs fading out under it (a tab-switch crossfade), each in a view of its own.
         self.assign_fading(&mut content.fading);
+        if let Some(p) = &mut self.phases {
+            p.assign = p.start.elapsed();
+        }
         for (layer, fv) in content.fading.iter_mut().zip(self.fading.iter_mut()) {
             fv.view.set_opacity(layer.alpha);
             let faded = ViewState {
@@ -633,6 +724,12 @@ impl Renderer {
                 scale,
                 self.text_rendering,
             );
+            if let Some(p) = &mut self.phases {
+                p.fading_rows += fv.view.stats().last_rows;
+            }
+        }
+        if let Some(p) = &mut self.phases {
+            p.fading = p.start.elapsed();
         }
         let params = self.frame_params(size, scale);
         // Slot 0 is the active tab's grid, the rest are the fading ones (`shell::TERM_SLOT`).
@@ -654,6 +751,14 @@ impl Renderer {
             params,
             &mut customs,
         )?;
+        if self.phases.is_some() {
+            let (font, custom) = self.raster_totals();
+            if let Some(p) = &mut self.phases {
+                p.draw_with = p.start.elapsed();
+                p.font_rasters = font.saturating_sub(rasters_before.0);
+                p.custom_rasters = custom.saturating_sub(rasters_before.1);
+            }
+        }
         Ok(Drawn {
             output,
             tab_events,
@@ -927,6 +1032,283 @@ mod text_tests {
             assert_eq!(r.fading.len(), 2);
             for (i, fv) in r.fading.iter().enumerate() {
                 assert_eq!(fv.view.builder().text_rendering(), text, "fading view {i}");
+            }
+        }
+    }
+}
+
+/// The offscreen tab-switch harness (plan step 3): the real [`Renderer`] with two tabs of dense
+/// full grids, switched A→B→A→B the way the app does it (`App::active_changed`: both grids marked
+/// dirty, the crossfade started, the old tab drawn by a fading view). Prints the phase timings
+/// of every frame of each switch to stderr; numbers only. Ignored by default (it measures, it does
+/// not check): `cargo test -p luneterm --lib [--release] switch_harness -- --ignored --nocapture`.
+#[cfg(test)]
+mod switch_harness {
+    use super::*;
+    use crate::fade::{self, Fade};
+    use crate::shell::HOST;
+    use lune_termview::{Attrs, Cell, Color};
+
+    const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+    const SCALE: f32 = 2.0;
+    /// The simulated display: the fade's clock advances one refresh per frame, so every run draws
+    /// the same number of fade frames whatever a frame costs.
+    const REFRESH: Duration = Duration::from_micros(16_667);
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+    }
+
+    /// A full screen of printable ASCII, palette colours on the default background, 20% bold.
+    fn dense(cols: usize, rows: usize, seed: u64) -> Grid {
+        let mut rng = Rng(seed);
+        let mut g = Grid::new(cols, rows);
+        for row in 0..rows {
+            for col in 0..cols {
+                let mut cell = Cell::default();
+                cell.set_char(char::from(b'!' + (rng.next() % 94) as u8));
+                cell.fg = Color::Palette((rng.next() % 16) as u8);
+                if rng.next() % 5 == 0 {
+                    cell.attrs.insert(Attrs::BOLD);
+                }
+                g.set(row, col, cell);
+            }
+        }
+        g
+    }
+
+    fn renderer(text: TextRendering) -> Option<Renderer> {
+        let gpu = match pollster::block_on(Gpu::new(lune_ui::gpu::instance(None), None)) {
+            Ok(gpu) => gpu,
+            Err(e) if crate::dump::require_gpu() => {
+                panic!("LUNE_REQUIRE_GPU=1 but no usable wgpu adapter: {e}")
+            }
+            Err(e) => {
+                eprintln!("SKIPPED: no wgpu adapter: {e}");
+                return None;
+            }
+        };
+        let mut r = Renderer::new(
+            gpu,
+            fonts::bundled_text_cache(),
+            FORMAT,
+            &Settings::default().clamped(),
+            true,
+        );
+        r.set_text_rendering(text);
+        r.set_phase_trace(true);
+        Some(r)
+    }
+
+    /// The smallest logical window (in 8 px steps) whose grid holds `cols` x `rows`.
+    fn window_for(r: &mut Renderer, cols: usize, rows: usize) -> (f32, f32) {
+        let mut size = (400.0, 300.0);
+        while r.grid_size(size, SCALE).0 < cols {
+            size.0 += 8.0;
+        }
+        while r.grid_size(size, SCALE).1 < rows {
+            size.1 += 8.0;
+        }
+        size
+    }
+
+    /// One frame's numbers: the draw's phases and the GPU wait after it, ms from the draw's start.
+    struct FrameRow {
+        p: DrawPhases,
+        gpu: f64,
+    }
+
+    fn ms(d: Duration) -> f64 {
+        d.as_secs_f64() * 1e3
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn frame(
+        r: &mut Renderer,
+        target: &wgpu::TextureView,
+        size: (u32, u32),
+        logical: (f32, f32),
+        tabs: &mut [Grid; 2],
+        active: usize,
+        alphas: &fade::Alphas,
+        theme: &TermTheme,
+    ) -> FrameRow {
+        let input = lune_ui::input::RawInput {
+            size: logical,
+            scale: SCALE,
+            time: Duration::ZERO,
+            focused: true,
+            events: Vec::new(),
+        };
+        let strip = [
+            StripTab {
+                id: 0,
+                title: "a",
+                progress: None,
+            },
+            StripTab {
+                id: 1,
+                title: "b",
+                progress: None,
+            },
+        ];
+        let [a, b] = tabs;
+        let (grid, other) = if active == 0 { (a, b) } else { (b, a) };
+        let other_id = 1 - active as TabId;
+        let fading: Vec<FadingGrid<'_>> = alphas
+            .outgoing
+            .iter()
+            .find(|(id, _)| *id == other_id)
+            .map(|(_, alpha)| FadingGrid {
+                id: other_id,
+                grid: other,
+                cursor: Cursor::default(),
+                theme,
+                alpha: *alpha,
+            })
+            .into_iter()
+            .collect();
+        let content = Content {
+            title: None,
+            tabs: &strip,
+            active_tab: Some(active as TabId),
+            modal: None,
+            maximized: false,
+            grid,
+            selection: &[],
+            hover_link: 0,
+            link_hand: false,
+            link_tip: None,
+            toasts: None,
+            cursor: Cursor::default(),
+            blink_on: true,
+            scroll: None,
+            chrome: HOST,
+            ime: false,
+            preedit: None,
+            clipboard_write: None,
+            clipboard_read: false,
+            page: None,
+            menu: None,
+            busy: None,
+            busy_tone: Tone::Neutral,
+            grid_alpha: alphas.incoming,
+            fading,
+        };
+        r.draw(&input, content, target, size).expect("draw");
+        r.gpu.end_frame(&mut r.text);
+        let _ = r.gpu.device.poll(wgpu::PollType::wait_indefinitely());
+        let p = *r.phases().expect("phases on");
+        FrameRow {
+            p,
+            gpu: ms(p.start.elapsed()),
+        }
+    }
+
+    fn print(label: &str, n: usize, f: usize, row: &FrameRow) {
+        let p = &row.p;
+        eprintln!(
+            "harness: {label} switch={n} f={f} ui={:.2} active={:.2} assign={:.2} fading={:.2} \
+             draw_with={:.2} gpu_done={:.2} views_created={} rows_active={} full={} \
+             rows_fading={} rasters_font={} rasters_custom={}",
+            ms(p.ui),
+            ms(p.active),
+            ms(p.assign),
+            ms(p.fading),
+            ms(p.draw_with),
+            row.gpu,
+            p.views_created,
+            p.active_rows,
+            u8::from(p.active_full),
+            p.fading_rows,
+            p.font_rasters,
+            p.custom_rasters,
+        );
+    }
+
+    fn run(text: TextRendering, cols: usize, rows: usize) {
+        let Some(mut r) = renderer(text) else { return };
+        let logical = window_for(&mut r, cols, rows);
+        let size = (
+            (logical.0 * SCALE).round() as u32,
+            (logical.1 * SCALE).round() as u32,
+        );
+        let texture = lune_ui::dump::target(&r.gpu.device, FORMAT, size);
+        let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let theme = TermTheme::lunegit_one_dark();
+        let mut tabs = [
+            dense(cols, rows, 0x9E37_79B9),
+            dense(cols, rows, 0x7F4A_7C15),
+        ];
+        let build = if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        };
+        let smooth = if text == TextRendering::SMOOTH {
+            "on"
+        } else {
+            "off"
+        };
+        let label = format!(
+            "{build} text={smooth} grid={cols}x{rows} target={}x{}",
+            size.0, size.1
+        );
+        let mut fade = Fade::default();
+        let mut now = Instant::now();
+        let mut active = 0usize;
+        // Tab A settles: its first frame builds everything, then two idle frames.
+        for f in 0..3 {
+            let (alphas, _) = fade.tick(now, |_| true);
+            let row = frame(
+                &mut r, &target, size, logical, &mut tabs, active, &alphas, &theme,
+            );
+            print(&label, 0, f, &row);
+            now += REFRESH;
+        }
+        for n in 1..=4 {
+            // `App::active_changed`: the fade starts, both grids are drawn from scratch.
+            let old = active;
+            active = 1 - active;
+            fade.switch(now, fade::FULL, Some(old as TabId), active as TabId);
+            tabs[old].mark_all_dirty();
+            tabs[active].mark_all_dirty();
+            let mut f = 1;
+            loop {
+                let (alphas, running) = fade.tick(now, |_| true);
+                let row = frame(
+                    &mut r, &target, size, logical, &mut tabs, active, &alphas, &theme,
+                );
+                print(&label, n, f, &row);
+                now += REFRESH;
+                f += 1;
+                if !running {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "measures; run by hand (plan step 3)"]
+    fn tab_switch_phases() {
+        let texts: &[TextRendering] = match std::env::var("LUNETERM_DUMP_TEXT").as_deref() {
+            Ok("on") => &[TextRendering::SMOOTH],
+            Ok("off") => &[TextRendering::OFF],
+            _ => &[TextRendering::SMOOTH, TextRendering::OFF],
+        };
+        for &text in texts {
+            for (cols, rows) in [(240, 63), (120, 40)] {
+                run(text, cols, rows);
             }
         }
     }

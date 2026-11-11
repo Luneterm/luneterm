@@ -225,6 +225,8 @@ pub struct AtlasCore {
     pages: [PageCore; 2],
     max_dim: u32,
     dropped: u64,
+    /// Rasterizer calls so far (atlas misses), font glyphs and procedural glyphs.
+    rasters: [u64; 2],
 }
 
 impl std::fmt::Debug for AtlasCore {
@@ -258,7 +260,14 @@ impl AtlasCore {
             pages: [PageCore::new(start), PageCore::new(start)],
             max_dim,
             dropped: 0,
+            rasters: [0; 2],
         }
+    }
+
+    /// Rasterizer calls so far, `(font glyphs, procedural glyphs)`: one per atlas miss, never
+    /// reset (a counter for the app's tab-switch trace).
+    pub fn rasters(&self) -> (u64, u64) {
+        (self.rasters[0], self.rasters[1])
     }
 
     pub fn size(&self, page: Page) -> u32 {
@@ -338,6 +347,8 @@ impl AtlasCore {
         if let Some(hit) = self.cached(&key) {
             return Ok(hit);
         }
+        let kind = usize::from(matches!(key, AtlasKey::Custom(_)));
+        self.rasters[kind] = self.rasters[kind].saturating_add(1);
         let Some(img) = raster.raster(key) else {
             self.pages[Page::Mask.index()].map.insert(key, None);
             return Ok(None);
