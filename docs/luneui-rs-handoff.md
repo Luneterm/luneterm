@@ -7,7 +7,7 @@ is a luneui-rs task, and Luneterm then bumps the pin (`Cargo.toml` and `scripts/
 reviewed change). Flipping a Class B entry to `done` is a luneui-rs commit.
 
 - Toolkit read: `~/Projects/luneui-rs` at `5be5dbea92b8994b1b088942da36b77f40469c0e` (`main`, "Merge
-  branch 'near-black-menu-glass'"), the rev Luneterm pinned from M10 step 13 until the tab-strip bump (`5216931d8ae06f01cbf38e3408bc43b1096dceed`, "Merge branch 'orch/library-pass'", before: the rows below were read at that rev); the pin is now `32d19048684745b54ab542e5dc886bea43326e08` ("Merge branch 'orch/tab-strip-plus-and-slide'", on top of `5be5dbe`). Paths marked `L:` are in that repo (at `5216931` for the rows below unless they say otherwise).
+  branch 'near-black-menu-glass'"), the rev Luneterm pinned from M10 step 13 until the tab-strip bump (`5216931d8ae06f01cbf38e3408bc43b1096dceed`, "Merge branch 'orch/library-pass'", before: the rows below were read at that rev); then `32d19048684745b54ab542e5dc886bea43326e08` ("Merge branch 'orch/tab-strip-plus-and-slide'", on top of `5be5dbe`); the pin is now `cebd7d7572ae7f0642cb7c7505fcfa467e0456fc` (tag `v0.4.0`; it crosses the 0.3.0 and 0.4.0 migrations, see "Seen in luneui-rs 0.4.0"). Paths marked `L:` are in that repo (at `5216931` for the rows below unless they say otherwise).
 - Luneterm at `b535456` (M9 step 8) for the CI runs below. Written 2026-11-08; the Windows section was extended on 2026-11-09 (M10 step 8).
 - Not yet run: the hands-on macOS run (the user's stop after M9's last step) and any Windows or Linux
   window. Every item that waits on them says so; nothing below is rounded up to a pass.
@@ -27,7 +27,7 @@ Lunegit). The owner line in luneui-rs still says "M9 to M11"; M11 no longer exis
 | The inactive window | Not run. The toolkit no longer draws an inactive solid, so `VibrancyFollowsWindow` changes nothing in the fills; the app maps the Lunegit style to `Vibrancy` (M9 step 4 note). | M10 |
 | Liquid Glass on macOS versions without it | Not run. | M10 |
 | Blur and noise against Avalonia's defaults | Not run. | M10 |
-| Dark glass (`near_black`, D285/D288) | Landed in luneui-rs `main` (`5be5dbe`), pinned in M10 step 13 (the pin is now `32d1904`, which adds only the tab strip changes below). The app maps `GlassStyle::Default` to `near_black::MATERIAL` and uses `near_black::THEME` and its own header tint, `shell::NEAR_BLACK_HEADER_TINT` (6% white; luneui-rs's 4% `near_black::HEADER_TINT` left the header too close to the title band, a value the toolkit leaves to the app, D131) (`crates/luneterm/src/render.rs` `theme`, `header_tint`; `settings.rs` `material`). The API range `5216931..5be5dbe` was additive for Luneterm (`Material::Custom`, the `near_black` module, the theme file's `glass` section); no gap found. **Not yet seen on a real window:** the offscreen dumps show the layers over a transparent backdrop; the user judges the blur and the near-black look at step 14. luneui-rs's own note: the macOS `UltraDark` look under a Light system appearance and the Windows tint on builds 22523 and later are unverified. | M10 step 14 |
+| Dark glass (`near_black`, D285/D288) | Landed in luneui-rs `main` (`5be5dbe`), pinned in M10 step 13 (`32d1904` added only the tab strip changes below; the pin is now `v0.4.0`). The app maps `GlassStyle::Default` to `near_black::MATERIAL` and uses `near_black::THEME` and its own header tint, `shell::NEAR_BLACK_HEADER_TINT` (6% white; luneui-rs's 4% `near_black::HEADER_TINT` left the header too close to the title band, a value the toolkit leaves to the app, D131) (`crates/luneterm/src/render.rs` `theme`, `header_tint`; `settings.rs` `material`). The API range `5216931..5be5dbe` was additive for Luneterm (`Material::Custom`, the `near_black` module, the theme file's `glass` section); no gap found. **Not yet seen on a real window:** the offscreen dumps show the layers over a transparent backdrop; the user judges the blur and the near-black look at step 14. luneui-rs's own note: the macOS `UltraDark` look under a Light system appearance and the Windows tint on builds 22523 and later are unverified. | M10 step 14 |
 
 ### `render.surface` (L: `docs/components/render/surface.md`, owner "consumer's window run")
 
@@ -157,12 +157,14 @@ no tab). Luneterm took them with the pin bump (M10 step 13) and changed no call:
 
 ## Gaps seen in M10 step 6 (settings page and menus)
 
-- **Tab context menu rows.** The strip's own menu takes `menu_extra` rows as plain text: no glyph
-  and no separator before them, unlike `Ui::menu_with`'s rows. The app's `⋯` menu and the
-  terminal's menu have both; the tab's menu looks plainer next to them.
+- **Tab context menu rows.** *Resolved at pin `v0.4.0`* (luneui-rs 0.3.0, D292/D293): the strip owns
+  no menu, `TabStripResponse::context` reports the request and the app opens its own menu
+  (`MenuKind::Tab`, `crates/luneterm/src/menus.rs`), with a glyph on every row like the `⋯` and
+  terminal menus. Was: the strip's own menu took `menu_extra` rows as plain text, no glyph.
 - **Tab tooltip under an open context menu.** The strip's hover tooltip for the tab under the
-  pointer can stay visible beside the tab's context menu while it is open (`menu-tab` dump). The app
-  has no lever on it.
+  pointer could stay visible beside the tab's context menu while it was open (`menu-tab` dump). Since
+  the bump the app-opened menu draws above the tooltip (the toolkit opens it one frame later); seen in
+  the `menu-tab@2x` dump only (step 1 of the v0.4.0 task), not on a real window.
 - **Settings page scroll bar and banner.** The page's scroll thumb sits at the viewport's right edge
   (the app keeps its groups 12 px clear of it); the restart banner is a full-width bar over the
   content's last rows rather than docked outside the scroll area.
@@ -176,6 +178,26 @@ no tab). Luneterm took them with the pin bump (M10 step 13) and changed no call:
   would have turned smooth while the grid stayed unsmoothed. The gap, if any: a way for a custom
   draw to read the setting when it builds, not only in `prepare` (the rows are built in `update`,
   before the frame exists).
+- **Tab context menu moved to the app (0.3.0).** The bump crossed two migrations, not one: the pin
+  `32d1904` predates v0.3.0, which removed the strip's own right-click menu
+  (`TabStripOptions::menu_extra`, `TabEvent::{CloseOthers, CloseAll, Rename, MenuExtra}` and the
+  `luneui.tab-strip.menu.*` strings are gone). Luneterm opens its own menu from
+  `TabStripResponse::context` and acts on the tab it was opened on, not the active one.
+- **Gap: the progress shine forces a redraw every frame.** While any tab has `progress: Some(_)` and
+  the motion tier is not Off, the strip calls `mark_moving()` every frame (`tab_strip.rs:745-747` at
+  v0.4.0), so the frame reports `Repaint::Now` and the whole window redraws at display rate, even
+  for a hidden tab. Probe (real renderer, offscreen, release): `Repaint::Now` on 6 of 6 frames with
+  progress, `Idle` on 6 of 6 without. With one busy tab the UI thread was busy ~1000 ms/s (measured
+  in a real window, step 3 of the task).
+- **Gap: `WindowSurface` blocks the main thread in acquire.** It fixes `PresentMode::Fifo` and
+  `desired_maximum_frame_latency: 2` (`lune-ui-wgpu/src/surface.rs:71-74` at v0.4.0); every frame
+  blocked ~15 ms in `acquire()`, so a click waited for the frame in flight (up to ~16 ms) and the
+  first frame of a tab switch landed 35-53 ms after the click (2-22 ms with no busy tab). The app
+  cannot configure either.
+- Both are requested as luneui-rs `docs/tasks/frame-pacing.md` (2026-11-11). Luneterm's stopgap is
+  `IDLE_ANIMATION_HZ = 30` in `crates/luneterm/src/app.rs`: a frame with no input and no tab fade
+  that the toolkit wants again at once waits for 1/30 s instead (an earlier deadline still wins). It
+  goes when a release has the toolkit's own cadence.
 
 ## Seen in M10 step 4 (link tooltip)
 
