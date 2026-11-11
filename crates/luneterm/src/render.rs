@@ -326,7 +326,7 @@ impl Renderer {
             blur_sigma: settings.menu_blur.sigma(),
             term_theme,
             font_size,
-            text_rendering: TextRendering::OFF,
+            text_rendering: TextRendering::SMOOTH,
         }
     }
 
@@ -340,6 +340,31 @@ impl Renderer {
     pub fn set_glass(&mut self, glass: bool, style: GlassStyle) {
         self.theme = theme(glass, style);
         self.header_tint = header_tint(glass, style);
+    }
+
+    /// How glyphs are rasterized, for the UI text and every terminal view alike (default
+    /// [`TextRendering::SMOOTH`], the look Lunegit's toolkit chose, luneui-rs D296). Takes effect
+    /// on the next frame: each view rebuilds its rows when the value it was given changes.
+    pub fn set_text_rendering(&mut self, text: TextRendering) {
+        self.text_rendering = text;
+    }
+
+    /// The text setting in force.
+    pub fn text_rendering(&self) -> TextRendering {
+        self.text_rendering
+    }
+
+    /// The frame's parameters: the one place `FrameParams.text` is set, from the same value every
+    /// terminal view's `update` gets.
+    fn frame_params(&self, size: (u32, u32), scale: f32) -> FrameParams {
+        FrameParams {
+            size,
+            scale,
+            blur_sigma: self.blur_sigma * scale,
+            saturation: BACKDROP_SATURATION,
+            text: self.text_rendering,
+            ..FrameParams::default()
+        }
     }
 
     /// The menu and dialog blur of the setting.
@@ -609,14 +634,7 @@ impl Renderer {
                 self.text_rendering,
             );
         }
-        let params = FrameParams {
-            size,
-            scale,
-            blur_sigma: self.blur_sigma * scale,
-            saturation: BACKDROP_SATURATION,
-            text: self.text_rendering,
-            ..FrameParams::default()
-        };
+        let params = self.frame_params(size, scale);
         // Slot 0 is the active tab's grid, the rest are the fading ones (`shell::TERM_SLOT`).
         // Only the views of this frame's layers go in: slot `n` is `self.fading[n - 1]`.
         let shown = content.fading.len();
@@ -789,5 +807,117 @@ mod pool_tests {
         // No layers: nothing moves needlessly and nothing is fresh.
         let (_, fresh) = arranged(vec![Some(A)], &[]);
         assert!(fresh.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+    use crate::shell::HOST;
+
+    const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+    const SIZE: (u32, u32) = (640, 400);
+
+    fn renderer() -> Option<Renderer> {
+        let gpu = match pollster::block_on(Gpu::new(lune_ui::gpu::instance(None), None)) {
+            Ok(gpu) => gpu,
+            Err(e) if crate::dump::require_gpu() => {
+                panic!("LUNE_REQUIRE_GPU=1 but no usable wgpu adapter: {e}")
+            }
+            Err(e) => {
+                eprintln!("SKIPPED: no wgpu adapter: {e}");
+                return None;
+            }
+        };
+        Some(Renderer::new(
+            gpu,
+            fonts::bundled_text_cache(),
+            FORMAT,
+            &Settings::default().clamped(),
+            true,
+        ))
+    }
+
+    #[test]
+    fn the_default_is_smooth() {
+        let Some(r) = renderer() else { return };
+        assert_eq!(r.text_rendering(), TextRendering::SMOOTH);
+    }
+
+    /// One value: in one frame the frame's `FrameParams.text`, the active grid's view and every
+    /// fading view (two of them, so the pool grows past one) get the renderer's setting, and a
+    /// change reaches all of them on the next frame.
+    #[test]
+    fn one_setting_reaches_the_frame_and_every_grid_view() {
+        let Some(mut r) = renderer() else { return };
+        let texture = lune_ui::dump::target(&r.gpu.device, FORMAT, SIZE);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let input = lune_ui::input::RawInput {
+            size: (SIZE.0 as f32, SIZE.1 as f32),
+            scale: 1.0,
+            time: std::time::Duration::ZERO,
+            focused: true,
+            events: Vec::new(),
+        };
+        let theme = TermTheme::lunegit_one_dark();
+        let (mut active, mut fade_a, mut fade_b) =
+            (Grid::new(20, 5), Grid::new(20, 5), Grid::new(20, 5));
+        for text in [
+            TextRendering::SMOOTH,
+            TextRendering::OFF,
+            TextRendering::SMOOTH,
+        ] {
+            r.set_text_rendering(text);
+            assert_eq!(r.frame_params((SIZE.0, SIZE.1), 1.0).text, text);
+            let content = Content {
+                title: None,
+                tabs: &[],
+                active_tab: None,
+                modal: None,
+                maximized: false,
+                grid: &mut active,
+                selection: &[],
+                hover_link: 0,
+                link_hand: false,
+                link_tip: None,
+                toasts: None,
+                cursor: Cursor::default(),
+                blink_on: true,
+                scroll: None,
+                chrome: HOST,
+                ime: false,
+                preedit: None,
+                clipboard_write: None,
+                clipboard_read: false,
+                page: None,
+                menu: None,
+                busy: None,
+                busy_tone: Tone::Neutral,
+                grid_alpha: 1.0,
+                fading: vec![
+                    FadingGrid {
+                        id: 10,
+                        grid: &mut fade_a,
+                        cursor: Cursor::default(),
+                        theme: &theme,
+                        alpha: 0.5,
+                    },
+                    FadingGrid {
+                        id: 11,
+                        grid: &mut fade_b,
+                        cursor: Cursor::default(),
+                        theme: &theme,
+                        alpha: 0.25,
+                    },
+                ],
+            };
+            r.draw(&input, content, &view, SIZE).expect("draw");
+            r.gpu.end_frame(&mut r.text);
+            assert_eq!(r.term.builder().text_rendering(), text, "active view");
+            assert_eq!(r.fading.len(), 2);
+            for (i, fv) in r.fading.iter().enumerate() {
+                assert_eq!(fv.view.builder().text_rendering(), text, "fading view {i}");
+            }
+        }
     }
 }

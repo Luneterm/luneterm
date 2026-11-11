@@ -73,6 +73,14 @@ every layer animates from the opacity it has now, so a quick second switch conti
 first was (the generation rule); `Full` is 250 ms, `Reduced` 180 ms, `None` a hard cut; the first tab
 and a restored workspace do not fade; redraws are requested only while it runs.
 
+## Text rendering
+
+Glyphs are smoothed (luneui-rs D296, variant A, `TextRendering::SMOOTH`: no hinting, stem
+darkening by size) in the UI text and in the terminal grid alike; Lunegit has no setting for it,
+and Luneterm has none either. The unsmoothed look (`TextRendering::OFF`) stays reachable for
+dumps (`LUNETERM_DUMP_TEXT=off`) and the termview goldens (`attributes-text-off@2x`). Box, block
+and powerline glyphs are drawn procedurally and look the same either way.
+
 ## Open items
 
 - Blur radius and noise texture: Lunegit uses Avalonia's acrylic defaults. Read Avalonia's

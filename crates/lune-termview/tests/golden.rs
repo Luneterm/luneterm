@@ -326,8 +326,20 @@ fn clear_colour(c: [u8; 4]) -> wgpu::Color {
     }
 }
 
-/// Renders `scene` with the one-dark theme into a target cleared to `clear`.
+/// Renders `scene` with the one-dark theme into a target cleared to `clear`, at the text setting
+/// the app ships (smoothed glyphs).
 fn render(cx: &mut Ctx, scene: &mut Scene, scale: f32, clear: [u8; 4]) -> Frame {
+    render_with(cx, scene, scale, clear, TextRendering::SMOOTH)
+}
+
+/// [`render`] at an explicit text setting.
+fn render_with(
+    cx: &mut Ctx,
+    scene: &mut Scene,
+    scale: f32,
+    clear: [u8; 4],
+    text: TextRendering,
+) -> Frame {
     let mut tv = TermView::new(
         &cx.device,
         FORMAT,
@@ -347,7 +359,7 @@ fn render(cx: &mut Ctx, scene: &mut Scene, scale: f32, clear: [u8; 4]) -> Frame 
         &view,
         (MARGIN, MARGIN),
         scale,
-        TextRendering::OFF,
+        text,
     );
     let m = tv.metrics(&mut cx.fs, scale);
     let margin = (MARGIN * scale).round() as u32;
@@ -360,7 +372,7 @@ fn render(cx: &mut Ctx, scene: &mut Scene, scale: f32, clear: [u8; 4]) -> Frame 
         size,
         scale,
         format: FORMAT,
-        text: TextRendering::OFF,
+        text,
     };
     tv.prepare(&cx.device, &cx.queue, &frame);
     let tex_view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1072,6 +1084,23 @@ fn golden_scene(name: &str, scale: f32, scene: &mut Scene) {
 #[test]
 fn attributes() {
     golden_scene("attributes", 2.0, &mut attributes_scene(true));
+}
+
+/// The unsmoothed look (`TextRendering::OFF`) is kept: this golden is the pre-D296 pixels of the
+/// attributes scene, byte for byte (`attributes@2x.png` before it was re-blessed at SMOOTH).
+#[test]
+fn attributes_text_off() {
+    let Some(mut cx) = ctx(test_fonts) else {
+        return;
+    };
+    let frame = render_with(
+        &mut cx,
+        &mut attributes_scene(true),
+        2.0,
+        STAND_IN,
+        TextRendering::OFF,
+    );
+    golden("attributes-text-off@2x", &frame);
 }
 
 #[test]

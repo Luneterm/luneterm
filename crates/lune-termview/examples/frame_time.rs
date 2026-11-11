@@ -144,7 +144,7 @@ fn main() {
         size: SIZE,
         scale: SCALE,
         format: FORMAT,
-        text: TextRendering::OFF,
+        text: TextRendering::SMOOTH,
     };
     let view_state = |blink_on: bool| ViewState {
         cursor: Cursor {
@@ -168,7 +168,7 @@ fn main() {
             &view_state(blink_on),
             (0.0, 0.0),
             SCALE,
-            TextRendering::OFF,
+            TextRendering::SMOOTH,
         );
         let update_ms = t0.elapsed().as_secs_f64() * 1e3;
 

@@ -75,7 +75,16 @@ the grid (in the app, `session::apply_update` from the engine thread's Updates; 
   private-use code point the terminal's own family lacks comes from `TermFonts.icon_family`, ahead
   of the platform's fallback list. Glyphs
   sit in an etagere atlas (a mask page and a colour page) keyed by cosmic `CacheKey` (font id,
-  glyph id, size, subpixel bin, weight, flags) or, for procedural glyphs, `AtlasKey::Custom`.
+  glyph id, size, subpixel bin, weight, flags) **and** the toolkit's `GlyphParams` (hinting and
+  stem darkening, from `TextRendering::glyph_params` at the glyph's own size) or, for procedural
+  glyphs, `AtlasKey::Custom`. Glyphs are rasterized by the toolkit's `GlyphRasterizer`.
+- **Text rendering:** one `TextRendering` (default `SMOOTH`, the toolkit's look since luneui-rs
+  D296) is held by the app's `Renderer` and handed both to the frame (`FrameParams.text`) and to
+  every `TermView::update` (the active grid and the fading ones), so the UI text and the grid
+  draw alike. It is part of the builder's `BuildKey`: a change rebuilds every row, and the atlas
+  keeps the entries of the setting not in use, so a toggle never serves a glyph rasterized under
+  the other one. Procedural glyphs are not font outlines and ignore it. Frame dumps take
+  `LUNETERM_DUMP_TEXT=on|off` (default `on`).
   Ligatures (ledger 15) are not shaped yet; whole-row shaping can reuse the same key later.
 - **Containment** (`contain`): Lunegit's rule with two deviations. A width-1 non-colour glyph
   followed by a blank cell may spill one cell. Anything wider is fitted to its slot by
