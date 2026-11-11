@@ -1063,8 +1063,9 @@ mod text_tests {
 /// The offscreen tab-switch harness (plan step 3): the real [`Renderer`] with two tabs of dense
 /// full grids, switched A→B→A→B the way the app does it (`App::active_changed`: both grids marked
 /// dirty, the crossfade started, the old tab drawn by a fading view). Prints the phase timings
-/// of every frame of each switch to stderr; numbers only. Ignored by default (it measures, it does
-/// not check): `cargo test -p luneterm --lib [--release] switch_harness -- --ignored --nocapture`.
+/// of every frame of each switch to stderr; numbers only. Ignored by default (it is timed); in a
+/// release build it fails when a switch's first frame takes 100 ms or more (plan step 4 (c)):
+/// `cargo test -p luneterm --lib [--release] switch_harness -- --ignored --nocapture`.
 #[cfg(test)]
 mod switch_harness {
     use super::*;
@@ -1258,8 +1259,15 @@ mod switch_harness {
         );
     }
 
-    fn run(text: TextRendering, cols: usize, rows: usize) {
-        let Some(mut r) = renderer(text) else { return };
+    /// The timed check (plan step 4 (c)): a switch's first frame, from the draw's start to the GPU
+    /// done, must stay under this in a release build. A debug build only prints.
+    const FIRST_FRAME_LIMIT_MS: f64 = 100.0;
+
+    /// Runs one size and text setting; returns the slowest first frame after a switch, ms.
+    fn run(text: TextRendering, cols: usize, rows: usize) -> f64 {
+        let Some(mut r) = renderer(text) else {
+            return 0.0;
+        };
         let logical = window_for(&mut r, cols, rows);
         let size = (
             (logical.0 * SCALE).round() as u32,
@@ -1298,6 +1306,7 @@ mod switch_harness {
             print(&label, 0, f, &row);
             now += REFRESH;
         }
+        let mut worst = 0.0f64;
         for n in 1..=4 {
             // `App::active_changed`: the fade starts, both grids are drawn from scratch.
             let old = active;
@@ -1312,6 +1321,9 @@ mod switch_harness {
                     &mut r, &target, size, logical, &mut tabs, active, &alphas, &theme,
                 );
                 print(&label, n, f, &row);
+                if f == 1 {
+                    worst = worst.max(row.gpu);
+                }
                 now += REFRESH;
                 f += 1;
                 if !running {
@@ -1319,10 +1331,12 @@ mod switch_harness {
                 }
             }
         }
+        eprintln!("harness: {label} first_frame_max={worst:.2}");
+        worst
     }
 
     #[test]
-    #[ignore = "measures; run by hand (plan step 3)"]
+    #[ignore = "timed; run by hand in release (plan steps 3 and 4)"]
     fn tab_switch_phases() {
         let texts: &[TextRendering] = match std::env::var("LUNETERM_DUMP_TEXT").as_deref() {
             Ok("on") => &[TextRendering::SMOOTH],
@@ -1331,7 +1345,13 @@ mod switch_harness {
         };
         for &text in texts {
             for (cols, rows) in [(240, 63), (120, 40)] {
-                run(text, cols, rows);
+                let worst = run(text, cols, rows);
+                if !cfg!(debug_assertions) {
+                    assert!(
+                        worst < FIRST_FRAME_LIMIT_MS,
+                        "a switch's first frame took {worst:.2} ms (limit {FIRST_FRAME_LIMIT_MS})"
+                    );
+                }
             }
         }
     }
