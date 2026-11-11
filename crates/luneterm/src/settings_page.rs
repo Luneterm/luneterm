@@ -23,7 +23,7 @@ use crate::palettes::PALETTES;
 use crate::session::MAX_SCROLLBACK;
 use crate::settings::{
     BlurLevel, GlassStyle, MAX_FONT_SIZE, MAX_NAME_BYTES, MAX_SHELL_BYTES, MIN_FONT_SIZE, Motion,
-    OutlineAnim, SettingId, Settings, text_ok,
+    OutlineAnim, SettingId, Settings, Theme, text_ok,
 };
 use crate::shell::HOST_GLASS;
 
@@ -127,6 +127,11 @@ static APPEARANCE: [Group; 2] = [
         header: "settings.appearance.window.header",
         rows: &[
             row(
+                SettingId::Theme,
+                Control::Combo,
+                "settings.appearance.theme",
+            ),
+            row(
                 SettingId::Glass,
                 Control::Combo,
                 "settings.appearance.glass",
@@ -161,6 +166,11 @@ static TERMINAL: [Group; 3] = [
                 SettingId::FontSize,
                 Control::Stepper,
                 "settings.terminal.appearance.fontSize",
+            ),
+            row(
+                SettingId::FontSmoothing,
+                Control::Toggle,
+                "settings.terminal.appearance.fontSmoothing",
             ),
             row(
                 SettingId::Palette,
@@ -295,6 +305,7 @@ fn desc_key(row: &Row) -> String {
 fn option_keys(id: SettingId) -> Vec<String> {
     let numbered = |base: &str, n: usize| (0..n).map(|i| format!("{base}.{i}")).collect();
     match id {
+        SettingId::Theme => numbered("settings.appearance.theme.option", Theme::ALL.len()),
         SettingId::Glass if !HOST_GLASS => vec![format!(
             "settings.appearance.glass.option.{OS}.{}",
             GlassStyle::ALL.len() - 1
@@ -334,6 +345,10 @@ pub fn options(strings: &StringTable, id: SettingId) -> Vec<String> {
 pub fn selected(settings: &Settings, id: SettingId) -> usize {
     let pos = |all: &[&str], name: &str| all.iter().position(|n| *n == name).unwrap_or(0);
     match id {
+        SettingId::Theme => Theme::ALL
+            .iter()
+            .position(|t| *t == settings.theme)
+            .unwrap_or(0),
         // Linux has the one option, Off.
         SettingId::Glass if !HOST_GLASS => 0,
         SettingId::Glass => GlassStyle::ALL
@@ -364,6 +379,11 @@ pub fn selected(settings: &Settings, id: SettingId) -> usize {
 /// Sets the value of option `i` of `id`; an index past the list changes nothing.
 pub fn choose(settings: &mut Settings, id: SettingId, i: usize) {
     match id {
+        SettingId::Theme => {
+            if let Some(t) = Theme::ALL.get(i) {
+                settings.theme = *t;
+            }
+        }
         SettingId::Glass if !HOST_GLASS => {}
         SettingId::Glass => {
             if let Some(g) = GlassStyle::ALL.get(i) {
@@ -407,6 +427,7 @@ pub fn choose(settings: &mut Settings, id: SettingId, i: usize) {
 /// The flag a toggle row shows.
 pub fn flag(settings: &Settings, id: SettingId) -> Option<bool> {
     Some(match id {
+        SettingId::FontSmoothing => settings.font_smoothing,
         SettingId::AnimateOutline => settings.animate_outline,
         SettingId::OutlineFullScreen => settings.outline_full_screen,
         SettingId::ReportIterm2 => settings.report_iterm2,
@@ -421,6 +442,7 @@ pub fn flag(settings: &Settings, id: SettingId) -> Option<bool> {
 /// Sets the flag of a toggle row; any other id changes nothing.
 pub fn set_flag(settings: &mut Settings, id: SettingId, on: bool) {
     match id {
+        SettingId::FontSmoothing => settings.font_smoothing = on,
         SettingId::AnimateOutline => settings.animate_outline = on,
         SettingId::OutlineFullScreen => settings.outline_full_screen = on,
         SettingId::ReportIterm2 => settings.report_iterm2 = on,
@@ -1059,6 +1081,15 @@ mod tests {
     #[test]
     fn each_combo_row_stores_the_value_the_table_names() {
         let mut s = Settings::default();
+        choose(&mut s, SettingId::Theme, 1);
+        assert_eq!(
+            s.theme,
+            Theme::Lunegit,
+            "on every OS: Linux shows the row too"
+        );
+        assert_eq!(selected(&s, SettingId::Theme), 1);
+        choose(&mut s, SettingId::Theme, 0);
+        assert_eq!(s.theme, Theme::Luneterm);
         choose(&mut s, SettingId::MenuBlur, 2);
         assert_eq!(s.menu_blur, BlurLevel::High);
         choose(&mut s, SettingId::Motion, 1);
@@ -1081,6 +1112,7 @@ mod tests {
     #[test]
     fn toggles_flip_their_own_field_only() {
         for id in [
+            SettingId::FontSmoothing,
             SettingId::AnimateOutline,
             SettingId::OutlineFullScreen,
             SettingId::ReportIterm2,

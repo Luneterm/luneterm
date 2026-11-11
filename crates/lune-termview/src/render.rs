@@ -10,6 +10,7 @@
 
 use cosmic_text::FontSystem;
 use lune_ui::custom::{CustomDraw, CustomFrame};
+use lune_ui::text::TextRendering;
 
 use crate::atlas::{Atlas, Page};
 use crate::build::{Builder, DecoInst, GlyphInst, RectInst, RowInstances};
@@ -64,6 +65,22 @@ struct Pipelines {
     mask: wgpu::RenderPipeline,
     color: wgpu::RenderPipeline,
     deco: wgpu::RenderPipeline,
+}
+
+/// A view's work counters ([`TermView::stats`]): plain counts, no clock, so the app's tab-switch
+/// trace can say what a frame cost besides how long it took.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ViewStats {
+    /// Rows built since the view was made.
+    pub rows_built: u64,
+    /// Rasterizer calls (atlas misses) since the view was made: font glyphs.
+    pub font_rasters: u64,
+    /// The same for procedural glyphs (box, block, powerline).
+    pub custom_rasters: u64,
+    /// Rows the latest `update` built.
+    pub last_rows: usize,
+    /// Whether the latest `update` rebuilt every row.
+    pub last_full: bool,
 }
 
 /// The terminal grid as a [`CustomDraw`]: call [`update`](Self::update) when the grid or view
@@ -170,7 +187,9 @@ impl TermView {
     /// Rebuilds the instances of the dirty rows (every row when the grid size, scale, origin,
     /// metrics, theme, fonts or atlas changed), the overlay, then clears the grid's dirty flags.
     /// `origin` is the grid's top-left in logical px. A scale that is not finite and positive
-    /// draws nothing.
+    /// draws nothing. `text` is how glyphs are rasterized: pass the one the frame's
+    /// `FrameParams.text` carries, so the grid and the UI text draw the same look (a different value
+    /// rebuilds every row; a pool view created later takes it from its first update).
     pub fn update(
         &mut self,
         fs: &mut FontSystem,
@@ -178,9 +197,23 @@ impl TermView {
         view: &ViewState<'_>,
         origin: (f32, f32),
         scale: f32,
+        text: TextRendering,
     ) {
         self.builder
-            .update(self.atlas.core_mut(), fs, grid, view, origin, scale);
+            .update(self.atlas.core_mut(), fs, grid, view, origin, scale, text);
+    }
+
+    /// The view's work counters.
+    pub fn stats(&self) -> ViewStats {
+        let (rows_built, last_rows, last_full) = self.builder.row_counts();
+        let (font_rasters, custom_rasters) = self.atlas.core().rasters();
+        ViewStats {
+            rows_built,
+            font_rasters,
+            custom_rasters,
+            last_rows,
+            last_full,
+        }
     }
 
     pub fn builder(&self) -> &Builder {

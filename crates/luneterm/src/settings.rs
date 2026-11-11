@@ -6,14 +6,27 @@
 use lune_ui::material::Material;
 use lune_ui::motion::MotionTier;
 use lune_ui::near_black;
+use lune_ui::text::TextRendering;
 use lune_ui::widgets::tab_strip::BusyCue;
 
 use crate::session::MAX_SCROLLBACK;
 
-/// Font size bounds and the default (Lunegit `JsonUserSettingsStore.cs:465,478`).
+/// Font size bounds (Lunegit `JsonUserSettingsStore.cs:465,478`) and the default: 14 at the user's
+/// request (Lunegit's is 13).
 pub const MIN_FONT_SIZE: u32 = 8;
 pub const MAX_FONT_SIZE: u32 = 32;
-pub const DEFAULT_FONT_SIZE: u32 = 13;
+pub const DEFAULT_FONT_SIZE: u32 = 14;
+
+/// The look: which layers and header tint the window is drawn with (Lunegit's `lunegit_dark` ones
+/// or the near-black ones), under every [`GlassStyle`]. The persisted names are `luneterm` (the
+/// default) and `lunegit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Theme {
+    /// The near-black glass, the look since M10 step 13.
+    Luneterm,
+    /// Lunegit's own look: the layers and the light vibrancy the app had before the near-black one.
+    Lunegit,
+}
 
 /// The glass behind the window. The persisted name of the default is `default` (plan M10 D6), so
 /// the change of what the default looks like (Lunegit's light vibrancy to the near-black look, step
@@ -79,6 +92,10 @@ macro_rules! named {
     };
 }
 
+named!(Theme {
+    Luneterm => "luneterm",
+    Lunegit => "lunegit",
+});
 named!(GlassStyle {
     Default => "default",
     LiquidClear => "liquid-clear",
@@ -115,11 +132,16 @@ pub const DEFAULT_PALETTE: &str = "One Dark";
 /// chosen: the app's own terminal font then.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
+    pub theme: Theme,
     pub glass: GlassStyle,
     pub menu_blur: BlurLevel,
     pub motion: Motion,
     pub font: String,
     pub font_size: u32,
+    /// Smoothed glyphs (the toolkit's `TextRendering::SMOOTH`, luneui-rs D296) in the UI text and
+    /// the terminal grid. Off: the hinted look of before (`TextRendering::OFF`). A Luneterm-only
+    /// setting: Lunegit has none.
+    pub font_smoothing: bool,
     pub palette: String,
     pub animate_outline: bool,
     pub outline: OutlineAnim,
@@ -140,11 +162,13 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            theme: Theme::Luneterm,
             glass: GlassStyle::Default,
             menu_blur: BlurLevel::Medium,
             motion: Motion::Full,
             font: String::new(),
             font_size: DEFAULT_FONT_SIZE,
+            font_smoothing: true,
             palette: DEFAULT_PALETTE.to_owned(),
             animate_outline: true,
             outline: OutlineAnim::Sweep,
@@ -169,7 +193,7 @@ pub fn text_ok(s: &str, max: usize) -> bool {
 
 impl Settings {
     /// The settings with every field inside what the app supports: scrollback at most
-    /// [`MAX_SCROLLBACK`] lines, a font size outside 8..=32 reset to 13 (Lunegit resets rather than
+    /// [`MAX_SCROLLBACK`] lines, a font size outside 8..=32 reset to 14 (Lunegit resets rather than
     /// clamps), and text fields (names, shell, directory) of the allowed length with no control
     /// character, else reset to their default. Whatever read the settings (a file, a page) passes
     /// through here.
@@ -197,12 +221,17 @@ impl Settings {
         self
     }
 
-    /// The OS material the glass style asks for. The toolkit's glass does not depend on the
-    /// window's active state, so Lunegit's "material follows the window" has no solid fallback to
-    /// go with it here (and `keep_glass_inactive` is gone: the glass is always active, D8).
+    /// The OS material the glass style asks for; the default style takes the theme's: the
+    /// near-black material for Luneterm, Lunegit's light vibrancy for Lunegit. The toolkit's glass
+    /// does not depend on the window's active state, so Lunegit's "material follows the window" has
+    /// no solid fallback to go with it here (and `keep_glass_inactive` is gone: the glass is always
+    /// active, D8).
     pub fn material(&self) -> Material {
         match self.glass {
-            GlassStyle::Default => near_black::MATERIAL,
+            GlassStyle::Default => match self.theme {
+                Theme::Luneterm => near_black::MATERIAL,
+                Theme::Lunegit => Material::Vibrancy,
+            },
             GlassStyle::LiquidClear => Material::LiquidClear,
             GlassStyle::LiquidRegular => Material::LiquidRegular,
             GlassStyle::Off => Material::Opaque,
@@ -215,6 +244,15 @@ impl Settings {
             Motion::Full => MotionTier::Full,
             Motion::Reduced => MotionTier::Reduced,
             Motion::None => MotionTier::Off,
+        }
+    }
+
+    /// How the toolkit and the terminal grid rasterize glyphs.
+    pub fn text_rendering(&self) -> TextRendering {
+        if self.font_smoothing {
+            TextRendering::SMOOTH
+        } else {
+            TextRendering::OFF
         }
     }
 
@@ -245,11 +283,13 @@ impl Settings {
     /// compile.
     pub fn changed(&self, other: &Settings) -> Vec<SettingId> {
         let Settings {
+            theme,
             glass,
             menu_blur,
             motion,
             font,
             font_size,
+            font_smoothing,
             palette,
             animate_outline,
             outline,
@@ -265,11 +305,16 @@ impl Settings {
             option_as_meta,
         } = self;
         let flags = [
+            (SettingId::Theme, *theme != other.theme),
             (SettingId::Glass, *glass != other.glass),
             (SettingId::MenuBlur, *menu_blur != other.menu_blur),
             (SettingId::Motion, *motion != other.motion),
             (SettingId::Font, *font != other.font),
             (SettingId::FontSize, *font_size != other.font_size),
+            (
+                SettingId::FontSmoothing,
+                *font_smoothing != other.font_smoothing,
+            ),
             (SettingId::Palette, *palette != other.palette),
             (
                 SettingId::AnimateOutline,
@@ -315,11 +360,13 @@ impl Settings {
 /// One setting of the page: a [`Settings`] field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettingId {
+    Theme,
     Glass,
     MenuBlur,
     Motion,
     Font,
     FontSize,
+    FontSmoothing,
     Palette,
     AnimateOutline,
     Outline,
@@ -337,12 +384,14 @@ pub enum SettingId {
 
 impl SettingId {
     /// Every setting, in the order of the [`Settings`] fields.
-    pub const ALL: [SettingId; 18] = [
+    pub const ALL: [SettingId; 20] = [
+        SettingId::Theme,
         SettingId::Glass,
         SettingId::MenuBlur,
         SettingId::Motion,
         SettingId::Font,
         SettingId::FontSize,
+        SettingId::FontSmoothing,
         SettingId::Palette,
         SettingId::AnimateOutline,
         SettingId::Outline,
@@ -361,10 +410,11 @@ impl SettingId {
     /// What changing this setting does (plan M10 step 6's table).
     pub fn effect(self) -> Effect {
         match self {
-            SettingId::Glass => Effect::Glass,
+            SettingId::Theme | SettingId::Glass => Effect::Glass,
             SettingId::MenuBlur => Effect::MenuBlur,
             SettingId::Motion => Effect::Motion,
             SettingId::Font | SettingId::FontSize => Effect::Font,
+            SettingId::FontSmoothing => Effect::TextRendering,
             SettingId::Palette => Effect::Palette,
             SettingId::AnimateOutline | SettingId::Outline | SettingId::OutlineFullScreen => {
                 Effect::Outline
@@ -385,7 +435,8 @@ impl SettingId {
 /// What the app does when a setting changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Effect {
-    /// `material::apply` on the window, and the glass theme (or the opaque one).
+    /// `material::apply` on the window, and the theme's layers and header tint (or the opaque
+    /// ones): the Theme and the Glass style both do it.
     Glass,
     /// The renderer's menu and dialog blur.
     MenuBlur,
@@ -393,6 +444,9 @@ pub enum Effect {
     Motion,
     /// The renderer's terminal fonts, and the geometry sent again to every tab.
     Font,
+    /// The renderer's text setting: the UI text and every terminal view, on the next frame (no
+    /// restart).
+    TextRendering,
     /// Every tab's colours (`Command::SetTheme`); a colour the child set itself stays.
     Palette,
     /// Read each frame: the outline gate and the strip's `BusyCue`.
@@ -428,9 +482,9 @@ mod tests {
     #[test]
     fn defaults_are_lunegits() {
         let s = Settings::default();
-        assert_eq!(s.glass, GlassStyle::Default);
-        assert_eq!((s.font_size, s.scrollback), (13, 5000));
-        assert!(s.osc_clipboard && s.confirm_close);
+        assert_eq!((s.theme, s.glass), (Theme::Luneterm, GlassStyle::Default));
+        assert_eq!((s.font_size, s.scrollback), (14, 5000));
+        assert!(s.osc_clipboard && s.confirm_close && s.font_smoothing);
         assert!(!s.report_iterm2 && !s.option_as_meta);
         assert_eq!(s.clone().clamped(), s);
     }
@@ -453,7 +507,7 @@ mod tests {
             assert_eq!(at(0, ok).font_size, ok, "size {ok} stays");
         }
         for bad in [0, 7, 33, 1000, u32::MAX] {
-            assert_eq!(at(0, bad).font_size, 13, "size {bad} resets");
+            assert_eq!(at(0, bad).font_size, 14, "size {bad} resets");
         }
         // The other fields are left alone.
         let s = Settings {
@@ -495,8 +549,66 @@ mod tests {
         assert_eq!(motion(Motion::None).effective_outline(), None);
     }
 
+    /// Every (style, theme) to its OS material: only the default style follows the theme.
+    #[test]
+    fn the_theme_picks_the_material_of_the_default_style_only() {
+        let material = |glass, theme| {
+            Settings {
+                glass,
+                theme,
+                ..Settings::default()
+            }
+            .material()
+        };
+        let table = [
+            (GlassStyle::Default, Theme::Luneterm, near_black::MATERIAL),
+            (GlassStyle::Default, Theme::Lunegit, Material::Vibrancy),
+            (
+                GlassStyle::LiquidClear,
+                Theme::Luneterm,
+                Material::LiquidClear,
+            ),
+            (
+                GlassStyle::LiquidClear,
+                Theme::Lunegit,
+                Material::LiquidClear,
+            ),
+            (
+                GlassStyle::LiquidRegular,
+                Theme::Luneterm,
+                Material::LiquidRegular,
+            ),
+            (
+                GlassStyle::LiquidRegular,
+                Theme::Lunegit,
+                Material::LiquidRegular,
+            ),
+            (GlassStyle::Off, Theme::Luneterm, Material::Opaque),
+            (GlassStyle::Off, Theme::Lunegit, Material::Opaque),
+        ];
+        assert_eq!(table.len(), GlassStyle::ALL.len() * Theme::ALL.len());
+        for (glass, theme, want) in table {
+            assert_eq!(material(glass, theme), want, "{glass:?} {theme:?}");
+        }
+        assert_ne!(near_black::MATERIAL, Material::Vibrancy);
+        // Changing the theme alone applies like a glass change: the window's material and the
+        // renderer's layers, with no restart.
+        let lunegit = Settings {
+            theme: Theme::Lunegit,
+            ..Settings::default()
+        };
+        assert_eq!(effects(&Settings::default(), &lunegit), vec![Effect::Glass]);
+    }
+
     #[test]
     fn enum_names_round_trip_and_are_stable() {
+        for (&t, name) in Theme::ALL.iter().zip(["luneterm", "lunegit"]) {
+            assert_eq!(t.name(), name);
+            assert_eq!(Theme::from_name(name), Some(t));
+        }
+        for bad in ["", "Luneterm", " lunegit", "dark", "default"] {
+            assert_eq!(Theme::from_name(bad), None, "{bad:?}");
+        }
         for (&g, name) in
             GlassStyle::ALL
                 .iter()
@@ -553,11 +665,13 @@ mod tests {
         use Effect as E;
         use SettingId as S;
         let table = [
+            (S::Theme, E::Glass),
             (S::Glass, E::Glass),
             (S::MenuBlur, E::MenuBlur),
             (S::Motion, E::Motion),
             (S::Font, E::Font),
             (S::FontSize, E::Font),
+            (S::FontSmoothing, E::TextRendering),
             (S::Palette, E::Palette),
             (S::AnimateOutline, E::Outline),
             (S::Outline, E::Outline),
@@ -583,7 +697,14 @@ mod tests {
     #[test]
     fn changing_one_field_changes_exactly_its_id() {
         let d = Settings::default();
-        let cases: [(SettingId, Settings); 18] = [
+        let cases: [(SettingId, Settings); 20] = [
+            (
+                SettingId::Theme,
+                Settings {
+                    theme: Theme::Lunegit,
+                    ..d.clone()
+                },
+            ),
             (
                 SettingId::Glass,
                 Settings {
@@ -616,6 +737,13 @@ mod tests {
                 SettingId::FontSize,
                 Settings {
                     font_size: 20,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::FontSmoothing,
+                Settings {
+                    font_smoothing: false,
                     ..d.clone()
                 },
             ),
@@ -735,6 +863,23 @@ mod tests {
             effects(&Settings::default(), &two),
             vec![Effect::Scrollback, Effect::NextSpawn]
         );
+    }
+
+    #[test]
+    fn font_smoothing_picks_the_text_rendering_and_applies_live() {
+        let on = Settings::default();
+        let off = Settings {
+            font_smoothing: false,
+            ..on.clone()
+        };
+        assert_eq!(on.text_rendering(), TextRendering::SMOOTH);
+        assert_eq!(off.text_rendering(), TextRendering::OFF);
+        // Its own effect, not the next-spawn one: no restart notice, the renderer takes it live.
+        assert_eq!(effects(&on, &off), vec![Effect::TextRendering]);
+        assert_eq!(effects(&off, &on), vec![Effect::TextRendering]);
+        assert_ne!(SettingId::FontSmoothing.effect(), Effect::NextSpawn);
+        // Smoothing alone never changes the clamped value.
+        assert_eq!(off.clone().clamped(), off);
     }
 
     #[test]

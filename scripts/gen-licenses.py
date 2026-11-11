@@ -23,7 +23,9 @@ Each package's text is, in order:
 Failures (exit 1, one line each): a package with no text; an SPDX id in any expression with no
 vendored text (an unknown id); an expression that does not parse; a licence file that is not UTF-8;
 a bundle that differs from what is generated; a static copy (project, luneui-rs, fonts) that differs
-from its source. An `OR` alternative that is only copyleft (GPL, LGPL, AGPL) is not elected when a
+from its source. luneui-rs's own `licenses/` directory is copied file by
+file as licenses/luneui-rs-<name>, and a `licenses/<file>` its notices file names that the directory
+lacks fails (the glyph renderer it vendors has its text there). An `OR` alternative that is only copyleft (GPL, LGPL, AGPL) is not elected when a
 permissive alternative is offered, so its text need not be vendored; an `AND` copyleft id is.
 MPL-2.0 packages carry a source pointer. Output is sorted and identical texts appear once.
 
@@ -391,7 +393,32 @@ def static_copies(packages):
     ]
     for name in ("LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md"):
         rows.append(("luneui-rs-" + name, os.path.join(luneui, name) if luneui else None))
+    # Every text luneui-rs bundles itself (its notices file points into this directory: the text of
+    # the glyph renderer it vendors, the fonts' and so on) travels with it, whatever a later pin adds.
+    if luneui:
+        sub = os.path.join(luneui, "licenses")
+        for name in sorted(os.listdir(sub)) if os.path.isdir(sub) else []:
+            if os.path.isfile(os.path.join(sub, name)):
+                rows.append(("luneui-rs-" + name, os.path.join(sub, name)))
     return rows
+
+
+def notices_problems(statics):
+    """Fail closed: luneui-rs's notices file names `licenses/<file>` texts; each must be one of the
+    files copied from its `licenses/` directory."""
+    bad = []
+    notices = None
+    for name, src in statics:
+        if name == "luneui-rs-THIRD_PARTY_NOTICES.md" and src and os.path.isfile(src):
+            notices = src
+    if notices is None:
+        return bad
+    with open(notices, encoding="utf-8") as f:
+        named = set(re.findall(r"`licenses/([A-Za-z0-9._-]+)`", f.read()))
+    copied = {n[len("luneui-rs-") :] for n, _ in statics}
+    for name in sorted(named - copied):
+        bad.append("luneui-rs's notices name licenses/%s but its licenses/ directory has no such file" % name)
+    return bad
 
 
 def main():
@@ -406,6 +433,7 @@ def main():
     text, bad, packages = build(docs, args.spdx_dir)
     licdir = os.path.join(ROOT, "licenses")
     statics = static_copies(packages)
+    bad.extend(notices_problems(statics))
     for name, src in statics:
         if src is None or not os.path.isfile(src):
             bad.append("static licence source missing for licenses/%s" % name)

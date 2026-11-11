@@ -1230,7 +1230,6 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
             menu: None,
             busy: None,
             busy_tone: lune_ui::widgets::tone::Tone::Neutral,
-            tab_menu_extra: &[],
             grid_alpha: 1.0,
             fading: Vec::new(),
         };
