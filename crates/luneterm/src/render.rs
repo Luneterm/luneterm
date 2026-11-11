@@ -18,7 +18,7 @@ use lune_ui::paint::Rect;
 use lune_ui::scene::{FrameParams, LayerId};
 use lune_ui::shortcuts::Shortcuts;
 use lune_ui::strings::{DisplayFormat, StringTable};
-use lune_ui::text::{Spec, Style, TextCache};
+use lune_ui::text::{Spec, Style, TextCache, TextRendering};
 use lune_ui::theme::{AcrylicLevel, Theme};
 use lune_ui::ui::{FrameConfig, Sense, Ui, UiStore};
 use lune_ui::widgets::menu::{MenuOptions, MenuPlace, MenuResponse, MenuRow};
@@ -33,6 +33,7 @@ use crate::settings::{GlassStyle, Settings};
 use crate::settings_page::{self, PageOut, PageView};
 use crate::shell::{
     self, Chrome, GridPlacement, Layout, Modal, ModalOut, ScrollView, ShellView, StripTab,
+    TabContext,
 };
 use crate::tabs::TabId;
 
@@ -101,8 +102,6 @@ pub struct Content<'a> {
     pub busy: Option<BusyCue>,
     /// The outline's colour while it runs.
     pub busy_tone: Tone,
-    /// The rows after the toolkit's four on a tab's context menu.
-    pub tab_menu_extra: &'a [&'a str],
     /// The opacity `grid` is drawn at: 1 outside a tab-switch crossfade ([`crate::fade`]).
     pub grid_alpha: f32,
     /// The grids of the tabs still fading out under `grid`, back to front.
@@ -213,6 +212,8 @@ pub struct Drawn {
     pub menu: Option<MenuResponse>,
     /// The `⋯` button was pressed: its rect.
     pub overflow: Option<Rect>,
+    /// A tab asked for its context menu: which tab, and where it opens.
+    pub tab_context: Option<TabContext>,
     /// The grid size the frame was laid out for.
     pub cols: usize,
     pub rows: usize,
@@ -238,6 +239,9 @@ pub struct Renderer {
     blur_sigma: f32,
     term_theme: TermTheme,
     font_size: f32,
+    /// How glyphs are rasterized: the one value the frame's `FrameParams.text` and every grid
+    /// view's `update` get, so the UI text and the terminal draw the same look.
+    text_rendering: TextRendering,
 }
 
 /// Puts the item that holds each of `ids` at its own index in `pool` (items are swapped, so each
@@ -322,6 +326,7 @@ impl Renderer {
             blur_sigma: settings.menu_blur.sigma(),
             term_theme,
             font_size,
+            text_rendering: TextRendering::OFF,
         }
     }
 
@@ -487,7 +492,6 @@ impl Renderer {
             page_open: content.page.is_some(),
             busy: content.busy,
             busy_tone: content.busy_tone,
-            menu_extra: content.tab_menu_extra,
             overflow_name: self.strings.tr("menu.more"),
             header_tint: self.header_tint,
             fading_slots: content.fading.len(),
@@ -583,6 +587,7 @@ impl Renderer {
             &view_state,
             placement.origin,
             scale,
+            self.text_rendering,
         );
         // The tabs fading out under it (a tab-switch crossfade), each in a view of its own.
         self.assign_fading(&mut content.fading);
@@ -601,6 +606,7 @@ impl Renderer {
                 &faded,
                 placement.origin,
                 scale,
+                self.text_rendering,
             );
         }
         let params = FrameParams {
@@ -608,6 +614,7 @@ impl Renderer {
             scale,
             blur_sigma: self.blur_sigma * scale,
             saturation: BACKDROP_SATURATION,
+            text: self.text_rendering,
             ..FrameParams::default()
         };
         // Slot 0 is the active tab's grid, the rest are the fading ones (`shell::TERM_SLOT`).
@@ -636,6 +643,7 @@ impl Renderer {
             page: page_out,
             menu: menu_resp,
             overflow: shell_out.overflow,
+            tab_context: shell_out.tab_context,
             cols: placement.cols,
             rows: placement.rows,
         })

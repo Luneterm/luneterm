@@ -16,6 +16,7 @@ use lune_termview::{
     Attrs, Cell, Color, Cursor, Grid, TermFonts, TermTheme, TermView, UnderlineStyle, ViewState,
 };
 use lune_ui::custom::{CustomDraw, CustomFrame};
+use lune_ui::text::TextRendering;
 
 const SIZE: (u32, u32) = (3840, 2160);
 const SCALE: f32 = 2.0;
@@ -143,6 +144,7 @@ fn main() {
         size: SIZE,
         scale: SCALE,
         format: FORMAT,
+        text: TextRendering::OFF,
     };
     let view_state = |blink_on: bool| ViewState {
         cursor: Cursor {
@@ -160,7 +162,14 @@ fn main() {
     // One frame: update (timed), then prepare + render + submit + poll (timed).
     let mut one = |grid: &mut Grid, tv: &mut TermView, blink_on: bool| -> (f64, f64) {
         let t0 = Instant::now();
-        tv.update(&mut fs, grid, &view_state(blink_on), (0.0, 0.0), SCALE);
+        tv.update(
+            &mut fs,
+            grid,
+            &view_state(blink_on),
+            (0.0, 0.0),
+            SCALE,
+            TextRendering::OFF,
+        );
         let update_ms = t0.elapsed().as_secs_f64() * 1e3;
 
         let t1 = Instant::now();

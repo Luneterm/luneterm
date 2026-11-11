@@ -61,7 +61,7 @@ use crate::input::{
     selection_position, selection_scroll, terminal_mods, wheel, wheel_delta, wheel_report,
 };
 use crate::links::{self, open::OpenError};
-use crate::menus::{self, MenuAction, MenuKind, MenuModel};
+use crate::menus::{self, MenuAction, MenuKind, MenuModel, TabOp};
 use crate::palettes;
 use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, snapshot,
@@ -73,7 +73,7 @@ use crate::session::{
 };
 use crate::settings::{Effect, Settings, effects};
 use crate::settings_page::{PageState, PageView, Section};
-use crate::shell::{self, HOST, Modal, ModalOut, ScrollView, StripTab, ThumbDrag};
+use crate::shell::{self, HOST, Modal, ModalOut, ScrollView, StripTab, TAB_CLOSABLE, ThumbDrag};
 use crate::spawn::{self, SpawnFailure};
 use crate::tabs::{
     ClosePlan, CwdCheck, CwdState, PasteState, Tab, TabId, TabSet, confirm_message, plan_close,
@@ -357,6 +357,9 @@ enum ModalState {
 struct OpenMenu {
     kind: MenuKind,
     place: MenuPlace,
+    /// The tab a tab menu was opened on (its picks act on it, not on the active tab); `None` for
+    /// the other menus.
+    tab: Option<TabId>,
 }
 
 /// The settings file is written this long after the last change (typing in a field changes it
@@ -1450,25 +1453,41 @@ impl App {
                 self.tabs.reorder(from, to);
                 self.workspace_changed(true);
             }
-            TabEvent::CloseOthers(key) => {
+        }
+        self.request_redraw();
+    }
+
+    /// A pick of the tab menu opened on `target`: it acts on that tab, not on the active one.
+    fn run_tab_menu_action(
+        &mut self,
+        action: MenuAction,
+        target: TabId,
+        event_loop: &ActiveEventLoop,
+    ) {
+        // The tab may be gone since the menu opened.
+        if self.tabs.get(target).is_none() {
+            return;
+        }
+        let before = self.tabs.active();
+        match menus::tab_op(action, target) {
+            Some(TabOp::Close(id)) => self.request_close(vec![id], event_loop),
+            Some(TabOp::CloseOthers(keep)) => {
                 let ids = self
                     .tabs
                     .ids()
                     .into_iter()
-                    .filter(|id| *id != key.0)
+                    .filter(|id| *id != keep)
                     .collect();
                 self.request_close(ids, event_loop);
             }
-            TabEvent::CloseAll => self.request_close(self.tabs.ids(), event_loop),
-            TabEvent::Rename(key) => self.open_rename(key.0),
-            TabEvent::MenuExtra(key, i) => {
-                // The extra rows act on the tab the menu was opened on.
-                if let Some(action) = menus::tab_extra_action(i) {
-                    self.tabs.activate(key.0);
-                    self.active_changed(before);
-                    self.run_menu_action(action, event_loop);
-                }
+            Some(TabOp::CloseAll) => self.request_close(self.tabs.ids(), event_loop),
+            Some(TabOp::Rename(id)) => self.open_rename(id),
+            Some(TabOp::ActivateThen(id, action)) => {
+                self.tabs.activate(id);
+                self.active_changed(before);
+                self.run_menu_action(action, event_loop);
             }
+            None => {}
         }
         self.request_redraw();
     }
@@ -1785,14 +1804,20 @@ impl App {
         };
 
         let macos = cfg!(target_os = "macos");
+        // A tab menu closes with its tab.
+        if self
+            .menu
+            .and_then(|m| m.tab)
+            .is_some_and(|id| self.tabs.get(id).is_none())
+        {
+            self.menu = None;
+        }
         let menu_model = self
             .menu
             .map(|m| (m, MenuModel::new(m.kind, stack.renderer.strings(), macos)));
         let menu_name = menu_model
             .as_ref()
             .map(|(_, m)| stack.renderer.strings().tr(m.name_key()).to_owned());
-        let extra = menus::tab_extra(stack.renderer.strings());
-        let extra: [&str; 2] = [extra[0].as_str(), extra[1].as_str()];
         let (busy, outline_cue, busy_tone) = {
             let cue = self.settings.busy_cue();
             let active = self.tabs.active_item();
@@ -1885,7 +1910,6 @@ impl App {
             }),
             busy: busy.then_some(outline_cue).flatten(),
             busy_tone: busy_tone.unwrap_or_default(),
-            tab_menu_extra: &extra,
             grid_alpha: alphas.incoming,
             fading: fading_grids,
         };
@@ -1899,6 +1923,7 @@ impl App {
         let mut out = drawn.output;
         let (tab_events, modal_out) = (drawn.tab_events, drawn.modal);
         let (page_out, menu_out, overflow) = (drawn.page, drawn.menu, drawn.overflow);
+        let tab_context = drawn.tab_context;
         // Closing the window is closing every tab: it asks like they do.
         let close_asked = out
             .commands
@@ -1944,12 +1969,26 @@ impl App {
         }
         if let Some(r) = menu_out {
             let action = r.picked.and_then(|i| menu_model.as_ref()?.1.action_at(i));
+            let target = menu_model.as_ref().and_then(|(m, _)| m.tab);
             if r.picked.is_some() || r.dismissed {
                 self.menu = None;
             }
             if let Some(action) = action {
-                self.run_menu_action(action, event_loop);
+                match target {
+                    Some(tab) => self.run_tab_menu_action(action, tab, event_loop),
+                    None => self.run_menu_action(action, event_loop),
+                }
             }
+        }
+        if let Some(ctx) = tab_context {
+            self.menu = Some(OpenMenu {
+                kind: MenuKind::Tab {
+                    closable: TAB_CLOSABLE,
+                },
+                place: MenuPlace::At(ctx.at),
+                tab: Some(ctx.id),
+            });
+            self.request_redraw();
         }
         if let Some(rect) = overflow {
             self.menu = Some(OpenMenu {
@@ -1960,6 +1999,7 @@ impl App {
                     align: PlaceAlign::End,
                     gap: 4.0,
                 },
+                tab: None,
             });
             self.request_redraw();
         }
@@ -2206,6 +2246,7 @@ impl App {
                     selection: self.has_selection(),
                 },
                 place: MenuPlace::At(pos),
+                tab: None,
             });
             self.request_redraw();
             return;

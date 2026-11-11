@@ -21,6 +21,7 @@ use lune_termview::{
     TermFonts, TermTheme, TermView, UnderlineStyle, ViewState, cell_metrics,
 };
 use lune_ui::custom::{CustomDraw, CustomFrame};
+use lune_ui::text::TextRendering;
 
 const REGULAR: &[u8] = include_bytes!("fonts/RznMono-Regular.subset.ttf");
 const BOLD: &[u8] = include_bytes!("fonts/RznMono-Bold.subset.ttf");
@@ -340,7 +341,14 @@ fn render(cx: &mut Ctx, scene: &mut Scene, scale: f32, clear: [u8; 4]) -> Frame 
         selection: &scene.selection,
         hover_link: scene.hover_link,
     };
-    tv.update(&mut cx.fs, &mut scene.grid, &view, (MARGIN, MARGIN), scale);
+    tv.update(
+        &mut cx.fs,
+        &mut scene.grid,
+        &view,
+        (MARGIN, MARGIN),
+        scale,
+        TextRendering::OFF,
+    );
     let m = tv.metrics(&mut cx.fs, scale);
     let margin = (MARGIN * scale).round() as u32;
     let size = (
@@ -352,6 +360,7 @@ fn render(cx: &mut Ctx, scene: &mut Scene, scale: f32, clear: [u8; 4]) -> Frame 
         size,
         scale,
         format: FORMAT,
+        text: TextRendering::OFF,
     };
     tv.prepare(&cx.device, &cx.queue, &frame);
     let tex_view = target.create_view(&wgpu::TextureViewDescriptor::default());

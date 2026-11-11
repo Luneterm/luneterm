@@ -10,6 +10,7 @@ use lune_termview::{
     Attrs, Cell, Color, Cursor, Grid, TermFonts, TermTheme, TermView, UnderlineStyle, ViewState,
 };
 use lune_ui::custom::{CustomDraw, CustomFrame};
+use lune_ui::text::TextRendering;
 
 const REGULAR: &[u8] = include_bytes!("fonts/RznMono-Regular.subset.ttf");
 const BOLD: &[u8] = include_bytes!("fonts/RznMono-Bold.subset.ttf");
@@ -67,6 +68,7 @@ fn draw(
         size,
         scale,
         format: FORMAT,
+        text: TextRendering::OFF,
     };
     tv.prepare(device, queue, &frame);
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -117,7 +119,14 @@ fn background_cell_and_clear_colour() {
     let mut tv = TermView::new(&device, FORMAT, fonts, TermTheme::lunegit_one_dark());
     let mut grid = Grid::new(4, 2);
     grid.set(0, 0, cell(|c| c.bg = Color::Rgb(200, 0, 0)));
-    tv.update(&mut fs, &mut grid, &view(), (0.0, 0.0), 2.0);
+    tv.update(
+        &mut fs,
+        &mut grid,
+        &view(),
+        (0.0, 0.0),
+        2.0,
+        TextRendering::OFF,
+    );
     let m = tv.metrics(&mut fs, 2.0);
     assert_eq!((m.cell_w, m.cell_h), (16, 34));
     let (w, h) = (4 * m.cell_w, 2 * m.cell_h);
@@ -144,7 +153,14 @@ fn text_stays_in_its_cell_and_dirty_rows_update() {
     let mut tv = TermView::new(&device, FORMAT, fonts, TermTheme::lunegit_one_dark());
     let mut grid = Grid::new(3, 2);
     grid.set(0, 1, cell(|c| c.set_char('W')));
-    tv.update(&mut fs, &mut grid, &view(), (0.0, 0.0), 2.0);
+    tv.update(
+        &mut fs,
+        &mut grid,
+        &view(),
+        (0.0, 0.0),
+        2.0,
+        TextRendering::OFF,
+    );
     let m = tv.metrics(&mut fs, 2.0);
     let (w, h) = (3 * m.cell_w, 2 * m.cell_h);
     let img = draw(&device, &queue, &mut tv, (w, h), 2.0);
@@ -166,7 +182,14 @@ fn text_stays_in_its_cell_and_dirty_rows_update() {
 
     // change only row 1: the row-0 glyph survives, the new glyph shows up
     grid.set(1, 0, cell(|c| c.set_char('i')));
-    tv.update(&mut fs, &mut grid, &view(), (0.0, 0.0), 2.0);
+    tv.update(
+        &mut fs,
+        &mut grid,
+        &view(),
+        (0.0, 0.0),
+        2.0,
+        TextRendering::OFF,
+    );
     let img2 = draw(&device, &queue, &mut tv, (w, h), 2.0);
     assert_eq!(
         ink(&img2, 0, 0, w, m.cell_h),
@@ -198,7 +221,7 @@ fn decorations_cursor_and_selection_draw() {
     let mut v = view();
     v.cursor.visible = true;
     v.cursor.col = 3;
-    tv.update(&mut fs, &mut grid, &v, (0.0, 0.0), 2.0);
+    tv.update(&mut fs, &mut grid, &v, (0.0, 0.0), 2.0, TextRendering::OFF);
     let m = tv.metrics(&mut fs, 2.0);
     let (w, h) = (4 * m.cell_w, m.cell_h);
     let img = draw(&device, &queue, &mut tv, (w, h), 2.0);
@@ -241,19 +264,19 @@ fn incremental_updates_match_a_fresh_view() {
     let size = (30 * metrics.cell_w, 6 * metrics.cell_h);
     let fresh = |fs: &mut FontSystem, grid: &mut Grid, v: &ViewState<'_>| {
         let mut other = TermView::new(&device, FORMAT, fonts.clone(), theme.clone());
-        other.update(fs, grid, v, (4.0, 2.0), 2.0);
+        other.update(fs, grid, v, (4.0, 2.0), 2.0, TextRendering::OFF);
         // `update` cleared the dirty flags; the caller's view must still see its own changes
         draw(&device, &queue, &mut other, size, 2.0)
     };
     let v = view();
     fill(&mut grid, "abc", 0);
-    tv.update(&mut fs, &mut grid, &v, (4.0, 2.0), 2.0);
+    tv.update(&mut fs, &mut grid, &v, (4.0, 2.0), 2.0, TextRendering::OFF);
     draw(&device, &queue, &mut tv, size, 2.0);
 
     // a long row: more instances than the initial per-row slot
     fill(&mut grid, "The quick brown fox jumps", 1);
     grid.set(1, 3, cell(|c| c.bg = Color::Rgb(9, 90, 200)));
-    tv.update(&mut fs, &mut grid, &v, (4.0, 2.0), 2.0);
+    tv.update(&mut fs, &mut grid, &v, (4.0, 2.0), 2.0, TextRendering::OFF);
     let a = draw(&device, &queue, &mut tv, size, 2.0);
     let mut copy = grid.clone();
     copy.mark_all_dirty();
@@ -261,7 +284,7 @@ fn incremental_updates_match_a_fresh_view() {
 
     // edit one row only
     fill(&mut grid, "xyz", 2);
-    tv.update(&mut fs, &mut grid, &v, (4.0, 2.0), 2.0);
+    tv.update(&mut fs, &mut grid, &v, (4.0, 2.0), 2.0, TextRendering::OFF);
     let b = draw(&device, &queue, &mut tv, size, 2.0);
     let mut copy = grid.clone();
     copy.mark_all_dirty();
@@ -271,14 +294,14 @@ fn incremental_updates_match_a_fresh_view() {
     tv.atlas_mut()
         .core_mut()
         .reset_grow(lune_termview::Page::Mask);
-    tv.update(&mut fs, &mut grid, &v, (4.0, 2.0), 2.0);
+    tv.update(&mut fs, &mut grid, &v, (4.0, 2.0), 2.0, TextRendering::OFF);
     let c = draw(&device, &queue, &mut tv, size, 2.0);
     assert_eq!(b, c, "after an atlas reset");
 
     // resize
     grid.resize(26, 5);
     fill(&mut grid, "0123456789012345678901234", 4);
-    tv.update(&mut fs, &mut grid, &v, (4.0, 2.0), 2.0);
+    tv.update(&mut fs, &mut grid, &v, (4.0, 2.0), 2.0, TextRendering::OFF);
     let d = draw(&device, &queue, &mut tv, size, 2.0);
     let mut copy = grid.clone();
     copy.mark_all_dirty();
@@ -318,7 +341,7 @@ fn drawn_at(opacity: Option<f32>) -> (Vec<u8>, u32) {
         tv.set_opacity(o);
     }
     let (mut grid, v) = busy_grid();
-    tv.update(&mut fs, &mut grid, &v, (0.0, 0.0), 2.0);
+    tv.update(&mut fs, &mut grid, &v, (0.0, 0.0), 2.0, TextRendering::OFF);
     let m = tv.metrics(&mut fs, 2.0);
     let (w, h) = (4 * m.cell_w, 2 * m.cell_h);
     (draw(&device, &queue, &mut tv, (w, h), 2.0), w)
@@ -395,7 +418,14 @@ fn colour_glyph_at(opacity: f32) -> Vec<u8> {
         }),
     );
     grid.set(0, 1, cell(|c| c.width = 0));
-    tv.update(&mut fs, &mut grid, &view(), (0.0, 0.0), 2.0);
+    tv.update(
+        &mut fs,
+        &mut grid,
+        &view(),
+        (0.0, 0.0),
+        2.0,
+        TextRendering::OFF,
+    );
     let m = tv.metrics(&mut fs, 2.0);
     draw(&device, &queue, &mut tv, (4 * m.cell_w, m.cell_h), 2.0)
 }
