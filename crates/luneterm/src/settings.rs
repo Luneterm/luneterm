@@ -11,10 +11,11 @@ use lune_ui::widgets::tab_strip::BusyCue;
 
 use crate::session::MAX_SCROLLBACK;
 
-/// Font size bounds and the default (Lunegit `JsonUserSettingsStore.cs:465,478`).
+/// Font size bounds (Lunegit `JsonUserSettingsStore.cs:465,478`) and the default: 14 at the user's
+/// request (Lunegit's is 13).
 pub const MIN_FONT_SIZE: u32 = 8;
 pub const MAX_FONT_SIZE: u32 = 32;
-pub const DEFAULT_FONT_SIZE: u32 = 13;
+pub const DEFAULT_FONT_SIZE: u32 = 14;
 
 /// The glass behind the window. The persisted name of the default is `default` (plan M10 D6), so
 /// the change of what the default looks like (Lunegit's light vibrancy to the near-black look, step
@@ -175,7 +176,7 @@ pub fn text_ok(s: &str, max: usize) -> bool {
 
 impl Settings {
     /// The settings with every field inside what the app supports: scrollback at most
-    /// [`MAX_SCROLLBACK`] lines, a font size outside 8..=32 reset to 13 (Lunegit resets rather than
+    /// [`MAX_SCROLLBACK`] lines, a font size outside 8..=32 reset to 14 (Lunegit resets rather than
     /// clamps), and text fields (names, shell, directory) of the allowed length with no control
     /// character, else reset to their default. Whatever read the settings (a file, a page) passes
     /// through here.
@@ -455,7 +456,7 @@ mod tests {
     fn defaults_are_lunegits() {
         let s = Settings::default();
         assert_eq!(s.glass, GlassStyle::Default);
-        assert_eq!((s.font_size, s.scrollback), (13, 5000));
+        assert_eq!((s.font_size, s.scrollback), (14, 5000));
         assert!(s.osc_clipboard && s.confirm_close && s.font_smoothing);
         assert!(!s.report_iterm2 && !s.option_as_meta);
         assert_eq!(s.clone().clamped(), s);
@@ -479,7 +480,7 @@ mod tests {
             assert_eq!(at(0, ok).font_size, ok, "size {ok} stays");
         }
         for bad in [0, 7, 33, 1000, u32::MAX] {
-            assert_eq!(at(0, bad).font_size, 13, "size {bad} resets");
+            assert_eq!(at(0, bad).font_size, 14, "size {bad} resets");
         }
         // The other fields are left alone.
         let s = Settings {
