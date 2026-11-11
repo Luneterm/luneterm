@@ -107,12 +107,21 @@ mod tests {
     use super::*;
     use lune_termview::{Shaper, cell_metrics};
 
+    /// The settings at 13 px, Lunegit's default size and the one the spike's look was approved
+    /// at (the app's default is 14 since ui-polish).
+    fn at_13_px() -> Settings {
+        Settings {
+            font_size: 13,
+            ..Settings::default()
+        }
+    }
+
     /// B4: the bundled mono face at 13 px with its natural line height is a 17 px cell at scale 1
     /// and 34 at scale 2, as the spike's approved look has it.
     #[test]
     fn the_bundled_font_at_13_px_makes_17_and_34_px_cells() {
         let mut text = bundled_text_cache();
-        let fonts = term_fonts(&mut text, &Settings::default());
+        let fonts = term_fonts(&mut text, &at_13_px());
         assert_eq!(fonts.family, MONO_FONT);
         assert_eq!(fonts.size, 13.0);
         let one = cell_metrics(&mut text.fonts, &fonts, 1.0);
@@ -186,14 +195,25 @@ mod tests {
         (f.families[0].0.clone(), f.weight.0, is_italic(&f.style))
     }
 
-    /// The terminal's `TermFonts` for the bundled default at the default size.
+    /// `cluster` shaped with the bundled default family at the default size.
     fn shaped(
         text: &mut TextCache,
         cluster: &str,
         bold: bool,
         italic: bool,
     ) -> lune_termview::Shaped {
-        let fonts = term_fonts(text, &Settings::default());
+        shaped_with(text, &Settings::default(), cluster, bold, italic)
+    }
+
+    /// `cluster` shaped with the terminal fonts `settings` pick.
+    fn shaped_with(
+        text: &mut TextCache,
+        settings: &Settings,
+        cluster: &str,
+        bold: bool,
+        italic: bool,
+    ) -> lune_termview::Shaped {
+        let fonts = term_fonts(text, settings);
         Shaper::new()
             .shape(&mut text.fonts, &fonts, cluster, bold, italic)
             .clone()
@@ -219,16 +239,20 @@ mod tests {
 
     /// A4: a private-use Nerd icon is not in RznMono; it draws from the bundled RobotoMono Nerd
     /// face through `icon_family`, with the icon's own glyph (not .notdef), and its
-    /// advance is the cell's, so it is cell-contained (the golden `nerd_fallback` draws it).
+    /// advance is the cell's, so it is cell-contained (the golden `nerd_fallback` draws it). At
+    /// 13 px, where the cell (8 px from a 7.8 px advance) is wider than the advance; at 14 px the
+    /// 8.4 px advance rounds to an 8 px cell for every face alike, which is cell metrics, not
+    /// fallback.
     #[test]
     fn a_private_use_icon_falls_back_to_the_bundled_nerd_face() {
         let mut text = bundled_text_cache();
-        let fonts = term_fonts(&mut text, &Settings::default());
+        let settings = at_13_px();
+        let fonts = term_fonts(&mut text, &settings);
         let cell = cell_metrics(&mut text.fonts, &fonts, 1.0);
-        let w = shaped(&mut text, "W", false, false).advance;
+        let w = shaped_with(&mut text, &settings, "W", false, false).advance;
         for cluster in ["\u{F015}", "\u{F07B}", "\u{E725}", "\u{F121}"] {
             for bold in [false, true] {
-                let s = shaped(&mut text, cluster, bold, false);
+                let s = shaped_with(&mut text, &settings, cluster, bold, false);
                 assert_eq!(s.glyphs.len(), 1, "{cluster:?}");
                 let g = &s.glyphs[0];
                 assert_ne!(g.glyph_id, 0, "{cluster:?} is .notdef");
@@ -292,11 +316,12 @@ mod tests {
     /// The premise of the toolkit's fit-on-base rule (termview D4 iii) still holds for the second
     /// bundled font, which the settings page offers: RobotoMono Nerd's marks advance like letters
     /// (its GDEF has no mark class), where RznMono's (no GDEF) have no advance. A saved
-    /// RobotoMono name draws with it, so the rule must keep its input.
+    /// RobotoMono name draws with it, so the rule must keep its input. At 13 px (the widths
+    /// below are its 7.8 px advance and two of them).
     #[test]
     fn marks_advance_in_robotomono_and_not_in_rznmono() {
         let mut text = bundled_text_cache();
-        let mut settings = Settings::default();
+        let mut settings = at_13_px();
         let mut width = |text: &mut TextCache, font: &str| {
             settings.font = font.to_owned();
             let fonts = term_fonts(text, &settings);
