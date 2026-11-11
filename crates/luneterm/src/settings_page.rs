@@ -163,6 +163,11 @@ static TERMINAL: [Group; 3] = [
                 "settings.terminal.appearance.fontSize",
             ),
             row(
+                SettingId::FontSmoothing,
+                Control::Toggle,
+                "settings.terminal.appearance.fontSmoothing",
+            ),
+            row(
                 SettingId::Palette,
                 Control::Combo,
                 "settings.terminal.appearance.colorTheme",
@@ -407,6 +412,7 @@ pub fn choose(settings: &mut Settings, id: SettingId, i: usize) {
 /// The flag a toggle row shows.
 pub fn flag(settings: &Settings, id: SettingId) -> Option<bool> {
     Some(match id {
+        SettingId::FontSmoothing => settings.font_smoothing,
         SettingId::AnimateOutline => settings.animate_outline,
         SettingId::OutlineFullScreen => settings.outline_full_screen,
         SettingId::ReportIterm2 => settings.report_iterm2,
@@ -421,6 +427,7 @@ pub fn flag(settings: &Settings, id: SettingId) -> Option<bool> {
 /// Sets the flag of a toggle row; any other id changes nothing.
 pub fn set_flag(settings: &mut Settings, id: SettingId, on: bool) {
     match id {
+        SettingId::FontSmoothing => settings.font_smoothing = on,
         SettingId::AnimateOutline => settings.animate_outline = on,
         SettingId::OutlineFullScreen => settings.outline_full_screen = on,
         SettingId::ReportIterm2 => settings.report_iterm2 = on,
@@ -1081,6 +1088,7 @@ mod tests {
     #[test]
     fn toggles_flip_their_own_field_only() {
         for id in [
+            SettingId::FontSmoothing,
             SettingId::AnimateOutline,
             SettingId::OutlineFullScreen,
             SettingId::ReportIterm2,

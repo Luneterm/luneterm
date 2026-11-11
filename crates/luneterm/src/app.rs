@@ -927,6 +927,13 @@ impl App {
                 }
             }
             Effect::Font => self.apply_font(),
+            Effect::TextRendering => {
+                if let Some(stack) = &mut self.stack {
+                    stack
+                        .renderer
+                        .set_text_rendering(self.settings.text_rendering());
+                }
+            }
             Effect::Palette => self.apply_palette(),
             Effect::Scrollback => {
                 let lines = self.settings.scrollback;

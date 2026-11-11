@@ -326,7 +326,7 @@ impl Renderer {
             blur_sigma: settings.menu_blur.sigma(),
             term_theme,
             font_size,
-            text_rendering: TextRendering::SMOOTH,
+            text_rendering: settings.text_rendering(),
         }
     }
 
@@ -342,9 +342,9 @@ impl Renderer {
         self.header_tint = header_tint(glass, style);
     }
 
-    /// How glyphs are rasterized, for the UI text and every terminal view alike (default
-    /// [`TextRendering::SMOOTH`], the look Lunegit's toolkit chose, luneui-rs D296). Takes effect
-    /// on the next frame: each view rebuilds its rows when the value it was given changes.
+    /// How glyphs are rasterized, for the UI text and every terminal view alike (the
+    /// `font_smoothing` setting: smooth, the look luneui-rs chose in D296, or the hinted look of
+    /// before). Takes effect on the next frame: each view rebuilds its rows when the value it was given changes.
     pub fn set_text_rendering(&mut self, text: TextRendering) {
         self.text_rendering = text;
     }
@@ -819,6 +819,10 @@ mod text_tests {
     const SIZE: (u32, u32) = (640, 400);
 
     fn renderer() -> Option<Renderer> {
+        renderer_with(&Settings::default().clamped())
+    }
+
+    fn renderer_with(settings: &Settings) -> Option<Renderer> {
         let gpu = match pollster::block_on(Gpu::new(lune_ui::gpu::instance(None), None)) {
             Ok(gpu) => gpu,
             Err(e) if crate::dump::require_gpu() => {
@@ -833,15 +837,21 @@ mod text_tests {
             gpu,
             fonts::bundled_text_cache(),
             FORMAT,
-            &Settings::default().clamped(),
+            settings,
             true,
         ))
     }
 
     #[test]
-    fn the_default_is_smooth() {
+    fn the_setting_picks_the_starting_text_rendering() {
         let Some(r) = renderer() else { return };
         assert_eq!(r.text_rendering(), TextRendering::SMOOTH);
+        let off = Settings {
+            font_smoothing: false,
+            ..Settings::default()
+        };
+        let Some(r) = renderer_with(&off) else { return };
+        assert_eq!(r.text_rendering(), TextRendering::OFF);
     }
 
     /// One value: in one frame the frame's `FrameParams.text`, the active grid's view and every

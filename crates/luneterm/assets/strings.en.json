@@ -40,6 +40,8 @@
     "settings.terminal.appearance.font.desc": "Typeface used to render terminal text.",
     "settings.terminal.appearance.fontSize.title": "Font size",
     "settings.terminal.appearance.fontSize.desc": "Text size in the terminal.",
+    "settings.terminal.appearance.fontSmoothing.title": "Font smoothing",
+    "settings.terminal.appearance.fontSmoothing.desc": "Smooth glyph edges in the terminal and the app's text. Off draws the sharper, hinted text of earlier versions.",
     "settings.terminal.appearance.colorTheme.title": "Color theme",
     "settings.terminal.appearance.colorTheme.desc": "ANSI color palette for terminal text. Background stays fixed.",
     "settings.terminal.appearance.runningOutline.title": "Animate the outline while a command runs",

@@ -78,8 +78,9 @@ the grid (in the app, `session::apply_update` from the engine thread's Updates; 
   glyph id, size, subpixel bin, weight, flags) **and** the toolkit's `GlyphParams` (hinting and
   stem darkening, from `TextRendering::glyph_params` at the glyph's own size) or, for procedural
   glyphs, `AtlasKey::Custom`. Glyphs are rasterized by the toolkit's `GlyphRasterizer`.
-- **Text rendering:** one `TextRendering` (default `SMOOTH`, the toolkit's look since luneui-rs
-  D296) is held by the app's `Renderer` and handed both to the frame (`FrameParams.text`) and to
+- **Text rendering:** one `TextRendering` (`SMOOTH`, the toolkit's look since luneui-rs D296, or
+  `OFF` when the `font_smoothing` setting is off; `Effect::TextRendering` applies a change live
+  through `Renderer::set_text_rendering`) is held by the app's `Renderer` and handed both to the frame (`FrameParams.text`) and to
   every `TermView::update` (the active grid and the fading ones), so the UI text and the grid
   draw alike. It is part of the builder's `BuildKey`: a change rebuilds every row, and the atlas
   keeps the entries of the setting not in use, so a toggle never serves a glyph rasterized under
