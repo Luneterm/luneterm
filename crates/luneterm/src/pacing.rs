@@ -149,8 +149,11 @@ pub struct Pacer {
     rate: Cadence,
     /// When the last paced frame started; `None` before the first.
     last_paced: Option<Duration>,
-    /// The earliest deferred paced ask.
-    due: Option<Duration>,
+    /// The earliest `not_before` of the asks deferred since the last frame start. The deadline
+    /// is derived from it and the current slot ([`Pacer::deadline`]), never stored: a slot that
+    /// moves (`set_rate`) moves it, and merging asks cannot lose an earlier one or keep a moment
+    /// the slot forbids (F2, F3).
+    pending: Option<Duration>,
     /// Since the last frame start: a paced ask was served at once.
     paced_now: bool,
     /// Since the last frame start: an urgent ask was made.
@@ -163,7 +166,7 @@ impl Pacer {
         Pacer {
             rate,
             last_paced: None,
-            due: None,
+            pending: None,
             paced_now: false,
             urgent_now: false,
         }
@@ -191,18 +194,12 @@ impl Pacer {
             self.paced_now = true;
             // A deadline that has come is served by the frame asked for now: dropped, so the
             // control flow does not wait for a moment already past while the redraw is pending.
-            if self.due.is_some_and(|d| d <= now) {
-                self.due = None;
+            if self.deadline().is_some_and(|d| d <= now) {
+                self.pending = None;
             }
             true
         } else {
-            // A deadline already past (asked under a faster grid, before `set_rate`) only meant
-            // "the slot is free", which `at` now decides: kept, it would make the control flow
-            // wait for a past moment and spin the loop until `at`.
-            self.due = Some(match self.due {
-                Some(d) if d > now => d.min(at),
-                _ => at,
-            });
+            self.pending = Some(self.pending.map_or(not_before, |p| p.min(not_before)));
             false
         }
     }
@@ -211,27 +208,31 @@ impl Pacer {
     /// time-based asks, I3), so the deadline goes. The frame takes the grid slot unless every
     /// ask it serves was urgent; a frame with no ask (the OS asked) is paced.
     pub fn frame_started(&mut self, now: Duration) {
-        let deadline_frame = self.due.is_some_and(|d| d <= now);
+        let deadline_frame = self.deadline().is_some_and(|d| d <= now);
         let only_urgent = self.urgent_now && !self.paced_now && !deadline_frame;
         if !only_urgent {
             self.last_paced = Some(now);
         }
-        self.due = None;
+        self.pending = None;
         self.paced_now = false;
         self.urgent_now = false;
     }
 
-    /// When the earliest deferred ask is due, if any.
+    /// When the earliest deferred ask is due, if any: the earliest moment a frame both may be
+    /// drawn (the grid slot is free) and must be (some deferred ask's `not_before` has come),
+    /// `max(min not_before, free_at)`. Never before the slot frees, so a past deadline means the
+    /// slot is free and the frame is drawn at once, without spinning.
     pub fn deadline(&self) -> Option<Duration> {
-        self.due
+        self.pending.map(|p| p.max(self.free_at()))
     }
 
     /// Drops the deferred asks (the window is hidden, or the surface has nothing to draw on).
     pub fn clear(&mut self) {
-        self.due = None;
+        self.pending = None;
     }
 
-    /// The grid's rate (the window moved to another display). The surface is not touched.
+    /// The grid's rate (the window moved to another display); a deferred ask's deadline moves
+    /// with the slot. The surface is not touched.
     pub fn set_rate(&mut self, rate: Cadence) {
         self.rate = rate;
     }
@@ -486,18 +487,167 @@ mod tests {
     }
 
     #[test]
-    fn a_past_deadline_does_not_survive_a_re_defer() {
-        // F2: a deadline on a 120 Hz grid, the window moves to 60 Hz before it comes.
+    fn a_deadline_follows_the_slot_through_a_rate_change() {
+        // F2: a deadline on a 120 Hz grid, the window moves to 60 Hz before it comes: the
+        // deadline is the new slot (kept at 8.33 ms it would be a past `WaitUntil` while the slot
+        // is taken, and the loop would spin until 16.67 ms), before and after a re-defer.
         let mut p = Pacer::new(Cadence::hz(120));
         p.frame_started(ms(0));
         assert!(!p.ask(ms(1), Duration::ZERO, false));
         assert_eq!(p.deadline(), Some(Duration::from_nanos(8_333_334)));
         p.set_rate(Cadence::hz(60));
+        assert_eq!(p.deadline(), Cadence::hz(60).next_tick(ms(0)));
         assert!(!p.ask(ms(9), Duration::ZERO, false));
         assert_eq!(p.deadline(), Cadence::hz(60).next_tick(ms(0)));
-        // A future deadline still keeps the earliest.
+        // A later ask keeps the earliest.
         assert!(!p.ask(ms(10), ms(300), false));
         assert_eq!(p.deadline(), Cadence::hz(60).next_tick(ms(0)));
+        // The other way, 60 Hz to 120 Hz: the deadline comes forward to the new slot.
+        let mut p = Pacer::new(Cadence::hz(60));
+        p.frame_started(ms(0));
+        assert!(!p.ask(ms(1), Duration::ZERO, false));
+        assert_eq!(p.deadline(), Some(Duration::from_nanos(16_666_667)));
+        p.set_rate(Cadence::hz(120));
+        assert_eq!(p.deadline(), Some(Duration::from_nanos(8_333_334)));
+        assert!(!p.ask(ms(2), ms(400), false));
+        assert_eq!(p.deadline(), Some(Duration::from_nanos(8_333_334)));
+    }
+
+    #[test]
+    fn a_past_deadline_with_a_free_slot_survives_a_later_ask() {
+        // F3: a toolkit `At` just ahead of now on a free slot, then the blink 500 ms ahead after
+        // that moment passed: the frame for the first is still due now (dropped, it would wait
+        // for the blink).
+        let mut p = Pacer::new(Cadence::hz(60));
+        let us = Duration::from_micros;
+        assert!(!p.ask(us(1_000), us(1_001), false));
+        assert_eq!(p.deadline(), Some(us(1_001)));
+        assert!(!p.ask(us(1_002), ms(500), false));
+        assert_eq!(p.deadline(), Some(us(1_001)));
+        // The past deadline wakes the loop, whose ask is served at once (the slot is free).
+        assert!(p.ask(us(1_003), Duration::ZERO, false));
+        assert_eq!(p.deadline(), None);
+    }
+
+    /// The deadline invariant against a brute-force reference that keeps every deferred ask:
+    /// with no redraw outstanding, `deadline()` is `min over deferred asks of max(not_before,
+    /// free_at)` for the current slot, and always no earlier than `free_at` (no spin while the
+    /// slot is taken). Axes varied: `not_before` past, just ahead (µs) and far ahead (ms) of
+    /// now and of the slot; urgent and paced asks; rate changes both ways, `EveryFrame`
+    /// included, with asks pending; frames, `clear`, steps from 1 µs to 25 ms.
+    #[test]
+    fn the_deadline_is_the_earliest_deferred_ask_on_the_current_slot() {
+        /// splitmix64.
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^ (z >> 31)
+            }
+            fn below(&mut self, n: u64) -> u64 {
+                self.next() % n
+            }
+        }
+        /// The reference: every deferred ask kept, the slot recomputed on every read.
+        struct Reference {
+            rate: Cadence,
+            last_paced: Option<Duration>,
+            deferred: Vec<Duration>,
+            paced_now: bool,
+            urgent_now: bool,
+        }
+        impl Reference {
+            fn free_at(&self) -> Duration {
+                self.last_paced
+                    .map_or(Duration::ZERO, |l| self.rate.next_tick(l).unwrap_or(l))
+            }
+            fn deadline(&self) -> Option<Duration> {
+                let free = self.free_at();
+                self.deferred.iter().map(|&nb| nb.max(free)).min()
+            }
+        }
+        let rates = [30, 59, 60, 119, 120, 144, 240, 0].map(Cadence::hz);
+        for seed in 0..500u64 {
+            let mut rng = Rng(seed);
+            let rate = rates[rng.below(rates.len() as u64) as usize];
+            let mut p = Pacer::new(rate);
+            let mut r = Reference {
+                rate,
+                last_paced: None,
+                deferred: Vec::new(),
+                paced_now: false,
+                urgent_now: false,
+            };
+            let mut now = Duration::ZERO;
+            // A redraw was requested and its frame has not started: that frame serves every
+            // ask (I3), so the deferred set only matters again after it.
+            let mut requested = false;
+            for op in 0..300 {
+                now += match rng.below(4) {
+                    0 => Duration::ZERO,
+                    1 => Duration::from_micros(1 + rng.below(5)),
+                    2 => Duration::from_micros(rng.below(2_000)),
+                    _ => Duration::from_micros(rng.below(25_000)),
+                };
+                match rng.below(10) {
+                    0..=5 => {
+                        let free = r.free_at();
+                        let base = if rng.below(2) == 0 { now } else { free };
+                        let nb = match rng.below(5) {
+                            0 => Duration::ZERO,
+                            1 => base.saturating_sub(Duration::from_micros(rng.below(3_000))),
+                            2 => base + Duration::from_micros(rng.below(5)),
+                            3 => base + Duration::from_micros(rng.below(20_000)),
+                            _ => base + Duration::from_millis(rng.below(600)),
+                        };
+                        let urgent = rng.below(3) == 0;
+                        let want = if urgent && nb <= now {
+                            r.urgent_now = true;
+                            true
+                        } else if nb.max(free) <= now {
+                            r.paced_now = true;
+                            r.deferred.retain(|&d| d.max(free) > now);
+                            true
+                        } else {
+                            r.deferred.push(nb);
+                            false
+                        };
+                        assert_eq!(p.ask(now, nb, urgent), want, "seed {seed} op {op}: ask");
+                        requested |= want;
+                    }
+                    6 | 7 => {
+                        let deadline_frame = r.deadline().is_some_and(|d| d <= now);
+                        if !(r.urgent_now && !r.paced_now && !deadline_frame) {
+                            r.last_paced = Some(now);
+                        }
+                        r.deferred.clear();
+                        (r.paced_now, r.urgent_now) = (false, false);
+                        p.frame_started(now);
+                        requested = false;
+                    }
+                    8 => {
+                        let rate = rates[rng.below(rates.len() as u64) as usize];
+                        r.rate = rate;
+                        p.set_rate(rate);
+                    }
+                    _ => {
+                        if rng.below(4) == 0 {
+                            r.deferred.clear();
+                            p.clear();
+                        }
+                    }
+                }
+                if let Some(d) = p.deadline() {
+                    assert!(d >= r.free_at(), "seed {seed} op {op}: before the slot");
+                }
+                if !requested {
+                    assert_eq!(p.deadline(), r.deadline(), "seed {seed} op {op}: deadline");
+                }
+            }
+        }
     }
 
     #[test]
