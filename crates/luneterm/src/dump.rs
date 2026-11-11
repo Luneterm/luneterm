@@ -28,11 +28,11 @@ use crate::app::failure_grid;
 use crate::demo::{demo_cursor, demo_grid};
 use crate::fonts;
 use crate::links;
-use crate::menus::{self, MenuKind, MenuModel};
+use crate::menus::{MenuKind, MenuModel};
 use crate::render::{Content, LinkTip, MenuDraw, Renderer};
 use crate::settings::{GlassStyle, Settings};
 use crate::settings_page::{PageState, PageView, Section};
-use crate::shell::{HOST, Layout, Modal, ScrollView, StripTab};
+use crate::shell::{HOST, Layout, Modal, ScrollView, StripTab, TAB_CLOSABLE};
 use crate::spawn::SpawnFailure;
 use crate::tabs::confirm_message;
 
@@ -61,7 +61,8 @@ struct PageScene {
     restart: bool,
 }
 
-/// An open menu, forced by the dump (the tab's own menu is the toolkit's: scripted input).
+/// An open menu, forced by the dump. The tab's own menu is not forced: the scripted right-click
+/// makes the frame report the request and the dump opens the menu then, as the app does.
 #[derive(Debug, Clone, Copy)]
 enum MenuScene {
     None,
@@ -545,7 +546,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         kind: SelectionKind::Linear,
     }];
     let strings = crate::strings::english();
-    let model = match scene.menu {
+    let mut model = match scene.menu {
         MenuScene::None => None,
         MenuScene::App => Some(MenuModel::new(
             MenuKind::App,
@@ -558,7 +559,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             cfg!(target_os = "macos"),
         )),
     };
-    let place = match scene.menu {
+    let mut place = match scene.menu {
         MenuScene::App => MenuPlace::Anchor {
             rect: Layout::new(Rect::new(0.0, 0.0, SIZE.0, SIZE.1)).overflow,
             side: Side::Bottom,
@@ -567,8 +568,6 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         },
         _ => MenuPlace::At(TERMINAL_MENU_AT),
     };
-    let extra = menus::tab_extra(&strings);
-    let extra: [&str; 2] = [extra[0].as_str(), extra[1].as_str()];
 
     for (k, ms) in FRAME_TIMES_MS.iter().enumerate() {
         let mut events: Vec<Event> = scene
@@ -646,11 +645,21 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             }),
             busy: None,
             busy_tone: Tone::Neutral,
-            tab_menu_extra: &extra,
             grid_alpha: 1.0,
             fading: Vec::new(),
         };
-        r.draw(&input, content, &view, size)?;
+        let drawn = r.draw(&input, content, &view, size)?;
+        // The app opens the tab menu from the request the strip reports (the next frame shows it).
+        if let Some(ctx) = drawn.tab_context {
+            model = Some(MenuModel::new(
+                MenuKind::Tab {
+                    closable: TAB_CLOSABLE,
+                },
+                &strings,
+                cfg!(target_os = "macos"),
+            ));
+            place = MenuPlace::At(ctx.at);
+        }
         r.gpu.end_frame(&mut r.text);
     }
     let rgba = read_rgba(&r.gpu.device, &r.gpu.queue, &texture)?;

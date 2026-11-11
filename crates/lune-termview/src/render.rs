@@ -10,6 +10,7 @@
 
 use cosmic_text::FontSystem;
 use lune_ui::custom::{CustomDraw, CustomFrame};
+use lune_ui::text::TextRendering;
 
 use crate::atlas::{Atlas, Page};
 use crate::build::{Builder, DecoInst, GlyphInst, RectInst, RowInstances};
@@ -170,7 +171,9 @@ impl TermView {
     /// Rebuilds the instances of the dirty rows (every row when the grid size, scale, origin,
     /// metrics, theme, fonts or atlas changed), the overlay, then clears the grid's dirty flags.
     /// `origin` is the grid's top-left in logical px. A scale that is not finite and positive
-    /// draws nothing.
+    /// draws nothing. `text` is how glyphs are rasterized: pass the one the frame's
+    /// `FrameParams.text` carries, so the grid and the UI text draw the same look (a different value
+    /// rebuilds every row; a pool view created later takes it from its first update).
     pub fn update(
         &mut self,
         fs: &mut FontSystem,
@@ -178,9 +181,10 @@ impl TermView {
         view: &ViewState<'_>,
         origin: (f32, f32),
         scale: f32,
+        text: TextRendering,
     ) {
         self.builder
-            .update(self.atlas.core_mut(), fs, grid, view, origin, scale);
+            .update(self.atlas.core_mut(), fs, grid, view, origin, scale, text);
     }
 
     pub fn builder(&self) -> &Builder {

@@ -5,6 +5,7 @@ mod common;
 
 use cosmic_text::{CacheKey, CacheKeyFlags, Weight, fontdb};
 use lune_termview::atlas::{Atlas, AtlasKey, Content, Image, Page, Raster, START_DIM};
+use lune_ui::text::GlyphParams;
 
 /// One 2x1 straight-alpha red pixel pair per key.
 struct Red;
@@ -39,6 +40,7 @@ fn atlas_flush_uploads_and_regrows() {
             CacheKeyFlags::empty(),
         )
         .0,
+        GlyphParams::OFF,
     );
     let e = atlas
         .core_mut()

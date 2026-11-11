@@ -1,0 +1,15 @@
+Lunegit sample themes and locale files (test fixtures)
+
+Files: apps/gallery/assets/lunegit/themes/*.json and apps/gallery/assets/lunegit/locale/*.json
+Origin: the Lunegit repository, commit 33a1dd41, copied byte for byte with `git show`:
+  src/Lunegit.Desktop/SampleThemes/{blue,dark-modern,green,orange,purple}.json
+  src/Lunegit.Infrastructure/Localization/en.json
+  src/Lunegit.Desktop/SampleLanguages/{de,es,fr,ja,ko,ms,pt-BR,ru,zh-CN}.json
+
+Licence: the owner of Lunegit licenses these files, as copied here, under either of the MIT
+licence or the Apache License 2.0, at your option, the same terms as the rest of this
+repository (LICENSE-MIT, LICENSE-APACHE). Granted 2026-11-08 (DECISIONS.md D284).
+
+They are kept so the toolkit's tests run on the real files a user's app would load. They are
+gallery test fixtures, not part of the toolkit's crates; an exported snapshot still leaves them
+out (scripts/export-snapshot.sh).

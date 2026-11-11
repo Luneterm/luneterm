@@ -94,6 +94,7 @@
     "luneui.settings-page.restart-action": "Open New Tab",
     "menu.app.name": "Luneterm menu",
     "menu.terminal.name": "Terminal menu",
+    "menu.tab.name": "Tab menu",
     "menu.newTab": "New Tab",
     "menu.close": "Close",
     "menu.closeOthers": "Close Others",
