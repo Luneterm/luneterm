@@ -178,9 +178,11 @@ impl Pacer {
 
     /// A frame is asked for at `now`, to be drawn no earlier than `not_before`. Returns whether
     /// to request a redraw now; when it does not, the ask is in [`Pacer::deadline`]. An urgent
-    /// ask is always served at once and does not take the grid slot.
+    /// ask whose time has come is served at once and does not take the grid slot; one for a
+    /// later time (a timer asked in an urgent scope: the cursor blink, a toolkit `At`) is
+    /// paced like any timed ask.
     pub fn ask(&mut self, now: Duration, not_before: Duration, urgent: bool) -> bool {
-        if urgent {
+        if urgent && not_before <= now {
             self.urgent_now = true;
             return true;
         }
@@ -194,7 +196,13 @@ impl Pacer {
             }
             true
         } else {
-            self.due = Some(self.due.map_or(at, |d| d.min(at)));
+            // A deadline already past (asked under a faster grid, before `set_rate`) only meant
+            // "the slot is free", which `at` now decides: kept, it would make the control flow
+            // wait for a past moment and spin the loop until `at`.
+            self.due = Some(match self.due {
+                Some(d) if d > now => d.min(at),
+                _ => at,
+            });
             false
         }
     }
@@ -454,6 +462,42 @@ mod tests {
         p.frame_started(ms(40));
         assert!(!p.ask(ms(41), Duration::ZERO, false));
         assert_eq!(p.deadline(), Cadence::hz(60).next_tick(ms(40)));
+    }
+
+    #[test]
+    fn an_urgent_ask_for_a_later_time_is_paced() {
+        // F1: an urgent scope (the frame after a press) asking for the blink 500 ms ahead.
+        let mut p = Pacer::new(Cadence::hz(60));
+        p.frame_started(ms(0));
+        assert!(!p.ask(ms(1), ms(500), true));
+        assert_eq!(p.deadline(), Some(ms(500)));
+        // `not_before` inside the taken slot: served at `free_at`.
+        let mut p = Pacer::new(Cadence::hz(60));
+        p.frame_started(ms(0));
+        assert!(!p.ask(ms(1), ms(5), true));
+        assert_eq!(p.deadline(), Some(Duration::from_nanos(16_666_667)));
+        // Its time come, an urgent ask is served at once and keeps the slot.
+        let mut p = Pacer::new(Cadence::hz(60));
+        p.frame_started(ms(0));
+        assert!(p.ask(ms(5), ms(5), true));
+        p.frame_started(ms(5));
+        assert!(!p.ask(ms(6), Duration::ZERO, false));
+        assert_eq!(p.deadline(), Some(Duration::from_nanos(16_666_667)));
+    }
+
+    #[test]
+    fn a_past_deadline_does_not_survive_a_re_defer() {
+        // F2: a deadline on a 120 Hz grid, the window moves to 60 Hz before it comes.
+        let mut p = Pacer::new(Cadence::hz(120));
+        p.frame_started(ms(0));
+        assert!(!p.ask(ms(1), Duration::ZERO, false));
+        assert_eq!(p.deadline(), Some(Duration::from_nanos(8_333_334)));
+        p.set_rate(Cadence::hz(60));
+        assert!(!p.ask(ms(9), Duration::ZERO, false));
+        assert_eq!(p.deadline(), Cadence::hz(60).next_tick(ms(0)));
+        // A future deadline still keeps the earliest.
+        assert!(!p.ask(ms(10), ms(300), false));
+        assert_eq!(p.deadline(), Cadence::hz(60).next_tick(ms(0)));
     }
 
     #[test]

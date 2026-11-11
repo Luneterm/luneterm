@@ -2165,8 +2165,9 @@ impl App {
         renderer.gpu.end_frame(&mut renderer.text);
 
         // The next frame, through the pacer: urgent only right after a frame that took discrete
-        // input (the click's tab switch, a menu opening); the window_event wrapper resets it.
-        // Every time-based ask is re-derived here, each frame (I3).
+        // input (the click's tab switch, a menu opening), and then only for an ask due now (a
+        // timer ahead, the blink or a toolkit `At`, stays paced); the window_event wrapper
+        // resets it. Every time-based ask is re-derived here, each frame (I3).
         self.urgent_scope = pacing::follow_up(&input.events);
         match out.repaint {
             Repaint::Idle => {}
