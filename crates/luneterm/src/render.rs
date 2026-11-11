@@ -14,7 +14,7 @@ use lune_ui::frame::FrameRenderer;
 use lune_ui::gpu::Gpu;
 use lune_ui::input::{FrameOutput, keymap};
 use lune_ui::lunegit_dark::THEME;
-use lune_ui::motion::MotionTier;
+use lune_ui::motion::{Cadence, MotionTier};
 use lune_ui::near_black;
 use lune_ui::paint::Rect;
 use lune_ui::scene::{FrameParams, LayerId};
@@ -581,6 +581,7 @@ impl Renderer {
         let config = FrameConfig {
             theme: self.theme,
             tier: self.tier,
+            busy_cadence: Cadence::BUSY,
             strings: &self.strings,
             arg_format: &DisplayFormat,
             keymap: keymap(),
