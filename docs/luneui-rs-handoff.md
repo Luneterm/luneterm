@@ -194,10 +194,33 @@ no tab). Luneterm took them with the pin bump (M10 step 13) and changed no call:
   blocked ~15 ms in `acquire()`, so a click waited for the frame in flight (up to ~16 ms) and the
   first frame of a tab switch landed 35-53 ms after the click (2-22 ms with no busy tab). The app
   cannot configure either.
-- Both are requested as luneui-rs `docs/tasks/frame-pacing.md` (2026-11-11). Luneterm's stopgap is
+- Both are requested as luneui-rs `docs/tasks/frame-pacing.md` (2026-11-11). Luneterm's stopgap was
   `IDLE_ANIMATION_HZ = 30` in `crates/luneterm/src/app.rs`: a frame with no input and no tab fade
-  that the toolkit wants again at once waits for 1/30 s instead (an earlier deadline still wins). It
-  goes when a release has the toolkit's own cadence.
+  that the toolkit wants again at once waited for 1/30 s instead (an earlier deadline still won).
+  **Resolved at pin `v0.5.0`**, the stopgap removed: see "Seen in luneui-rs 0.5.0".
+
+## Seen in luneui-rs 0.5.0 (frame cadence and surface options)
+
+- **Cadence adopted.** `FrameConfig.busy_cadence = Cadence::BUSY` (30/s): the progress shine and the
+  other busy loops tick at that rate, hidden tab included. This is the rate the user approved for
+  the stopgap, now applied by the toolkit to busy loops only, so a hover fade, a toast or a menu
+  opening runs at the display's rate again. Measured (release, M1 Pro, ink demo): a hidden busy tab
+  with the shine and titles costs ~40 redraws/s; with no chrome, 0.
+- **Surface options adopted.** `WindowSurface` takes a present mode and a frame latency. Luneterm
+  asks `AutoNoVsync` on every OS and **resolves it itself** (`pacing::resolve`: the first of
+  `Immediate`, `Mailbox` the surface lists, else `Fifo`), frame latency 2. Finding: `options()`
+  reports `AutoNoVsync` unresolved (the toolkit's `resolve_present_mode` passes `Auto*` through),
+  so the app cannot tell from the toolkit which concrete mode it got; it reads the surface's
+  capabilities and prints its own resolution once (`luneterm: present ...`). A report of the
+  concrete mode from `options()` would remove that copy.
+- **What the toolkit did not do.** Pacing frames to the display's rate and telling urgent input
+  from background asks stays in the app (`crates/luneterm/src/pacing.rs`): luneui-rs's `paced`
+  alone is a strict grid for every frame, which would delay a click's frame by up to two ticks.
+  Measured on Metal: with `Immediate` and the pacer, per-frame acquire wait 15.7 to 0.03 ms and a
+  busy to idle tab switch 27 to 2 ms median; with `Fifo` the toolkit's old wait comes back
+  (`LUNETERM_PRESENT=fifo`: 27 ms median). Windows, Linux and tearing: not measured.
+- **Stopgap removed.** `IDLE_ANIMATION_HZ`, `IDLE_ANIMATION_INTERVAL` and `pace_frame` are gone from
+  `app.rs`.
 
 ## Seen in M10 step 4 (link tooltip)
 

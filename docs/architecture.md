@@ -913,23 +913,57 @@ scrollback 0), cursor, scroll state from `Terminal::viewport_state()` (O(1), D3)
 changed (`Arc<str>`), bells, the last OSC 52 write, palette changes, cwd, progress and marks.
 `apply_update` writes rows into the termview `Grid`, so the renderer rebuilds only dirty rows.
 
-**Frame scheduling (`App::redraw`, `pace_frame`).** A frame is drawn on a redraw request: every
-window event, a visible Update (`UserEvent::Wake`), a clipboard read, a deadline that came due
-(`Repaint::At`, the cursor blink, the settings and workspace debounces), and while the tab
-crossfade runs. The toolkit's `Repaint::Now` (an animation in progress) is the one ask that is
-paced: when the frame took no input event and no crossfade runs, the next frame waits until the
-frame's start + 1/`IDLE_ANIMATION_HZ` (30 Hz) instead of drawing at once; an earlier deadline still
-wins, and any other request draws at once. The case it exists for is the tab strip's progress shine,
-which asks `Now` every frame while any tab, a hidden one too, shows progress (OSC 9;4): at 60 fps
-every such frame blocked ~15 ms in the surface's acquire (Fifo, frame latency 2, the toolkit's
-configuration), so a click waited for the frame in flight and the new tab's first frame for one
-more (plan step 4, user decision D12; measured on the ink demo, release, M1 Pro: 60 to ~40
-redraws/s, UI busy ~1000 to ~300 ms/s, t0 to the new tab's first frame 18-34 ms to 1-4 ms while
-the busy tab is hidden). The cost: any toolkit animation in a frame without input (the shine, a
-hover fade after the pointer stops, a toast, a menu opening) runs at 30 fps at its own speed. A
-stopgap until luneui-rs offers a shine cadence and a surface that does not block the UI thread
-(luneui-rs `docs/tasks/frame-pacing.md`, requested 2026-11-11). Switching away from a *visible*
-busy tab is not helped: its own output keeps every frame in acquire.
+**Frame scheduling (`pacing.rs`, `App::ask_frame`, `settle_flow`).** A frame is drawn on a redraw
+request, and every request goes through one pure `Pacer` (no clock; app time is the `Duration` since
+`App::start`). It has two lanes. A *paced* ask (PTY output, a pointer move, the wheel, a toolkit
+animation `Repaint::Now`, the crossfade, the cursor blink, a deadline, a clipboard read) is served at
+`max(not_before, first grid tick after the last paced frame's start)`: at most one frame per slot of a
+grid at the display's rate, several pending asks keep the earliest, and the deadline is what
+`settle_flow` puts into the control flow (`WaitUntil`), so a deferred ask is never lost (invariant
+I1, tested on the pure flow function). An *urgent* ask draws at once and does not take the slot:
+a mouse press or release, a key, IME, focus, a resize or scale change, un-occlusion, a dropped file,
+a close request, and the one frame after a frame whose input held such an event (a click's tab
+switch, a menu opening; the frame after that is paced again). The grid rate is the display's whole
+Hz (60 when unknown, clamped to 30..=240), one below that when the present mode queues (`Fifo`),
+read at window creation and on `ScaleFactorChanged` and `Moved`. The toolkit's own cadence covers
+the progress shine and the other busy loops (`FrameConfig.busy_cadence = Cadence::BUSY`, 30/s; the
+rate the user approved for the earlier stopgap `IDLE_ANIMATION_HZ`, now applied by luneui-rs 0.5.0
+to busy loops only and removed from the app with `pace_frame`, plan render-performance D2, D6).
+
+**Present mode.** The surface is created with `AutoNoVsync`'s meaning resolved by the app
+(`pacing::resolve`: the first of `Immediate`, `Mailbox` the surface lists, else `Fifo`; luneui-rs's
+`options()` reports `AutoNoVsync` unresolved), frame latency 2, on every OS (user decision at the
+plan gate, 2026-11-11: no per-OS split). `LUNETERM_PRESENT=fifo|novsync` overrides it for a run
+(anything else prints the variable's name and exits 2); stderr prints once
+`luneterm: present <mode> (asked <ask>), frames <= <hz>/s, caps [<modes>]`. Why: under `Fifo` with
+frame latency 2 the main thread blocked ~15 ms per frame in surface acquire whenever the busy tab
+was visible, so a click and the new tab's first frame waited behind it. With no wait the pacer's
+urgent lane is what makes a switch quick.
+
+*Measured* (artifacts of plan render-performance: `baseline.md`, `after.md`; M1 Pro, Metal, release,
+the ink demo with the busy tab, caps `[Fifo, Immediate]` so the mode is `Immediate`): per-frame acquire
+wait 15.7 ms median before, 0.03 ms after (p95 0.76 / 1.69 ms in two runs); a steady visible busy
+tab `acquire_ms` 921 ms/s before, 1.5 ms/s after; busy tab to an idle tab, click to the new tab's
+first frame 27.4 ms median (max 33.8) before, 2.1 ms (max 20.5 and 3.9 in two runs) after; the UI
+thread busy 327 ms/s median before, 74 after (visible steady: ~1000 before, 102 after); redraws per
+second never above grid + 2 x (presses + autos) + 2; a hidden busy tab with the shine and titles ~40
+redraws/s (unchanged: the toolkit's 30/s plus titles), without chrome 0; an idle focused window with a
+blinking cursor one redraw per 600 ms. Not all thresholds were met: single frames at a tab switch still
+wait up to 16 ms in acquire under `Immediate` (about 1 switch in 14 at its first frame; cause not
+established), so the maximum first-frame latency is 20 ms in one run of two, and idle to idle was
+5.0 and 13.1 ms at its maximum against an estimate of 5. Under `Fifo` (`LUNETERM_PRESENT=fifo`, grid
+one below the display's rate) the pacer did **not** remove the switch delay on macOS (busy to idle
+27.3 ms median, per-frame acquire 15.2 ms, as before the work): with a switch every 250 to 1000 ms
+an urgent frame queues an extra present that a 59 Hz grid drains too slowly (hypothesis); with a
+steady flood and no switching `Fifo` at 59 Hz does not wait (acquire 2.2 ms/s). So `fifo` is an
+escape from tearing, not a latency setting.
+
+*Not measured:* Windows (DX12), Linux (Vulkan, GL) and any present mode other than `Immediate` on them
+(a run on the Windows laptop decides whether Windows stays on no-wait: STATE.md); **tearing** on any
+OS (the user's eye check on macOS; Linux X11 without a compositor may tear, and the user accepted
+that); ProMotion displays (the grid follows `refresh_rate_millihertz`, not exercised); a flood of
+pointer moves with a busy tab (moves are paced, not skipped: the toolkit is immediate-mode and only a
+frame knows whether a hover changed).
 
 **Mode 2026 (D10, ledger 14).** While the mode is set the engine publishes nothing, until the mode
 is reset or 1000 ms after it was first seen (xterm.js `RenderService.ts`). Unlike xterm.js the
