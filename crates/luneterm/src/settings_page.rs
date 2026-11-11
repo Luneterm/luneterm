@@ -23,7 +23,7 @@ use crate::palettes::PALETTES;
 use crate::session::MAX_SCROLLBACK;
 use crate::settings::{
     BlurLevel, GlassStyle, MAX_FONT_SIZE, MAX_NAME_BYTES, MAX_SHELL_BYTES, MIN_FONT_SIZE, Motion,
-    OutlineAnim, SettingId, Settings, text_ok,
+    OutlineAnim, SettingId, Settings, Theme, text_ok,
 };
 use crate::shell::HOST_GLASS;
 
@@ -126,6 +126,11 @@ static APPEARANCE: [Group; 2] = [
     Group {
         header: "settings.appearance.window.header",
         rows: &[
+            row(
+                SettingId::Theme,
+                Control::Combo,
+                "settings.appearance.theme",
+            ),
             row(
                 SettingId::Glass,
                 Control::Combo,
@@ -300,6 +305,7 @@ fn desc_key(row: &Row) -> String {
 fn option_keys(id: SettingId) -> Vec<String> {
     let numbered = |base: &str, n: usize| (0..n).map(|i| format!("{base}.{i}")).collect();
     match id {
+        SettingId::Theme => numbered("settings.appearance.theme.option", Theme::ALL.len()),
         SettingId::Glass if !HOST_GLASS => vec![format!(
             "settings.appearance.glass.option.{OS}.{}",
             GlassStyle::ALL.len() - 1
@@ -339,6 +345,10 @@ pub fn options(strings: &StringTable, id: SettingId) -> Vec<String> {
 pub fn selected(settings: &Settings, id: SettingId) -> usize {
     let pos = |all: &[&str], name: &str| all.iter().position(|n| *n == name).unwrap_or(0);
     match id {
+        SettingId::Theme => Theme::ALL
+            .iter()
+            .position(|t| *t == settings.theme)
+            .unwrap_or(0),
         // Linux has the one option, Off.
         SettingId::Glass if !HOST_GLASS => 0,
         SettingId::Glass => GlassStyle::ALL
@@ -369,6 +379,11 @@ pub fn selected(settings: &Settings, id: SettingId) -> usize {
 /// Sets the value of option `i` of `id`; an index past the list changes nothing.
 pub fn choose(settings: &mut Settings, id: SettingId, i: usize) {
     match id {
+        SettingId::Theme => {
+            if let Some(t) = Theme::ALL.get(i) {
+                settings.theme = *t;
+            }
+        }
         SettingId::Glass if !HOST_GLASS => {}
         SettingId::Glass => {
             if let Some(g) = GlassStyle::ALL.get(i) {
@@ -1066,6 +1081,15 @@ mod tests {
     #[test]
     fn each_combo_row_stores_the_value_the_table_names() {
         let mut s = Settings::default();
+        choose(&mut s, SettingId::Theme, 1);
+        assert_eq!(
+            s.theme,
+            Theme::Lunegit,
+            "on every OS: Linux shows the row too"
+        );
+        assert_eq!(selected(&s, SettingId::Theme), 1);
+        choose(&mut s, SettingId::Theme, 0);
+        assert_eq!(s.theme, Theme::Luneterm);
         choose(&mut s, SettingId::MenuBlur, 2);
         assert_eq!(s.menu_blur, BlurLevel::High);
         choose(&mut s, SettingId::Motion, 1);

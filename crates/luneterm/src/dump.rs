@@ -31,7 +31,7 @@ use crate::fonts;
 use crate::links;
 use crate::menus::{MenuKind, MenuModel};
 use crate::render::{Content, LinkTip, MenuDraw, Renderer};
-use crate::settings::{GlassStyle, Settings};
+use crate::settings::{Settings, Theme};
 use crate::settings_page::{PageState, PageView, Section};
 use crate::shell::{HOST, Layout, Modal, ScrollView, StripTab, TAB_CLOSABLE};
 use crate::spawn::SpawnFailure;
@@ -129,8 +129,8 @@ struct Scene {
     failed: bool,
     /// OS glass is behind the window; `false` is the opaque look (P22).
     glass: bool,
-    /// The glass style the theme and tab header follow (only matters with `glass`).
-    style: GlassStyle,
+    /// The look whose layers and header tint the scene draws with.
+    look: Theme,
     page: Option<PageScene>,
     menu: MenuScene,
     /// The terminal palette, by name.
@@ -169,7 +169,7 @@ const BASE: Scene = Scene {
     overlay: Overlay::None,
     failed: false,
     glass: true,
-    style: GlassStyle::Default,
+    look: Theme::Luneterm,
     page: None,
     menu: MenuScene::None,
     palette: "One Dark",
@@ -191,7 +191,7 @@ const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
-const SCENES: [Scene; 35] = [
+const SCENES: [Scene; 37] = [
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -381,11 +381,26 @@ const SCENES: [Scene; 35] = [
         palette: "Dracula",
         ..BASE
     },
-    // Lunegit's layers under a liquid style: the proof the near-black look did not move them.
+    // The Lunegit look: its layers and header tint, with glass (the proof the near-black look did
+    // not move them), and with the app menu open (its floating-surface fill is its own).
     Scene {
-        name: "liquid@2x.png",
+        name: "lunegit@2x.png",
         tabs: FOUR,
-        style: GlassStyle::LiquidRegular,
+        look: Theme::Lunegit,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-menu@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        menu: MenuScene::App,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-opaque@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        glass: false,
         ..BASE
     },
     // The opaque look (no OS glass: Linux, or Off).
@@ -499,7 +514,7 @@ const FRAME_TIMES_MS: [u64; 4] = [0, 800, 1600, 2400];
 /// the last frame.
 fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String> {
     r.reset_ui();
-    r.set_glass(scene.glass, scene.style);
+    r.set_glass(scene.glass, scene.look);
     r.set_term_theme(crate::palettes::theme_of(scene.palette));
     let scale = scene.scale as f32;
     let size = (SIZE.0 as u32 * scene.scale, SIZE.1 as u32 * scene.scale);
@@ -830,7 +845,7 @@ mod tests {
             let opaque = path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("opaque"));
+                .is_some_and(|n| n.contains("opaque"));
             if opaque {
                 assert_eq!(*alpha, 255, "{} has a transparent pixel", path.display());
             }
@@ -840,7 +855,7 @@ mod tests {
                 .iter()
                 .filter(|(p, _)| p.to_string_lossy().contains("opaque"))
                 .count(),
-            5
+            6
         );
         let first: Vec<PathBuf> = gated.into_iter().map(|(p, _)| p).collect();
         let second = dump_frames(&b).expect("second dump");
@@ -871,7 +886,9 @@ mod tests {
         for n in [
             "palette@2x.png",
             "opaque@2x.png",
-            "liquid@2x.png",
+            "lunegit@2x.png",
+            "lunegit-menu@2x.png",
+            "lunegit-opaque@2x.png",
             "menu-app@2x.png",
             "menu-tab@2x.png",
             "settings-appearance@2x.png",
