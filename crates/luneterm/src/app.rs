@@ -295,6 +295,18 @@ fn run_window() -> ExitCode {
                 _ => eprintln!("luneterm: LUNETERM_TRACE_SWITCH_AUTO must be ms in 200..=60000"),
             }
         }
+        // A synthetic left click into the window every <ms> (macOS), posted into the app's own
+        // event queue from a thread: the known answer for the OS-timestamp ages (os_event.rs).
+        if let Some(v) = std::env::var_os("LUNETERM_TRACE_SWITCH_CLICK") {
+            match v.to_str().and_then(|v| v.parse::<u64>().ok()) {
+                Some(ms @ 50..=60_000) => {
+                    if let Some(t) = &mut app.trace {
+                        t.click_every = Some(Duration::from_millis(ms));
+                    }
+                }
+                _ => eprintln!("luneterm: LUNETERM_TRACE_SWITCH_CLICK must be ms in 50..=60000"),
+            }
+        }
     }
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop: {e}");
@@ -2469,6 +2481,14 @@ impl ApplicationHandler<UserEvent> for App {
             use winit::platform::macos::WindowExtMacOS;
             window.set_option_as_alt(crate::input::option_as_alt(self.settings.option_as_meta));
         }
+        if let Some(t) = &mut self.trace {
+            if let Some(every) = t.click_every {
+                t.synth = crate::os_event::start_synth_clicks(&window, every);
+                if t.synth.is_none() {
+                    eprintln!("luneterm: LUNETERM_TRACE_SWITCH_CLICK: no synthetic clicks here");
+                }
+            }
+        }
         self.glass = apply_material(&window, &self.settings);
         let stack = match Stack::build(
             event_loop,
@@ -2714,6 +2734,10 @@ struct SwitchTrace {
     frame: FrameStamps,
     /// The event loop's health over the current second.
     lp: LoopStats,
+    /// `LUNETERM_TRACE_SWITCH_CLICK`: post a synthetic click this often once the window exists.
+    click_every: Option<Duration>,
+    /// The synthetic clicks' posting times (the known answer for the OS ages).
+    synth: Option<std::sync::Arc<crate::os_event::SynthClicks>>,
 }
 
 /// Which `ApplicationHandler` callback ran.
@@ -2757,6 +2781,36 @@ struct LoopStats {
     press_waiting: Option<Instant>,
     presses: u32,
     max_press_to_frame: Duration,
+    /// OS timestamp → winit handing it over, real input (motion, presses, keys): count, sum, max.
+    os: AgeStats,
+    /// The same for the trace's synthetic clicks, and the largest disagreement between their
+    /// OS-timestamp age and their `Instant` age (the instrument's own error).
+    syn: AgeStats,
+    syn_clock_err: f64,
+}
+
+/// Count, sum and largest of a set of ages in ms.
+#[derive(Debug, Clone, Copy, Default)]
+struct AgeStats {
+    n: u32,
+    sum: f64,
+    max: f64,
+}
+
+impl AgeStats {
+    fn add(&mut self, ms: f64) {
+        self.n += 1;
+        self.sum += ms;
+        self.max = self.max.max(ms);
+    }
+
+    fn mean(&self) -> f64 {
+        if self.n == 0 {
+            f64::NAN
+        } else {
+            self.sum / f64::from(self.n)
+        }
+    }
 }
 
 /// One switch being traced.
@@ -2810,16 +2864,44 @@ impl SwitchTrace {
                 ..
             }
         );
+        use crate::os_event::{InputKind, current_age};
+        let kind = match event {
+            WindowEvent::MouseInput { .. } if press => Some(InputKind::Press),
+            WindowEvent::KeyboardInput { .. } if press => Some(InputKind::Key),
+            WindowEvent::CursorMoved { .. } => Some(InputKind::Motion),
+            _ => None,
+        };
+        let age = kind.and_then(current_age);
+        let now = Instant::now();
+        // A synthetic click's ages by both clocks (its press; its motions are not counted).
+        let synthetic = age.and_then(|a| {
+            let by_instant = self.synth.as_ref()?.posted_ms_ago(a.stamp, now)?;
+            Some((a.ms, by_instant))
+        });
+        match (age, synthetic) {
+            (Some(a), None) => self.lp.os.add(a.ms),
+            (Some(_), Some((ms, by_instant))) if kind == Some(InputKind::Press) => {
+                self.lp.syn.add(ms);
+                self.lp.syn_clock_err = self.lp.syn_clock_err.max((ms - by_instant).abs());
+            }
+            _ => {}
+        }
         if press {
-            let now = Instant::now();
             self.pending = Some(now);
             self.press_arrived(now);
-            if matches!(event, WindowEvent::MouseInput { .. }) {
-                // The wall clock, to pair with `scripts/os-press-times.py` (when the OS saw it).
-                let wall = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default();
-                eprintln!("press: wall_ms={:09}", wall.as_millis() % 1_000_000_000);
+            let what = if kind == Some(InputKind::Key) {
+                "key"
+            } else {
+                "mouse"
+            };
+            match age {
+                Some(a) => eprintln!(
+                    "press: kind={what} os_age_ms={:.2} synthetic={}",
+                    a.ms,
+                    u8::from(synthetic.is_some())
+                ),
+                // The event AppKit dispatches is not this one (winit queued it), or no OS stamp.
+                None => eprintln!("press: kind={what} os_age_ms=NaN"),
             }
         }
     }
@@ -2879,7 +2961,8 @@ impl SwitchTrace {
         eprintln!(
             "loop: span={:.0} redraws={} window_events={} wakes={} autos={} presses={} \
              busy={:.1} wake_busy={:.1} max_cb={:.2} max_cb_kind={} max_gap={:.1} \
-             max_press_to_frame={:.1}",
+             max_press_to_frame={:.1} os_n={} os_mean={:.2} os_max={:.2} syn_n={} \
+             syn_mean={:.2} syn_max={:.2} syn_clock_err={:.2}",
             ms(span),
             lp.redraws,
             lp.windows,
@@ -2892,6 +2975,13 @@ impl SwitchTrace {
             lp.max_cb_kind.map_or("none", Callback::name),
             ms(lp.max_gap),
             ms(lp.max_press_to_frame),
+            lp.os.n,
+            lp.os.mean(),
+            lp.os.max,
+            lp.syn.n,
+            lp.syn.mean(),
+            lp.syn.max,
+            lp.syn_clock_err,
         );
         *lp = LoopStats {
             last_end: lp.last_end,
@@ -3155,6 +3245,17 @@ mod tests {
         // No fade (motion off): the first frame of the new tab is also the last.
         let f = traced_frame(&mut t, 1, false).expect("traced");
         assert!(f.first_new && f.end);
+    }
+
+    #[test]
+    fn age_stats_count_sum_and_max() {
+        let mut a = AgeStats::default();
+        assert!(a.mean().is_nan());
+        for ms in [2.0, 6.0, 1.0] {
+            a.add(ms);
+        }
+        assert_eq!((a.n, a.max), (3, 6.0));
+        assert!((a.mean() - 3.0).abs() < 1e-12);
     }
 
     #[test]
