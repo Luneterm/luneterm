@@ -39,7 +39,7 @@ use lune_ui::input::{
 };
 use lune_ui::material::{self, Material};
 use lune_ui::paint::Rect;
-use lune_ui::surface::{Acquired, WindowSurface};
+use lune_ui::surface::{Acquired, SurfaceOptions, WindowSurface};
 use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
 use lune_ui::widgets::tab_strip::TabEvent;
@@ -62,6 +62,7 @@ use crate::input::{
 };
 use crate::links::{self, open::OpenError};
 use crate::menus::{self, MenuAction, MenuKind, MenuModel, TabOp};
+use crate::pacing::{self, PresentAsk};
 use crate::palettes;
 use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, snapshot,
@@ -267,6 +268,22 @@ pub fn run() -> ExitCode {
 }
 
 fn run_window() -> ExitCode {
+    // The present mode knob (this is the only place the variable is read); checked before
+    // anything is built, a value that is not UTF-8 is as wrong as any other.
+    let present = {
+        let var = match std::env::var(pacing::PRESENT_VAR) {
+            Ok(v) => Some(v),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(_)) => Some(String::new()),
+        };
+        match pacing::present_from_env(var.as_deref()) {
+            Ok(ask) => ask.unwrap_or(pacing::DEFAULT_PRESENT),
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::from(2);
+            }
+        }
+    };
     let mut builder = EventLoop::<UserEvent>::with_user_event();
     #[cfg(target_os = "macos")]
     {
@@ -307,6 +324,7 @@ fn run_window() -> ExitCode {
         start.notices,
         config_dir,
     );
+    app.present = present;
     // The tab-switch trace (this is the only place the variable is read).
     if std::env::var_os("LUNETERM_TRACE_SWITCH").is_some_and(|v| v == "1") {
         app.trace = Some(Box::default());
@@ -373,6 +391,7 @@ impl Stack {
         glass: bool,
         theme: &TermTheme,
         trace: bool,
+        present: PresentAsk,
     ) -> Result<Stack, String> {
         let instance = gpu::instance(Some(Box::new(event_loop.owned_display_handle())));
         let surface = instance
@@ -380,7 +399,19 @@ impl Stack {
             .map_err(|e| format!("surface: {e}"))?;
         let gpu = pollster::block_on(Gpu::new(instance, Some(&surface)))?;
         let size = window.inner_size();
-        let surface = WindowSurface::new(&gpu, surface, (size.width, size.height))?;
+        let caps = surface.get_capabilities(&gpu.adapter).present_modes;
+        let mode = pacing::resolve(present, &caps);
+        let options = SurfaceOptions {
+            present_mode: mode,
+            frame_latency: 2,
+        };
+        let surface =
+            WindowSurface::with_options(&gpu, surface, (size.width, size.height), options)?;
+        // Mode names only: what was asked, what the surface lists and what it was given.
+        eprintln!(
+            "luneterm: present {mode:?} (asked {}), frames <= n/a/s, caps {caps:?}",
+            present.name()
+        );
         let (text, _took) = fonts::text_cache();
         let mut renderer = Renderer::new(gpu, text, surface.format(), settings, glass);
         if renderer.term_theme() != theme {
@@ -626,6 +657,8 @@ struct App {
     /// `LUNETERM_TRACE_SWITCH=1`: where a tab switch's time goes; `None` (the default) costs one
     /// check per hook.
     trace: Option<Box<SwitchTrace>>,
+    /// The present mode asked for (the knob or the default); the surface resolves it.
+    present: PresentAsk,
 }
 
 impl App {
@@ -687,6 +720,7 @@ impl App {
             shown: false,
             exit_code: 0,
             trace: None,
+            present: pacing::DEFAULT_PRESENT,
         }
     }
 
@@ -735,6 +769,7 @@ impl App {
             self.glass,
             &theme,
             trace,
+            self.present,
         ) {
             Ok(stack) => {
                 self.stack = Some(stack);
@@ -1821,7 +1856,12 @@ impl App {
         let (Some(win), Some(stack)) = (self.win.as_mut(), self.stack.as_mut()) else {
             return;
         };
-        let frame = match stack.surface.acquire(&stack.renderer.gpu) {
+        let before_acquire = self.trace.is_some().then(Instant::now);
+        let acquired = stack.surface.acquire(&stack.renderer.gpu);
+        if let (Some(t), Some(before)) = (&mut self.trace, before_acquire) {
+            t.acquire_waited(before.elapsed());
+        }
+        let frame = match acquired {
             Ok(Acquired::Frame(frame)) => frame,
             Ok(Acquired::Skip) => {
                 // Nothing to draw and nothing to ask for: the platform redraws when it can.
@@ -2536,6 +2576,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.glass,
             &self.base_theme(),
             self.trace.is_some(),
+            self.present,
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -2820,6 +2861,9 @@ struct LoopStats {
     press_waiting: Option<Instant>,
     presses: u32,
     max_press_to_frame: Duration,
+    /// Time spent in the surface's acquire this span, and the longest single wait.
+    acquire: Duration,
+    acquire_max: Duration,
     /// OS timestamp → winit handing it over, real input (motion, presses, keys): count, sum, max.
     os: AgeStats,
     /// The same for the trace's synthetic clicks, and the largest disagreement between their
@@ -2945,6 +2989,12 @@ impl SwitchTrace {
         }
     }
 
+    /// One surface acquire took `d`.
+    fn acquire_waited(&mut self, d: Duration) {
+        self.lp.acquire += d;
+        self.lp.acquire_max = self.lp.acquire_max.max(d);
+    }
+
     /// A press (or an auto switch posted at `at`) reached the app.
     fn press_arrived(&mut self, at: Instant) {
         self.lp.presses += 1;
@@ -3001,7 +3051,7 @@ impl SwitchTrace {
             "loop: span={:.0} redraws={} window_events={} wakes={} autos={} presses={} \
              busy={:.1} wake_busy={:.1} max_cb={:.2} max_cb_kind={} max_gap={:.1} \
              max_press_to_frame={:.1} os_n={} os_mean={:.2} os_max={:.2} syn_n={} \
-             syn_mean={:.2} syn_max={:.2} syn_clock_err={:.2}",
+             syn_mean={:.2} syn_max={:.2} syn_clock_err={:.2} acquire_ms={:.1} acquire_max={:.2}",
             ms(span),
             lp.redraws,
             lp.windows,
@@ -3021,6 +3071,8 @@ impl SwitchTrace {
             lp.syn.mean(),
             lp.syn.max,
             lp.syn_clock_err,
+            ms(lp.acquire),
+            ms(lp.acquire_max),
         );
         *lp = LoopStats {
             last_end: lp.last_end,
