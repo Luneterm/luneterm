@@ -1038,8 +1038,9 @@ style termview asks for), RobotoMono Nerd Font Mono Regular and Bold (the fallba
 icons RznMono does not have until its stage 4, and a terminal font option) and RznSans Regular and
 Medium, with their licences. luneui-rs's `TextCache` loads no system fonts, so the app loads them once at start
 (`fonts::text_cache`, 59 to 64 ms on the Apple M1 Pro) for emoji and CJK fallback. Cell
-height is `ceil(natural_line_height)`: 17 px at scale 1 and 34 at scale 2 for the bundled face at
-13 px. At 1040 x 660 the body is 1000 x 596 at (20, 44), a 125 x 35 grid. Glass: `near_black::MATERIAL`
+height is `ceil(natural_line_height)`: 18 px at scale 1 and 37 at scale 2 for the bundled face at
+14 px, the default size since the luneui-rs 0.4.0 work (13 px gave 17 and 34). At 1040 x 660 the dump
+scenes' grid is 125 x 31 at scale 1 and 117 x 30 at scale 2 (read from `Renderer::grid_size`). Glass: `near_black::MATERIAL`
 (UltraDark vibrancy, near-black layers; `docs/glass-styling.md`) for the default style, Lunegit's layers under the liquid styles; Windows draws its own caption buttons.
 
 **Windows (D17).** `main` hardens the DLL search before any winit or wgpu object ("lune-pty", above),
