@@ -999,7 +999,7 @@ checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 
 [[package]]
 name = "lune-pty"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "nix",
  "portable-pty",
@@ -1008,7 +1008,7 @@ dependencies = [
 
 [[package]]
 name = "lune-termview"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -1024,8 +1024,8 @@ dependencies = [
 
 [[package]]
 name = "lune-ui"
-version = "0.5.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=b767f51f0619d9905bba20f246d160b3fe6368ef#b767f51f0619d9905bba20f246d160b3fe6368ef"
+version = "0.5.1"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=ec17ff0fbfa84d632214bbb7617be5a64140d07e#ec17ff0fbfa84d632214bbb7617be5a64140d07e"
 dependencies = [
  "lune-ui-core",
  "lune-ui-platform",
@@ -1035,13 +1035,13 @@ dependencies = [
 
 [[package]]
 name = "lune-ui-core"
-version = "0.5.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=b767f51f0619d9905bba20f246d160b3fe6368ef#b767f51f0619d9905bba20f246d160b3fe6368ef"
+version = "0.5.1"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=ec17ff0fbfa84d632214bbb7617be5a64140d07e#ec17ff0fbfa84d632214bbb7617be5a64140d07e"
 
 [[package]]
 name = "lune-ui-platform"
-version = "0.5.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=b767f51f0619d9905bba20f246d160b3fe6368ef#b767f51f0619d9905bba20f246d160b3fe6368ef"
+version = "0.5.1"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=ec17ff0fbfa84d632214bbb7617be5a64140d07e#ec17ff0fbfa84d632214bbb7617be5a64140d07e"
 dependencies = [
  "lune-ui-core",
  "objc2 0.6.5",
@@ -1054,8 +1054,8 @@ dependencies = [
 
 [[package]]
 name = "lune-ui-wgpu"
-version = "0.5.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=b767f51f0619d9905bba20f246d160b3fe6368ef#b767f51f0619d9905bba20f246d160b3fe6368ef"
+version = "0.5.1"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=ec17ff0fbfa84d632214bbb7617be5a64140d07e#ec17ff0fbfa84d632214bbb7617be5a64140d07e"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -1071,8 +1071,8 @@ dependencies = [
 
 [[package]]
 name = "lune-ui-winit"
-version = "0.5.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=b767f51f0619d9905bba20f246d160b3fe6368ef#b767f51f0619d9905bba20f246d160b3fe6368ef"
+version = "0.5.1"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=ec17ff0fbfa84d632214bbb7617be5a64140d07e#ec17ff0fbfa84d632214bbb7617be5a64140d07e"
 dependencies = [
  "arboard",
  "lune-ui-core",
@@ -1081,18 +1081,18 @@ dependencies = [
 
 [[package]]
 name = "lune-vt"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "lune-vt-conformance"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "lune-vt",
 ]
 
 [[package]]
 name = "luneterm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dirs",
  "libc",
@@ -1111,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "luneterm-ffi"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "lune-vt",
 ]
