@@ -133,9 +133,26 @@ pub fn natural_line_height(fs: &mut FontSystem, family: &str, size: f32) -> f32 
     }
 }
 
+/// How close (physical px) a cell width must be to a whole pixel to count as that pixel, so
+/// float noise in a shaped advance (16.000001) does not add a column of space.
+const CELL_W_SNAP: f64 = 1e-3;
+
+/// A cell width in physical px from an unrounded advance: rounded up, so a cell is never
+/// narrower than the font's advance (rounding to nearest drew RznMono's 8.4 px cells at 8 and
+/// merged bold `dm`), except within `CELL_W_SNAP` of a whole pixel; at least 1.
+fn cell_width_px(px: f64) -> f64 {
+    let whole = px.round();
+    let w = if (px - whole).abs() < CELL_W_SNAP {
+        whole
+    } else {
+        px.ceil()
+    };
+    w.max(1.0)
+}
+
 /// Cell metrics per D3, in physical px. `advance` is the shaped advance of "W" in
 /// `fonts.family`. With no face at all, the cell is 0.6 em wide and 1.2 em tall (ascent 0.95 em,
-/// descent 0.25 em); a bad `scale` counts as 1 and nothing panics.
+/// descent 0.25 em). The width is rounded up (`cell_width_px`); a bad `scale` counts as 1 and nothing panics.
 pub fn cell_metrics(fs: &mut FontSystem, fonts: &TermFonts, scale: f32) -> CellMetrics {
     let scale = sane_scale(scale);
     let size = sane_px(fonts.size, 13.0);
@@ -145,8 +162,8 @@ pub fn cell_metrics(fs: &mut FontSystem, fonts: &TermFonts, scale: f32) -> CellM
 
     let (face, advance) = w_face_em(fs, &fonts.family, size, line_height);
     let (cell_w, asc_em, desc_em) = match face {
-        Some((a, d)) if advance > 0.0 => ((f64::from(advance) * s).round().max(1.0), a, d),
-        _ => ((0.6 * size64 * s).round().max(1.0), 0.95, 0.25),
+        Some((a, d)) if advance > 0.0 => (cell_width_px(f64::from(advance) * s), a, d),
+        _ => (cell_width_px(0.6 * size64 * s), 0.95, 0.25),
     };
 
     let cell_h = (f64::from(line_height) * s).round().max(1.0);
@@ -372,6 +389,55 @@ mod tests {
 
     fn face_family(r: &Rig, id: fontdb::ID) -> String {
         family_of(r.fs.db(), id)
+    }
+
+    #[test]
+    fn a_cell_is_never_narrower_than_the_advance_and_less_than_a_pixel_wider() {
+        let mut r = rig();
+        for size in 8..=32 {
+            let mut f = fonts(&r, false);
+            f.size = size as f32;
+            f.line_height = size as f32 * 1.3;
+            let (_, advance) = w_face_em(&mut r.fs, &f.family, f.size, f.line_height);
+            assert!(advance > 0.0, "size {size}");
+            for scale in [1.0f32, 1.5, 2.0] {
+                let m = cell_metrics(&mut r.fs, &f, scale);
+                let exact = f64::from(advance) * f64::from(scale);
+                let w = f64::from(m.cell_w);
+                assert!(
+                    w + CELL_W_SNAP >= exact,
+                    "size {size} scale {scale}: {w} < {exact}"
+                );
+                assert!(w - exact < 1.0, "size {size} scale {scale}: {w} vs {exact}");
+            }
+        }
+    }
+
+    #[test]
+    fn cell_width_rounds_up_but_keeps_a_whole_pixel() {
+        for (px, want) in [
+            (16.000001, 16.0),
+            (15.9999, 16.0),
+            (16.0, 16.0),
+            (16.01, 17.0),
+            (8.4, 9.0),
+            (7.8, 8.0),
+            (16.8, 17.0),
+            (0.2, 1.0),
+            (0.0, 1.0),
+        ] {
+            assert_eq!(cell_width_px(px), want, "{px}");
+        }
+    }
+
+    #[test]
+    fn the_default_size_14_is_9_px_at_1x_and_17_at_2x() {
+        let mut r = rig();
+        let mut f = fonts(&r, false);
+        f.size = 14.0;
+        f.line_height = 18.0;
+        assert_eq!(cell_metrics(&mut r.fs, &f, 1.0).cell_w, 9);
+        assert_eq!(cell_metrics(&mut r.fs, &f, 2.0).cell_w, 17);
     }
 
     #[test]
