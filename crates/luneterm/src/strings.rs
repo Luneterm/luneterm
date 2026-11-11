@@ -46,9 +46,16 @@ mod tests {
         }
     }
 
+    /// The product does not name Lunegit in its copy, except as the name of the Theme option
+    /// that is Lunegit's own look (the user asked for it by that name).
     #[test]
     fn no_user_visible_string_names_lunegit() {
+        const THEME_OPTION: &str = "settings.appearance.theme.option.1";
         for (key, text) in english().iter() {
+            if key == THEME_OPTION {
+                assert_eq!(text, "Lunegit");
+                continue;
+            }
             assert!(
                 !text.to_lowercase().contains("lunegit") && !key.to_lowercase().contains("lunegit"),
                 "{key}: {text}"

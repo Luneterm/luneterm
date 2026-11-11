@@ -31,7 +31,7 @@ use lune_ui::widgets::tone::Tone;
 use crate::fonts;
 use crate::links;
 use crate::session::Geometry;
-use crate::settings::{GlassStyle, Settings};
+use crate::settings::{Settings, Theme as LookTheme};
 use crate::settings_page::{self, PageOut, PageView};
 use crate::shell::{
     self, Chrome, GridPlacement, Layout, Modal, ModalOut, ScrollView, ShellView, StripTab,
@@ -42,25 +42,29 @@ use crate::tabs::TabId;
 /// The saturation the backdrop blur applies (Luneium's menu glass; no backdrop is requested in M9).
 const BACKDROP_SATURATION: f32 = 1.8;
 
-/// The toolkit theme for a window with or without OS glass: without it (Linux, or a material the
-/// OS refused) every glass layer is opaque. With it, the default style is the near-black look (the
-/// toolkit's `near_black::THEME`, whole, so floating surfaces take it too) and the liquid styles
-/// keep Lunegit's layers.
-pub fn theme(glass: bool, style: GlassStyle) -> Theme {
-    match (glass, style) {
-        (true, GlassStyle::Default) => near_black::THEME,
-        (true, _) => THEME,
-        (false, _) => THEME.with_acrylic(AcrylicLevel::Opaque),
+/// The toolkit theme for the app's look, for a window with or without OS glass. The look picks the
+/// layers under every glass style: Luneterm the near-black ones (the toolkit's `near_black::THEME`,
+/// whole, so floating surfaces take it too), Lunegit its own (`THEME`). Without OS glass (Linux, or a
+/// material the OS refused) every layer is opaque.
+pub fn theme(glass: bool, look: LookTheme) -> Theme {
+    let base = match look {
+        LookTheme::Luneterm => near_black::THEME,
+        LookTheme::Lunegit => THEME,
+    };
+    if glass {
+        base
+    } else {
+        base.with_acrylic(AcrylicLevel::Opaque)
     }
 }
 
-/// The tab header's wash over the card, for the theme [`theme`] returns for the same arguments: the
-/// near-black look's with its theme (the app's own value, see `shell::NEAR_BLACK_HEADER_TINT`), the
-/// Lunegit one otherwise (luneui-rs D8: the header is a material of the look, so the app passes it).
-pub fn header_tint(glass: bool, style: GlassStyle) -> [u8; 4] {
-    match (glass, style) {
-        (true, GlassStyle::Default) => shell::NEAR_BLACK_HEADER_TINT,
-        _ => shell::HEADER_TINT,
+/// The tab header's wash over the card, for the look [`theme`] returns the theme of: the near-black
+/// look's with its theme (the app's own value, see `shell::NEAR_BLACK_HEADER_TINT`), Lunegit's with
+/// Lunegit's (luneui-rs D8: the header is a material of the look, so the app passes it).
+pub fn header_tint(look: LookTheme) -> [u8; 4] {
+    match look {
+        LookTheme::Luneterm => shell::NEAR_BLACK_HEADER_TINT,
+        LookTheme::Lunegit => shell::HEADER_TINT,
     }
 }
 
@@ -371,8 +375,8 @@ impl Renderer {
             store: UiStore::default(),
             strings: crate::strings::english(),
             shortcuts: Shortcuts::default(),
-            theme: theme(glass, settings.glass),
-            header_tint: header_tint(glass, settings.glass),
+            theme: theme(glass, settings.theme),
+            header_tint: header_tint(settings.theme),
             tier: settings.tier(),
             blur_sigma: settings.menu_blur.sigma(),
             term_theme,
@@ -407,10 +411,11 @@ impl Renderer {
         self.store = UiStore::default();
     }
 
-    /// Whether OS glass is behind the window: the glass theme, or the opaque one (P22).
-    pub fn set_glass(&mut self, glass: bool, style: GlassStyle) {
-        self.theme = theme(glass, style);
-        self.header_tint = header_tint(glass, style);
+    /// The look and whether OS glass is behind the window: the look's glass theme, or its opaque one
+    /// (P22). The glass style does not enter: it picks the OS material, the look the layers.
+    pub fn set_glass(&mut self, glass: bool, look: LookTheme) {
+        self.theme = theme(glass, look);
+        self.header_tint = header_tint(look);
     }
 
     /// How glyphs are rasterized, for the UI text and every terminal view alike (the
@@ -777,12 +782,10 @@ impl Renderer {
 mod theme_tests {
     use super::*;
 
-    const LIQUID: [GlassStyle; 2] = [GlassStyle::LiquidClear, GlassStyle::LiquidRegular];
-
     #[test]
-    fn default_glass_is_the_near_black_theme_whole() {
+    fn the_luneterm_look_is_the_near_black_theme_whole() {
         // Floating surfaces fill from `menu_glass`: the whole theme, not only its layers.
-        let t = theme(true, GlassStyle::Default);
+        let t = theme(true, LookTheme::Luneterm);
         assert_eq!(t, near_black::THEME);
         assert_eq!(t.glass, near_black::GLASS);
         assert_eq!(t.menu_glass, near_black::MENU_GLASS);
@@ -791,55 +794,62 @@ mod theme_tests {
     }
 
     #[test]
-    fn liquid_styles_keep_lunegits_layers() {
-        for style in LIQUID {
-            let t = theme(true, style);
-            assert_eq!(t, THEME, "{style:?}");
-            assert_eq!(t.glass, THEME.glass, "{style:?}");
-            assert_eq!(t.menu_glass, THEME.menu_glass, "{style:?}");
+    fn the_lunegit_look_is_lunegits_theme_whole() {
+        let t = theme(true, LookTheme::Lunegit);
+        assert_eq!(t, THEME);
+        assert_eq!(t.glass, THEME.glass);
+        assert_eq!(t.menu_glass, THEME.menu_glass);
+    }
+
+    /// Linux, `Off`, a refused material: each look's own layers, opaque.
+    #[test]
+    fn no_glass_is_the_looks_own_theme_made_opaque() {
+        for (look, base) in [
+            (LookTheme::Luneterm, near_black::THEME),
+            (LookTheme::Lunegit, THEME),
+        ] {
+            let t = theme(false, look);
+            assert_eq!(t, base.with_acrylic(AcrylicLevel::Opaque), "{look:?}");
+            assert_eq!(t.menu_glass, base.menu_glass, "{look:?}");
         }
     }
 
+    /// Every (glass, look) to its theme and header tint; the glass style is no input of either,
+    /// the look picks the layers under every style (ui-polish D3).
     #[test]
-    fn no_glass_is_opaque_whatever_the_style() {
-        // Linux, `Off`, a refused material: opaque layers, never `with_acrylic` on the near-black
-        // theme (its layer would come out a lighter grey).
-        let opaque = THEME.with_acrylic(AcrylicLevel::Opaque);
-        for style in GlassStyle::ALL.iter().copied() {
-            let t = theme(false, style);
-            assert_eq!(t, opaque, "{style:?}");
-            assert_eq!(t.glass, opaque.glass, "{style:?}");
-            assert_eq!(t.menu_glass, opaque.menu_glass, "{style:?}");
+    fn every_glass_and_look_pair_has_its_theme_and_tint() {
+        let opaque = AcrylicLevel::Opaque;
+        let table = [
+            (
+                true,
+                LookTheme::Luneterm,
+                near_black::THEME,
+                shell::NEAR_BLACK_HEADER_TINT,
+            ),
+            (true, LookTheme::Lunegit, THEME, shell::HEADER_TINT),
+            (
+                false,
+                LookTheme::Luneterm,
+                near_black::THEME.with_acrylic(opaque),
+                shell::NEAR_BLACK_HEADER_TINT,
+            ),
+            (
+                false,
+                LookTheme::Lunegit,
+                THEME.with_acrylic(opaque),
+                shell::HEADER_TINT,
+            ),
+        ];
+        assert_eq!(table.len(), 2 * LookTheme::ALL.len());
+        for (glass, look, want_theme, want_tint) in table {
+            assert_eq!(theme(glass, look), want_theme, "{glass} {look:?}");
+            assert_eq!(header_tint(look), want_tint, "{look:?}");
         }
-    }
-
-    #[test]
-    fn the_header_tint_follows_the_theme_in_use() {
-        assert_eq!(
-            header_tint(true, GlassStyle::Default),
-            shell::NEAR_BLACK_HEADER_TINT
-        );
         assert_eq!(shell::NEAR_BLACK_HEADER_TINT, [0xFF, 0xFF, 0xFF, 0x10]);
-        for style in LIQUID {
-            assert_eq!(header_tint(true, style), shell::HEADER_TINT, "{style:?}");
-        }
-        for style in GlassStyle::ALL.iter().copied() {
-            assert_eq!(header_tint(false, style), shell::HEADER_TINT, "{style:?}");
-        }
         assert_ne!(shell::NEAR_BLACK_HEADER_TINT, shell::HEADER_TINT);
-    }
-
-    #[test]
-    fn a_style_change_with_the_same_glass_changes_theme_and_tint() {
-        // `Effect::Glass` hands the renderer the glass bool and the style; the pair is the whole
-        // input, so a Default <-> Liquid switch cannot be a no-op.
         assert_ne!(
-            theme(true, GlassStyle::Default),
-            theme(true, GlassStyle::LiquidRegular)
-        );
-        assert_ne!(
-            header_tint(true, GlassStyle::Default),
-            header_tint(true, GlassStyle::LiquidRegular)
+            theme(true, LookTheme::Luneterm),
+            theme(true, LookTheme::Lunegit)
         );
     }
 }
@@ -945,6 +955,19 @@ mod text_tests {
             settings,
             true,
         ))
+    }
+
+    /// `set_glass` is the one door: the renderer's theme and tint are the pair's.
+    #[test]
+    fn set_glass_swaps_the_theme_and_the_tint_together() {
+        let Some(mut r) = renderer() else { return };
+        for glass in [true, false] {
+            for look in LookTheme::ALL.iter().copied() {
+                r.set_glass(glass, look);
+                assert_eq!(r.theme(), &theme(glass, look), "{glass} {look:?}");
+                assert_eq!(r.header_tint, header_tint(look), "{glass} {look:?}");
+            }
+        }
     }
 
     #[test]

@@ -17,6 +17,17 @@ pub const MIN_FONT_SIZE: u32 = 8;
 pub const MAX_FONT_SIZE: u32 = 32;
 pub const DEFAULT_FONT_SIZE: u32 = 14;
 
+/// The look: which layers and header tint the window is drawn with (Lunegit's `lunegit_dark` ones
+/// or the near-black ones), under every [`GlassStyle`]. The persisted names are `luneterm` (the
+/// default) and `lunegit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Theme {
+    /// The near-black glass, the look since M10 step 13.
+    Luneterm,
+    /// Lunegit's own look: the layers and the light vibrancy the app had before the near-black one.
+    Lunegit,
+}
+
 /// The glass behind the window. The persisted name of the default is `default` (plan M10 D6), so
 /// the change of what the default looks like (Lunegit's light vibrancy to the near-black look, step
 /// 13) was a mapping and not a file format.
@@ -81,6 +92,10 @@ macro_rules! named {
     };
 }
 
+named!(Theme {
+    Luneterm => "luneterm",
+    Lunegit => "lunegit",
+});
 named!(GlassStyle {
     Default => "default",
     LiquidClear => "liquid-clear",
@@ -117,6 +132,7 @@ pub const DEFAULT_PALETTE: &str = "One Dark";
 /// chosen: the app's own terminal font then.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
+    pub theme: Theme,
     pub glass: GlassStyle,
     pub menu_blur: BlurLevel,
     pub motion: Motion,
@@ -146,6 +162,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            theme: Theme::Luneterm,
             glass: GlassStyle::Default,
             menu_blur: BlurLevel::Medium,
             motion: Motion::Full,
@@ -204,12 +221,17 @@ impl Settings {
         self
     }
 
-    /// The OS material the glass style asks for. The toolkit's glass does not depend on the
-    /// window's active state, so Lunegit's "material follows the window" has no solid fallback to
-    /// go with it here (and `keep_glass_inactive` is gone: the glass is always active, D8).
+    /// The OS material the glass style asks for; the default style takes the theme's: the
+    /// near-black material for Luneterm, Lunegit's light vibrancy for Lunegit. The toolkit's glass
+    /// does not depend on the window's active state, so Lunegit's "material follows the window" has
+    /// no solid fallback to go with it here (and `keep_glass_inactive` is gone: the glass is always
+    /// active, D8).
     pub fn material(&self) -> Material {
         match self.glass {
-            GlassStyle::Default => near_black::MATERIAL,
+            GlassStyle::Default => match self.theme {
+                Theme::Luneterm => near_black::MATERIAL,
+                Theme::Lunegit => Material::Vibrancy,
+            },
             GlassStyle::LiquidClear => Material::LiquidClear,
             GlassStyle::LiquidRegular => Material::LiquidRegular,
             GlassStyle::Off => Material::Opaque,
@@ -261,6 +283,7 @@ impl Settings {
     /// compile.
     pub fn changed(&self, other: &Settings) -> Vec<SettingId> {
         let Settings {
+            theme,
             glass,
             menu_blur,
             motion,
@@ -282,6 +305,7 @@ impl Settings {
             option_as_meta,
         } = self;
         let flags = [
+            (SettingId::Theme, *theme != other.theme),
             (SettingId::Glass, *glass != other.glass),
             (SettingId::MenuBlur, *menu_blur != other.menu_blur),
             (SettingId::Motion, *motion != other.motion),
@@ -336,6 +360,7 @@ impl Settings {
 /// One setting of the page: a [`Settings`] field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettingId {
+    Theme,
     Glass,
     MenuBlur,
     Motion,
@@ -359,7 +384,8 @@ pub enum SettingId {
 
 impl SettingId {
     /// Every setting, in the order of the [`Settings`] fields.
-    pub const ALL: [SettingId; 19] = [
+    pub const ALL: [SettingId; 20] = [
+        SettingId::Theme,
         SettingId::Glass,
         SettingId::MenuBlur,
         SettingId::Motion,
@@ -384,7 +410,7 @@ impl SettingId {
     /// What changing this setting does (plan M10 step 6's table).
     pub fn effect(self) -> Effect {
         match self {
-            SettingId::Glass => Effect::Glass,
+            SettingId::Theme | SettingId::Glass => Effect::Glass,
             SettingId::MenuBlur => Effect::MenuBlur,
             SettingId::Motion => Effect::Motion,
             SettingId::Font | SettingId::FontSize => Effect::Font,
@@ -409,7 +435,8 @@ impl SettingId {
 /// What the app does when a setting changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Effect {
-    /// `material::apply` on the window, and the glass theme (or the opaque one).
+    /// `material::apply` on the window, and the theme's layers and header tint (or the opaque
+    /// ones): the Theme and the Glass style both do it.
     Glass,
     /// The renderer's menu and dialog blur.
     MenuBlur,
@@ -455,7 +482,7 @@ mod tests {
     #[test]
     fn defaults_are_lunegits() {
         let s = Settings::default();
-        assert_eq!(s.glass, GlassStyle::Default);
+        assert_eq!((s.theme, s.glass), (Theme::Luneterm, GlassStyle::Default));
         assert_eq!((s.font_size, s.scrollback), (14, 5000));
         assert!(s.osc_clipboard && s.confirm_close && s.font_smoothing);
         assert!(!s.report_iterm2 && !s.option_as_meta);
@@ -522,8 +549,66 @@ mod tests {
         assert_eq!(motion(Motion::None).effective_outline(), None);
     }
 
+    /// Every (style, theme) to its OS material: only the default style follows the theme.
+    #[test]
+    fn the_theme_picks_the_material_of_the_default_style_only() {
+        let material = |glass, theme| {
+            Settings {
+                glass,
+                theme,
+                ..Settings::default()
+            }
+            .material()
+        };
+        let table = [
+            (GlassStyle::Default, Theme::Luneterm, near_black::MATERIAL),
+            (GlassStyle::Default, Theme::Lunegit, Material::Vibrancy),
+            (
+                GlassStyle::LiquidClear,
+                Theme::Luneterm,
+                Material::LiquidClear,
+            ),
+            (
+                GlassStyle::LiquidClear,
+                Theme::Lunegit,
+                Material::LiquidClear,
+            ),
+            (
+                GlassStyle::LiquidRegular,
+                Theme::Luneterm,
+                Material::LiquidRegular,
+            ),
+            (
+                GlassStyle::LiquidRegular,
+                Theme::Lunegit,
+                Material::LiquidRegular,
+            ),
+            (GlassStyle::Off, Theme::Luneterm, Material::Opaque),
+            (GlassStyle::Off, Theme::Lunegit, Material::Opaque),
+        ];
+        assert_eq!(table.len(), GlassStyle::ALL.len() * Theme::ALL.len());
+        for (glass, theme, want) in table {
+            assert_eq!(material(glass, theme), want, "{glass:?} {theme:?}");
+        }
+        assert_ne!(near_black::MATERIAL, Material::Vibrancy);
+        // Changing the theme alone applies like a glass change: the window's material and the
+        // renderer's layers, with no restart.
+        let lunegit = Settings {
+            theme: Theme::Lunegit,
+            ..Settings::default()
+        };
+        assert_eq!(effects(&Settings::default(), &lunegit), vec![Effect::Glass]);
+    }
+
     #[test]
     fn enum_names_round_trip_and_are_stable() {
+        for (&t, name) in Theme::ALL.iter().zip(["luneterm", "lunegit"]) {
+            assert_eq!(t.name(), name);
+            assert_eq!(Theme::from_name(name), Some(t));
+        }
+        for bad in ["", "Luneterm", " lunegit", "dark", "default"] {
+            assert_eq!(Theme::from_name(bad), None, "{bad:?}");
+        }
         for (&g, name) in
             GlassStyle::ALL
                 .iter()
@@ -580,6 +665,7 @@ mod tests {
         use Effect as E;
         use SettingId as S;
         let table = [
+            (S::Theme, E::Glass),
             (S::Glass, E::Glass),
             (S::MenuBlur, E::MenuBlur),
             (S::Motion, E::Motion),
@@ -611,7 +697,14 @@ mod tests {
     #[test]
     fn changing_one_field_changes_exactly_its_id() {
         let d = Settings::default();
-        let cases: [(SettingId, Settings); 19] = [
+        let cases: [(SettingId, Settings); 20] = [
+            (
+                SettingId::Theme,
+                Settings {
+                    theme: Theme::Lunegit,
+                    ..d.clone()
+                },
+            ),
             (
                 SettingId::Glass,
                 Settings {
