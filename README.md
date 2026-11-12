@@ -34,11 +34,6 @@ cargo test --workspace
 Linux needs a Vulkan or OpenGL ES driver, `libxkbcommon` and an X11 or Wayland session.
 Prebuilt, unsigned builds are attached to the GitHub releases.
 
-## Roadmap
-
-After the first public release the VT engine (`lune-vt`, the xterm.js port) will move to its own
-repository, so other projects can use it without the terminal app.
-
 ## Layout
 
 `crates/lune-vt` (engine), `lune-pty`, `lune-termview` (grid renderer), `luneterm` (the app),
