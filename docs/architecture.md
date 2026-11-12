@@ -959,7 +959,7 @@ steady flood and no switching `Fifo` at 59 Hz does not wait (acquire 2.2 ms/s). 
 escape from tearing, not a latency setting.
 
 *Not measured:* Windows (DX12), Linux (Vulkan, GL) and any present mode other than `Immediate` on them
-(a run on the Windows laptop decides whether Windows stays on no-wait: STATE.md); **tearing** on any
+(a run on Windows decides whether Windows stays on no-wait); **tearing** on any
 OS (the user's eye check on macOS; Linux X11 without a compositor may tear, and the user accepted
 that); ProMotion displays (the grid follows `refresh_rate_millihertz`, not exercised); a flood of
 pointer moves with a busy tab (moves are paced, not skipped: the toolkit is immediate-mode and only a
@@ -1124,8 +1124,7 @@ bounds are 5x the debug median, not a product claim.
 - *Frame time and the headless render:* `lune-termview`'s `frame_time` is unchanged (the table under
   "lune-termview"); the E8 PNG of a real session is byte-identical to a reference replay on macOS
   and on Windows CI (1040 x 660).
-- *Binary:* macOS arm64 release 11,495,056 bytes, the Windows exe 13,858,304 (STATE.md has the table
-  and the fonts' share).
+- *Binary:* macOS arm64 release 11,495,056 bytes, the Windows exe 13,858,304.
 - *Windows CI* (run 42477613074 at b535456): the e2e harness ran 10 cases with 0 failures; E2 to E5
   and E9 need a Unix tty (`stty`) and skip there; the GPU initialized on the runner.
 
@@ -1164,7 +1163,7 @@ Invariants that keep a split cheap:
 1. No `lune-*` crate depends on a `luneterm*` crate.
 2. No `lune-*` crate holds Luneterm identity (names, env values, copy, paths).
 3. Each library's tests and test data live in its crate directory, or in a tool named for it.
-4. Every crate sets `license` (inherited from the workspace: MIT OR Apache-2.0).
+4. Every crate sets `license` (inherited from the workspace: Apache-2.0).
 
 `scripts/check-lib-boundaries.sh` enforces them with grep rules: no `luneterm` in `lune-*`
 manifests or files (the allow list is `scripts/lib-boundaries.allow`); no clock or environment
