@@ -8,7 +8,9 @@
 //! The tables, constants and comments follow upstream order. Deviations from upstream are in
 //! `// LUNETERM:` blocks:
 //!
-//! 1. D17: the stroke snap in [`translate_args`] ([`snap`]).
+//! 1. D17: the stroke snap in [`translate_args`] ([`snap`]); a coordinate on the far cell edge
+//!    is not snapped, and a box-drawing line width is a whole number of device pixels, so lines
+//!    reach the cell edge and stay crisp at fractional scales (125%, 150%).
 //! 2. A pattern fill on a colourless mask: coverage = pattern x 255, no `CanvasPattern` cache
 //!    (the atlas caches the result).
 //! 3. [`has_custom_char`].
@@ -1118,7 +1120,9 @@ fn draw_box_drawing_char(
     // `Object.entries` lists integer keys ascending; the tables list weights ascending
     for &(font_weight, instructions) in char_definition {
         ctx.begin_path();
-        ctx.line_width = device_pixel_ratio * f64::from(font_weight);
+        // LUNETERM: D17. Whole device pixels (at least 1): a fractional width (1.25 at 125%)
+        // cannot have both edges on pixel boundaries, so the line smeared over two rows.
+        ctx.line_width = js_round(device_pixel_ratio * f64::from(font_weight)).max(1.0);
         let actual_instructions = match instructions {
             Def::Func(f) => {
                 let xp = 0.15;
@@ -1338,7 +1342,9 @@ pub fn translate_args(
             cell_width - (left_padding * device_pixel_ratio) - (right_padding * device_pixel_ratio);
         // Ensure coordinate doesn't escape cell bounds and round to the nearest 0.5 to ensure a crisp
         // line at 100% devicePixelRatio
-        if do_clamp && result[x] != 0.0 {
+        // LUNETERM: D17. The far edge is not snapped: a snap could pull a line's end inside the
+        // cell and leave a gap at every cell boundary.
+        if do_clamp && result[x] != 0.0 && result[x] < cell_width {
             result[x] = clamp(snap(result[x], line_width), cell_width, 0.0);
         }
         // Apply the cell's offset (ie. x*cellWidth)
@@ -1350,7 +1356,7 @@ pub fn translate_args(
         result[y] *= cell_height;
         // Ensure coordinate doesn't escape cell bounds and round to the nearest 0.5 to ensure a crisp
         // line at 100% devicePixelRatio
-        if do_clamp && result[y] != 0.0 {
+        if do_clamp && result[y] != 0.0 && result[y] < cell_height {
             result[y] = clamp(snap(result[y], line_width), cell_height, 0.0);
         }
         // Apply the cell's offset (ie. x*cellHeight)
@@ -1678,5 +1684,75 @@ mod tests {
             "{rows:?}"
         );
         assert_eq!(px(&c, 4, 17), 0);
+    }
+
+    /// Windows display scales: (cell w, cell h, scale).
+    const FRACTIONAL: [(u32, u32, f64); 5] = [
+        (10, 21, 1.25),
+        (11, 22, 1.25),
+        (12, 25, 1.5),
+        (13, 26, 1.5),
+        (14, 30, 1.75),
+    ];
+
+    #[test]
+    fn straight_lines_fill_the_cell_end_to_end_at_fractional_scales() {
+        for (w, h, scale) in FRACTIONAL {
+            for (ch, weight) in [('─', 1.0), ('━', 3.0)] {
+                let c = draw(ch, w, h, scale, 14.0);
+                let lw = js_round(scale * weight).max(1.0) as usize;
+                let lit: Vec<u32> = (0..h)
+                    .filter(|&y| row(&c, y).iter().any(|&v| v > 0))
+                    .collect();
+                assert_eq!(lit.len(), lw, "{ch} {w}x{h} at {scale}: rows {lit:?}");
+                for y in lit {
+                    assert_eq!(
+                        row(&c, y),
+                        vec![255; w as usize],
+                        "{ch} {w}x{h} at {scale}, row {y}"
+                    );
+                }
+            }
+            for (ch, weight) in [('│', 1.0), ('┃', 3.0)] {
+                let c = draw(ch, w, h, scale, 14.0);
+                let lw = js_round(scale * weight).max(1.0) as usize;
+                let lit: Vec<u32> = (0..w)
+                    .filter(|&x| col(&c, x).iter().any(|&v| v > 0))
+                    .collect();
+                assert_eq!(lit.len(), lw, "{ch} {w}x{h} at {scale}: cols {lit:?}");
+                for x in lit {
+                    assert_eq!(
+                        col(&c, x),
+                        vec![255; h as usize],
+                        "{ch} {w}x{h} at {scale}, col {x}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn corners_and_tees_join_their_neighbours_at_fractional_scales() {
+        for (w, h, scale) in FRACTIONAL {
+            let (hl, vl) = (draw('─', w, h, scale, 14.0), draw('│', w, h, scale, 14.0));
+            for &(ch, [l, r, t, b], curved) in JOINS {
+                if curved {
+                    continue;
+                }
+                let g = draw(ch, w, h, scale, 14.0);
+                let edge = |e: Vec<u8>, reference: Vec<u8>, connects: bool, what: &str| {
+                    let want = if connects {
+                        reference
+                    } else {
+                        vec![0; e.len()]
+                    };
+                    assert_eq!(e, want, "{ch} {w}x{h} at {scale}, {what} edge");
+                };
+                edge(col(&g, 0), col(&hl, 0), l, "left");
+                edge(col(&g, w - 1), col(&hl, w - 1), r, "right");
+                edge(row(&g, 0), row(&vl, 0), t, "top");
+                edge(row(&g, h - 1), row(&vl, h - 1), b, "bottom");
+            }
+        }
     }
 }
