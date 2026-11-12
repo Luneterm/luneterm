@@ -6,3 +6,8 @@ node_modules/
 /tools/lunegit-oracle/bin/
 /tools/lunegit-oracle/obj/
 /.claude/
+
+# Internal notes, not published
+/STATE.md
+/docs/tasks/
+/CLAUDE.md

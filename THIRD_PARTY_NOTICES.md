@@ -12,9 +12,8 @@
 | glyphon 0.12.0 text renderer, vendored in the luneui-rs `lune-ui-wgpu` crate (no longer a package of its own since v0.4.0) | inside the luneui-rs toolkit the app links | MIT — `licenses/luneui-rs-glyphon-LICENSE-MIT` (every text luneui-rs bundles is copied as `licenses/luneui-rs-<name>`) |
 | Every Rust crate the shipped binaries are built from | the dependencies of `luneterm` and `luneterm-ffi` | each its own licence — `licenses/THIRD_PARTY_CRATES.txt`, generated from `cargo metadata --locked` by `scripts/gen-licenses.py` (`--check` runs in CI; it fails on a package with no text, an SPDX id with no text in `licenses/spdx/`, or a stale file) |
 
-Luneterm itself is MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`; copies in `licenses/` as
-`luneterm-LICENSE-MIT` and `luneterm-LICENSE-APACHE`, which travel with the Windows exe in CI's
-`luneterm-windows-x64` artifact).
+Luneterm itself is Apache-2.0 (`LICENSE-APACHE`; a copy in `licenses/` as `luneterm-LICENSE-APACHE`,
+which travels with the Windows exe in CI's `luneterm-windows-x64` artifact).
 
 Lunegit itself has no entry: the other Lunegit-derived code in `lune-vt` (the
 protocol-aware key encoder, the kitty keyboard / modifyOtherKeys / XTVERSION / VS16 / OSC 52 /

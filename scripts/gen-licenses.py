@@ -10,7 +10,7 @@ exactly what is committed.
 
 The package set comes only from `cargo metadata --locked --filter-platform <target>`, for four
 targets (the union): the normal dependencies, transitively, of the roots `luneterm` and
-`luneterm-ffi`. Workspace packages are the project's own (LICENSE-MIT, LICENSE-APACHE) and are not
+`luneterm-ffi`. Workspace packages are the project's own (LICENSE-APACHE) and are not
 listed. The list is not read from Cargo.lock or from a grep.
 
 Each package's text is, in order:
@@ -355,7 +355,7 @@ def build(docs, spdx):
     out.append("Roots: %s (normal dependencies, transitively)" % ", ".join(ROOTS))
     out.append("Targets: %s" % ", ".join(TARGETS))
     out.append("Third-party packages: %d" % len(packages))
-    out.append("The project's own packages are not listed: see LICENSE-MIT and LICENSE-APACHE.")
+    out.append("The project's own packages are not listed: see LICENSE-APACHE.")
     out.append("")
     out.append("PACKAGES")
     out.append("name version | licence expression | source | licence texts (ids below)")
@@ -385,7 +385,6 @@ def static_copies(packages):
                     break
     assets = os.path.join(ROOT, "crates", "luneterm", "assets")
     rows = [
-        ("luneterm-LICENSE-MIT", os.path.join(ROOT, "LICENSE-MIT")),
         ("luneterm-LICENSE-APACHE", os.path.join(ROOT, "LICENSE-APACHE")),
         ("RobotoMonoNerdFont.LICENSE.txt", os.path.join(assets, "RobotoMonoNerdFont.LICENSE.txt")),
         ("RznSans.OFL.txt", os.path.join(assets, "RznSans.OFL.txt")),
