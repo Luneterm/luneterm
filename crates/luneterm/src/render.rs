@@ -8,6 +8,7 @@ use lune_termview::{
     CellMetrics, Cursor, Grid, GridLayout, SelectionRange, TermFonts, TermTheme, TermView,
     ViewState, ViewStats,
 };
+use lune_ui::GlassLayer;
 use lune_ui::color::premul;
 use lune_ui::custom::CustomDraw;
 use lune_ui::frame::FrameRenderer;
@@ -31,7 +32,7 @@ use lune_ui::widgets::tone::Tone;
 use crate::fonts;
 use crate::links;
 use crate::session::Geometry;
-use crate::settings::{Settings, Theme as LookTheme};
+use crate::settings::{Settings, Theme as LookTheme, WindowOpacity};
 use crate::settings_page::{self, PageOut, PageView};
 use crate::shell::{
     self, Chrome, GridPlacement, Layout, Modal, ModalOut, ScrollView, ShellView, StripTab,
@@ -45,17 +46,44 @@ const BACKDROP_SATURATION: f32 = 1.8;
 /// The toolkit theme for the app's look, for a window with or without OS glass. The look picks the
 /// layers under every glass style: Luneterm the near-black ones (the toolkit's `near_black::THEME`,
 /// whole, so floating surfaces take it too), Lunegit its own (`THEME`). Without OS glass (Linux, or a
-/// material the OS refused) every layer is opaque.
-pub fn theme(glass: bool, look: LookTheme) -> Theme {
+/// material the OS refused) every layer is opaque, whatever `opacity` is.
+///
+/// `opacity` (p = 0, .25, .5, .75, 1) gives up that share of what each layer still lets through:
+/// a layer's alpha A becomes A + (1 - A) * p, so 1 - A' = (1 - A)(1 - p), and a floating surface's
+/// fill alpha a becomes a + (255 - a) * p. `P0` returns the look's own theme unchanged. Only
+/// alphas move, never a colour.
+pub fn theme(glass: bool, look: LookTheme, opacity: WindowOpacity) -> Theme {
     let base = match look {
         LookTheme::Luneterm => near_black::THEME,
         LookTheme::Lunegit => THEME,
     };
-    if glass {
-        base
-    } else {
-        base.with_acrylic(AcrylicLevel::Opaque)
+    if !glass {
+        return base.with_acrylic(AcrylicLevel::Opaque);
     }
+    let p = opacity.fraction();
+    if p == 0.0 {
+        return base;
+    }
+    let mut t = base;
+    for layer in [&mut t.glass.window, &mut t.glass.panel, &mut t.glass.card] {
+        raise_tint(layer, p);
+    }
+    let a = f32::from(t.menu_glass[3]);
+    t.menu_glass[3] = (a + (255.0 - a) * p).round().clamp(0.0, 255.0) as u8;
+    t
+}
+
+/// Raises a black glass layer's tint so its composite alpha A becomes A + (1 - A) * p.
+///
+/// The layers are tinted black at alpha 255, so the tint's effective opacity is
+/// `tint_opacity * curve.black_max_opacity` (the toolkit's `acrylic_colors`). With t' = t + (1 - t) * p
+/// and the grey luminosity layer under it unchanged, 1 - A' = (1 - t')(1 - l) = (1 - A)(1 - p).
+/// The lever is the tint, not `material_opacity`: that one adds grey and lightens the glass.
+fn raise_tint(layer: &mut GlassLayer, p: f32) {
+    let t = f64::from(layer.tint_opacity) * layer.curve.black_max_opacity;
+    let raised = (t + (1.0 - t) * f64::from(p)).clamp(0.0, 1.0);
+    layer.tint_opacity = 1.0;
+    layer.curve.black_max_opacity = raised;
 }
 
 /// The tab header's wash over the card, for the look [`theme`] returns the theme of: the near-black
@@ -290,6 +318,8 @@ pub struct Renderer {
     header_tint: [u8; 4],
     tier: MotionTier,
     blur_sigma: f32,
+    /// The window opacity setting in force; [`theme`] applies it.
+    window_opacity: WindowOpacity,
     term_theme: TermTheme,
     font_size: f32,
     /// How glyphs are rasterized: the one value the frame's `FrameParams.text` and every grid
@@ -375,10 +405,11 @@ impl Renderer {
             store: UiStore::default(),
             strings: crate::strings::english(),
             shortcuts: Shortcuts::default(),
-            theme: theme(glass, settings.theme),
+            theme: theme(glass, settings.theme, settings.window_opacity),
             header_tint: header_tint(settings.theme),
             tier: settings.tier(),
             blur_sigma: settings.menu_blur.sigma(),
+            window_opacity: settings.window_opacity,
             term_theme,
             font_size,
             text_rendering: settings.text_rendering(),
@@ -414,8 +445,15 @@ impl Renderer {
     /// The look and whether OS glass is behind the window: the look's glass theme, or its opaque one
     /// (P22). The glass style does not enter: it picks the OS material, the look the layers.
     pub fn set_glass(&mut self, glass: bool, look: LookTheme) {
-        self.theme = theme(glass, look);
+        self.theme = theme(glass, look, self.window_opacity);
         self.header_tint = header_tint(look);
+    }
+
+    /// The window opacity of the setting, with the glass and look the theme is built for: only the
+    /// theme is rebuilt, the OS material is not touched.
+    pub fn set_window_opacity(&mut self, opacity: WindowOpacity, glass: bool, look: LookTheme) {
+        self.window_opacity = opacity;
+        self.set_glass(glass, look);
     }
 
     /// How glyphs are rasterized, for the UI text and every terminal view alike (the
@@ -786,7 +824,7 @@ mod theme_tests {
     #[test]
     fn the_luneterm_look_is_the_near_black_theme_whole() {
         // Floating surfaces fill from `menu_glass`: the whole theme, not only its layers.
-        let t = theme(true, LookTheme::Luneterm);
+        let t = theme(true, LookTheme::Luneterm, WindowOpacity::P0);
         assert_eq!(t, near_black::THEME);
         assert_eq!(t.glass, near_black::GLASS);
         assert_eq!(t.menu_glass, near_black::MENU_GLASS);
@@ -796,7 +834,7 @@ mod theme_tests {
 
     #[test]
     fn the_lunegit_look_is_lunegits_theme_whole() {
-        let t = theme(true, LookTheme::Lunegit);
+        let t = theme(true, LookTheme::Lunegit, WindowOpacity::P0);
         assert_eq!(t, THEME);
         assert_eq!(t.glass, THEME.glass);
         assert_eq!(t.menu_glass, THEME.menu_glass);
@@ -809,9 +847,141 @@ mod theme_tests {
             (LookTheme::Luneterm, near_black::THEME),
             (LookTheme::Lunegit, THEME),
         ] {
-            let t = theme(false, look);
+            let t = theme(false, look, WindowOpacity::P0);
             assert_eq!(t, base.with_acrylic(AcrylicLevel::Opaque), "{look:?}");
             assert_eq!(t.menu_glass, base.menu_glass, "{look:?}");
+        }
+    }
+
+    /// The three layers of a theme, by name.
+    fn layers(t: &Theme) -> [(&'static str, GlassLayer); 3] {
+        [
+            ("window", t.glass.window),
+            ("panel", t.glass.panel),
+            ("card", t.glass.card),
+        ]
+    }
+
+    fn base_theme(look: LookTheme) -> Theme {
+        match look {
+            LookTheme::Luneterm => near_black::THEME,
+            LookTheme::Lunegit => THEME,
+        }
+    }
+
+    /// 0% gives the look's own theme, bit for bit: the approved look does not move.
+    #[test]
+    fn zero_opacity_is_the_theme_before_the_setting_existed() {
+        for look in LookTheme::ALL.iter().copied() {
+            assert_eq!(
+                theme(true, look, WindowOpacity::P0),
+                base_theme(look),
+                "{look:?}"
+            );
+        }
+    }
+
+    /// 1 - A' = (1 - A)(1 - p) for every layer of every look (the tint alpha is a u8, so within
+    /// 1/255), and 100% is solid: every layer's alpha is exactly 1.
+    #[test]
+    fn each_layer_gives_up_the_share_p_of_what_it_lets_through() {
+        for look in LookTheme::ALL.iter().copied() {
+            let base = base_theme(look);
+            for w in WindowOpacity::ALL.iter().copied() {
+                let p = w.fraction();
+                let t = theme(true, look, w);
+                for ((name, was), (_, now)) in layers(&base).into_iter().zip(layers(&t)) {
+                    let a = was.premultiplied()[3];
+                    let a2 = now.premultiplied()[3];
+                    let want = (1.0 - a) * (1.0 - p);
+                    assert!(
+                        ((1.0 - a2) - want).abs() <= 1.0 / 255.0,
+                        "{look:?} {name} p={p}: 1-A' = {} want {want}",
+                        1.0 - a2
+                    );
+                    if w == WindowOpacity::P100 {
+                        assert_eq!(a2, 1.0, "{look:?} {name} is solid at 100%");
+                    }
+                }
+            }
+        }
+    }
+
+    /// More opacity never lets more through: the alpha of every layer and of the floating fill
+    /// only grows from 0% to 100%.
+    #[test]
+    fn opacity_only_ever_adds_alpha() {
+        for look in LookTheme::ALL.iter().copied() {
+            let mut last: Option<Theme> = None;
+            for w in WindowOpacity::ALL.iter().copied() {
+                let t = theme(true, look, w);
+                if let Some(prev) = &last {
+                    for ((name, was), (_, now)) in layers(prev).into_iter().zip(layers(&t)) {
+                        assert!(
+                            now.premultiplied()[3] >= was.premultiplied()[3],
+                            "{look:?} {name} {w:?}"
+                        );
+                    }
+                    assert!(t.menu_glass[3] >= prev.menu_glass[3], "{look:?} {w:?}");
+                }
+                last = Some(t);
+            }
+        }
+    }
+
+    /// Floating surfaces: a' = a + (255 - a) * p, rounded; solid at 100%.
+    #[test]
+    fn the_floating_fill_follows_the_same_share() {
+        for look in LookTheme::ALL.iter().copied() {
+            let a = f32::from(base_theme(look).menu_glass[3]);
+            for w in WindowOpacity::ALL.iter().copied() {
+                let got = theme(true, look, w).menu_glass[3];
+                let want = (a + (255.0 - a) * w.fraction()).round() as u8;
+                assert_eq!(got, want, "{look:?} {w:?}");
+            }
+            assert_eq!(theme(true, look, WindowOpacity::P100).menu_glass[3], 255);
+        }
+    }
+
+    /// Only alphas and opacities move: the tint colour, the grey layer and every colour of the
+    /// floating fill stay.
+    #[test]
+    fn opacity_moves_alphas_and_nothing_else() {
+        for look in LookTheme::ALL.iter().copied() {
+            let base = base_theme(look);
+            for w in WindowOpacity::ALL.iter().copied() {
+                let t = theme(true, look, w);
+                for ((name, was), (_, now)) in layers(&base).into_iter().zip(layers(&t)) {
+                    assert_eq!(now.tint, was.tint, "{look:?} {name} {w:?}");
+                    assert_eq!(
+                        now.material_opacity, was.material_opacity,
+                        "{look:?} {name} {w:?}"
+                    );
+                    assert_eq!(now.curve.mid_point, was.curve.mid_point);
+                    assert_eq!(
+                        now.curve.mid_point_max_opacity,
+                        was.curve.mid_point_max_opacity
+                    );
+                    assert_eq!(now.curve.white_max_opacity, was.curve.white_max_opacity);
+                }
+                assert_eq!(t.menu_glass[..3], base.menu_glass[..3], "{look:?} {w:?}");
+                // Everything but the glass and the floating fill is the base theme's.
+                let mut rest = t;
+                rest.glass = base.glass;
+                rest.menu_glass = base.menu_glass;
+                assert_eq!(rest, base, "{look:?} {w:?}");
+            }
+        }
+    }
+
+    /// An opaque window has nothing to raise: the theme is the same at every opacity.
+    #[test]
+    fn without_glass_the_opacity_changes_nothing() {
+        for look in LookTheme::ALL.iter().copied() {
+            let want = theme(false, look, WindowOpacity::P0);
+            for w in WindowOpacity::ALL.iter().copied() {
+                assert_eq!(theme(false, look, w), want, "{look:?} {w:?}");
+            }
         }
     }
 
@@ -843,14 +1013,18 @@ mod theme_tests {
         ];
         assert_eq!(table.len(), 2 * LookTheme::ALL.len());
         for (glass, look, want_theme, want_tint) in table {
-            assert_eq!(theme(glass, look), want_theme, "{glass} {look:?}");
+            assert_eq!(
+                theme(glass, look, WindowOpacity::P0),
+                want_theme,
+                "{glass} {look:?}"
+            );
             assert_eq!(header_tint(look), want_tint, "{look:?}");
         }
         assert_eq!(shell::NEAR_BLACK_HEADER_TINT, [0xFF, 0xFF, 0xFF, 0x10]);
         assert_ne!(shell::NEAR_BLACK_HEADER_TINT, shell::HEADER_TINT);
         assert_ne!(
-            theme(true, LookTheme::Luneterm),
-            theme(true, LookTheme::Lunegit)
+            theme(true, LookTheme::Luneterm, WindowOpacity::P0),
+            theme(true, LookTheme::Lunegit, WindowOpacity::P0)
         );
     }
 }
@@ -965,8 +1139,28 @@ mod text_tests {
         for glass in [true, false] {
             for look in LookTheme::ALL.iter().copied() {
                 r.set_glass(glass, look);
-                assert_eq!(r.theme(), &theme(glass, look), "{glass} {look:?}");
+                assert_eq!(
+                    r.theme(),
+                    &theme(glass, look, WindowOpacity::P0),
+                    "{glass} {look:?}"
+                );
                 assert_eq!(r.header_tint, header_tint(look), "{glass} {look:?}");
+            }
+        }
+    }
+
+    /// The opacity setter rebuilds the theme for the pair in force, and `set_glass` keeps using it.
+    #[test]
+    fn set_window_opacity_rebuilds_the_theme_and_set_glass_keeps_it() {
+        let Some(mut r) = renderer() else { return };
+        for look in LookTheme::ALL.iter().copied() {
+            for w in WindowOpacity::ALL.iter().copied() {
+                r.set_window_opacity(w, true, look);
+                assert_eq!(r.theme(), &theme(true, look, w), "{look:?} {w:?}");
+                r.set_glass(false, look);
+                assert_eq!(r.theme(), &theme(false, look, w), "{look:?} {w:?}");
+                r.set_glass(true, look);
+                assert_eq!(r.theme(), &theme(true, look, w), "{look:?} {w:?}");
             }
         }
     }

@@ -1091,6 +1091,16 @@ impl App {
                     stack.renderer.set_glass(self.glass, self.settings.theme);
                 }
             }
+            Effect::WindowOpacity => {
+                // The theme only: the OS material is the Glass effect's, and does not change.
+                if let Some(stack) = &mut self.stack {
+                    stack.renderer.set_window_opacity(
+                        self.settings.window_opacity,
+                        self.glass,
+                        self.settings.theme,
+                    );
+                }
+            }
             Effect::MenuBlur => {
                 if let Some(stack) = &mut self.stack {
                     stack.renderer.set_blur(self.settings.menu_blur.sigma());

@@ -13,7 +13,7 @@ use lune_ui::json::{self, Value};
 
 use super::json_write::{Json, WriteError};
 use super::{Reject, read_version};
-use crate::settings::{BlurLevel, GlassStyle, Motion, OutlineAnim, Settings, Theme};
+use crate::settings::{BlurLevel, GlassStyle, Motion, OutlineAnim, Settings, Theme, WindowOpacity};
 
 /// The version this build writes and reads.
 pub const SETTINGS_VERSION: i64 = 1;
@@ -27,10 +27,11 @@ pub struct SettingsDoc {
 }
 
 /// The names this build writes, in the order it writes them.
-const KEYS: [&str; 20] = [
+const KEYS: [&str; 21] = [
     "theme",
     "glass",
     "menu_blur",
+    "window_opacity",
     "motion",
     "font",
     "font_size",
@@ -100,6 +101,12 @@ pub fn parse_settings(bytes: &[u8]) -> Result<SettingsDoc, Reject> {
     named(members, "theme", &mut s.theme, Theme::from_name);
     named(members, "glass", &mut s.glass, GlassStyle::from_name);
     named(members, "menu_blur", &mut s.menu_blur, BlurLevel::from_name);
+    named(
+        members,
+        "window_opacity",
+        &mut s.window_opacity,
+        WindowOpacity::from_name,
+    );
     named(members, "motion", &mut s.motion, Motion::from_name);
     text(members, "font", &mut s.font);
     number(members, "font_size", &mut s.font_size);
@@ -137,6 +144,10 @@ pub fn render_settings(doc: &SettingsDoc) -> Result<String, WriteError> {
         ("theme".into(), Json::Str(s.theme.name().into())),
         ("glass".into(), Json::Str(s.glass.name().into())),
         ("menu_blur".into(), Json::Str(s.menu_blur.name().into())),
+        (
+            "window_opacity".into(),
+            Json::Str(s.window_opacity.name().into()),
+        ),
         ("motion".into(), Json::Str(s.motion.name().into())),
         ("font".into(), Json::Str(s.font)),
         ("font_size".into(), int(s.font_size)),
@@ -171,6 +182,7 @@ mod tests {
             theme: Theme::Lunegit,
             glass: GlassStyle::LiquidRegular,
             menu_blur: BlurLevel::High,
+            window_opacity: WindowOpacity::P75,
             motion: Motion::Reduced,
             font: "Some Mono".into(),
             font_size: 17,
@@ -200,6 +212,41 @@ mod tests {
             };
             let text = render_settings(&doc).expect("writes");
             assert_eq!(parse_settings(text.as_bytes()), Ok(doc));
+        }
+    }
+
+    #[test]
+    fn every_window_opacity_round_trips_by_its_percentage_name() {
+        for w in WindowOpacity::ALL.iter().copied() {
+            let doc = SettingsDoc {
+                settings: Settings {
+                    window_opacity: w,
+                    ..Settings::default()
+                },
+                unknown: Vec::new(),
+            };
+            let text = render_settings(&doc).expect("writes");
+            assert!(
+                text.contains(&format!("\"window_opacity\":\"{}\"", w.name())),
+                "{text}"
+            );
+            assert_eq!(parse_settings(text.as_bytes()), Ok(doc));
+        }
+    }
+
+    #[test]
+    fn a_missing_or_unknown_window_opacity_loads_as_zero() {
+        let d = Settings::default();
+        assert_eq!(d.window_opacity, WindowOpacity::P0);
+        for file in [
+            r#"{"version":1}"#,
+            r#"{"version":1,"window_opacity":"33"}"#,
+            r#"{"version":1,"window_opacity":""}"#,
+            r#"{"version":1,"window_opacity":50}"#,
+        ] {
+            let doc = parse_settings(file.as_bytes()).expect("a lenient read");
+            assert_eq!(doc.settings.window_opacity, WindowOpacity::P0, "{file}");
+            assert!(doc.unknown.is_empty(), "{file}: the key is known");
         }
     }
 
