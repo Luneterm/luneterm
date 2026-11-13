@@ -23,7 +23,7 @@ use crate::palettes::PALETTES;
 use crate::session::MAX_SCROLLBACK;
 use crate::settings::{
     BlurLevel, GlassStyle, MAX_FONT_SIZE, MAX_NAME_BYTES, MAX_SHELL_BYTES, MIN_FONT_SIZE, Motion,
-    OutlineAnim, SettingId, Settings, Theme, text_ok,
+    OutlineAnim, SettingId, Settings, Theme, WindowOpacity, text_ok,
 };
 use crate::shell::HOST_GLASS;
 
@@ -135,6 +135,11 @@ static APPEARANCE: [Group; 2] = [
                 SettingId::Glass,
                 Control::Combo,
                 "settings.appearance.glass",
+            ),
+            row(
+                SettingId::WindowOpacity,
+                Control::Combo,
+                "settings.appearance.windowOpacity",
             ),
             row(
                 SettingId::MenuBlur,
@@ -317,6 +322,10 @@ fn option_keys(id: SettingId) -> Vec<String> {
         SettingId::MenuBlur => {
             numbered("settings.appearance.menuBlur.option", BlurLevel::ALL.len())
         }
+        SettingId::WindowOpacity => numbered(
+            "settings.appearance.windowOpacity.option",
+            WindowOpacity::ALL.len(),
+        ),
         SettingId::Motion => numbered("settings.appearance.motion.option", Motion::ALL.len()),
         SettingId::Outline => numbered(
             "settings.terminal.appearance.runningOutlineStyle.option",
@@ -359,6 +368,10 @@ pub fn selected(settings: &Settings, id: SettingId) -> usize {
             .iter()
             .position(|b| *b == settings.menu_blur)
             .unwrap_or(0),
+        SettingId::WindowOpacity => WindowOpacity::ALL
+            .iter()
+            .position(|w| *w == settings.window_opacity)
+            .unwrap_or(0),
         SettingId::Motion => Motion::ALL
             .iter()
             .position(|m| *m == settings.motion)
@@ -393,6 +406,11 @@ pub fn choose(settings: &mut Settings, id: SettingId, i: usize) {
         SettingId::MenuBlur => {
             if let Some(b) = BlurLevel::ALL.get(i) {
                 settings.menu_blur = *b;
+            }
+        }
+        SettingId::WindowOpacity => {
+            if let Some(w) = WindowOpacity::ALL.get(i) {
+                settings.window_opacity = *w;
             }
         }
         SettingId::Motion => {
@@ -1078,6 +1096,38 @@ mod tests {
         }
     }
 
+    /// The Window opacity row: five options, one per value, after Glass style; an index past the
+    /// list changes nothing.
+    #[test]
+    fn the_window_opacity_row_lists_the_five_values_after_the_glass_style() {
+        let strings = crate::strings::english();
+        let labels = options(&strings, SettingId::WindowOpacity);
+        assert_eq!(labels.len(), 5);
+        assert_eq!(labels.len(), WindowOpacity::ALL.len());
+        assert_eq!(labels[0], "0% (default)");
+        assert_eq!(labels[4], "100% · solid");
+        for (i, w) in WindowOpacity::ALL.iter().enumerate() {
+            let mut s = Settings::default();
+            choose(&mut s, SettingId::WindowOpacity, i);
+            assert_eq!(s.window_opacity, *w);
+            assert_eq!(selected(&s, SettingId::WindowOpacity), i);
+        }
+        let mut s = Settings::default();
+        choose(&mut s, SettingId::WindowOpacity, 5);
+        assert_eq!(s, Settings::default());
+        let window = &groups(Section::Appearance)[0];
+        let ids: Vec<SettingId> = window.rows.iter().map(|r| r.id).collect();
+        let glass = ids
+            .iter()
+            .position(|i| *i == SettingId::Glass)
+            .expect("the Glass row");
+        assert_eq!(ids[glass + 1], SettingId::WindowOpacity);
+        assert_eq!(
+            strings.tr(&format!("{}.title", window.rows[glass + 1].key)),
+            "Window opacity"
+        );
+    }
+
     #[test]
     fn each_combo_row_stores_the_value_the_table_names() {
         let mut s = Settings::default();
@@ -1094,6 +1144,9 @@ mod tests {
         assert_eq!(s.menu_blur, BlurLevel::High);
         choose(&mut s, SettingId::Motion, 1);
         assert_eq!(s.motion, Motion::Reduced);
+        choose(&mut s, SettingId::WindowOpacity, 3);
+        assert_eq!(s.window_opacity, WindowOpacity::P75);
+        assert_eq!(selected(&s, SettingId::WindowOpacity), 3);
         choose(&mut s, SettingId::Outline, 1);
         assert_eq!(s.outline, OutlineAnim::Comet);
         choose(&mut s, SettingId::Palette, 4);
