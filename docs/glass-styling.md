@@ -89,6 +89,19 @@ unsmoothed look is also reachable for dumps (`LUNETERM_DUMP_TEXT=off`) and in th
 (`attributes-text-off@2x`). Box, block
 and powerline glyphs are drawn procedurally and look the same either way.
 
+## Window opacity
+
+Luneterm adds a setting Lunegit does not have (Settings > Appearance > Window, "Window opacity",
+file key `window_opacity`, saved as `"0"`, `"25"`, `"50"`, `"75"` or `"100"`, applied live): p = 0, .25,
+.5, .75 or 1. Every glass layer's composite alpha A becomes A + (1 - A) * p, so 1 - A' = (1 - A)(1 - p):
+the share p of what the layer still let through is given up. The lever is the black tint (the layer's
+effective tint opacity t = `tint_opacity` * `black_max_opacity` becomes t + (1 - t) * p, with
+`tint_opacity` = 1), not `material_opacity`, which adds grey and would lighten the glass. The floating
+surfaces' fill (`menu_glass`) follows: its alpha a becomes a + (255 - a) * p, rounded. Only alphas move,
+never a colour. The rule is the same under both themes; at 100 % every layer and the floating fill are
+solid. p = 0 (the default) is the approved look, unchanged to the byte. Where the window is already
+opaque (Linux, Glass style Off) the setting has no effect.
+
 ## Open items
 
 - Blur radius and noise texture: Lunegit uses Avalonia's acrylic defaults. Read Avalonia's
