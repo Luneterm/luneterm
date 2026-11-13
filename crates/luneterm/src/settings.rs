@@ -64,6 +64,31 @@ impl BlurLevel {
     }
 }
 
+/// How much of the window the glass makes solid (a Luneterm-only setting): each glass layer's alpha
+/// A becomes A + (1 - A) * p, and the floating surfaces' fill likewise. `P0` is the look as
+/// designed; `P100` is solid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowOpacity {
+    P0,
+    P25,
+    P50,
+    P75,
+    P100,
+}
+
+impl WindowOpacity {
+    /// The share `p` of the remaining see-through given up, 0.0..=1.0.
+    pub fn fraction(self) -> f32 {
+        match self {
+            Self::P0 => 0.0,
+            Self::P25 => 0.25,
+            Self::P50 => 0.5,
+            Self::P75 => 0.75,
+            Self::P100 => 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutlineAnim {
     Sweep,
@@ -112,6 +137,13 @@ named!(BlurLevel {
     Medium => "medium",
     High => "high",
 });
+named!(WindowOpacity {
+    P0 => "0",
+    P25 => "25",
+    P50 => "50",
+    P75 => "75",
+    P100 => "100",
+});
 named!(OutlineAnim {
     Sweep => "sweep",
     Comet => "comet",
@@ -135,6 +167,9 @@ pub struct Settings {
     pub theme: Theme,
     pub glass: GlassStyle,
     pub menu_blur: BlurLevel,
+    /// How solid the glass is (Appearance > Window); no effect where the window is already opaque
+    /// (Linux, Glass style Off). A Luneterm-only setting: Lunegit has none.
+    pub window_opacity: WindowOpacity,
     pub motion: Motion,
     pub font: String,
     pub font_size: u32,
@@ -165,6 +200,7 @@ impl Default for Settings {
             theme: Theme::Luneterm,
             glass: GlassStyle::Default,
             menu_blur: BlurLevel::Medium,
+            window_opacity: WindowOpacity::P0,
             motion: Motion::Full,
             font: String::new(),
             font_size: DEFAULT_FONT_SIZE,
@@ -286,6 +322,7 @@ impl Settings {
             theme,
             glass,
             menu_blur,
+            window_opacity,
             motion,
             font,
             font_size,
@@ -308,6 +345,10 @@ impl Settings {
             (SettingId::Theme, *theme != other.theme),
             (SettingId::Glass, *glass != other.glass),
             (SettingId::MenuBlur, *menu_blur != other.menu_blur),
+            (
+                SettingId::WindowOpacity,
+                *window_opacity != other.window_opacity,
+            ),
             (SettingId::Motion, *motion != other.motion),
             (SettingId::Font, *font != other.font),
             (SettingId::FontSize, *font_size != other.font_size),
@@ -363,6 +404,7 @@ pub enum SettingId {
     Theme,
     Glass,
     MenuBlur,
+    WindowOpacity,
     Motion,
     Font,
     FontSize,
@@ -384,10 +426,11 @@ pub enum SettingId {
 
 impl SettingId {
     /// Every setting, in the order of the [`Settings`] fields.
-    pub const ALL: [SettingId; 20] = [
+    pub const ALL: [SettingId; 21] = [
         SettingId::Theme,
         SettingId::Glass,
         SettingId::MenuBlur,
+        SettingId::WindowOpacity,
         SettingId::Motion,
         SettingId::Font,
         SettingId::FontSize,
@@ -412,6 +455,7 @@ impl SettingId {
         match self {
             SettingId::Theme | SettingId::Glass => Effect::Glass,
             SettingId::MenuBlur => Effect::MenuBlur,
+            SettingId::WindowOpacity => Effect::WindowOpacity,
             SettingId::Motion => Effect::Motion,
             SettingId::Font | SettingId::FontSize => Effect::Font,
             SettingId::FontSmoothing => Effect::TextRendering,
@@ -440,6 +484,8 @@ pub enum Effect {
     Glass,
     /// The renderer's menu and dialog blur.
     MenuBlur,
+    /// The renderer's theme, rebuilt with the new opacity (no `material::apply`).
+    WindowOpacity,
     /// The renderer's motion tier.
     Motion,
     /// The renderer's terminal fonts, and the geometry sent again to every tab.
@@ -598,6 +644,15 @@ mod tests {
             ..Settings::default()
         };
         assert_eq!(effects(&Settings::default(), &lunegit), vec![Effect::Glass]);
+        // The window opacity alone rebuilds the theme and never re-applies the OS material.
+        let opaque = Settings {
+            window_opacity: WindowOpacity::P50,
+            ..Settings::default()
+        };
+        assert_eq!(
+            effects(&Settings::default(), &opaque),
+            vec![Effect::WindowOpacity]
+        );
     }
 
     #[test]
@@ -625,6 +680,15 @@ mod tests {
         }
         for o in OutlineAnim::ALL {
             assert_eq!(OutlineAnim::from_name(o.name()), Some(*o));
+        }
+        for w in WindowOpacity::ALL {
+            assert_eq!(WindowOpacity::from_name(w.name()), Some(*w));
+        }
+        // The fractions are the percentages, in order.
+        let fractions: Vec<f32> = WindowOpacity::ALL.iter().map(|w| w.fraction()).collect();
+        assert_eq!(fractions, [0.0, 0.25, 0.5, 0.75, 1.0]);
+        for bad in ["", "33", "p25", "25%", " 25", "100 "] {
+            assert_eq!(WindowOpacity::from_name(bad), None, "{bad:?}");
         }
         // Text that is not a name is no variant, whatever its case or padding.
         for bad in ["", "Default", " default", "default ", "0", "liquid_clear"] {
@@ -668,6 +732,7 @@ mod tests {
             (S::Theme, E::Glass),
             (S::Glass, E::Glass),
             (S::MenuBlur, E::MenuBlur),
+            (S::WindowOpacity, E::WindowOpacity),
             (S::Motion, E::Motion),
             (S::Font, E::Font),
             (S::FontSize, E::Font),
@@ -697,7 +762,7 @@ mod tests {
     #[test]
     fn changing_one_field_changes_exactly_its_id() {
         let d = Settings::default();
-        let cases: [(SettingId, Settings); 20] = [
+        let cases: [(SettingId, Settings); 21] = [
             (
                 SettingId::Theme,
                 Settings {
@@ -716,6 +781,13 @@ mod tests {
                 SettingId::MenuBlur,
                 Settings {
                     menu_blur: BlurLevel::High,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::WindowOpacity,
+                Settings {
+                    window_opacity: WindowOpacity::P50,
                     ..d.clone()
                 },
             ),
