@@ -5,8 +5,9 @@
 //! An offscreen 3840x2160 target at scale 2 holds a dense grid (random printable ASCII, palette
 //! and RGB colours, 20% bold, 10% underlined) drawn from a fixed-seed xorshift. After 20 warm-up
 //! frames, 200 frames are timed for each case: (a) every row dirty, (b) one dirty row,
-//! (c) only the cursor blink toggling. Prints the median and p95 of `update` (CPU) and of
-//! `prepare` + `render` + submit + `device.poll(wait)`. Without an adapter it says so and exits 0.
+//! (c) only the cursor blink toggling; all three with ligatures off, then on. Prints the median
+//! and p95 of `update` (CPU) and of `prepare` + `render` + submit + `device.poll(wait)`. Without an
+//! adapter it says so and exits 0.
 
 use std::path::Path;
 use std::time::Instant;
@@ -71,7 +72,7 @@ fn summarize(label: &str, mut update: Vec<f64>, mut gpu: Vec<f64>) {
     update.sort_by(f64::total_cmp);
     gpu.sort_by(f64::total_cmp);
     println!(
-        "{label:<28} update  median {:7.3} ms  p95 {:7.3} ms | prepare+render+submit+poll  median {:7.3} ms  p95 {:7.3} ms",
+        "{label:<40} update  median {:7.3} ms  p95 {:7.3} ms | prepare+render+submit+poll  median {:7.3} ms  p95 {:7.3} ms",
         percentile(&update, 0.5),
         percentile(&update, 0.95),
         percentile(&gpu, 0.5),
@@ -122,9 +123,15 @@ fn main() {
         line_height: 17.0,
         emoji_family: None,
         icon_family: None,
+        ligatures: false,
     };
 
-    let mut tv = TermView::new(&device, FORMAT, fonts, TermTheme::lunegit_one_dark());
+    let mut tv = TermView::new(
+        &device,
+        FORMAT,
+        fonts.clone(),
+        TermTheme::lunegit_one_dark(),
+    );
     let m = tv.metrics(&mut fs, SCALE);
     let (cols, rows) = ((SIZE.0 / m.cell_w) as usize, (SIZE.1 / m.cell_h) as usize);
     println!(
@@ -199,13 +206,6 @@ fn main() {
         (update_ms, t1.elapsed().as_secs_f64() * 1e3)
     };
 
-    // Prime every row (atlas fill, buffer sizing) before the cases.
-    let mut blink = true;
-    for _ in 0..WARMUP {
-        grid.mark_all_dirty();
-        one(&mut grid, &mut tv, blink);
-    }
-
     type Case = (&'static str, fn(&mut Grid, &mut Rng, usize, usize));
     let cases: [Case; 3] = [
         ("(a) all rows dirty", |g, _, _, _| g.mark_all_dirty()),
@@ -214,20 +214,37 @@ fn main() {
         }),
         ("(c) cursor blink only", |_, _, _, _| {}),
     ];
-    for (label, prep) in cases {
-        for i in 0..WARMUP {
-            prep(&mut grid, &mut rng, rows, i);
-            blink = !blink;
+    let mut blink = true;
+    for ligatures in [false, true] {
+        tv.set_fonts(TermFonts {
+            ligatures,
+            ..fonts.clone()
+        });
+        // Prime every row (atlas fill, buffer sizing) before the cases.
+        for _ in 0..WARMUP {
+            grid.mark_all_dirty();
             one(&mut grid, &mut tv, blink);
         }
-        let (mut upd, mut gpu) = (Vec::new(), Vec::new());
-        for i in 0..FRAMES {
-            prep(&mut grid, &mut rng, rows, i);
-            blink = !blink;
-            let (u, g) = one(&mut grid, &mut tv, blink);
-            upd.push(u);
-            gpu.push(g);
+        let on_off = if ligatures {
+            "ligatures on"
+        } else {
+            "ligatures off"
+        };
+        for (label, prep) in cases {
+            for i in 0..WARMUP {
+                prep(&mut grid, &mut rng, rows, i);
+                blink = !blink;
+                one(&mut grid, &mut tv, blink);
+            }
+            let (mut upd, mut gpu) = (Vec::new(), Vec::new());
+            for i in 0..FRAMES {
+                prep(&mut grid, &mut rng, rows, i);
+                blink = !blink;
+                let (u, g) = one(&mut grid, &mut tv, blink);
+                upd.push(u);
+                gpu.push(g);
+            }
+            summarize(&format!("{label}, {on_off}"), upd, gpu);
         }
-        summarize(label, upd, gpu);
     }
 }

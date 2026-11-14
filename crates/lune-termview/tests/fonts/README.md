@@ -7,15 +7,25 @@ fonts: `RznMono.OFL.txt`, `RobotoMonoNerdFont.LICENSE.txt`, `NotoSansSymbols2.OF
 `TwemojiLunegit.LICENSE.md`.
 
 Tool: fontTools 4.58.0 (`pyftsubset`). Re-running a command reproduces the committed file
-byte for byte (checked for the RznMono Regular subset). `$LF` is Lunegit's
+byte for byte (checked for the RznMono Regular subset, 2026-11-14). `$LF` is Lunegit's
 `src/Lunegit.Desktop/Assets/Fonts`; `$A` is the app crate's `assets` directory, with its bundled copies of
-RznMono 0.007 (`RznMono-{Regular,Bold,Italic,BoldItalic}.ttf`, from `fonts/rznmono/desktop` in the
-RznSans repository) and RobotoMono Nerd Font Mono (see `THIRD_PARTY_NOTICES.md`).
+RznMono 1.000 (`RznMono-{Regular,Bold,Italic,BoldItalic}.ttf`, from `fonts/rznmono/desktop` in the
+RznSans repository at tag `rznmono-v1.000`).
 
-The RznMono subsets are the terminal font. The RobotoMono subsets hold **private-use icons only**:
-they are the app's fallback face for the Nerd icons RznMono does not have (M10 D9a), so a Latin
-character missing from a RznMono subset shows as tofu in a golden and cannot pass quietly through
-the fallback.
+The RznMono subsets are the terminal font. `--layout-features='*'` keeps the `calt` feature, and
+closure pulls in the ligature glyphs (the spacer `LIG` and the 128 `.liga` glyphs, every one of
+them built from the characters kept), so the ligature tests and goldens run on them. Every
+outline, advance and hint of the earlier 0.007 subsets is unchanged in 1.000, so the goldens
+drawn before the swap stayed byte-identical.
+
+The RobotoMono subsets hold **private-use icons only** and are **test fixtures**, never bundled:
+the app dropped RobotoMono Nerd Font (rznmono-1000 D1; RznMono 1.000 has the Nerd icons), but the
+RznMono subsets carry none of U+F000-F02F, so these keep proving the generic `icon_family`
+mechanism (a second family for the icons the primary lacks; RznMono cannot be both, an
+`icon_family` equal to the family is skipped). A Latin character missing from a RznMono subset
+shows as tofu in a golden and cannot pass quietly through them. They were cut from RobotoMono Nerd
+Font Mono as bundled before rznmono-1000 (`$R` below: the app crate's `assets` directory at
+commit `e5a8e01`; its licence and notice are in that commit's `THIRD_PARTY_NOTICES.md`).
 
 ```bash
 RU="U+0020-007E,U+00A0-00FF,U+0300-036F,U+2500-259F,U+E0A0-E0A3,U+E0B0-E0B3"
@@ -24,7 +34,7 @@ for w in Regular Bold Italic BoldItalic; do
     --glyph-names --notdef-outline --name-IDs='*' --output-file=RznMono-$w.subset.ttf
 done
 for w in Regular Bold; do
-  pyftsubset $A/RobotoMonoNerdFontMono-$w.ttf --unicodes="U+F000-F02F,U+F07B" --layout-features='*' \
+  pyftsubset $R/RobotoMonoNerdFontMono-$w.ttf --unicodes="U+F000-F02F,U+F07B" --layout-features='*' \
     --glyph-names --notdef-outline --name-IDs='*' --output-file=RobotoMonoNerdFontMono-$w.pua.subset.ttf
 done
 pyftsubset "$LF/NotoSansSymbols2-Regular.ttf" \
@@ -37,10 +47,10 @@ pyftsubset "$LF/TwemojiLunegit.ttf" \
 
 | file | bytes | codepoints present (cmap) |
 |---|---|---|
-| `RznMono-Regular.subset.ttf` | 69632 | 365: U+0020-007E, U+00A0-00FF, U+0300-0301, U+0303, U+0309, U+030F, U+0323, U+2500-259F, U+E0A0-E0A3, U+E0B0-E0B3 |
-| `RznMono-Bold.subset.ttf` | 71668 | same 365 |
-| `RznMono-Italic.subset.ttf` | 71628 | same 365 |
-| `RznMono-BoldItalic.subset.ttf` | 74676 | same 365 |
+| `RznMono-Regular.subset.ttf` | 131444 | 365: U+0020-007E, U+00A0-00FF, U+0300-0301, U+0303, U+0309, U+030F, U+0323, U+2500-259F, U+E0A0-E0A3, U+E0B0-E0B3; GSUB `calt`, `cv01`; 128 `.liga` glyphs |
+| `RznMono-Bold.subset.ttf` | 135804 | same |
+| `RznMono-Italic.subset.ttf` | 133440 | same |
+| `RznMono-BoldItalic.subset.ttf` | 138812 | same |
 | `RobotoMonoNerdFontMono-Regular.pua.subset.ttf` | 11280 | 49: U+F000-F02F, U+F07B |
 | `RobotoMonoNerdFontMono-Bold.pua.subset.ttf` | 11336 | same 49 |
 | `NotoSansSymbols2.subset.ttf` | 2576 | U+23FA, U+2605, U+26A0, U+2733, U+273B (all five asked for) |

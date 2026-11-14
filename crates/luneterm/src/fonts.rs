@@ -93,6 +93,7 @@ pub fn term_fonts(text: &mut TextCache, settings: &Settings) -> TermFonts {
         line_height: natural_line_height(&mut text.fonts, family, size),
         emoji_family: Some(emoji_family().to_owned()),
         icon_family: Some(MONO_FONT.to_owned()),
+        ligatures: true, // the Ligatures setting (step 3 of rznmono-1000) replaces this
     }
 }
 

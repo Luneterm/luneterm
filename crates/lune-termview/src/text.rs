@@ -26,6 +26,9 @@ pub struct TermFonts {
     /// fallback tries the platform's list first (Segoe UI Symbol on Windows maps part of the
     /// private-use area), so the first face that happens to map the code point would win.
     pub icon_family: Option<String>,
+    /// Draw the font's contextual ligatures (`calt`) over runs of ASCII punctuation (`->`,
+    /// `!=`, `<!--`): each cell keeps its own placement, only its glyph changes.
+    pub ligatures: bool,
 }
 
 fn sane_scale(s: f32) -> f32 {
@@ -92,6 +95,40 @@ fn shape_line(
         }
     }
     (glyphs, advance)
+}
+
+/// `text` shaped with harfrust in `font` (default features), left to right: (glyph id, cluster,
+/// x advance) per glyph, font units.
+pub(crate) fn harf_shape(font: &cosmic_text::Font, text: &str) -> Vec<(u32, u32, i32)> {
+    let mut ub = harfrust::UnicodeBuffer::new();
+    ub.push_str(text);
+    ub.guess_segment_properties();
+    ub.set_direction(harfrust::Direction::LeftToRight);
+    let out = font.shaper().shape(ub, &[]);
+    out.glyph_infos()
+        .iter()
+        .zip(out.glyph_positions())
+        .map(|(i, p)| (i.glyph_id, i.cluster, p.x_advance))
+        .collect()
+}
+
+/// A ligature run's glyph ids, when the shaped result keeps one cell per char: one glyph per
+/// byte (the text is ASCII), clusters 0..n in order, equal positive advances, ids that fit u16
+/// and are not .notdef.
+fn run_glyphs(font: &cosmic_text::Font, text: &str) -> Option<Box<[u16]>> {
+    let shaped = harf_shape(font, text);
+    let adv = shaped.first()?.2;
+    if shaped.len() != text.len() || adv <= 0 {
+        return None;
+    }
+    shaped
+        .iter()
+        .enumerate()
+        .map(|(i, &(id, cluster, a))| {
+            let id = u16::try_from(id).ok().filter(|&id| id != 0)?;
+            (cluster as usize == i && a == adv).then_some(id)
+        })
+        .collect()
 }
 
 /// Shapes "W" in `family`; returns the resolved face's (ascent, descent) in em, read with swash,
@@ -215,6 +252,7 @@ struct FontSig {
     line_height_bits: u32,
     emoji_family: Option<String>,
     icon_family: Option<String>,
+    ligatures: bool,
 }
 
 impl FontSig {
@@ -224,15 +262,23 @@ impl FontSig {
             && self.family == f.family
             && self.emoji_family == f.emoji_family
             && self.icon_family == f.icon_family
+            && self.ligatures == f.ligatures
     }
 }
 
-/// Shaping cache keyed by (text, bold, italic). The cache is cleared when it holds
-/// [`MAX_CACHED`] entries, by [`Shaper::clear`], and whenever the fonts passed in change.
+/// A shaped ligature run: the face it was shaped in and, when the result passed validation,
+/// one glyph id per char.
+type LigRun = (fontdb::ID, Option<Box<[u16]>>);
+
+/// Shaping cache keyed by (text, bold, italic), and a ligature-run cache keyed the same way.
+/// Both are cleared together when either holds [`MAX_CACHED`] entries, by [`Shaper::clear`],
+/// and whenever the fonts passed in change.
 pub struct Shaper {
     // indexed by `bold as usize | (italic as usize) << 1`
     cache: [HashMap<String, Shaped>; 4],
     len: usize,
+    ligs: [HashMap<String, LigRun>; 4],
+    lig_len: usize,
     sig: Option<FontSig>,
     buffer: Option<Buffer>,
     empty: Shaped,
@@ -257,18 +303,89 @@ impl Shaper {
         Shaper {
             cache: Default::default(),
             len: 0,
+            ligs: Default::default(),
+            lig_len: 0,
             sig: None,
             buffer: None,
             empty: Shaped::default(),
         }
     }
 
-    /// Drop every cached cluster.
+    /// Drop every cached cluster and ligature run.
     pub fn clear(&mut self) {
         for m in &mut self.cache {
             m.clear();
         }
+        for m in &mut self.ligs {
+            m.clear();
+        }
         self.len = 0;
+        self.lig_len = 0;
+    }
+
+    /// Ligature runs currently cached.
+    pub fn ligature_runs(&self) -> usize {
+        self.lig_len
+    }
+
+    /// Start over when `fonts` is not what the caches were filled with.
+    fn check_sig(&mut self, fonts: &TermFonts) {
+        if !self.sig.as_ref().is_some_and(|s| s.matches(fonts)) {
+            self.clear();
+            self.sig = Some(FontSig {
+                family: fonts.family.clone(),
+                size_bits: fonts.size.to_bits(),
+                line_height_bits: fonts.line_height.to_bits(),
+                emoji_family: fonts.emoji_family.clone(),
+                icon_family: fonts.icon_family.clone(),
+                ligatures: fonts.ligatures,
+            });
+            self.buffer = None;
+        }
+    }
+
+    /// The glyph ids of a ligature run: `text` (two or more ASCII punctuation chars, each of
+    /// which shapes per cell to one glyph of face `font_id`) shaped as one string with harfrust
+    /// and the face's default features (`calt` on). `None` when ligatures are off, the text is
+    /// not such a run, the face does not load, or the result is not one glyph per char in order
+    /// with equal positive advances and non-zero 16-bit ids: the run then draws per cell.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ligate(
+        &mut self,
+        fs: &mut FontSystem,
+        fonts: &TermFonts,
+        font_id: fontdb::ID,
+        weight: Weight,
+        text: &str,
+        bold: bool,
+        italic: bool,
+    ) -> Option<&[u16]> {
+        // the ASCII check also makes harfrust's byte clusters char indices
+        if !fonts.ligatures || text.len() < 2 || !text.bytes().all(|b| b.is_ascii_punctuation()) {
+            return None;
+        }
+        self.check_sig(fonts);
+        let slot = usize::from(bold) | (usize::from(italic) << 1);
+        if self.ligs[slot]
+            .get(text)
+            .is_none_or(|(id, _)| *id != font_id)
+        {
+            if self.lig_len >= MAX_CACHED {
+                self.clear();
+            }
+            let ids = fs
+                .get_font(font_id, weight)
+                .and_then(|font| run_glyphs(&font, text));
+            if self.ligs[slot]
+                .insert(text.to_owned(), (font_id, ids))
+                .is_none()
+            {
+                self.lig_len += 1;
+            }
+        }
+        self.ligs[slot]
+            .get(text)
+            .and_then(|(_, ids)| ids.as_deref())
     }
 
     /// Clusters currently cached.
@@ -292,17 +409,7 @@ impl Shaper {
         if is_blank(text) {
             return &self.empty;
         }
-        if !self.sig.as_ref().is_some_and(|s| s.matches(fonts)) {
-            self.clear();
-            self.sig = Some(FontSig {
-                family: fonts.family.clone(),
-                size_bits: fonts.size.to_bits(),
-                line_height_bits: fonts.line_height.to_bits(),
-                emoji_family: fonts.emoji_family.clone(),
-                icon_family: fonts.icon_family.clone(),
-            });
-            self.buffer = None;
-        }
+        self.check_sig(fonts);
         let slot = usize::from(bold) | (usize::from(italic) << 1);
         if !self.cache[slot].contains_key(text) {
             if self.len >= MAX_CACHED {
@@ -384,6 +491,7 @@ mod tests {
             line_height: 17.0,
             emoji_family: emoji.then(|| r.twemoji.clone()),
             icon_family: None,
+            ligatures: false,
         }
     }
 
@@ -525,6 +633,7 @@ mod tests {
             line_height: 17.0,
             emoji_family: None,
             icon_family: None,
+            ligatures: false,
         };
         let m = cell_metrics(&mut fs, &f, 2.0);
         // round(0.6 * 13 * 2) = 16; ceil(1.2 * 13 * 2) = 32
@@ -692,6 +801,7 @@ mod tests {
             line_height: 17.0,
             emoji_family: emoji.map(str::to_owned),
             icon_family: icon_family.map(str::to_owned),
+            ligatures: false,
         }
     }
 
