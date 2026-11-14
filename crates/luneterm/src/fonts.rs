@@ -21,16 +21,62 @@ pub const UI_FONT: &str = "RznSans";
 /// The terminal family: the bundled RznMono.
 pub const MONO_FONT: &str = "RznMono";
 
-/// The terminal fonts the settings page offers: the bundled families. A saved font name that is
-/// not one of these (a font removed, a hand-edited file) draws as the first, [`MONO_FONT`].
-pub const TERMINAL_FONTS: &[&str] = &[MONO_FONT];
+/// The monospace system fonts the settings page can offer (D5): a curated list of popular ones,
+/// of which only the installed ones show. A saved name outside this list, or not installed, draws
+/// as [`MONO_FONT`] and is kept in the file as it is.
+pub const SYSTEM_MONO_FONTS: &[&str] = &[
+    "Andale Mono",
+    "Cascadia Code",
+    "Cascadia Mono",
+    "Consolas",
+    "Courier New",
+    "DejaVu Sans Mono",
+    "Fira Code",
+    "Fira Mono",
+    "Hack",
+    "IBM Plex Mono",
+    "Inconsolata",
+    "Iosevka",
+    "JetBrains Mono",
+    "Liberation Mono",
+    "Lucida Console",
+    "Menlo",
+    "Monaco",
+    "Noto Sans Mono",
+    "PT Mono",
+    "Roboto Mono",
+    "SF Mono",
+    "Source Code Pro",
+    "Ubuntu Mono",
+];
 
-/// The family the terminal draws with for the saved font name `saved` (empty is the default).
-pub fn terminal_family(saved: &str) -> &'static str {
-    TERMINAL_FONTS
+/// The curated system fonts the loaded font database has an upright face of, sorted without
+/// regard to case. Reads only the database's faces (no OS call): empty on
+/// [`bundled_text_cache`], and a font installed after the cache was built shows after a restart.
+pub fn system_fonts(text: &TextCache) -> Vec<&'static str> {
+    let mut found: Vec<&'static str> = SYSTEM_MONO_FONTS
         .iter()
         .copied()
-        .find(|f| *f == saved)
+        .filter(|name| {
+            text.fonts.db().faces().any(|f| {
+                // `fontdb`'s style enum is not named by this crate: anything but Normal is slanted.
+                f.families.iter().any(|(n, _)| n == name) && format!("{:?}", f.style) == "Normal"
+            })
+        })
+        .collect();
+    found.sort_by_key(|n| n.to_lowercase());
+    found
+}
+
+/// The family the terminal draws with for the saved font name `saved` (empty is the default),
+/// given the installed curated fonts `installed` ([`system_fonts`]): an installed curated name is
+/// itself, anything else (empty, [`MONO_FONT`], a font from an older build, an unknown or
+/// uninstalled name) is [`MONO_FONT`]. The saved name is never changed by this.
+pub fn terminal_family(saved: &str, installed: &[&str]) -> &'static str {
+    SYSTEM_MONO_FONTS
+        .iter()
+        .copied()
+        .find(|f| *f == saved && installed.contains(f))
         .unwrap_or(MONO_FONT)
 }
 
@@ -86,7 +132,13 @@ fn emoji_family() -> &'static str {
 /// cell is 17 px tall at 13 px (the spike's approved 17/13).
 pub fn term_fonts(text: &mut TextCache, settings: &Settings) -> TermFonts {
     let size = settings.font_size as f32;
-    let family = terminal_family(&settings.font);
+    // Only a curated saved name needs the face scan; the default and unknown names are RznMono.
+    let installed = if SYSTEM_MONO_FONTS.contains(&settings.font.as_str()) {
+        system_fonts(text)
+    } else {
+        Vec::new()
+    };
+    let family = terminal_family(&settings.font, &installed);
     TermFonts {
         family: family.to_owned(),
         size,
@@ -127,13 +179,105 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_font_name_resolves_to_a_bundled_family_or_the_default() {
-        assert_eq!(terminal_family(""), MONO_FONT);
-        assert_eq!(terminal_family(MONO_FONT), MONO_FONT);
-        assert_eq!(terminal_family("Comic Sans"), MONO_FONT);
-        for f in TERMINAL_FONTS {
-            assert_eq!(terminal_family(f), *f);
+    fn a_saved_font_name_resolves_to_rznmono_or_an_installed_curated_family() {
+        let installed = ["Menlo", "JetBrains Mono"];
+        for saved in [
+            "",
+            MONO_FONT,
+            "RobotoMono Nerd Font Mono",
+            "Comic Sans",
+            "Cascadia Code", // curated, not installed
+            "menlo",         // the name is exact
+        ] {
+            assert_eq!(terminal_family(saved, &installed), MONO_FONT, "{saved:?}");
+            assert_eq!(terminal_family(saved, &[]), MONO_FONT, "{saved:?}");
         }
+        for saved in installed {
+            assert_eq!(terminal_family(saved, &installed), saved);
+            assert_eq!(
+                terminal_family(saved, &[]),
+                MONO_FONT,
+                "{saved} not installed"
+            );
+        }
+        // A name that is installed but not curated is not offered, so it is not drawn.
+        assert_eq!(terminal_family("Arial", &["Arial"]), MONO_FONT);
+    }
+
+    #[test]
+    fn the_curated_list_is_alphabetical_and_has_no_duplicates() {
+        let mut sorted = SYSTEM_MONO_FONTS.to_vec();
+        sorted.sort_by_key(|n| n.to_lowercase());
+        assert_eq!(sorted, SYSTEM_MONO_FONTS);
+        sorted.dedup();
+        assert_eq!(sorted.len(), SYSTEM_MONO_FONTS.len());
+        assert!(!SYSTEM_MONO_FONTS.contains(&MONO_FONT));
+    }
+
+    /// The bundled cache has no system font: the list is empty there (the instrument: the same
+    /// function finds Menlo on a Mac in the next test).
+    #[test]
+    fn the_bundled_cache_has_no_system_fonts() {
+        assert!(system_fonts(&bundled_text_cache()).is_empty());
+    }
+
+    #[test]
+    fn system_fonts_are_curated_installed_and_sorted() {
+        let (text, _) = text_cache();
+        let found = system_fonts(&text);
+        eprintln!("system fonts found: {found:?}");
+        for name in &found {
+            assert!(SYSTEM_MONO_FONTS.contains(name), "{name}");
+            assert!(
+                text.fonts
+                    .db()
+                    .faces()
+                    .any(|f| { f.families.iter().any(|(n, _)| n == name) && !is_italic(&f.style) }),
+                "{name} has an upright face"
+            );
+        }
+        let mut sorted = found.clone();
+        sorted.sort_by_key(|n| n.to_lowercase());
+        assert_eq!(found, sorted);
+        #[cfg(target_os = "macos")]
+        assert!(found.contains(&"Menlo"), "macOS ships Menlo: {found:?}");
+    }
+
+    /// A system font as the terminal font: its own family, with RznMono named for the icons it
+    /// lacks; the default and unknown names keep RznMono.
+    #[test]
+    fn term_fonts_use_an_installed_system_family_and_keep_rznmono_for_icons() {
+        let (mut text, _) = text_cache();
+        let found = system_fonts(&text);
+        for saved in ["", "Comic Sans", "RobotoMono Nerd Font Mono"] {
+            let f = term_fonts(
+                &mut text,
+                &Settings {
+                    font: saved.to_owned(),
+                    ..Settings::default()
+                },
+            );
+            assert_eq!(f.family, MONO_FONT, "{saved:?}");
+        }
+        let Some(name) = found.first().copied() else {
+            eprintln!("skipped: no curated system font is installed here");
+            return;
+        };
+        let settings = Settings {
+            font: name.to_owned(),
+            ..Settings::default()
+        };
+        let fonts = term_fonts(&mut text, &settings);
+        assert_eq!(fonts.family, name);
+        assert_eq!(fonts.icon_family.as_deref(), Some(MONO_FONT));
+        assert_eq!(settings.font, name, "resolution never rewrites the setting");
+        // an icon the system font lacks goes through the icon path to RznMono
+        let s = Shaper::new()
+            .shape(&mut text.fonts, &fonts, "\u{F015}", false, false)
+            .clone();
+        assert_eq!(s.glyphs.len(), 1);
+        assert_ne!(s.glyphs[0].glyph_id, 0);
+        assert_eq!(face_of(&text, &s.glyphs[0]).0, MONO_FONT);
     }
 
     /// The Ligatures setting reaches the terminal fonts both ways (the Font effect rebuilds them).

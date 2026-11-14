@@ -56,8 +56,8 @@ enum Overlay {
 #[derive(Debug, Clone, Copy)]
 struct PageScene {
     section: Section,
-    /// The Glass style list is open.
-    combo: bool,
+    /// The combo list that is open, if any.
+    combo: Option<crate::settings::SettingId>,
     /// The notice banner is up.
     restart: bool,
 }
@@ -181,17 +181,20 @@ const BASE: Scene = Scene {
 const fn page(section: Section) -> Option<PageScene> {
     Some(PageScene {
         section,
-        combo: false,
+        combo: None,
         restart: false,
     })
 }
+
+/// The system fonts the dumps' font combo offers: fixed, so a dump is the same on every machine.
+const DUMP_SYSTEM_FONTS: [&str; 3] = ["Cascadia Code", "JetBrains Mono", "Menlo"];
 
 /// A pointer over the page's content (so a wheel scrolls it).
 const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
-const SCENES: [Scene; 37] = [
+const SCENES: [Scene; 38] = [
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -310,7 +313,17 @@ const SCENES: [Scene; 37] = [
         tabs: FOUR,
         page: Some(PageScene {
             section: Section::Appearance,
-            combo: true,
+            combo: Some(crate::settings::SettingId::Glass),
+            restart: false,
+        }),
+        ..BASE
+    },
+    Scene {
+        name: "settings-font-combo@2x.png",
+        tabs: FOUR,
+        page: Some(PageScene {
+            section: Section::Terminal,
+            combo: Some(crate::settings::SettingId::Font),
             restart: false,
         }),
         ..BASE
@@ -320,7 +333,7 @@ const SCENES: [Scene; 37] = [
         tabs: FOUR,
         page: Some(PageScene {
             section: Section::Terminal,
-            combo: false,
+            combo: None,
             restart: true,
         }),
         ..BASE
@@ -580,8 +593,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     let mut edited = page_settings.clone();
     let mut page_state = scene.page.map(|p| {
         let mut state = PageState::new(p.section, &page_settings);
-        // The Glass style row is the first combo of the Appearance section.
-        state.combo = p.combo.then_some(crate::settings::SettingId::Glass);
+        state.combo = p.combo;
         state
     });
     let selection = [SelectionRange {
@@ -681,6 +693,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
                 settings: &mut edited,
                 restart: scene.page.is_some_and(|p| p.restart),
                 focused: scene.focused,
+                system_fonts: &DUMP_SYSTEM_FONTS,
             }),
             menu: model.as_ref().map(|m| MenuDraw {
                 rows: m.rows(),
@@ -910,6 +923,10 @@ mod tests {
         assert_ne!(
             named("settings-appearance@2x.png"),
             named("settings-combo@2x.png")
+        );
+        assert_ne!(
+            named("settings-terminal@2x.png"),
+            named("settings-font-combo@2x.png")
         );
         // The tooltip is not there at the first dwell and is there after the delay.
         assert_ne!(named("link-hover@2x.png"), named("link-tip@2x.png"));

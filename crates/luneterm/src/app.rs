@@ -376,6 +376,9 @@ struct Stack {
     renderer: Renderer,
     /// The concrete present mode the surface was given (never an `Auto*` mode).
     mode: wgpu::PresentMode,
+    /// The installed curated system fonts the font combo offers, found once from the text cache
+    /// the renderer was built with.
+    system_fonts: Vec<&'static str>,
 }
 
 impl Stack {
@@ -410,6 +413,7 @@ impl Stack {
             present.name()
         );
         let (text, _took) = fonts::text_cache();
+        let system_fonts = fonts::system_fonts(&text);
         let mut renderer = Renderer::new(gpu, text, surface.format(), settings, glass);
         if renderer.term_theme() != theme {
             renderer.set_term_theme(theme.clone());
@@ -419,6 +423,7 @@ impl Stack {
             surface,
             renderer,
             mode,
+            system_fonts,
         })
     }
 }
@@ -2128,6 +2133,7 @@ impl App {
                 settings: &mut edited,
                 restart: self.restart_notice,
                 focused: input.focused,
+                system_fonts: &stack.system_fonts,
             }),
             menu: menu_model.as_ref().map(|(m, model)| MenuDraw {
                 rows: model.rows(),
