@@ -445,7 +445,7 @@ pub fn choose(settings: &mut Settings, id: SettingId, i: usize) {
 /// One row of the font combo: a heading or a font that can be picked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FontRow {
-    /// A disabled label ("Built-in", "System"): never picked, skipped by the keys.
+    /// A disabled label ("BUILT-IN", "SYSTEM"): never picked, skipped by the keys.
     Heading(String),
     /// A font: the family shown, and the name saved when it is picked (RznMono saves `""`).
     Pick { family: &'static str, saved: String },
@@ -1267,9 +1267,9 @@ mod tests {
         assert_eq!(
             labels,
             [
-                "Built-in",
+                "BUILT-IN",
                 "RznMono",
-                "System",
+                "SYSTEM",
                 "Cascadia Code",
                 "JetBrains Mono",
                 "Menlo"
@@ -1280,7 +1280,7 @@ mod tests {
         // no system fonts: no System heading
         let rows = font_rows(&strings, &[]);
         let labels: Vec<&str> = rows.iter().map(FontRow::label).collect();
-        assert_eq!(labels, ["Built-in", "RznMono"]);
+        assert_eq!(labels, ["BUILT-IN", "RznMono"]);
     }
 
     #[test]
