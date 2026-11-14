@@ -1014,6 +1014,7 @@ dependencies = [
  "cosmic-text",
  "etagere",
  "fontdb",
+ "harfrust",
  "lune-ui",
  "png",
  "pollster",

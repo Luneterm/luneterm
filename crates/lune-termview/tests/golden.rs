@@ -27,9 +27,10 @@ const REGULAR: &[u8] = include_bytes!("fonts/RznMono-Regular.subset.ttf");
 const BOLD: &[u8] = include_bytes!("fonts/RznMono-Bold.subset.ttf");
 const ITALIC: &[u8] = include_bytes!("fonts/RznMono-Italic.subset.ttf");
 const BOLD_ITALIC: &[u8] = include_bytes!("fonts/RznMono-BoldItalic.subset.ttf");
-// Private-use icons only (U+F000-F02F, U+F07B): the app's fallback face for the Nerd icons
-// RznMono does not have. A Latin character missing from the RznMono subset shows as tofu here and
-// cannot pass quietly through this face.
+// Private-use icons only (U+F000-F02F, U+F07B), which the RznMono subsets do not carry: a test
+// fixture for a second face with icons the primary lacks (the app draws its icons from RznMono
+// itself). A Latin character missing from the RznMono subset shows as tofu here and cannot pass
+// quietly through this face.
 const NERD_REGULAR: &[u8] = include_bytes!("fonts/RobotoMonoNerdFontMono-Regular.pua.subset.ttf");
 const NERD_BOLD: &[u8] = include_bytes!("fonts/RobotoMonoNerdFontMono-Bold.pua.subset.ttf");
 const SYMBOLS: &[u8] = include_bytes!("fonts/NotoSansSymbols2.subset.ttf");
@@ -249,6 +250,7 @@ fn term_fonts(family: String, emoji: String) -> TermFonts {
         line_height: 17.0,
         emoji_family: Some(emoji),
         icon_family: None,
+        ligatures: false,
     }
 }
 
@@ -964,8 +966,9 @@ fn nerd_scene() -> Scene {
     sc
 }
 
-/// The fallback proof (M10 step 11, D9a): Nerd icons are not in RznMono and draw from the
-/// bundled RobotoMono Nerd face. `A`, icon, `B` have non-blank neighbours, so an icon that
+/// The fallback proof (M10 step 11, D9a): the icons are not in the RznMono subsets and draw from
+/// the RobotoMono PUA fixture through the shaper's fallback (the app draws them from RznMono 1.000
+/// itself, rznmono-1000 D1). `A`, icon, `B` have non-blank neighbours, so an icon that
 /// overflowed its cell would show as ink on the letters or past the slot.
 fn nerd_fallback_scene() -> Scene {
     let mut sc = Scene::new(14, 5);
@@ -1068,6 +1071,54 @@ fn system_fallback_scene() -> Scene {
             c += 1;
         }
     }
+    sc
+}
+
+/// `FAMILIES` of `rznmono/ligatures.py` in the RznSans repository at tag `rznmono-v1.000`: the
+/// 128 ligature sequences by family, strings as written.
+const LIGATURE_FAMILIES: [&str; 10] = [
+    "-< -> <- => >- --> -<< ->> <-- <-< <-> <<- <=< <== <=> =<< ==> =>> >-> >=> >>- >>= <==>",
+    "!= /= <= == >= !== /== =!= =/= ===",
+    "-| <| |- |> || <-| <=| <|> <|| _|_ |-> |=> ||- ||= ||> ||| <||| |||>",
+    "-~ <~ ~- ~> ~@ ~~ <~> <~~ ~~>",
+    "!! ## %% && ** ++ -- .. ;; << >> ?? __ !!. ### *** +++ --- ... ..< ..= <<< >>> ####",
+    "#: :: := ?: ::: ::= =:=",
+    "#! #= #? #_ */ /* // /// //= <!--",
+    "$> *> +> /> <$ <* <+ </ <> <$> <*> <+> </>",
+    "#( #[ #{ [| ]# {| |] |} #_(",
+    ".= .? ?. ?= ^=",
+];
+const LIGATURE_COLS: usize = 96;
+
+/// Ligatures (rznmono-1000 step 2), drawn with ligatures on and off. Rows 0-9: one family each;
+/// 10: the boundary strings that must draw plain; 11: colour and bold changes inside a sequence
+/// (`->` two colours, `==>` three, `==` then `>` in another colour, `->` with a bold `>`, then a
+/// one-colour `->`); 12, 13: the arrows in bold and in italic; 14: `a->b->c`; 15: a ligature at
+/// column 0, one followed by a blank and a plain `>`, and one ending in the last column.
+fn ligatures_scene() -> Scene {
+    let mut sc = Scene::new(LIGATURE_COLS, 16);
+    let g = &mut sc.grid;
+    for (row, family) in LIGATURE_FAMILIES.iter().enumerate() {
+        put(g, row, 0, family, s());
+    }
+    put(g, 10, 0, "<!= =>= ->= !=> ----> ===== ->->", s());
+    let c = put(g, 11, 0, "-", s().fg(pal(1)));
+    let c = put(g, 11, c, ">", s().fg(pal(2)));
+    let mut c = c + 1;
+    for (ch, n) in [("=", 1), ("=", 2), (">", 3)] {
+        c = put(g, 11, c, ch, s().fg(pal(n)));
+    }
+    let c = put(g, 11, c + 1, "==", s().fg(pal(5)));
+    let c = put(g, 11, c, ">", s().fg(pal(6)));
+    let c = put(g, 11, c + 1, "-", s());
+    let c = put(g, 11, c, ">", s().attr(Attrs::BOLD));
+    put(g, 11, c + 1, "->", s().fg(pal(4)));
+    put(g, 12, 0, LIGATURE_FAMILIES[0], s().attr(Attrs::BOLD));
+    put(g, 13, 0, LIGATURE_FAMILIES[0], s().attr(Attrs::ITALIC));
+    put(g, 14, 0, "a->b->c", s());
+    put(g, 15, 0, "<!--", s());
+    put(g, 15, 40, "-> >", s());
+    put(g, 15, LIGATURE_COLS - 3, "==>", s());
     sc
 }
 
@@ -1223,6 +1274,25 @@ fn nerd_powerline() {
 #[test]
 fn nerd_fallback() {
     golden_scene("nerd_fallback", 2.0, &mut nerd_fallback_scene());
+}
+
+fn ligature_golden(name: &str, ligatures: bool) {
+    let Some(mut cx) = ctx(test_fonts) else {
+        return;
+    };
+    cx.fonts.ligatures = ligatures;
+    let frame = render(&mut cx, &mut ligatures_scene(), 2.0, STAND_IN);
+    golden(&format!("{name}@2x"), &frame);
+}
+
+#[test]
+fn ligatures() {
+    ligature_golden("ligatures", true);
+}
+
+#[test]
+fn ligatures_off() {
+    ligature_golden("ligatures_off", false);
 }
 
 #[test]

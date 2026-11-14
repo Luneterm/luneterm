@@ -446,6 +446,106 @@ fn clamp_i32(v: i64) -> i32 {
     v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
+/// Whether a cell can be part of a ligature run: one cell wide, its text one ASCII
+/// punctuation char. (Shown and same style are checked by the run scan.)
+fn lig_char(cell: &Cell) -> bool {
+    cell.width == 1 && matches!(cell.text().as_bytes(), [b] if b.is_ascii_punctuation())
+}
+
+/// What a run must share: bold, italic and the resolved foreground. `None` for a cell that is
+/// not eligible or not shown.
+fn lig_style(ctx: &RowCtx<'_>, cell: &Cell) -> Option<(bool, bool, Rgba)> {
+    if !lig_char(cell) {
+        return None;
+    }
+    let res = resolve(cell, ctx.theme, ctx.blink_on);
+    res.show_fg.then(|| {
+        (
+            cell.attrs.contains(Attrs::BOLD),
+            cell.attrs.contains(Attrs::ITALIC),
+            res.fg,
+        )
+    })
+}
+
+/// A ligature substitution for one cell: the glyph drawn instead of the cell's own, and the
+/// first column of the contiguous span of substituted cells it belongs to (its clip's left edge).
+type LigSub = Option<(u16, usize)>;
+
+/// The ligature substitutions of a row, per column; `None` (and nothing allocated) when ligatures
+/// are off or nothing in the row ligates. A run is a maximal stretch of two or more eligible,
+/// shown cells of one bold, italic and foreground; it is shaped as one string only when every
+/// cell shapes on its own to one real glyph of one face, and a cell is substituted only where
+/// the run's glyph differs from its own. Anything else draws per cell (fail closed).
+fn ligature_subs(
+    ctx: &RowCtx<'_>,
+    shaper: &mut Shaper,
+    fs: &mut FontSystem,
+    row: &[Cell],
+) -> Option<Vec<LigSub>> {
+    if !ctx.fonts.ligatures {
+        return None;
+    }
+    let mut subs: Option<Vec<LigSub>> = None;
+    let mut per: Vec<ShapedGlyph> = Vec::new();
+    let mut text = String::new();
+    let mut c = 0;
+    while c < row.len() {
+        let Some(style) = lig_style(ctx, &row[c]) else {
+            c += 1;
+            continue;
+        };
+        let start = c;
+        c += 1;
+        while c < row.len() && lig_style(ctx, &row[c]) == Some(style) {
+            c += 1;
+        }
+        if c - start < 2 {
+            continue;
+        }
+        let (bold, italic, _) = style;
+        per.clear();
+        let one_face = row[start..c].iter().all(|cell| {
+            let shaped = shaper.shape(fs, ctx.fonts, cell.text(), bold, italic);
+            match shaped.glyphs.as_slice() {
+                [g] if g.glyph_id != 0 && per.first().is_none_or(|f| f.font_id == g.font_id) => {
+                    per.push(*g);
+                    true
+                }
+                _ => false,
+            }
+        });
+        if !one_face {
+            continue;
+        }
+        text.clear();
+        text.extend(row[start..c].iter().map(Cell::text));
+        let (font_id, weight) = (per[0].font_id, per[0].weight);
+        let Some(ids) = shaper.ligate(fs, ctx.fonts, font_id, weight, &text, bold, italic) else {
+            continue;
+        };
+        if ids.len() != per.len() {
+            continue;
+        }
+        let mut k = 0;
+        while k < ids.len() {
+            if ids[k] == per[k].glyph_id {
+                k += 1;
+                continue;
+            }
+            let a = k;
+            while k < ids.len() && ids[k] != per[k].glyph_id {
+                k += 1;
+            }
+            let subs = subs.get_or_insert_with(|| vec![None; row.len()]);
+            for j in a..k {
+                subs[start + j] = Some((ids[j], start + a));
+            }
+        }
+    }
+    subs
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_row(
     ctx: &RowCtx<'_>,
@@ -470,6 +570,7 @@ fn build_row(
         }
     };
 
+    let subs = ligature_subs(ctx, shaper, fs, row);
     for (c, cell) in row.iter().enumerate() {
         if cell.width == 0 {
             continue;
@@ -531,12 +632,23 @@ fn build_row(
             let bold = cell.attrs.contains(Attrs::BOLD);
             let italic = cell.attrs.contains(Attrs::ITALIC);
             let shaped = shaper.shape(fs, ctx.fonts, text, bold, italic);
+            let sub = subs.as_ref().and_then(|s| s[c]);
+            // A ligated cell draws the run's glyph in place of its own, with the same font,
+            // offsets and placement; only its clip reaches left to the span's first cell.
+            let sub_glyph: [ShapedGlyph; 1];
+            let drawn: &[ShapedGlyph] = match (sub, shaped.glyphs.first()) {
+                (Some((glyph_id, _)), Some(g)) => {
+                    sub_glyph = [ShapedGlyph { glyph_id, ..*g }];
+                    &sub_glyph
+                }
+                _ => &shaped.glyphs,
+            };
             if !shaped.glyphs.is_empty() {
                 let advance_px = base_advance(&shaped.glyphs) * scale;
                 let next_blank = next_cell_blank(row, c);
                 let mut raster = SwashRaster { glyphs, fs };
-                let key_of = |i: usize, pl: &crate::contain::Placement| {
-                    let g: &ShapedGlyph = &shaped.glyphs[i];
+                let key_of = |glyphs: &[ShapedGlyph], i: usize, pl: &crate::contain::Placement| {
+                    let g: &ShapedGlyph = &glyphs[i];
                     let rs = pl.raster_scale;
                     let flags = if g.italic {
                         CacheKeyFlags::FAKE_ITALIC
@@ -548,7 +660,7 @@ fn build_row(
                         g.glyph_id,
                         m.font_size * scale * rs,
                         (
-                            pl.origin_x + glyph_x(&shaped.glyphs, i) * scale * rs,
+                            pl.origin_x + glyph_x(glyphs, i) * scale * rs,
                             (pl.baseline_y as f32 + g.y * scale * rs).trunc(),
                         ),
                         g.weight,
@@ -563,7 +675,7 @@ fn build_row(
                 let pl0 = place(
                     cell_x, row_top, m, cell.width, advance_px, false, next_blank,
                 );
-                let (k0, _, _) = key_of(0, &pl0);
+                let (k0, _, _) = key_of(&shaped.glyphs, 0, &pl0);
                 let is_color =
                     fetch(core, &mut raster, proto, k0)?.is_some_and(|e| e.page == Page::Color);
                 let pl = if is_color {
@@ -571,10 +683,13 @@ fn build_row(
                 } else {
                     pl0
                 };
-                let clip = pl.clip.map(|v| v as f32);
+                let mut clip = pl.clip.map(|v| v as f32);
+                if let Some((_, c0)) = sub {
+                    clip[0] = ctx.layout.cell_rect_px(r, c0, 1)[0] as f32;
+                }
                 let color = premul(res.fg);
-                for i in 0..shaped.glyphs.len().min(MAX_GLYPHS_PER_CELL) {
-                    let (key, xi, yi) = key_of(i, &pl);
+                for i in 0..drawn.len().min(MAX_GLYPHS_PER_CELL) {
+                    let (key, xi, yi) = key_of(drawn, i, &pl);
                     let Some(e) = fetch(core, &mut raster, proto, key)? else {
                         continue;
                     };
@@ -788,6 +903,7 @@ mod tests {
             line_height: 17.0,
             emoji_family: None,
             icon_family: None,
+            ligatures: false,
         };
         Rig {
             b: Builder::new(fonts, TermTheme::lunegit_one_dark()),
@@ -1395,5 +1511,499 @@ mod tests {
         for _ in 0..8 {
             r.update();
         }
+    }
+}
+
+#[cfg(test)]
+mod lig_tests {
+    //! Ligatures (plan rznmono-1000 step 2): runs, substitution and clip, on the RznMono 1.000
+    //! subsets.
+    use super::*;
+    use crate::model::Color;
+    use cosmic_text::fontdb;
+    use std::sync::Arc;
+
+    const FACES: [&[u8]; 4] = [
+        include_bytes!("../tests/fonts/RznMono-Regular.subset.ttf"),
+        include_bytes!("../tests/fonts/RznMono-Bold.subset.ttf"),
+        include_bytes!("../tests/fonts/RznMono-Italic.subset.ttf"),
+        include_bytes!("../tests/fonts/RznMono-BoldItalic.subset.ttf"),
+    ];
+    const SYMBOLS: &[u8] = include_bytes!("../tests/fonts/NotoSansSymbols2.subset.ttf");
+    const TWEMOJI: &[u8] = include_bytes!("../tests/fonts/TwemojiLunegit.subset.ttf");
+
+    /// The 128 sequences, `FAMILIES` of `rznmono/ligatures.py` in the RznSans repository at tag
+    /// `rznmono-v1.000`, family strings as written.
+    const FAMILIES: [(&str, &str); 10] = [
+        (
+            "arrows",
+            "-< -> <- => >- --> -<< ->> <-- <-< <-> <<- <=< <== <=> =<< ==> =>> >-> >=> >>- >>= <==>",
+        ),
+        ("bars", "!= /= <= == >= !== /== =!= =/= ==="),
+        (
+            "pipes",
+            "-| <| |- |> || <-| <=| <|> <|| _|_ |-> |=> ||- ||= ||> ||| <||| |||>",
+        ),
+        ("tilde", "-~ <~ ~- ~> ~@ ~~ <~> <~~ ~~>"),
+        (
+            "repeats",
+            "!! ## %% && ** ++ -- .. ;; << >> ?? __ !!. ### *** +++ --- ... ..< ..= <<< >>> ####",
+        ),
+        ("colons", "#: :: := ?: ::: ::= =:="),
+        ("comments", "#! #= #? #_ */ /* // /// //= <!--"),
+        ("tags", "$> *> +> /> <$ <* <+ </ <> <$> <*> <+> </>"),
+        ("brackets", "#( #[ #{ [| ]# {| |] |} #_("),
+        ("misc", ".= .? ?. ?= ^="),
+    ];
+
+    /// The ASCII punctuation RznMono's `calt` rules look at.
+    const PUNCT: &str = "!#$%&(*+-./:;<=>?@[]^_{|}~";
+
+    struct Rig {
+        b: Builder,
+        fs: FontSystem,
+        core: AtlasCore,
+        theme: TermTheme,
+    }
+
+    fn rig(ligatures: bool) -> Rig {
+        let mut db = fontdb::Database::new();
+        let mut family = String::new();
+        for face in FACES {
+            let ids = db.load_font_source(fontdb::Source::Binary(Arc::new(face)));
+            family = db.face(ids[0]).expect("face").families[0].0.clone();
+        }
+        db.load_font_source(fontdb::Source::Binary(Arc::new(SYMBOLS)));
+        db.load_font_source(fontdb::Source::Binary(Arc::new(TWEMOJI)));
+        let fonts = TermFonts {
+            family,
+            size: 13.0,
+            line_height: 17.0,
+            emoji_family: None,
+            icon_family: None,
+            ligatures,
+        };
+        Rig {
+            b: Builder::new(fonts, TermTheme::lunegit_one_dark()),
+            fs: FontSystem::new_with_locale_and_db("en-US".to_owned(), db),
+            core: AtlasCore::new(1024, 8192),
+            theme: TermTheme::lunegit_one_dark(),
+        }
+    }
+
+    fn cells(text: &str, attrs: Attrs) -> Vec<Cell> {
+        text.chars()
+            .map(|ch| {
+                let mut c = Cell::default();
+                c.set_char(ch);
+                c.attrs = attrs;
+                c
+            })
+            .collect()
+    }
+
+    impl Rig {
+        fn subs(&mut self, row: &[Cell]) -> Option<Vec<LigSub>> {
+            let m = self.b.metrics(&mut self.fs, 2.0);
+            let ctx = RowCtx {
+                theme: &self.theme,
+                fonts: &self.b.fonts,
+                text: TextRendering::OFF,
+                m,
+                layout: GridLayout::new((0.0, 0.0), m),
+                blink_on: true,
+                cols: row.len(),
+            };
+            ligature_subs(&ctx, &mut self.b.shaper, &mut self.fs, row)
+        }
+
+        /// The glyph each cell draws on its own (0 for a blank cell).
+        fn own(&mut self, row: &[Cell]) -> Vec<u16> {
+            let fonts = self.b.fonts.clone();
+            row.iter()
+                .map(|c| {
+                    let (b, i) = (
+                        c.attrs.contains(Attrs::BOLD),
+                        c.attrs.contains(Attrs::ITALIC),
+                    );
+                    let s = self.b.shaper.shape(&mut self.fs, &fonts, c.text(), b, i);
+                    s.glyphs.first().map_or(0, |g| g.glyph_id)
+                })
+                .collect()
+        }
+
+        /// The glyph each cell draws with the row's substitutions.
+        fn drawn(&mut self, row: &[Cell]) -> Vec<u16> {
+            let own = self.own(row);
+            match self.subs(row) {
+                None => own,
+                Some(s) => own
+                    .iter()
+                    .zip(&s)
+                    .map(|(&o, s)| s.map_or(o, |(g, _)| g))
+                    .collect(),
+            }
+        }
+
+        /// Instances of a one-row grid holding `row`.
+        fn build(&mut self, row: &[Cell]) -> RowInstances {
+            let mut grid = Grid::new(row.len(), 1);
+            for (c, cell) in row.iter().enumerate() {
+                grid.set(0, c, cell.clone());
+            }
+            let v = ViewState {
+                cursor: Cursor {
+                    visible: false,
+                    ..Cursor::default()
+                },
+                focused: true,
+                blink_on: true,
+                selection: &[],
+                hover_link: 0,
+            };
+            self.b.update(
+                &mut self.core,
+                &mut self.fs,
+                &mut grid,
+                &v,
+                (0.0, 0.0),
+                2.0,
+                TextRendering::OFF,
+            );
+            self.b.rows()[0].clone()
+        }
+    }
+
+    /// Which cells of `text` (one cell per char) are substituted.
+    fn changed(r: &mut Rig, text: &str, attrs: Attrs) -> Vec<bool> {
+        let row = cells(text, attrs);
+        let n = row.len();
+        r.subs(&row)
+            .map_or(vec![false; n], |s| s.iter().map(Option::is_some).collect())
+    }
+
+    /// The spacer glyph: the first glyph of a ligated `->`.
+    fn spacer(r: &mut Rig, attrs: Attrs) -> u16 {
+        let s = r.subs(&cells("->", attrs)).expect("-> ligates");
+        s[0].expect("spacer").0
+    }
+
+    #[test]
+    fn every_sequence_ligates_in_regular_and_bold() {
+        let mut r = rig(true);
+        let mut count = 0;
+        for attrs in [Attrs::NONE, Attrs::BOLD] {
+            let lig = spacer(&mut r, attrs);
+            for (family, seqs) in FAMILIES {
+                for seq in seqs.split(' ') {
+                    let row = cells(seq, attrs);
+                    let own = r.own(&row);
+                    let subs = r.subs(&row).unwrap_or_else(|| panic!("{family} {seq:?}"));
+                    let n = row.len();
+                    for (k, s) in subs.iter().enumerate() {
+                        let (g, c0) = s.unwrap_or_else(|| panic!("{seq:?} cell {k}"));
+                        assert_eq!(c0, 0, "{seq:?} cell {k}: one span from the first cell");
+                        if k + 1 < n {
+                            assert_eq!(g, lig, "{seq:?} cell {k} is the spacer");
+                        } else {
+                            assert!(g != own[k] && g != lig, "{seq:?}: last cell {g}");
+                        }
+                    }
+                    count += 1;
+                }
+            }
+        }
+        assert_eq!(count, 2 * 128);
+    }
+
+    #[test]
+    fn boundary_sequences() {
+        let mut r = rig(true);
+        for seq in [
+            "-->", "->>", "<->", "!==", "=>>", "==>", "<=>", ">=", "||=", "<!--",
+        ] {
+            assert!(
+                changed(&mut r, seq, Attrs::NONE).iter().all(|&c| c),
+                "{seq:?} ligates whole"
+            );
+        }
+        for seq in ["<!=", "=>=", "->=", "!=>", "---->", "=====", "->->"] {
+            assert!(
+                changed(&mut r, seq, Attrs::NONE).iter().all(|&c| !c),
+                "{seq:?} draws plain"
+            );
+        }
+        let ch = changed(&mut r, "a->b->c", Attrs::NONE);
+        assert_eq!(ch, [false, true, true, false, true, true, false]);
+        let subs = r.subs(&cells("a->b->c", Attrs::NONE)).expect("subs");
+        assert_eq!(subs[2].map(|s| s.1), Some(1));
+        assert_eq!(subs[5].map(|s| s.1), Some(4));
+    }
+
+    #[test]
+    fn substitution_from_runs_equals_shaping_the_whole_line() {
+        let alphabet: Vec<char> = ('a'..='z')
+            .chain('A'..='Z')
+            .chain('0'..='9')
+            .chain(" ".chars())
+            .chain(PUNCT.chars())
+            .chain(PUNCT.chars())
+            .chain(PUNCT.chars())
+            .collect();
+        let mut r = rig(true);
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (mut lines, mut ligated) = (0, 0);
+        for attrs in [
+            Attrs::NONE,
+            Attrs::BOLD,
+            Attrs::ITALIC,
+            Attrs::BOLD | Attrs::ITALIC,
+        ] {
+            let fonts = r.b.fonts.clone();
+            let (b, i) = (attrs.contains(Attrs::BOLD), attrs.contains(Attrs::ITALIC));
+            let g = r.b.shaper.shape(&mut r.fs, &fonts, "a", b, i).glyphs[0];
+            let font = r.fs.get_font(g.font_id, g.weight).expect("font");
+            for _ in 0..150 {
+                let len = 1 + (next() % 60) as usize;
+                let line: String = (0..len)
+                    .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+                    .collect();
+                let row = cells(&line, attrs);
+                let own = r.own(&row);
+                let drawn = r.drawn(&row);
+                let whole = crate::text::harf_shape(&font, &line);
+                assert_eq!(whole.len(), line.len(), "{line:?}");
+                for (k, ch) in line.chars().enumerate() {
+                    assert_eq!(whole[k].1 as usize, k, "{line:?}");
+                    if ch != ' ' {
+                        assert_eq!(
+                            u32::from(drawn[k]),
+                            whole[k].0,
+                            "{attrs:?} {line:?} cell {k}"
+                        );
+                    }
+                    ligated += usize::from(drawn[k] != own[k]);
+                }
+                lines += 1;
+            }
+        }
+        assert!(lines >= 500);
+        assert!(ligated > 100, "the lines hold ligatures: {ligated}");
+    }
+
+    #[test]
+    fn a_style_or_colour_change_or_a_gap_breaks_the_run() {
+        let mut r = rig(true);
+        let mut row = cells("->", Attrs::NONE);
+        row[0].fg = Color::Palette(1);
+        row[1].fg = Color::Palette(2);
+        assert!(r.subs(&row).is_none(), "two colours");
+        let mut row = cells("->", Attrs::NONE);
+        row[1].attrs = Attrs::BOLD;
+        assert!(r.subs(&row).is_none(), "one bold");
+        let mut row = cells("->", Attrs::NONE);
+        row[0].attrs = Attrs::ITALIC;
+        assert!(r.subs(&row).is_none(), "one italic");
+        assert!(r.subs(&cells("- >", Attrs::NONE)).is_none(), "a space");
+        let mut row = cells("->", Attrs::NONE);
+        row[1].attrs = Attrs::INVISIBLE;
+        assert!(r.subs(&row).is_none(), "hidden");
+        // the same colour reached two ways is one run
+        let mut row = cells("->", Attrs::NONE);
+        row[0].fg = Color::Palette(1);
+        row[1].fg = Color::Rgb(0xE0, 0x6C, 0x75);
+        let same = resolve(&row[0], &r.theme, true).fg == resolve(&row[1], &r.theme, true).fg;
+        assert_eq!(r.subs(&row).is_some(), same);
+    }
+
+    #[test]
+    fn a_wide_char_an_emoji_or_a_box_char_breaks_the_run() {
+        let mut r = rig(true);
+        for mid in ["\u{4E2D}", "\u{1F600}", "\u{2500}"] {
+            let mut row = cells("-x>", Attrs::NONE);
+            row[1].set_text(mid);
+            if mid != "\u{2500}" {
+                row[1].width = 2;
+                let mut sp = Cell::default();
+                sp.width = 0;
+                row.insert(2, sp);
+            }
+            assert!(r.subs(&row).is_none(), "{mid:?}");
+        }
+        // beside the box char the arrow still ligates
+        let mut row = cells("x->x", Attrs::NONE);
+        row[0].set_text("\u{2500}");
+        row[3].set_text("\u{2500}");
+        let s = r.subs(&row).expect("-> beside box chars");
+        assert!(s[0].is_none() && s[3].is_none() && s[1].is_some() && s[2].is_some());
+    }
+
+    #[test]
+    fn ligatures_off_builds_what_per_cell_drawing_builds() {
+        let line = "a -> != <!-- ||= ==> <=> ### b";
+        let mut off = rig(false);
+        let row = cells(line, Attrs::NONE);
+        assert!(off.subs(&row).is_none());
+        let built_off = off.build(&row);
+        // with ligatures on, alternating colours split every run: each cell draws on its own
+        let mut on = rig(true);
+        let mut split = row.clone();
+        for (k, c) in split.iter_mut().enumerate() {
+            c.fg = Color::Palette(if k % 2 == 0 { 1 } else { 2 });
+        }
+        assert!(on.subs(&split).is_none());
+        let built_split = on.build(&split);
+        let geom = |r: &RowInstances| -> Vec<([f32; 4], [f32; 4], [f32; 4])> {
+            r.mask.iter().map(|g| (g.rect, g.uv, g.clip)).collect()
+        };
+        assert_eq!(geom(&built_off), geom(&built_split));
+        assert_eq!(built_off.bgs, built_split.bgs);
+        assert!(built_off.color.is_empty() && built_split.color.is_empty());
+        let glyphs = line.chars().filter(|c| *c != ' ').count();
+        assert_eq!(built_off.mask.len(), glyphs);
+    }
+
+    #[test]
+    fn a_ligated_comment_opener_draws_one_glyph_clipped_from_its_first_cell() {
+        let line = "xa<!--bx";
+        let mut off = rig(false);
+        let row = cells(line, Attrs::NONE);
+        let plain = off.build(&row);
+        let mut on = rig(true);
+        let lig = on.build(&row);
+        let subs = on.subs(&row).expect("ligates");
+        assert!((2..6).all(|c| subs[c].map(|s| s.1) == Some(2)), "{subs:?}");
+        assert!(subs[..2].iter().chain(&subs[6..]).all(Option::is_none));
+        // the spacers draw nothing: x, a, the ligature, b, x
+        assert_eq!(plain.mask.len(), 8);
+        assert_eq!(lig.mask.len(), 5);
+        let cw = on.b.metrics(&mut on.fs, 2.0).cell_w as f32;
+        let at = |r: &RowInstances, col: usize| -> GlyphInst {
+            *r.mask
+                .iter()
+                .find(|g| g.clip[0] <= col as f32 * cw && g.clip[2] > col as f32 * cw)
+                .expect("glyph")
+        };
+        let liga = lig.mask[2];
+        let plain_last = plain.mask[5];
+        assert_eq!(liga.clip[0], 2.0 * cw, "clip from the first cell");
+        assert_eq!(
+            liga.clip[1..],
+            plain_last.clip[1..],
+            "rest of the clip is place()'s"
+        );
+        assert!(
+            liga.rect[0] < plain_last.rect[0],
+            "the ligature's ink starts left"
+        );
+        assert!(
+            liga.rect[0] >= 2.0 * cw - 1.0,
+            "and not before its first cell"
+        );
+        assert_eq!(liga.color, plain_last.color);
+        for col in [0usize, 1, 7] {
+            assert_eq!(at(&lig, col), at(&plain, col), "neighbour {col}");
+        }
+        // the plain stub of the last cell is gone
+        assert!(lig.mask.iter().all(|g| g.uv != plain_last.uv));
+    }
+
+    #[test]
+    fn the_run_cache_is_bounded_and_cleared_by_a_font_change() {
+        let mut r = rig(true);
+        r.subs(&cells("-> != ==>", Attrs::NONE)).expect("subs");
+        assert_eq!(r.b.shaper.ligature_runs(), 3);
+        let mut fonts = r.b.fonts.clone();
+        fonts.ligatures = false;
+        r.b.set_fonts(fonts.clone());
+        assert_eq!(r.b.shaper.ligature_runs(), 0);
+        fonts.ligatures = true;
+        r.b.set_fonts(fonts.clone());
+        // a ligatures toggle reaching the shaper directly clears it too
+        r.subs(&cells("->", Attrs::NONE));
+        assert_eq!(r.b.shaper.ligature_runs(), 1);
+        let mut off = fonts.clone();
+        off.ligatures = false;
+        let fid =
+            r.b.shaper
+                .shape(&mut r.fs, &fonts, "-", false, false)
+                .glyphs[0];
+        assert!(
+            r.b.shaper
+                .ligate(&mut r.fs, &off, fid.font_id, fid.weight, "->", false, false)
+                .is_none()
+        );
+        r.b.shaper.shape(&mut r.fs, &off, "-", false, false);
+        assert_eq!(r.b.shaper.ligature_runs(), 0);
+        let p: Vec<char> = PUNCT.chars().collect();
+        for k in 0..crate::text::MAX_CACHED + 10 {
+            let s: String = [p[k % 26], p[k / 26 % 26], p[k / 676 % 26]]
+                .iter()
+                .collect();
+            r.b.shaper
+                .ligate(&mut r.fs, &fonts, fid.font_id, fid.weight, &s, false, false);
+            assert!(r.b.shaper.ligature_runs() <= crate::text::MAX_CACHED);
+        }
+    }
+
+    #[test]
+    fn an_empty_font_db_or_an_unknown_face_draws_plain() {
+        let fonts = TermFonts {
+            family: "Nothing".to_owned(),
+            size: 13.0,
+            line_height: 17.0,
+            emoji_family: None,
+            icon_family: None,
+            ligatures: true,
+        };
+        let mut fs =
+            FontSystem::new_with_locale_and_db("en-US".to_owned(), fontdb::Database::new());
+        let mut b = Builder::new(fonts.clone(), TermTheme::lunegit_one_dark());
+        let mut core = AtlasCore::new(512, 8192);
+        let mut grid = Grid::new(4, 1);
+        for (c, ch) in "<!--".chars().enumerate() {
+            let mut cell = Cell::default();
+            cell.set_char(ch);
+            grid.set(0, c, cell);
+        }
+        let v = ViewState {
+            cursor: Cursor::default(),
+            focused: true,
+            blink_on: true,
+            selection: &[],
+            hover_link: 0,
+        };
+        b.update(
+            &mut core,
+            &mut fs,
+            &mut grid,
+            &v,
+            (0.0, 0.0),
+            2.0,
+            TextRendering::OFF,
+        );
+        assert!(b.rows()[0].mask.is_empty());
+        // a face id that does not load
+        let mut r = rig(true);
+        let missing = fontdb::ID::dummy();
+        assert!(
+            r.b.shaper
+                .ligate(
+                    &mut r.fs,
+                    &fonts,
+                    missing,
+                    cosmic_text::Weight::NORMAL,
+                    "->",
+                    false,
+                    false
+                )
+                .is_none()
+        );
     }
 }

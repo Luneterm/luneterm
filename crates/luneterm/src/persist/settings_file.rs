@@ -27,7 +27,7 @@ pub struct SettingsDoc {
 }
 
 /// The names this build writes, in the order it writes them.
-const KEYS: [&str; 21] = [
+const KEYS: [&str; 22] = [
     "theme",
     "glass",
     "menu_blur",
@@ -36,6 +36,7 @@ const KEYS: [&str; 21] = [
     "font",
     "font_size",
     "font_smoothing",
+    "ligatures",
     "palette",
     "animate_outline",
     "outline",
@@ -111,6 +112,7 @@ pub fn parse_settings(bytes: &[u8]) -> Result<SettingsDoc, Reject> {
     text(members, "font", &mut s.font);
     number(members, "font_size", &mut s.font_size);
     flag(members, "font_smoothing", &mut s.font_smoothing);
+    flag(members, "ligatures", &mut s.ligatures);
     text(members, "palette", &mut s.palette);
     flag(members, "animate_outline", &mut s.animate_outline);
     named(members, "outline", &mut s.outline, OutlineAnim::from_name);
@@ -152,6 +154,7 @@ pub fn render_settings(doc: &SettingsDoc) -> Result<String, WriteError> {
         ("font".into(), Json::Str(s.font)),
         ("font_size".into(), int(s.font_size)),
         ("font_smoothing".into(), Json::Bool(s.font_smoothing)),
+        ("ligatures".into(), Json::Bool(s.ligatures)),
         ("palette".into(), Json::Str(s.palette)),
         ("animate_outline".into(), Json::Bool(s.animate_outline)),
         ("outline".into(), Json::Str(s.outline.name().into())),
@@ -187,6 +190,7 @@ mod tests {
             font: "Some Mono".into(),
             font_size: 17,
             font_smoothing: false,
+            ligatures: false,
             palette: "Nord".into(),
             animate_outline: false,
             outline: OutlineAnim::Comet,
@@ -357,6 +361,27 @@ mod tests {
         };
         let text = render_settings(&doc).expect("writes");
         assert!(text.contains("\"font_smoothing\":false"), "{text}");
+    }
+
+    /// A file from before the setting has no `ligatures`: ligatures are on. A value of the wrong
+    /// type is on too; `false` reads off; the key is written.
+    #[test]
+    fn ligatures_default_on_and_read_off() {
+        let read = |json: &str| parse_settings(json.as_bytes()).expect("parses").settings;
+        assert!(read(r#"{"version":1,"palette":"Nord"}"#).ligatures);
+        let wrong = read(r#"{"version":1,"ligatures":"off","palette":"Nord"}"#);
+        assert!(wrong.ligatures, "a string is no bool");
+        assert_eq!(wrong.palette, "Nord");
+        assert!(!read(r#"{"version":1,"ligatures":false}"#).ligatures);
+        let doc = SettingsDoc {
+            settings: Settings {
+                ligatures: false,
+                ..Settings::default()
+            },
+            unknown: Vec::new(),
+        };
+        let text = render_settings(&doc).expect("writes");
+        assert!(text.contains("\"ligatures\":false"), "{text}");
     }
 
     #[test]

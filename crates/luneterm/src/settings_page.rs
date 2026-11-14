@@ -178,6 +178,11 @@ static TERMINAL: [Group; 3] = [
                 "settings.terminal.appearance.fontSmoothing",
             ),
             row(
+                SettingId::Ligatures,
+                Control::Toggle,
+                "settings.terminal.appearance.ligatures",
+            ),
+            row(
                 SettingId::Palette,
                 Control::Combo,
                 "settings.terminal.appearance.colorTheme",
@@ -284,8 +289,8 @@ const NOTICES: [(&str, &str); 7] = [
         "settings.about.notice.rznmono.license",
     ),
     (
-        "settings.about.notice.roboto",
-        "settings.about.notice.roboto.license",
+        "settings.about.notice.nerdicons",
+        "settings.about.notice.nerdicons.license",
     ),
     (
         "settings.about.notice.rznsans",
@@ -339,10 +344,9 @@ fn option_keys(id: SettingId) -> Vec<String> {
 pub fn options(strings: &StringTable, id: SettingId) -> Vec<String> {
     match id {
         SettingId::Palette => PALETTES.iter().map(|p| p.name.to_owned()).collect(),
-        SettingId::Font => fonts::TERMINAL_FONTS
-            .iter()
-            .map(|f| (*f).to_owned())
-            .collect(),
+        // The built-in font only: the font row's real list has the headings and the installed
+        // system fonts, see [`font_rows`].
+        SettingId::Font => vec![fonts::MONO_FONT.to_owned()],
         _ => option_keys(id)
             .iter()
             .map(|k| strings.tr(k).to_owned())
@@ -384,7 +388,7 @@ pub fn selected(settings: &Settings, id: SettingId) -> usize {
             let names: Vec<&str> = PALETTES.iter().map(|p| p.name).collect();
             pos(&names, &settings.palette)
         }
-        SettingId::Font => pos(fonts::TERMINAL_FONTS, &settings.font),
+        SettingId::Font => 0,
         _ => 0,
     }
 }
@@ -428,17 +432,76 @@ pub fn choose(settings: &mut Settings, id: SettingId, i: usize) {
                 settings.palette = p.name.to_owned();
             }
         }
+        // RznMono, the default, is saved as the empty name.
         SettingId::Font => {
-            // The first font is the default, saved as the empty name.
-            if let Some(f) = fonts::TERMINAL_FONTS.get(i) {
-                settings.font = if i == 0 {
-                    String::new()
-                } else {
-                    (*f).to_owned()
-                };
+            if i == 0 {
+                settings.font = String::new();
             }
         }
         _ => {}
+    }
+}
+
+/// One row of the font combo: a heading or a font that can be picked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FontRow {
+    /// A disabled label ("BUILT-IN", "SYSTEM"): never picked, skipped by the keys.
+    Heading(String),
+    /// A font: the family shown, and the name saved when it is picked (RznMono saves `""`).
+    Pick { family: &'static str, saved: String },
+}
+
+impl FontRow {
+    /// The text the combo draws for the row.
+    pub fn label(&self) -> &str {
+        match self {
+            FontRow::Heading(t) => t,
+            FontRow::Pick { family, .. } => family,
+        }
+    }
+}
+
+/// The font combo's rows: `Built-in`, RznMono, then, when `system` (the installed curated fonts,
+/// [`fonts::system_fonts`]) is not empty, `System` and each of them.
+pub fn font_rows(strings: &StringTable, system: &[&'static str]) -> Vec<FontRow> {
+    let mut rows = vec![
+        FontRow::Heading(
+            strings
+                .tr("settings.terminal.appearance.font.group.builtin")
+                .to_owned(),
+        ),
+        FontRow::Pick {
+            family: fonts::MONO_FONT,
+            saved: String::new(),
+        },
+    ];
+    if !system.is_empty() {
+        rows.push(FontRow::Heading(
+            strings
+                .tr("settings.terminal.appearance.font.group.system")
+                .to_owned(),
+        ));
+        rows.extend(system.iter().map(|f| FontRow::Pick {
+            family: f,
+            saved: (*f).to_owned(),
+        }));
+    }
+    rows
+}
+
+/// The index in [`font_rows`] of the font the terminal draws with: a saved name that is not
+/// available (uninstalled, not curated, from an older build) shows RznMono.
+pub fn font_selected(settings: &Settings, rows: &[FontRow], system: &[&str]) -> usize {
+    let family = fonts::terminal_family(&settings.font, system);
+    rows.iter()
+        .position(|r| matches!(r, FontRow::Pick { family: f, .. } if *f == family))
+        .unwrap_or(1)
+}
+
+/// Picks row `i` of [`font_rows`]: a heading or an index past the list changes nothing.
+pub fn font_choose(settings: &mut Settings, rows: &[FontRow], i: usize) {
+    if let Some(FontRow::Pick { saved, .. }) = rows.get(i) {
+        settings.font.clone_from(saved);
     }
 }
 
@@ -446,6 +509,7 @@ pub fn choose(settings: &mut Settings, id: SettingId, i: usize) {
 pub fn flag(settings: &Settings, id: SettingId) -> Option<bool> {
     Some(match id {
         SettingId::FontSmoothing => settings.font_smoothing,
+        SettingId::Ligatures => settings.ligatures,
         SettingId::AnimateOutline => settings.animate_outline,
         SettingId::OutlineFullScreen => settings.outline_full_screen,
         SettingId::ReportIterm2 => settings.report_iterm2,
@@ -461,6 +525,7 @@ pub fn flag(settings: &Settings, id: SettingId) -> Option<bool> {
 pub fn set_flag(settings: &mut Settings, id: SettingId, on: bool) {
     match id {
         SettingId::FontSmoothing => settings.font_smoothing = on,
+        SettingId::Ligatures => settings.ligatures = on,
         SettingId::AnimateOutline => settings.animate_outline = on,
         SettingId::OutlineFullScreen => settings.outline_full_screen = on,
         SettingId::ReportIterm2 => settings.report_iterm2 = on,
@@ -572,6 +637,8 @@ pub fn required_keys() -> Vec<String> {
         "settings.about.notices",
         "luneui.settings-page.restart-message",
         "luneui.settings-page.restart-action",
+        "settings.terminal.appearance.font.group.builtin",
+        "settings.terminal.appearance.font.group.system",
     ]
     .iter()
     .map(|k| (*k).to_owned())
@@ -691,6 +758,9 @@ pub struct PageView<'a> {
     pub restart: bool,
     /// The window has keyboard focus (the card's ring).
     pub focused: bool,
+    /// The installed curated system fonts the font combo offers ([`fonts::system_fonts`], computed
+    /// once with the window's text cache).
+    pub system_fonts: &'a [&'static str],
 }
 
 /// What the frame asked of the app.
@@ -723,6 +793,7 @@ pub fn draw(ui: &mut Ui<'_>, strings: &StringTable, view: PageView<'_>, card: Re
         settings,
         restart,
         focused,
+        system_fonts,
     } = view;
     let theme = *ui.theme();
     let lay = PageLayout::new(card);
@@ -803,7 +874,7 @@ pub fn draw(ui: &mut Ui<'_>, strings: &StringTable, view: PageView<'_>, card: Re
         name: &name,
     };
     let resp = ui.settings_page(("page", section), lay.page, &page, |ui, vp| {
-        content(ui, strings, state, settings, vp, &mut out)
+        content(ui, strings, state, settings, system_fonts, vp, &mut out)
     });
     out.restart_action = resp.restart;
     out
@@ -815,6 +886,7 @@ fn content(
     strings: &StringTable,
     state: &mut PageState,
     settings: &mut Settings,
+    system: &[&'static str],
     vp: Rect,
     out: &mut PageOut,
 ) -> f32 {
@@ -830,7 +902,7 @@ fn content(
         y = about(ui, strings, vp, y);
     } else {
         for group in groups(section) {
-            y = draw_group(ui, strings, state, settings, vp, y, group, out) + 16.0;
+            y = draw_group(ui, strings, state, settings, system, vp, y, group, out) + 16.0;
         }
     }
     y - vp.y + 4.0
@@ -842,6 +914,7 @@ fn draw_group(
     strings: &StringTable,
     state: &mut PageState,
     settings: &mut Settings,
+    system: &[&'static str],
     vp: Rect,
     y: f32,
     group: &Group,
@@ -885,7 +958,7 @@ fn draw_group(
             cw,
             ch,
         );
-        control(ui, strings, state, settings, r, c, &title_text, out);
+        control(ui, strings, state, settings, system, r, c, &title_text, out);
         cy += row_h + 2.0;
     }
     let panel = Rect::new(x, y, w, cy - y + 6.0);
@@ -899,6 +972,7 @@ fn control(
     strings: &StringTable,
     state: &mut PageState,
     settings: &mut Settings,
+    system: &[&'static str],
     r: &Row,
     c: Rect,
     name: &str,
@@ -912,8 +986,23 @@ fn control(
             set_flag(settings, id, on);
         }
         Control::Combo => {
-            let labels = options(strings, id);
-            let sel = selected(settings, id).min(labels.len().saturating_sub(1));
+            // The font row has headings and the installed system fonts; the rest are fixed lists.
+            let font_rows = (id == SettingId::Font).then(|| font_rows(strings, system));
+            let (labels, enabled_of, sel): (Vec<String>, Vec<bool>, usize) = match &font_rows {
+                Some(rows) => (
+                    rows.iter().map(|r| r.label().to_owned()).collect(),
+                    rows.iter()
+                        .map(|r| matches!(r, FontRow::Pick { .. }))
+                        .collect(),
+                    font_selected(settings, rows, system),
+                ),
+                None => {
+                    let labels = options(strings, id);
+                    let n = labels.len();
+                    let sel = selected(settings, id).min(n.saturating_sub(1));
+                    (labels, vec![true; n], sel)
+                }
+            };
             let shown = labels.get(sel).map_or("", String::as_str);
             let enabled = id != SettingId::Glass || HOST_GLASS;
             ui.with_enabled(enabled, |ui| {
@@ -923,8 +1012,11 @@ fn control(
                     open = false;
                 }
                 if open {
-                    let list: Vec<(&str, bool)> =
-                        labels.iter().map(|l| (l.as_str(), true)).collect();
+                    let list: Vec<(&str, bool)> = labels
+                        .iter()
+                        .zip(&enabled_of)
+                        .map(|(l, on)| (l.as_str(), *on))
+                        .collect();
                     let d = ui.dropdown_with(
                         ("list", id),
                         resp.rect,
@@ -936,7 +1028,10 @@ fn control(
                         },
                     );
                     if let Some(i) = d.picked {
-                        choose(settings, id, i);
+                        match &font_rows {
+                            Some(rows) => font_choose(settings, rows, i),
+                            None => choose(settings, id, i),
+                        }
                     }
                     if d.picked.is_some() || d.dismissed {
                         open = false;
@@ -1162,10 +1257,167 @@ mod tests {
         }
     }
 
+    const SYSTEM: [&str; 3] = ["Cascadia Code", "JetBrains Mono", "Menlo"];
+
+    #[test]
+    fn the_font_combo_lists_built_in_then_system_with_headings() {
+        let strings = crate::strings::english();
+        let rows = font_rows(&strings, &SYSTEM);
+        let labels: Vec<&str> = rows.iter().map(FontRow::label).collect();
+        assert_eq!(
+            labels,
+            [
+                "BUILT-IN",
+                "RznMono",
+                "SYSTEM",
+                "Cascadia Code",
+                "JetBrains Mono",
+                "Menlo"
+            ]
+        );
+        assert!(matches!(rows[0], FontRow::Heading(_)));
+        assert!(matches!(rows[2], FontRow::Heading(_)));
+        // no system fonts: no System heading
+        let rows = font_rows(&strings, &[]);
+        let labels: Vec<&str> = rows.iter().map(FontRow::label).collect();
+        assert_eq!(labels, ["BUILT-IN", "RznMono"]);
+    }
+
+    #[test]
+    fn picking_a_font_row_saves_its_name_and_a_heading_changes_nothing() {
+        let strings = crate::strings::english();
+        let rows = font_rows(&strings, &SYSTEM);
+        let mut s = Settings::default();
+        font_choose(&mut s, &rows, 4);
+        assert_eq!(s.font, "JetBrains Mono");
+        assert_eq!(font_selected(&s, &rows, &SYSTEM), 4);
+        for heading in [0, 2] {
+            let before = s.clone();
+            font_choose(&mut s, &rows, heading);
+            assert_eq!(s, before, "heading {heading}");
+        }
+        font_choose(&mut s, &rows, rows.len());
+        assert_eq!(s.font, "JetBrains Mono", "past the list");
+        font_choose(&mut s, &rows, 1);
+        assert_eq!(s.font, "", "RznMono is saved as the empty name");
+        assert_eq!(font_selected(&s, &rows, &SYSTEM), 1);
+    }
+
+    /// A saved name that is not available shows RznMono and is not rewritten by showing it.
+    #[test]
+    fn an_unavailable_saved_font_shows_rznmono_and_stays_saved() {
+        let strings = crate::strings::english();
+        let rows = font_rows(&strings, &SYSTEM);
+        for saved in [
+            "RobotoMono Nerd Font Mono",
+            "Comic Sans",
+            "Consolas",
+            "menlo",
+        ] {
+            let s = Settings {
+                font: saved.to_owned(),
+                ..Settings::default()
+            };
+            assert_eq!(font_selected(&s, &rows, &SYSTEM), 1, "{saved}");
+            assert_eq!(s.font, saved);
+        }
+        // and with no system font at all
+        let rows = font_rows(&strings, &[]);
+        let s = Settings {
+            font: "Menlo".to_owned(),
+            ..Settings::default()
+        };
+        assert_eq!(font_selected(&s, &rows, &[]), 1);
+    }
+
+    /// The font combo through real toolkit frames: Up and Down skip the headings and Enter picks
+    /// the row the highlight is on (the first frame registers the regions, as in the shell tests).
+    #[test]
+    fn the_keys_skip_the_font_headings() {
+        use lune_ui::input::{Event, Key, Modifiers, NamedKey, RawInput, keymap};
+        use lune_ui::lunegit_dark::THEME;
+        use lune_ui::motion::{Cadence, MotionTier};
+        use lune_ui::shortcuts::Shortcuts;
+        use lune_ui::ui::{FrameConfig, UiStore};
+        use std::time::Duration;
+
+        let key = |k: NamedKey| {
+            [true, false].map(|pressed| Event::Key {
+                key: Key::Named(k),
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            })
+        };
+        // Starts on `start`, presses `keys`, then Enter: the font the page ends with.
+        let run = |start: &str, keys: &[NamedKey]| -> String {
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            let mut settings = Settings {
+                font: start.to_owned(),
+                ..Settings::default()
+            };
+            let mut state = PageState::new(Section::Terminal, &settings);
+            state.combo = Some(SettingId::Font);
+            let (strings, shortcuts) = (StringTable::default(), Shortcuts::default());
+            let table = crate::strings::english();
+            let mut frame = |events: Vec<Event>| {
+                let input = RawInput {
+                    size: (1040.0, 660.0),
+                    scale: 1.0,
+                    time: Duration::ZERO,
+                    focused: true,
+                    events,
+                };
+                let config = FrameConfig {
+                    theme: THEME,
+                    tier: MotionTier::Off,
+                    busy_cadence: Cadence::BUSY,
+                    strings: &strings,
+                    arg_format: &DisplayFormat,
+                    keymap: keymap(),
+                    shortcuts: &shortcuts,
+                };
+                let view = PageView {
+                    state: &mut state,
+                    settings: &mut settings,
+                    restart: false,
+                    focused: true,
+                    system_fonts: &SYSTEM,
+                };
+                let mut ui = Ui::begin(&mut store, &input, config, &mut text);
+                draw(&mut ui, &table, view, Rect::new(10.0, 34.0, 1020.0, 616.0));
+                let _ = ui.finish();
+            };
+            frame(vec![]);
+            frame(vec![]);
+            for k in keys {
+                frame(key(*k).to_vec());
+            }
+            frame(key(NamedKey::Enter).to_vec());
+            frame(vec![]);
+            settings.font
+        };
+        use NamedKey::{ArrowDown as Down, ArrowUp as Up};
+        // From Menlo (row 5) up: JetBrains (4), Cascadia (3), skipping System (2), RznMono (1).
+        assert_eq!(run("Menlo", &[Up]), "JetBrains Mono");
+        assert_eq!(run("Menlo", &[Up, Up]), "Cascadia Code");
+        assert_eq!(run("Menlo", &[Up, Up, Up]), "", "past the System heading");
+        // and no further than RznMono: the Built-in heading is never reached.
+        assert_eq!(run("Menlo", &[Up, Up, Up, Up, Up]), "");
+        // From RznMono down over the System heading to the first system font.
+        assert_eq!(run("", &[Down]), "Cascadia Code");
+        assert_eq!(
+            run("Cascadia Code", &[Down, Down, Down]),
+            "Menlo",
+            "stays on the last row"
+        );
+    }
+
     #[test]
     fn toggles_flip_their_own_field_only() {
         for id in [
             SettingId::FontSmoothing,
+            SettingId::Ligatures,
             SettingId::AnimateOutline,
             SettingId::OutlineFullScreen,
             SettingId::ReportIterm2,
@@ -1253,9 +1505,10 @@ mod tests {
         let names: Vec<&str> = NOTICES.iter().map(|(n, _)| strings.tr(n)).collect();
         assert!(names.iter().any(|n| n.starts_with("xterm.js")));
         assert!(names.iter().any(|n| n.contains("RznSans")));
-        // RznMono ships since M10 step 11, above RobotoMono (still bundled: the icon fallback)
+        // RznMono 1.000 carries the Nerd icons: their notice follows it, and nothing names RobotoMono
         let at = |what: &str| names.iter().position(|n| n.contains(what));
-        assert!(at("RznMono").is_some_and(|i| Some(i + 1) == at("RobotoMono")));
+        assert!(at("RznMono").is_some_and(|i| Some(i + 1) == at("Nerd Fonts icons")));
+        assert!(names.iter().all(|n| !n.contains("RobotoMono")));
         for (_, l) in NOTICES {
             assert!(!strings.tr(l).is_empty());
         }

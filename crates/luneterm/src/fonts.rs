@@ -1,12 +1,13 @@
 //! Fonts (plan M9 D16, M10 D9): the bundled faces, system fonts for fallback, and the terminal's
 //! `TermFonts`.
 //!
-//! The terminal draws with RznMono (Regular, Bold, Italic, Bold Italic: the four styles termview
-//! asks for, so no synthetic italic or bold). RznMono has no Nerd icons yet (its stage 4), so the
-//! RobotoMono Nerd Font Mono faces stay bundled for the private-use code points it lacks, named as
-//! `TermFonts::icon_family` so a system face cannot take them first. The toolkit's `TextCache` loads no
-//! system font, so the app does, once: without them emoji and CJK would have no fallback face. One
-//! `FontSystem` serves the UI text and the terminal (a second one would duplicate the faces).
+//! The terminal draws with RznMono 1.000 (Regular, Bold, Italic, Bold Italic: the four styles
+//! termview asks for, so no synthetic italic or bold). Its desktop TTFs carry the Nerd Fonts icons, so
+//! no second icon font is bundled; RznMono is named as `TermFonts::icon_family` so that a system font
+//! chosen as the terminal font still draws the private-use code points through it (while the family
+//! is RznMono itself the field is skipped). The toolkit's `TextCache` loads no system font, so the app
+//! does, once: without them emoji and CJK would have no fallback face. One `FontSystem` serves the UI
+//! text and the terminal (a second one would duplicate the faces).
 
 use std::time::{Duration, Instant};
 
@@ -19,20 +20,63 @@ use crate::settings::Settings;
 pub const UI_FONT: &str = "RznSans";
 /// The terminal family: the bundled RznMono.
 pub const MONO_FONT: &str = "RznMono";
-/// Lunegit's terminal font, still bundled: an option on the settings page and the fallback face
-/// for the Nerd icons RznMono does not have yet.
-pub const NERD_FONT: &str = "RobotoMono Nerd Font Mono";
 
-/// The terminal fonts the settings page offers: the bundled families. A saved font name that is
-/// not one of these (a font removed, a hand-edited file) draws as the first, [`MONO_FONT`].
-pub const TERMINAL_FONTS: &[&str] = &[MONO_FONT, NERD_FONT];
+/// The monospace system fonts the settings page can offer (D5): a curated list of popular ones,
+/// of which only the installed ones show. A saved name outside this list, or not installed, draws
+/// as [`MONO_FONT`] and is kept in the file as it is.
+pub const SYSTEM_MONO_FONTS: &[&str] = &[
+    "Andale Mono",
+    "Cascadia Code",
+    "Cascadia Mono",
+    "Consolas",
+    "Courier New",
+    "DejaVu Sans Mono",
+    "Fira Code",
+    "Fira Mono",
+    "Hack",
+    "IBM Plex Mono",
+    "Inconsolata",
+    "Iosevka",
+    "JetBrains Mono",
+    "Liberation Mono",
+    "Lucida Console",
+    "Menlo",
+    "Monaco",
+    "Noto Sans Mono",
+    "PT Mono",
+    "Roboto Mono",
+    "SF Mono",
+    "Source Code Pro",
+    "Ubuntu Mono",
+];
 
-/// The family the terminal draws with for the saved font name `saved` (empty is the default).
-pub fn terminal_family(saved: &str) -> &'static str {
-    TERMINAL_FONTS
+/// The curated system fonts the loaded font database has an upright face of, sorted without
+/// regard to case. Reads only the database's faces (no OS call): empty on
+/// [`bundled_text_cache`], and a font installed after the cache was built shows after a restart.
+pub fn system_fonts(text: &TextCache) -> Vec<&'static str> {
+    let mut found: Vec<&'static str> = SYSTEM_MONO_FONTS
         .iter()
         .copied()
-        .find(|f| *f == saved)
+        .filter(|name| {
+            text.fonts.db().faces().any(|f| {
+                // `fontdb`'s style enum is not named by this crate: anything but Normal is slanted.
+                f.families.iter().any(|(n, _)| n == name) && format!("{:?}", f.style) == "Normal"
+            })
+        })
+        .collect();
+    found.sort_by_key(|n| n.to_lowercase());
+    found
+}
+
+/// The family the terminal draws with for the saved font name `saved` (empty is the default),
+/// given the installed curated fonts `installed` ([`system_fonts`]): an installed curated name is
+/// itself, anything else (empty, [`MONO_FONT`], a font from an older build, an unknown or
+/// uninstalled name) is [`MONO_FONT`]. The saved name is never changed by this.
+pub fn terminal_family(saved: &str, installed: &[&str]) -> &'static str {
+    SYSTEM_MONO_FONTS
+        .iter()
+        .copied()
+        .find(|f| *f == saved && installed.contains(f))
         .unwrap_or(MONO_FONT)
 }
 
@@ -40,20 +84,16 @@ const MONO_REGULAR: &[u8] = include_bytes!("../assets/RznMono-Regular.ttf");
 const MONO_BOLD: &[u8] = include_bytes!("../assets/RznMono-Bold.ttf");
 const MONO_ITALIC: &[u8] = include_bytes!("../assets/RznMono-Italic.ttf");
 const MONO_BOLD_ITALIC: &[u8] = include_bytes!("../assets/RznMono-BoldItalic.ttf");
-const NERD_REGULAR: &[u8] = include_bytes!("../assets/RobotoMonoNerdFontMono-Regular.ttf");
-const NERD_BOLD: &[u8] = include_bytes!("../assets/RobotoMonoNerdFontMono-Bold.ttf");
 const UI_REGULAR: &[u8] = include_bytes!("../assets/RznSans-Regular.ttf");
 const UI_MEDIUM: &[u8] = include_bytes!("../assets/RznSans-Medium.ttf");
 
 /// The bundled faces in the order the `TextCache` loads them.
-pub fn bundled() -> [&'static [u8]; 8] {
+pub fn bundled() -> [&'static [u8]; 6] {
     [
         MONO_REGULAR,
         MONO_BOLD,
         MONO_ITALIC,
         MONO_BOLD_ITALIC,
-        NERD_REGULAR,
-        NERD_BOLD,
         UI_REGULAR,
         UI_MEDIUM,
     ]
@@ -92,13 +132,20 @@ fn emoji_family() -> &'static str {
 /// cell is 17 px tall at 13 px (the spike's approved 17/13).
 pub fn term_fonts(text: &mut TextCache, settings: &Settings) -> TermFonts {
     let size = settings.font_size as f32;
-    let family = terminal_family(&settings.font);
+    // Only a curated saved name needs the face scan; the default and unknown names are RznMono.
+    let installed = if SYSTEM_MONO_FONTS.contains(&settings.font.as_str()) {
+        system_fonts(text)
+    } else {
+        Vec::new()
+    };
+    let family = terminal_family(&settings.font, &installed);
     TermFonts {
         family: family.to_owned(),
         size,
         line_height: natural_line_height(&mut text.fonts, family, size),
         emoji_family: Some(emoji_family().to_owned()),
-        icon_family: Some(NERD_FONT.to_owned()),
+        icon_family: Some(MONO_FONT.to_owned()),
+        ligatures: settings.ligatures,
     }
 }
 
@@ -132,13 +179,123 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_font_name_resolves_to_a_bundled_family_or_the_default() {
-        assert_eq!(terminal_family(""), MONO_FONT);
-        assert_eq!(terminal_family(MONO_FONT), MONO_FONT);
-        assert_eq!(terminal_family("Comic Sans"), MONO_FONT);
-        for f in TERMINAL_FONTS {
-            assert_eq!(terminal_family(f), *f);
+    fn a_saved_font_name_resolves_to_rznmono_or_an_installed_curated_family() {
+        let installed = ["Menlo", "JetBrains Mono"];
+        for saved in [
+            "",
+            MONO_FONT,
+            "RobotoMono Nerd Font Mono",
+            "Comic Sans",
+            "Cascadia Code", // curated, not installed
+            "menlo",         // the name is exact
+        ] {
+            assert_eq!(terminal_family(saved, &installed), MONO_FONT, "{saved:?}");
+            assert_eq!(terminal_family(saved, &[]), MONO_FONT, "{saved:?}");
         }
+        for saved in installed {
+            assert_eq!(terminal_family(saved, &installed), saved);
+            assert_eq!(
+                terminal_family(saved, &[]),
+                MONO_FONT,
+                "{saved} not installed"
+            );
+        }
+        // A name that is installed but not curated is not offered, so it is not drawn.
+        assert_eq!(terminal_family("Arial", &["Arial"]), MONO_FONT);
+    }
+
+    #[test]
+    fn the_curated_list_is_alphabetical_and_has_no_duplicates() {
+        let mut sorted = SYSTEM_MONO_FONTS.to_vec();
+        sorted.sort_by_key(|n| n.to_lowercase());
+        assert_eq!(sorted, SYSTEM_MONO_FONTS);
+        sorted.dedup();
+        assert_eq!(sorted.len(), SYSTEM_MONO_FONTS.len());
+        assert!(!SYSTEM_MONO_FONTS.contains(&MONO_FONT));
+    }
+
+    /// The bundled cache has no system font: the list is empty there (the instrument: the same
+    /// function finds Menlo on a Mac in the next test).
+    #[test]
+    fn the_bundled_cache_has_no_system_fonts() {
+        assert!(system_fonts(&bundled_text_cache()).is_empty());
+    }
+
+    #[test]
+    fn system_fonts_are_curated_installed_and_sorted() {
+        let (text, _) = text_cache();
+        let found = system_fonts(&text);
+        eprintln!("system fonts found: {found:?}");
+        for name in &found {
+            assert!(SYSTEM_MONO_FONTS.contains(name), "{name}");
+            assert!(
+                text.fonts
+                    .db()
+                    .faces()
+                    .any(|f| { f.families.iter().any(|(n, _)| n == name) && !is_italic(&f.style) }),
+                "{name} has an upright face"
+            );
+        }
+        let mut sorted = found.clone();
+        sorted.sort_by_key(|n| n.to_lowercase());
+        assert_eq!(found, sorted);
+        #[cfg(target_os = "macos")]
+        assert!(found.contains(&"Menlo"), "macOS ships Menlo: {found:?}");
+    }
+
+    /// A system font as the terminal font: its own family, with RznMono named for the icons it
+    /// lacks; the default and unknown names keep RznMono.
+    #[test]
+    fn term_fonts_use_an_installed_system_family_and_keep_rznmono_for_icons() {
+        let (mut text, _) = text_cache();
+        let found = system_fonts(&text);
+        for saved in ["", "Comic Sans", "RobotoMono Nerd Font Mono"] {
+            let f = term_fonts(
+                &mut text,
+                &Settings {
+                    font: saved.to_owned(),
+                    ..Settings::default()
+                },
+            );
+            assert_eq!(f.family, MONO_FONT, "{saved:?}");
+        }
+        let Some(name) = found.first().copied() else {
+            eprintln!("skipped: no curated system font is installed here");
+            return;
+        };
+        let settings = Settings {
+            font: name.to_owned(),
+            ..Settings::default()
+        };
+        let fonts = term_fonts(&mut text, &settings);
+        assert_eq!(fonts.family, name);
+        assert_eq!(fonts.icon_family.as_deref(), Some(MONO_FONT));
+        assert_eq!(settings.font, name, "resolution never rewrites the setting");
+        // an icon the system font lacks goes through the icon path to RznMono
+        let s = Shaper::new()
+            .shape(&mut text.fonts, &fonts, "\u{F015}", false, false)
+            .clone();
+        assert_eq!(s.glyphs.len(), 1);
+        assert_ne!(s.glyphs[0].glyph_id, 0);
+        assert_eq!(face_of(&text, &s.glyphs[0]).0, MONO_FONT);
+    }
+
+    /// The Ligatures setting reaches the terminal fonts both ways (the Font effect rebuilds them).
+    #[test]
+    fn term_fonts_carry_the_ligatures_setting() {
+        let mut text = bundled_text_cache();
+        let on = term_fonts(&mut text, &Settings::default());
+        assert!(on.ligatures);
+        let off = term_fonts(
+            &mut text,
+            &Settings {
+                ligatures: false,
+                ..Settings::default()
+            },
+        );
+        assert!(!off.ligatures);
+        let back = term_fonts(&mut text, &Settings::default());
+        assert!(back.ligatures);
     }
 
     /// The faces' style as the db reports it (the app has no direct `fontdb` dependency).
@@ -171,18 +328,16 @@ mod tests {
                 "{MONO_FONT} {weight} {italic} in {faces:?}"
             );
         }
-        for weight in [400, 700] {
-            assert!(
-                has(NERD_FONT, weight, false),
-                "{NERD_FONT} {weight} in {faces:?}"
-            );
-        }
+        assert!(
+            faces.iter().all(|f| f.0 != "RobotoMono Nerd Font Mono"),
+            "RobotoMono is no longer bundled: {faces:?}"
+        );
         assert!(
             faces.iter().any(|f| f.0 == UI_FONT),
             "{UI_FONT} in {faces:?}"
         );
         assert_eq!(faces.len(), bundled().len());
-        assert_eq!(faces.len(), 8);
+        assert_eq!(faces.len(), 6);
     }
 
     /// The family and style of the face `glyph` was shaped with.
@@ -237,28 +392,40 @@ mod tests {
         }
     }
 
-    /// A4: a private-use Nerd icon is not in RznMono; it draws from the bundled RobotoMono Nerd
-    /// face through `icon_family`, with the icon's own glyph (not .notdef), and its
-    /// advance is the cell's, so it is cell-contained (the golden `nerd_fallback` draws it). At
-    /// 13 px, where the cell (8 px from a 7.8 px advance) is wider than the advance; at 14 px the
-    /// 8.4 px advance rounds to an 8 px cell for every face alike, which is cell metrics, not
-    /// fallback.
+    /// The Nerd icons RznMono 1.000 carries, one per set (Font Awesome, Codicons, Devicons, Seti,
+    /// Material Design, Font Awesome again).
+    const ICONS: [&str; 6] = [
+        "\u{F015}",
+        "\u{F07B}",
+        "\u{E725}",
+        "\u{F121}",
+        "\u{F0001}",
+        "\u{F013}",
+    ];
+
+    /// A4: a private-use Nerd icon is in RznMono itself: it shapes to the icon's own glyph (not
+    /// .notdef) from the RznMono face of the requested weight, and its advance is the cell's, so it
+    /// is cell-contained (the golden `nerd_fallback` draws it). At 13 px, where the cell (8 px from a
+    /// 7.8 px advance) is wider than the advance; at 14 px the 8.4 px advance rounds to an 8 px cell
+    /// for every face alike, which is cell metrics, not fallback.
     #[test]
-    fn a_private_use_icon_falls_back_to_the_bundled_nerd_face() {
+    fn rznmono_draws_the_nerd_icons() {
         let mut text = bundled_text_cache();
         let settings = at_13_px();
         let fonts = term_fonts(&mut text, &settings);
         let cell = cell_metrics(&mut text.fonts, &fonts, 1.0);
         let w = shaped_with(&mut text, &settings, "W", false, false).advance;
-        for cluster in ["\u{F015}", "\u{F07B}", "\u{E725}", "\u{F121}"] {
-            for bold in [false, true] {
+        for cluster in ICONS {
+            for (bold, weight) in [(false, 400), (true, 700)] {
                 let s = shaped_with(&mut text, &settings, cluster, bold, false);
                 assert_eq!(s.glyphs.len(), 1, "{cluster:?}");
                 let g = &s.glyphs[0];
                 assert_ne!(g.glyph_id, 0, "{cluster:?} is .notdef");
-                assert_eq!(face_of(&text, g).0, NERD_FONT, "{cluster:?} bold {bold}");
-                // the Nerd face's advance is RznMono's to within a hundredth of a pixel, and the
-                // cell (8 px, snapped up from 7.8) holds it
+                assert_eq!(
+                    face_of(&text, g),
+                    (MONO_FONT.to_owned(), weight, false),
+                    "{cluster:?} bold {bold}"
+                );
                 assert!(
                     (s.advance - w).abs() < 0.05,
                     "{cluster:?} advance {}",
@@ -278,61 +445,43 @@ mod tests {
 
     /// A4 in the app's real stack: the bundled faces first, then the system fonts, as the window
     /// loads them. Some system faces map the same private-use range (Wingdings and Webdings on a
-    /// Mac, Segoe UI Symbol on Windows), so a pass means the bundled Nerd face wins, regular and bold. The instrument is
-    /// checked in the same test: a cache built without the Nerd faces must not resolve to them.
+    /// Mac, Segoe UI Symbol on Windows), so a pass means RznMono wins, regular and bold. The
+    /// instrument is checked in the same test: a cache built without the RznMono faces must not
+    /// resolve to them.
     #[test]
-    fn the_icon_fallback_holds_with_system_fonts_loaded() {
+    fn icons_stay_on_rznmono_with_system_fonts_loaded() {
         let (mut text, _) = text_cache();
         for (bold, weight) in [(false, 400), (true, 700)] {
-            for cluster in [
-                "\u{F015}",
-                "\u{F07B}",
-                "\u{F013}",
-                "\u{E725}",
-                "\u{F121}",
-                "\u{F0001}",
-            ] {
+            for cluster in ICONS {
                 let s = shaped(&mut text, cluster, bold, false);
                 assert_eq!(s.glyphs.len(), 1, "{cluster:?}");
                 let (family, w, italic) = face_of(&text, &s.glyphs[0]);
-                assert_eq!(family, NERD_FONT, "{cluster:?} bold {bold}");
+                assert_eq!(family, MONO_FONT, "{cluster:?} bold {bold}");
                 assert_eq!((w, italic), (weight, false), "{cluster:?} bold {bold}");
             }
         }
-        // the same lookup without the bundled Nerd faces resolves elsewhere (or to nothing)
+        // the same lookup without the bundled RznMono faces resolves elsewhere (or to nothing)
         let without: Vec<&[u8]> = bundled()
             .into_iter()
-            .filter(|f| *f != NERD_REGULAR && *f != NERD_BOLD)
+            .filter(|f| ![MONO_REGULAR, MONO_BOLD, MONO_ITALIC, MONO_BOLD_ITALIC].contains(f))
             .collect();
+        assert_eq!(without.len(), 2);
         let mut bare = TextCache::new(&without, UI_FONT, MONO_FONT);
         bare.fonts.db_mut().load_system_fonts();
         let s = shaped(&mut bare, "\u{F015}", false, false);
         assert!(
-            s.glyphs.iter().all(|g| face_of(&bare, g).0 != NERD_FONT),
-            "the check cannot tell the Nerd face from another"
+            s.glyphs.iter().all(|g| face_of(&bare, g).0 != MONO_FONT),
+            "the check cannot tell RznMono from another face"
         );
     }
 
-    /// The premise of the toolkit's fit-on-base rule (termview D4 iii) still holds for the second
-    /// bundled font, which the settings page offers: RobotoMono Nerd's marks advance like letters
-    /// (its GDEF has no mark class), where RznMono's (no GDEF) have no advance. A saved
-    /// RobotoMono name draws with it, so the rule must keep its input. At 13 px (the widths
-    /// below are its 7.8 px advance and two of them).
+    /// The premise of the toolkit's fit-on-base rule (termview D4 iii): RznMono has no GDEF, so its
+    /// marks have no advance (`a` + two combining marks is one 7.8 px advance at 13 px).
     #[test]
-    fn marks_advance_in_robotomono_and_not_in_rznmono() {
+    fn marks_do_not_advance_in_rznmono() {
         let mut text = bundled_text_cache();
-        let mut settings = at_13_px();
-        let mut width = |text: &mut TextCache, font: &str| {
-            settings.font = font.to_owned();
-            let fonts = term_fonts(text, &settings);
-            Shaper::new()
-                .shape(&mut text.fonts, &fonts, "a\u{301}\u{303}", false, false)
-                .advance
-        };
-        let rzn = width(&mut text, MONO_FONT);
-        let nerd = width(&mut text, NERD_FONT);
-        assert!((rzn - 7.8).abs() < 0.02, "{rzn}");
-        assert!((nerd - 15.6).abs() < 0.05, "{nerd}");
+        let width = shaped_with(&mut text, &at_13_px(), "a\u{301}\u{303}", false, false).advance;
+        assert!((width - 7.8).abs() < 0.02, "{width}");
     }
 
     #[test]
