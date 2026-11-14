@@ -86,7 +86,24 @@ the grid (in the app, `session::apply_update` from the engine thread's Updates; 
   keeps the entries of the setting not in use, so a toggle never serves a glyph rasterized under
   the other one. Procedural glyphs are not font outlines and ignore it. Frame dumps take
   `LUNETERM_DUMP_TEXT=on|off` (default `on`).
-  Ligatures (ledger 15) are not shaped yet; whole-row shaping can reuse the same key later.
+- **Ligatures** (ledger 15; the `ligatures` setting, `TermFonts.ligatures`, on by default). A per-cell
+  glyph substitution, in `build.rs` (`ligature_subs`): in each row a run is a maximal stretch of two or
+  more shown cells of one ASCII-punctuation character each (one cell wide) with the same bold, italic
+  and resolved foreground. The run is shaped as one string with harfrust directly (cosmic-text's
+  `Buffer` splits `||=`), and only when every cell on its own shapes to one real glyph of one face
+  and the run gives one glyph per cell; the cells whose glyph differs from their own draw the run's
+  glyph at their own placement, the ligature's glyph clipped from its first cell (the clip widens left
+  over the span of substituted cells), the others draw nothing. Anything else draws per cell (fail
+  closed): a wide or non-ASCII cell, a colour or style change, a blank cell or a run whose shaped glyph
+  count is not the cell count. Limits: no join across wrapped rows (a row is the unit), none across a
+  style or colour change, none through a blank cell, and the cursor does not split a run (it is drawn
+  over the substituted cells). The shaped runs are cached in the `Shaper` (bounded, cleared by a font
+  change). The face decides which sequences join: RznMono 1.000 has 128 `calt` sequences; a system font
+  chosen as the terminal font ligates only what it carries (unverified beyond RznMono). Cost: all rows
+  dirty at 4K, 3.08 ms with ligatures off and 3.30 ms on (`frame_time`).
+  *Known issue* (shipped, to fix in luneui-rs): with Font smoothing on, three ligatures (`|]`, `|}`,
+  `<||`) draw at about half their ink, a bug in the toolkit's rasterizer (`docs/luneui-rs-handoff.md`
+  gap 9); smoothing off draws them right.
 - **Containment** (`contain`): Lunegit's rule with two deviations. A width-1 non-colour glyph
   followed by a blank cell may spill one cell. Anything wider is fitted to its slot by
   re-rasterizing at a smaller size, and an oversized colour glyph is scaled, not clipped. A
@@ -871,7 +888,7 @@ global state (M10: a `Tab` owns a session and everything that used to be per-ses
 | `persist` | `settings.json` and `workspace.json`: bounded JSON reader and writer, atomic 0600 writes, versioned, `.bak` on a file it cannot read, `SaveGuard` (ledger 12) |
 | `cwd` | The host's check of a directory a shell reported (`syntax`, `validated`) |
 | `outline`, `menus`, `palettes`, `settings_page` | The running-outline gate and command tracker; the app and terminal menus as data; the ten palettes (saved by name); the settings page model and its one draw function |
-| `title`, `settings`, `fonts`, `dump`, `demo` | Title sanitizer; the settings model (Lunegit's `TerminalSettings` defaults; every field has a `SettingId` and an `Effect`); the eight bundled faces plus system fonts; `LUNETERM_DUMP_FRAMES`; the dump mode's placeholder grid |
+| `title`, `settings`, `fonts`, `dump`, `demo` | Title sanitizer; the settings model (Lunegit's `TerminalSettings` defaults; every field has a `SettingId` and an `Effect`); the six bundled faces plus the detected system fonts; `LUNETERM_DUMP_FRAMES`; the dump mode's placeholder grid |
 
 **Threads (D1).** Each session runs three: `luneterm-reader` blocks on the PTY and fills the inbox;
 `luneterm-engine` owns the `Terminal` and the `Box<dyn Pty>`; `luneterm-writer` owns one `PtyWriter`
@@ -1084,11 +1101,19 @@ U+2066 to U+2069), trims, caps at 80 characters, and uses "Luneterm" when empty;
 the window title and the title band (a 10 MB title takes under 10 ms in the test). A bell asks for
 user attention (`Informational`) only while the window is unfocused, at most every 2 s.
 
-**Fonts and look (D15, D16; M10 D9a).** The eight bundled faces live in `crates/luneterm/assets`:
-RznMono 0.007 Regular, Bold, Italic and Bold Italic (the terminal font, real faces for every
-style termview asks for), RobotoMono Nerd Font Mono Regular and Bold (the fallback for the Nerd
-icons RznMono does not have until its stage 4, and a terminal font option) and RznSans Regular and
-Medium, with their licences. luneui-rs's `TextCache` loads no system fonts, so the app loads them once at start
+**Fonts and look (D15, D16; M10 D9a; rznmono-1000).** The six bundled faces live in `crates/luneterm/assets`:
+RznMono 1.000 Regular, Bold, Italic and Bold Italic (the terminal font, real faces for every
+style termview asks for; it carries the Nerd Fonts icons and the 128 `calt` ligatures, and its
+`CREDITS.txt` is bundled) and RznSans Regular and Medium, with their licences. RobotoMono Nerd Font Mono
+is no longer bundled. The Settings font list is the built-in RznMono and the installed system fonts:
+the curated names of `fonts::SYSTEM_MONO_FONTS` (23 popular monospace families) that the loaded font
+database has an upright face of (`fonts::system_fonts`, once when the window's `TextCache` is built;
+a font installed later shows after a restart; no OS enumeration, no new crate). The combo shows disabled
+`BUILT-IN` and `SYSTEM` heading rows (no `SYSTEM` heading when none is found); the rows are
+`settings_page::font_rows`, and the generic option path covers RznMono only. A saved name that is not
+curated or not installed draws as RznMono and stays in the file unchanged. RznMono is `TermFonts::icon_family`
+for every system font, so Nerd icons a system font lacks still draw; other missing characters keep
+cosmic-text's fallback. luneui-rs's `TextCache` loads no system fonts, so the app loads them once at start
 (`fonts::text_cache`, 59 to 64 ms on the Apple M1 Pro) for emoji and CJK fallback. Cell
 height is `ceil(natural_line_height)`: 18 px at scale 1 and 37 at scale 2 for the bundled face at
 14 px, the default size since the luneui-rs 0.4.0 work (13 px gave 17 and 34). At 1040 x 660 the dump
