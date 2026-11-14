@@ -284,8 +284,8 @@ const NOTICES: [(&str, &str); 7] = [
         "settings.about.notice.rznmono.license",
     ),
     (
-        "settings.about.notice.roboto",
-        "settings.about.notice.roboto.license",
+        "settings.about.notice.nerdicons",
+        "settings.about.notice.nerdicons.license",
     ),
     (
         "settings.about.notice.rznsans",
@@ -1253,9 +1253,10 @@ mod tests {
         let names: Vec<&str> = NOTICES.iter().map(|(n, _)| strings.tr(n)).collect();
         assert!(names.iter().any(|n| n.starts_with("xterm.js")));
         assert!(names.iter().any(|n| n.contains("RznSans")));
-        // RznMono ships since M10 step 11, above RobotoMono (still bundled: the icon fallback)
+        // RznMono 1.000 carries the Nerd icons: their notice follows it, and nothing names RobotoMono
         let at = |what: &str| names.iter().position(|n| n.contains(what));
-        assert!(at("RznMono").is_some_and(|i| Some(i + 1) == at("RobotoMono")));
+        assert!(at("RznMono").is_some_and(|i| Some(i + 1) == at("Nerd Fonts icons")));
+        assert!(names.iter().all(|n| !n.contains("RobotoMono")));
         for (_, l) in NOTICES {
             assert!(!strings.tr(l).is_empty());
         }

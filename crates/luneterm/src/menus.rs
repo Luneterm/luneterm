@@ -62,7 +62,7 @@ impl MenuAction {
     }
 
     /// The row's icon. Within one menu no two rows show the same icon (a test checks it); the
-    /// codicon names are those of the Nerd Font the toolkit draws icons from.
+    /// codicon names are those of the Nerd icons in RznMono, the mono font the toolkit draws icons with.
     fn glyph(self) -> Option<&'static str> {
         match self {
             MenuAction::NewTab => Some(icon::ADD),

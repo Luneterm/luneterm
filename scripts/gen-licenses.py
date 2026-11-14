@@ -386,9 +386,9 @@ def static_copies(packages):
     assets = os.path.join(ROOT, "crates", "luneterm", "assets")
     rows = [
         ("luneterm-LICENSE-APACHE", os.path.join(ROOT, "LICENSE-APACHE")),
-        ("RobotoMonoNerdFont.LICENSE.txt", os.path.join(assets, "RobotoMonoNerdFont.LICENSE.txt")),
         ("RznSans.OFL.txt", os.path.join(assets, "RznSans.OFL.txt")),
         ("RznMono.OFL.txt", os.path.join(assets, "RznMono.OFL.txt")),
+        ("RznMono.CREDITS.txt", os.path.join(assets, "RznMono.CREDITS.txt")),
     ]
     for name in ("LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md"):
         rows.append(("luneui-rs-" + name, os.path.join(luneui, name) if luneui else None))
