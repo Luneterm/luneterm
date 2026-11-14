@@ -177,6 +177,10 @@ pub struct Settings {
     /// the terminal grid. Off: the hinted look of before (`TextRendering::OFF`). A Luneterm-only
     /// setting: Lunegit has none.
     pub font_smoothing: bool,
+    /// Ligatures in the terminal grid: runs of punctuation such as `->` and `!=` draw as one
+    /// glyph where the font has one (`lune_termview` `calt`). A Luneterm-only setting: Lunegit
+    /// has none.
+    pub ligatures: bool,
     pub palette: String,
     pub animate_outline: bool,
     pub outline: OutlineAnim,
@@ -205,6 +209,7 @@ impl Default for Settings {
             font: String::new(),
             font_size: DEFAULT_FONT_SIZE,
             font_smoothing: true,
+            ligatures: true,
             palette: DEFAULT_PALETTE.to_owned(),
             animate_outline: true,
             outline: OutlineAnim::Sweep,
@@ -327,6 +332,7 @@ impl Settings {
             font,
             font_size,
             font_smoothing,
+            ligatures,
             palette,
             animate_outline,
             outline,
@@ -356,6 +362,7 @@ impl Settings {
                 SettingId::FontSmoothing,
                 *font_smoothing != other.font_smoothing,
             ),
+            (SettingId::Ligatures, *ligatures != other.ligatures),
             (SettingId::Palette, *palette != other.palette),
             (
                 SettingId::AnimateOutline,
@@ -409,6 +416,7 @@ pub enum SettingId {
     Font,
     FontSize,
     FontSmoothing,
+    Ligatures,
     Palette,
     AnimateOutline,
     Outline,
@@ -426,7 +434,7 @@ pub enum SettingId {
 
 impl SettingId {
     /// Every setting, in the order of the [`Settings`] fields.
-    pub const ALL: [SettingId; 21] = [
+    pub const ALL: [SettingId; 22] = [
         SettingId::Theme,
         SettingId::Glass,
         SettingId::MenuBlur,
@@ -435,6 +443,7 @@ impl SettingId {
         SettingId::Font,
         SettingId::FontSize,
         SettingId::FontSmoothing,
+        SettingId::Ligatures,
         SettingId::Palette,
         SettingId::AnimateOutline,
         SettingId::Outline,
@@ -457,7 +466,7 @@ impl SettingId {
             SettingId::MenuBlur => Effect::MenuBlur,
             SettingId::WindowOpacity => Effect::WindowOpacity,
             SettingId::Motion => Effect::Motion,
-            SettingId::Font | SettingId::FontSize => Effect::Font,
+            SettingId::Font | SettingId::FontSize | SettingId::Ligatures => Effect::Font,
             SettingId::FontSmoothing => Effect::TextRendering,
             SettingId::Palette => Effect::Palette,
             SettingId::AnimateOutline | SettingId::Outline | SettingId::OutlineFullScreen => {
@@ -737,6 +746,7 @@ mod tests {
             (S::Font, E::Font),
             (S::FontSize, E::Font),
             (S::FontSmoothing, E::TextRendering),
+            (S::Ligatures, E::Font),
             (S::Palette, E::Palette),
             (S::AnimateOutline, E::Outline),
             (S::Outline, E::Outline),
@@ -762,7 +772,7 @@ mod tests {
     #[test]
     fn changing_one_field_changes_exactly_its_id() {
         let d = Settings::default();
-        let cases: [(SettingId, Settings); 21] = [
+        let cases: [(SettingId, Settings); 22] = [
             (
                 SettingId::Theme,
                 Settings {
@@ -816,6 +826,13 @@ mod tests {
                 SettingId::FontSmoothing,
                 Settings {
                     font_smoothing: false,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::Ligatures,
+                Settings {
+                    ligatures: false,
                     ..d.clone()
                 },
             ),
@@ -951,6 +968,21 @@ mod tests {
         assert_eq!(effects(&off, &on), vec![Effect::TextRendering]);
         assert_ne!(SettingId::FontSmoothing.effect(), Effect::NextSpawn);
         // Smoothing alone never changes the clamped value.
+        assert_eq!(off.clone().clamped(), off);
+    }
+
+    #[test]
+    fn ligatures_default_on_and_apply_through_the_font_effect() {
+        let on = Settings::default();
+        let off = Settings {
+            ligatures: false,
+            ..on.clone()
+        };
+        assert!(on.ligatures);
+        // The terminal fonts are rebuilt (`TermFonts.ligatures`), so the effect is Font.
+        assert_eq!(SettingId::Ligatures.effect(), Effect::Font);
+        assert_eq!(effects(&on, &off), vec![Effect::Font]);
+        assert_eq!(effects(&off, &on), vec![Effect::Font]);
         assert_eq!(off.clone().clamped(), off);
     }
 

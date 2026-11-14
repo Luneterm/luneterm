@@ -110,8 +110,8 @@ pub fn demo_grid(cols: usize, rows: usize) -> Grid {
     put(&mut g, 11, 0, "luneterm", Color::Palette(2), Attrs::BOLD);
     put(&mut g, 11, 8, " ~ % ", Color::Palette(4), plain);
 
-    // Nerd icons (private use: not in RznMono, drawn from the fallback face), a powerline branch
-    // glyph and a prompt arrow RznMono has. A free row, clear of the link scenes' (row 13).
+    // Nerd icons (private use; RznMono 1.000 has them, so they draw from the terminal face), a
+    // powerline branch glyph and a prompt arrow. A free row, clear of the link scenes' (row 13).
     let c = put(
         &mut g,
         16,
@@ -121,6 +121,28 @@ pub fn demo_grid(cols: usize, rows: usize) -> Grid {
         plain,
     );
     put(&mut g, 16, c, " \u{276F} ls", Color::Default, plain);
+
+    // Ligatures (rows 18 and 19, clear of the rows above): the samples, then the same run with a
+    // colour change inside `->`, which must not join (a run never crosses a colour change).
+    put(&mut g, 18, 0, "ligatures", Color::Default, plain);
+    put(
+        &mut g,
+        18,
+        10,
+        "-> => != === <!-- |> ::",
+        Color::Default,
+        plain,
+    );
+    put(&mut g, 19, 0, "colour", Color::Default, plain);
+    let c = put(&mut g, 19, 10, "-", Color::Palette(1), plain);
+    put(
+        &mut g,
+        19,
+        c,
+        "> => != === <!-- |> ::",
+        Color::Default,
+        plain,
+    );
     g
 }
 

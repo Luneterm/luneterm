@@ -178,6 +178,11 @@ static TERMINAL: [Group; 3] = [
                 "settings.terminal.appearance.fontSmoothing",
             ),
             row(
+                SettingId::Ligatures,
+                Control::Toggle,
+                "settings.terminal.appearance.ligatures",
+            ),
+            row(
                 SettingId::Palette,
                 Control::Combo,
                 "settings.terminal.appearance.colorTheme",
@@ -446,6 +451,7 @@ pub fn choose(settings: &mut Settings, id: SettingId, i: usize) {
 pub fn flag(settings: &Settings, id: SettingId) -> Option<bool> {
     Some(match id {
         SettingId::FontSmoothing => settings.font_smoothing,
+        SettingId::Ligatures => settings.ligatures,
         SettingId::AnimateOutline => settings.animate_outline,
         SettingId::OutlineFullScreen => settings.outline_full_screen,
         SettingId::ReportIterm2 => settings.report_iterm2,
@@ -461,6 +467,7 @@ pub fn flag(settings: &Settings, id: SettingId) -> Option<bool> {
 pub fn set_flag(settings: &mut Settings, id: SettingId, on: bool) {
     match id {
         SettingId::FontSmoothing => settings.font_smoothing = on,
+        SettingId::Ligatures => settings.ligatures = on,
         SettingId::AnimateOutline => settings.animate_outline = on,
         SettingId::OutlineFullScreen => settings.outline_full_screen = on,
         SettingId::ReportIterm2 => settings.report_iterm2 = on,
@@ -1166,6 +1173,7 @@ mod tests {
     fn toggles_flip_their_own_field_only() {
         for id in [
             SettingId::FontSmoothing,
+            SettingId::Ligatures,
             SettingId::AnimateOutline,
             SettingId::OutlineFullScreen,
             SettingId::ReportIterm2,

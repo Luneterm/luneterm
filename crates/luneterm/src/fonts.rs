@@ -93,7 +93,7 @@ pub fn term_fonts(text: &mut TextCache, settings: &Settings) -> TermFonts {
         line_height: natural_line_height(&mut text.fonts, family, size),
         emoji_family: Some(emoji_family().to_owned()),
         icon_family: Some(MONO_FONT.to_owned()),
-        ligatures: true, // the Ligatures setting (step 3 of rznmono-1000) replaces this
+        ligatures: settings.ligatures,
     }
 }
 
@@ -134,6 +134,24 @@ mod tests {
         for f in TERMINAL_FONTS {
             assert_eq!(terminal_family(f), *f);
         }
+    }
+
+    /// The Ligatures setting reaches the terminal fonts both ways (the Font effect rebuilds them).
+    #[test]
+    fn term_fonts_carry_the_ligatures_setting() {
+        let mut text = bundled_text_cache();
+        let on = term_fonts(&mut text, &Settings::default());
+        assert!(on.ligatures);
+        let off = term_fonts(
+            &mut text,
+            &Settings {
+                ligatures: false,
+                ..Settings::default()
+            },
+        );
+        assert!(!off.ligatures);
+        let back = term_fonts(&mut text, &Settings::default());
+        assert!(back.ligatures);
     }
 
     /// The faces' style as the db reports it (the app has no direct `fontdb` dependency).
