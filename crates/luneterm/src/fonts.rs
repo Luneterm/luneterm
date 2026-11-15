@@ -284,18 +284,18 @@ mod tests {
     #[test]
     fn term_fonts_carry_the_ligatures_setting() {
         let mut text = bundled_text_cache();
-        let on = term_fonts(&mut text, &Settings::default());
-        assert!(on.ligatures);
-        let off = term_fonts(
+        let off = term_fonts(&mut text, &Settings::default());
+        assert!(!off.ligatures);
+        let on = term_fonts(
             &mut text,
             &Settings {
-                ligatures: false,
+                ligatures: true,
                 ..Settings::default()
             },
         );
-        assert!(!off.ligatures);
+        assert!(on.ligatures);
         let back = term_fonts(&mut text, &Settings::default());
-        assert!(back.ligatures);
+        assert!(!back.ligatures);
     }
 
     /// The faces' style as the db reports it (the app has no direct `fontdb` dependency).

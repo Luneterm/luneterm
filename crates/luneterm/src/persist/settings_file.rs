@@ -190,7 +190,7 @@ mod tests {
             font: "Some Mono".into(),
             font_size: 17,
             font_smoothing: false,
-            ligatures: false,
+            ligatures: true,
             palette: "Nord".into(),
             animate_outline: false,
             outline: OutlineAnim::Comet,
@@ -363,25 +363,25 @@ mod tests {
         assert!(text.contains("\"font_smoothing\":false"), "{text}");
     }
 
-    /// A file from before the setting has no `ligatures`: ligatures are on. A value of the wrong
-    /// type is on too; `false` reads off; the key is written.
+    /// A file with no `ligatures` key: ligatures are off. A value of the wrong type is off too;
+    /// `true` reads on; the key is written.
     #[test]
-    fn ligatures_default_on_and_read_off() {
+    fn ligatures_default_off_and_read_on() {
         let read = |json: &str| parse_settings(json.as_bytes()).expect("parses").settings;
-        assert!(read(r#"{"version":1,"palette":"Nord"}"#).ligatures);
-        let wrong = read(r#"{"version":1,"ligatures":"off","palette":"Nord"}"#);
-        assert!(wrong.ligatures, "a string is no bool");
+        assert!(!read(r#"{"version":1,"palette":"Nord"}"#).ligatures);
+        let wrong = read(r#"{"version":1,"ligatures":"on","palette":"Nord"}"#);
+        assert!(!wrong.ligatures, "a string is no bool");
         assert_eq!(wrong.palette, "Nord");
-        assert!(!read(r#"{"version":1,"ligatures":false}"#).ligatures);
+        assert!(read(r#"{"version":1,"ligatures":true}"#).ligatures);
         let doc = SettingsDoc {
             settings: Settings {
-                ligatures: false,
+                ligatures: true,
                 ..Settings::default()
             },
             unknown: Vec::new(),
         };
         let text = render_settings(&doc).expect("writes");
-        assert!(text.contains("\"ligatures\":false"), "{text}");
+        assert!(text.contains("\"ligatures\":true"), "{text}");
     }
 
     #[test]
