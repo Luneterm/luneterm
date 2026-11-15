@@ -1,7 +1,7 @@
 //! Fonts (plan M9 D16, M10 D9): the bundled faces, system fonts for fallback, and the terminal's
 //! `TermFonts`.
 //!
-//! The terminal draws with RznMono 1.000 (Regular, Bold, Italic, Bold Italic: the four styles
+//! The terminal draws with RznMono 1.001 (Regular, Bold, Italic, Bold Italic: the four styles
 //! termview asks for, so no synthetic italic or bold). Its desktop TTFs carry the Nerd Fonts icons, so
 //! no second icon font is bundled; RznMono is named as `TermFonts::icon_family` so that a system font
 //! chosen as the terminal font still draws the private-use code points through it (while the family
@@ -392,7 +392,7 @@ mod tests {
         }
     }
 
-    /// The Nerd icons RznMono 1.000 carries, one per set (Font Awesome, Codicons, Devicons, Seti,
+    /// The Nerd icons RznMono 1.001 carries, one per set (Font Awesome, Codicons, Devicons, Seti,
     /// Material Design, Font Awesome again).
     const ICONS: [&str; 6] = [
         "\u{F015}",

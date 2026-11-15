@@ -13,7 +13,7 @@ license = "Apache-2.0"
 [workspace.dependencies]
 lune-vt = { path = "crates/lune-vt" }
 lune-pty = { path = "crates/lune-pty" }
-lune-ui = { git = "https://github.com/lune-rs/luneui-rs", rev = "ec17ff0fbfa84d632214bbb7617be5a64140d07e" }
+lune-ui = { git = "https://github.com/lune-rs/luneui-rs", rev = "65b6fb9c739afb391cc346417e152d07cc620528" }
 lune-termview = { path = "crates/lune-termview" }
 
 [workspace.lints.rust]

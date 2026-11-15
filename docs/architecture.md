@@ -98,12 +98,11 @@ the grid (in the app, `session::apply_update` from the engine thread's Updates; 
   count is not the cell count. Limits: no join across wrapped rows (a row is the unit), none across a
   style or colour change, none through a blank cell, and the cursor does not split a run (it is drawn
   over the substituted cells). The shaped runs are cached in the `Shaper` (bounded, cleared by a font
-  change). The face decides which sequences join: RznMono 1.000 has 128 `calt` sequences; a system font
+  change). The face decides which sequences join: RznMono 1.001 has 128 `calt` sequences; a system font
   chosen as the terminal font ligates only what it carries (unverified beyond RznMono). Cost: all rows
   dirty at 4K, 3.08 ms with ligatures off and 3.30 ms on (`frame_time`).
-  *Known issue* (shipped, to fix in luneui-rs): with Font smoothing on, three ligatures (`|]`, `|}`,
-  `<||`) draw at about half their ink, a bug in the toolkit's rasterizer (`docs/luneui-rs-handoff.md`
-  gap 9); smoothing off draws them right.
+  With Font smoothing on, three ligatures (`|]`, `|}`, `<||`) drew at about half their ink until the
+  luneui-rs v0.6.1 pin (`docs/luneui-rs-handoff.md` gap 9, closed).
 - **Containment** (`contain`): Lunegit's rule with two deviations. A width-1 non-colour glyph
   followed by a blank cell may spill one cell. Anything wider is fitted to its slot by
   re-rasterizing at a smaller size, and an oversized colour glyph is scaled, not clipped. A
@@ -1102,7 +1101,7 @@ the window title and the title band (a 10 MB title takes under 10 ms in the test
 user attention (`Informational`) only while the window is unfocused, at most every 2 s.
 
 **Fonts and look (D15, D16; M10 D9a; rznmono-1000).** The six bundled faces live in `crates/luneterm/assets`:
-RznMono 1.000 Regular, Bold, Italic and Bold Italic (the terminal font, real faces for every
+RznMono 1.001 Regular, Bold, Italic and Bold Italic (the terminal font, real faces for every
 style termview asks for; it carries the Nerd Fonts icons and the 128 `calt` ligatures, and its
 `CREDITS.txt` is bundled) and RznSans Regular and Medium, with their licences. RobotoMono Nerd Font Mono
 is no longer bundled. The Settings font list is the built-in RznMono and the installed system fonts:

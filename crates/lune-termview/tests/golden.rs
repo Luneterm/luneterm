@@ -967,7 +967,7 @@ fn nerd_scene() -> Scene {
 }
 
 /// The fallback proof (M10 step 11, D9a): the icons are not in the RznMono subsets and draw from
-/// the RobotoMono PUA fixture through the shaper's fallback (the app draws them from RznMono 1.000
+/// the RobotoMono PUA fixture through the shaper's fallback (the app draws them from RznMono 1.001
 /// itself, rznmono-1000 D1). `A`, icon, `B` have non-blank neighbours, so an icon that
 /// overflowed its cell would show as ink on the letters or past the slot.
 fn nerd_fallback_scene() -> Scene {
