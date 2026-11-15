@@ -86,7 +86,7 @@ the grid (in the app, `session::apply_update` from the engine thread's Updates; 
   keeps the entries of the setting not in use, so a toggle never serves a glyph rasterized under
   the other one. Procedural glyphs are not font outlines and ignore it. Frame dumps take
   `LUNETERM_DUMP_TEXT=on|off` (default `on`).
-- **Ligatures** (ledger 15; the `ligatures` setting, `TermFonts.ligatures`, on by default). A per-cell
+- **Ligatures** (ledger 15; the `ligatures` setting, `TermFonts.ligatures`, off by default since v0.4.1). A per-cell
   glyph substitution, in `build.rs` (`ligature_subs`): in each row a run is a maximal stretch of two or
   more shown cells of one ASCII-punctuation character each (one cell wide) with the same bold, italic
   and resolved foreground. The run is shaped as one string with harfrust directly (cosmic-text's

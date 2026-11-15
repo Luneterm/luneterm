@@ -209,7 +209,7 @@ impl Default for Settings {
             font: String::new(),
             font_size: DEFAULT_FONT_SIZE,
             font_smoothing: true,
-            ligatures: true,
+            ligatures: false,
             palette: DEFAULT_PALETTE.to_owned(),
             animate_outline: true,
             outline: OutlineAnim::Sweep,
@@ -832,7 +832,7 @@ mod tests {
             (
                 SettingId::Ligatures,
                 Settings {
-                    ligatures: false,
+                    ligatures: true,
                     ..d.clone()
                 },
             ),
@@ -972,13 +972,13 @@ mod tests {
     }
 
     #[test]
-    fn ligatures_default_on_and_apply_through_the_font_effect() {
-        let on = Settings::default();
-        let off = Settings {
-            ligatures: false,
-            ..on.clone()
+    fn ligatures_default_off_and_apply_through_the_font_effect() {
+        let off = Settings::default();
+        let on = Settings {
+            ligatures: true,
+            ..off.clone()
         };
-        assert!(on.ligatures);
+        assert!(!off.ligatures);
         // The terminal fonts are rebuilt (`TermFonts.ligatures`), so the effect is Font.
         assert_eq!(SettingId::Ligatures.effect(), Effect::Font);
         assert_eq!(effects(&on, &off), vec![Effect::Font]);
