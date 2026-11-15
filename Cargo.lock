@@ -1025,8 +1025,8 @@ dependencies = [
 
 [[package]]
 name = "lune-ui"
-version = "0.5.1"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=ec17ff0fbfa84d632214bbb7617be5a64140d07e#ec17ff0fbfa84d632214bbb7617be5a64140d07e"
+version = "0.6.1"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=65b6fb9c739afb391cc346417e152d07cc620528#65b6fb9c739afb391cc346417e152d07cc620528"
 dependencies = [
  "lune-ui-core",
  "lune-ui-platform",
@@ -1036,13 +1036,13 @@ dependencies = [
 
 [[package]]
 name = "lune-ui-core"
-version = "0.5.1"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=ec17ff0fbfa84d632214bbb7617be5a64140d07e#ec17ff0fbfa84d632214bbb7617be5a64140d07e"
+version = "0.6.1"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=65b6fb9c739afb391cc346417e152d07cc620528#65b6fb9c739afb391cc346417e152d07cc620528"
 
 [[package]]
 name = "lune-ui-platform"
-version = "0.5.1"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=ec17ff0fbfa84d632214bbb7617be5a64140d07e#ec17ff0fbfa84d632214bbb7617be5a64140d07e"
+version = "0.6.1"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=65b6fb9c739afb391cc346417e152d07cc620528#65b6fb9c739afb391cc346417e152d07cc620528"
 dependencies = [
  "lune-ui-core",
  "objc2 0.6.5",
@@ -1050,13 +1050,14 @@ dependencies = [
  "raw-window-handle",
  "tray-icon",
  "window-vibrancy",
+ "windows-sys 0.61.2",
  "winit",
 ]
 
 [[package]]
 name = "lune-ui-wgpu"
-version = "0.5.1"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=ec17ff0fbfa84d632214bbb7617be5a64140d07e#ec17ff0fbfa84d632214bbb7617be5a64140d07e"
+version = "0.6.1"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=65b6fb9c739afb391cc346417e152d07cc620528#65b6fb9c739afb391cc346417e152d07cc620528"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -1072,8 +1073,8 @@ dependencies = [
 
 [[package]]
 name = "lune-ui-winit"
-version = "0.5.1"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=ec17ff0fbfa84d632214bbb7617be5a64140d07e#ec17ff0fbfa84d632214bbb7617be5a64140d07e"
+version = "0.6.1"
+source = "git+https://github.com/lune-rs/luneui-rs?rev=65b6fb9c739afb391cc346417e152d07cc620528#65b6fb9c739afb391cc346417e152d07cc620528"
 dependencies = [
  "arboard",
  "lune-ui-core",

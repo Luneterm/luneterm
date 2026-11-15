@@ -1505,7 +1505,7 @@ mod tests {
         let names: Vec<&str> = NOTICES.iter().map(|(n, _)| strings.tr(n)).collect();
         assert!(names.iter().any(|n| n.starts_with("xterm.js")));
         assert!(names.iter().any(|n| n.contains("RznSans")));
-        // RznMono 1.000 carries the Nerd icons: their notice follows it, and nothing names RobotoMono
+        // RznMono 1.001 carries the Nerd icons: their notice follows it, and nothing names RobotoMono
         let at = |what: &str| names.iter().position(|n| n.contains(what));
         assert!(at("RznMono").is_some_and(|i| Some(i + 1) == at("Nerd Fonts icons")));
         assert!(names.iter().all(|n| !n.contains("RobotoMono")));

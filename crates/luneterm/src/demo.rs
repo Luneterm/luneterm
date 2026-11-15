@@ -110,7 +110,7 @@ pub fn demo_grid(cols: usize, rows: usize) -> Grid {
     put(&mut g, 11, 0, "luneterm", Color::Palette(2), Attrs::BOLD);
     put(&mut g, 11, 8, " ~ % ", Color::Palette(4), plain);
 
-    // Nerd icons (private use; RznMono 1.000 has them, so they draw from the terminal face), a
+    // Nerd icons (private use; RznMono 1.001 has them, so they draw from the terminal face), a
     // powerline branch glyph and a prompt arrow. A free row, clear of the link scenes' (row 13).
     let c = put(
         &mut g,
