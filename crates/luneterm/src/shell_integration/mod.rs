@@ -18,7 +18,7 @@
 //!  - script text is a constant: nothing user-controlled is interpolated when it is written.
 //!    What reaches a command line is a path: PowerShell gets it as a single-quoted literal with
 //!    every quote doubled ([`pwsh_command`]); zsh and bash get it through env and argv only;
-//!  - on Windows the directory is under `dirs::config_dir()` (the roaming app data folder), whose
+//!  - on Windows the directory is under `dirs::home_dir()` (`%USERPROFILE%\.luneterm`), whose
 //!    default ACL is user-only. That is assumption A3 of the plan, not probed here, and the
 //!    security review's scope; no ACL check is made there.
 //!
