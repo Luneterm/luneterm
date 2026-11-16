@@ -1041,7 +1041,7 @@ which follows the OSC 133 marks and whether the program consumes keystrokes; pro
 sets the cue's tone. `scripts/cpu-sample.sh` samples a process's CPU for the outline's budget
 (ledger 16).
 
-**Persistence (M10 step 5, D5, D17, ledger 12).** `<config dir>/Luneterm` (`dirs::config_dir()`;
+**Persistence (M10 step 5, D5, D17, ledger 12).** `~/.luneterm` (`dirs::home_dir()`, on every OS;
 `LUNETERM_CONFIG_DIR` overrides it, as the dump mode and the trial runs do) is created 0700 on
 Unix and holds `settings.json` and `workspace.json`, both `{"version": 1, ...}`. Both are read
 through the toolkit's bounded JSON reader and written by `persist/json_write.rs`; a write creates a
@@ -1080,12 +1080,11 @@ script's path single-quoted, every quote doubled). On Unix the directory, its th
 and each script are `lstat`-checked before use (real, owned by the effective user, no group or other
 write); a failed check, or any error, skips integration for that spawn and the shell starts as
 without it. The directory is created 0700 and the scripts 0600, written through a temporary name and
-renamed. On Windows the directory is under `%APPDATA%`, whose user-only default ACL is assumed
+renamed. On Windows the directory is under `%USERPROFILE%`, whose user-only default ACL is assumed
 (plan assumption A3), and only PowerShell is integrated. `shell_integration = false` leaves the
 environment and argv exactly as before (a test pins it).
 
-**Environment (M10).** Read by the app: `LUNETERM_CONFIG_DIR` (replaces the platform config
-directory; read once, in `app::run`), `LUNETERM_DUMP_FRAMES` (dump mode, no window) with
+**Environment (M10).** Read by the app: `LUNETERM_CONFIG_DIR` (replaces `~/.luneterm`; read once, in `app::run`), `LUNETERM_DUMP_FRAMES` (dump mode, no window) with
 `LUNE_REQUIRE_GPU` (a missing adapter becomes a failure), `SHELL` (the login shell's name when
 integration needs one), `ZDOTDIR` and `HOME` (where the user's zsh files are), `LC_ALL`, `LC_CTYPE`
 and `LANG` (the locale fallback). Added to the child's inherited environment: `TERM=xterm-256color`,

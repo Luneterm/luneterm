@@ -1,8 +1,8 @@
-//! Persistence (plan M10 step 5, D5, D17): `settings.json` and `workspace.json` in the platform
-//! config directory, read through the toolkit's bounded JSON reader and written by [`json_write`].
+//! Persistence (plan M10 step 5, D5, D17): `settings.json` and `workspace.json` in `~/.luneterm`
+//! (the app's data directory), read through the toolkit's bounded JSON reader and written by [`json_write`].
 //!
 //! The rules, all fail-closed:
-//!  - the directory is `dirs::config_dir()/Luneterm`, created `0700` on Unix; a file is created
+//!  - the directory is `dirs::home_dir()/.luneterm`, created `0700` on Unix; a file is created
 //!    `0600` with `create_new` under a unique temporary name in the same directory, synced, then
 //!    renamed over the target ([`write_atomic`]); a symlink or any file already at the temporary
 //!    name is never followed or touched;
@@ -112,9 +112,9 @@ enum Bytes {
 }
 
 impl Store {
-    /// The platform config directory of the app, `None` when the OS has none.
+    /// The app's data directory, `~/.luneterm` on every OS; `None` when there is no home.
     pub fn default_dir() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("Luneterm"))
+        dirs::home_dir().map(|d| d.join(".luneterm"))
     }
 
     /// A store over `dir` (nothing is touched until a file is read or written).
