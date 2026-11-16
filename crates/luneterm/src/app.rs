@@ -402,6 +402,8 @@ impl Stack {
         let options = SurfaceOptions {
             present_mode: mode,
             frame_latency: 2,
+            // `Auto` depth on a glass window: the 8-bit format of 0.6 on every OS (luneui-rs D330).
+            ..SurfaceOptions::default()
         };
         let surface =
             WindowSurface::with_options(&gpu, surface, (size.width, size.height), options)?;
