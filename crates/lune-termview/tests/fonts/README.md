@@ -7,11 +7,12 @@ fonts: `RznMono.OFL.txt`, `RobotoMonoNerdFont.LICENSE.txt`, `NotoSansSymbols2.OF
 `TwemojiLunegit.LICENSE.md`.
 
 Tool: fontTools 4.58.0 (`pyftsubset`); the RznMono subsets of 1.001 were cut with 4.65.0, which
-reproduces the 1.000 Regular subset of 4.58.0 byte for byte (2026-11-15). Re-running a command
+reproduces the 1.000 Regular subset of 4.58.0 byte for byte (2026-11-15); those of 1.003 with 4.58.0
+(2026-11-19). Re-running a command
 reproduces the committed file byte for byte (checked for the RznMono Regular subset, 2026-11-14). `$LF` is Lunegit's
 `src/Lunegit.Desktop/Assets/Fonts`; `$A` is the app crate's `assets` directory, with its bundled copies of
-RznMono 1.001 (`RznMono-{Regular,Bold,Italic,BoldItalic}.ttf`, from `fonts/rznmono/desktop` in the
-RznSans repository at tag `rznmono-v1.001`).
+RznMono 1.003 (`RznMono-{Regular,Bold,Italic,BoldItalic}.ttf`, from `fonts/rznmono/desktop` in the
+RznSans repository at tag `rznmono-v1.003`).
 
 The RznMono subsets are the terminal font. `--layout-features='*'` keeps the `calt` feature, and
 closure pulls in the ligature glyphs (the spacer `LIG` and the 128 `.liga` glyphs, every one of
@@ -19,7 +20,11 @@ them built from the characters kept), so the ligature tests and goldens run on t
 outline, advance and hint of the earlier 0.007 subsets is unchanged in 1.000, so the goldens
 drawn before the swap stayed byte-identical. 1.001 changes only the outlines of 35 accented
 letters (mark direction: À, Ž, Ě and others; no other table); every golden but `ligatures@2x`
-(re-blessed for the luneui-rs v0.6.1 rasterizer fix, handoff gap 9) stayed byte-identical.
+(re-blessed for the luneui-rs v0.6.1 rasterizer fix, handoff gap 9) stayed byte-identical. 1.002
+reverses the contour direction of Nerd icons only (none in these subsets): every subset outline is
+unchanged, only the version tables differ, and no golden changed. 1.003 adds 130 code points (Geometric Shapes
+U+25A0-25FF and 36 TUI symbols), none in these subsets: against the 1.001 subsets only `OS/2`, `head`
+and `name` differ (glyph order, `glyf`, `hmtx` and cmap equal; checked 2026-11-19).
 
 The RobotoMono subsets hold **private-use icons only** and are **test fixtures**, never bundled:
 the app dropped RobotoMono Nerd Font (rznmono-1000 D1; RznMono 1.000 has the Nerd icons), but the
@@ -50,10 +55,10 @@ pyftsubset "$LF/TwemojiLunegit.ttf" \
 
 | file | bytes | codepoints present (cmap) |
 |---|---|---|
-| `RznMono-Regular.subset.ttf` | 131180 | 365: U+0020-007E, U+00A0-00FF, U+0300-0301, U+0303, U+0309, U+030F, U+0323, U+2500-259F, U+E0A0-E0A3, U+E0B0-E0B3; GSUB `calt`, `cv01`; 128 `.liga` glyphs |
-| `RznMono-Bold.subset.ttf` | 135796 | same |
-| `RznMono-Italic.subset.ttf` | 133044 | same |
-| `RznMono-BoldItalic.subset.ttf` | 138752 | same |
+| `RznMono-Regular.subset.ttf` | 131184 | 365: U+0020-007E, U+00A0-00FF, U+0300-0301, U+0303, U+0309, U+030F, U+0323, U+2500-259F, U+E0A0-E0A3, U+E0B0-E0B3; GSUB `calt`, `cv01`; 128 `.liga` glyphs |
+| `RznMono-Bold.subset.ttf` | 135800 | same |
+| `RznMono-Italic.subset.ttf` | 133048 | same |
+| `RznMono-BoldItalic.subset.ttf` | 138756 | same |
 | `RobotoMonoNerdFontMono-Regular.pua.subset.ttf` | 11280 | 49: U+F000-F02F, U+F07B |
 | `RobotoMonoNerdFontMono-Bold.pua.subset.ttf` | 11336 | same 49 |
 | `NotoSansSymbols2.subset.ttf` | 2576 | U+23FA, U+2605, U+26A0, U+2733, U+273B (all five asked for) |
