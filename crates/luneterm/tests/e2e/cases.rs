@@ -1513,7 +1513,7 @@ fn e11_copy() -> CaseResult {
         top: 0,
         scroll: 0,
     }));
-    rig.send(Command::Select(SelectCmd::End));
+    rig.send(Command::Select(SelectCmd::End { copy: false }));
     let drag = copy_text(&mut rig)?;
     ensure(drag == "world\nsecond", || {
         format!("a drag copied {drag:?}")

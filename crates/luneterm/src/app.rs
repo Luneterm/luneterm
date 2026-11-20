@@ -957,7 +957,7 @@ impl App {
         }
         self.selecting = after.selecting;
         if ended.end_selection {
-            self.send(Command::Select(SelectCmd::End));
+            self.send(Command::Select(SelectCmd::End { copy: false }));
         }
         if ended.release_to_program {
             self.send_program_release();
@@ -1065,7 +1065,7 @@ impl App {
         self.pending_link = None;
         self.thumb_drag = None;
         if std::mem::take(&mut self.selecting) {
-            self.send(Command::Select(SelectCmd::End));
+            self.send(Command::Select(SelectCmd::End { copy: false }));
         }
         // The program's press is released to it, or it would see the button down for good.
         if std::mem::take(&mut self.mouse_captured) {
@@ -2539,7 +2539,9 @@ impl App {
                     return;
                 }
                 if button == TerminalMouseButton::Left && std::mem::take(&mut self.selecting) {
-                    self.send(Command::Select(SelectCmd::End));
+                    self.send(Command::Select(SelectCmd::End {
+                        copy: self.settings.copy_on_select,
+                    }));
                 }
                 // Always through the mapping, which also ends a Shift bypass; sent only when the
                 // press went to the program.
@@ -3384,7 +3386,7 @@ fn end_left_tab_holds(
     out: &mut Vec<Command>,
 ) {
     if holds.selecting {
-        out.push(Command::Select(SelectCmd::End));
+        out.push(Command::Select(SelectCmd::End { copy: false }));
     }
     if holds.captured
         && let Some(report) = program_release(mouse, at, mods)
@@ -3553,7 +3555,10 @@ mod tests {
         let mut sent = Vec::new();
         end_left_tab_holds(holds, &mut mouse, Some((far, old)), none, &mut sent);
         assert_eq!(sent.len(), 2);
-        assert!(matches!(sent[0], Command::Select(SelectCmd::End)));
+        assert!(matches!(
+            sent[0],
+            Command::Select(SelectCmd::End { copy: false })
+        ));
         let Command::Mouse(up) = &sent[1] else {
             panic!("{:?}", sent[1]);
         };
@@ -3580,7 +3585,10 @@ mod tests {
             ..Holds::default()
         };
         end_left_tab_holds(holds, &mut MouseState::default(), None, none, &mut sent);
-        assert!(matches!(sent[..], [Command::Select(SelectCmd::End)]));
+        assert!(matches!(
+            sent[..],
+            [Command::Select(SelectCmd::End { copy: false })]
+        ));
 
         // Captured with no position to report at: no invented report.
         let holds = Holds {

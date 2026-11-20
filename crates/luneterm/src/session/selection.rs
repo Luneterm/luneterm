@@ -639,8 +639,12 @@ pub enum SelectCmd {
         top: usize,
         scroll: i32,
     },
-    /// The button was released.
-    End,
+    /// The button was released. `copy` asks for the selection to be copied in the same command
+    /// (copy on select): the engine does it only when something is selected, so a plain click
+    /// never answers with an empty copy.
+    End {
+        copy: bool,
+    },
     Clear,
     /// Select everything: the whole buffer, scrollback included (`selectAll`).
     All,
@@ -939,7 +943,7 @@ impl Selection {
                 column,
             } => self.start(term, cell, top, clicks, extend, column),
             SelectCmd::Drag { cell, top, scroll } => self.drag(term, cell, top, scroll, now),
-            SelectCmd::End => {
+            SelectCmd::End { .. } => {
                 self.selecting = false;
                 self.drag_amount = 0;
                 self.next_drag = None;
