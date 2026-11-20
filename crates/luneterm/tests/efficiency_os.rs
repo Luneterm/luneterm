@@ -230,14 +230,16 @@ mod os {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetPriorityClass, GetProcessInformation, IDLE_PRIORITY_CLASS,
-        NORMAL_PRIORITY_CLASS, OpenProcess, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-        PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION, ProcessPowerThrottling,
+        NORMAL_PRIORITY_CLASS, OpenProcess, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+        PROCESS_QUERY_LIMITED_INFORMATION, ProcessPowerThrottling,
     };
 
     /// (priority class, ControlMask, StateMask) of a process handle.
     fn state_of(handle: windows_sys::Win32::Foundation::HANDLE) -> (u32, u32, u32) {
         let mut info = PROCESS_POWER_THROTTLING_STATE {
-            Version: 0,
+            // The call reads `Version` as input: it must be the current one.
+            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
             ControlMask: 0xdead,
             StateMask: 0xdead,
         };
