@@ -2014,6 +2014,27 @@ fn selection_drag_scroll_runs_on_the_engines_clock() {
     assert!(rig.idle().is_none());
 }
 
+#[test]
+fn update_output_is_true_for_pty_bytes_and_false_for_a_command() {
+    let mut rig = selection_rig();
+    // The first Update came from the printed bytes (selection_rig fed them).
+    let u = rig.command(press(0, 0, 3)).expect("a selection");
+    assert!(!u.output, "a select command parsed no PTY bytes");
+    let u = rig
+        .command(Command::Resize(geometry(30, 5)))
+        .expect("update");
+    assert!(!u.output, "a resize parsed no PTY bytes");
+    let u = rig.feed(b"\r\nmore").expect("update");
+    assert!(u.output, "PTY bytes were parsed");
+    // The flag is per Update: the next one, from a command, is false again.
+    let u = rig.command(press(0, 7, 2)).expect("update");
+    assert!(!u.output);
+    // A published first Update that came from bytes carries it too.
+    let mut fresh = Rig::new(&config(20, 5));
+    let u = fresh.feed(b"x").expect("first update");
+    assert!(u.output);
+}
+
 // ---------------------------------------------------------------- copy on select
 
 fn drag_to(row: usize, col: usize) -> Command {

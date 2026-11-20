@@ -54,6 +54,7 @@ use lune_vt::{
 
 use crate::cwd;
 use crate::dump;
+use crate::efficiency::{Controller, HostOs};
 use crate::fade::{self, Fade};
 use crate::fonts;
 use crate::input::{
@@ -663,6 +664,9 @@ struct App {
     thumb_drag: Option<ThumbDrag>,
     bell: BellLimiter,
     focused: bool,
+    /// Efficiency mode in the background (UI thread only; every child creation runs inside its
+    /// `lifted`).
+    efficiency: Controller<HostOs>,
     /// The app's time origin (`RawInput.time` and `Repaint::At` count from it).
     start: Instant,
     blink: Blink,
@@ -690,6 +694,7 @@ impl App {
         startup_notices: Vec<String>,
         config_dir: Option<PathBuf>,
     ) -> App {
+        let efficiency = Controller::new(HostOs::default(), settings.efficiency_mode);
         App {
             config_dir,
             persist,
@@ -734,6 +739,7 @@ impl App {
             thumb_drag: None,
             bell: BellLimiter::default(),
             focused: false,
+            efficiency,
             start: Instant::now(),
             blink: Blink::default(),
             occluded: false,
@@ -840,12 +846,20 @@ impl App {
     /// Sets the control flow from the pacer and the app's deadlines: the only setter after
     /// start-up (I1), called at the end of every callback.
     fn settle_flow(&self, event_loop: &ActiveEventLoop) {
-        event_loop.set_control_flow(settled_flow(
+        let flow = settled_flow(
             self.pacer.deadline(),
             self.pending_flow(),
             self.occluded,
             self.start,
-        ));
+        );
+        // The efficiency controller's quiet-period deadline also holds while the window is
+        // hidden (a minimized window is where it matters); `efficiency.tick` runs first in every
+        // callback, so the instant is consumed when it comes and cannot spin the loop.
+        let efficiency = self
+            .efficiency
+            .deadline()
+            .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
+        event_loop.set_control_flow(merge_flow(flow, efficiency));
     }
 
     /// Sets the frame grid's rate from the display the window is on now (D5); the surface is
@@ -1004,7 +1018,11 @@ impl App {
 
     /// Opens a link the user clicked: checked again here, whatever produced it.
     fn open_link(&mut self, uri: &str) {
-        match links::open::open_url(uri) {
+        // The launcher is a child (or `ShellExecuteW` in this process): created unthrottled.
+        match self
+            .efficiency
+            .lifted(Instant::now(), || links::open::open_url(uri))
+        {
             Ok(()) => {}
             Err(e) => {
                 // The reason, never the URL (its query can hold a token).
@@ -1149,8 +1167,9 @@ impl App {
             Effect::Outline | Effect::ConfirmClose => {}
             // Read on each mouse-up that ends a selection (step 2).
             Effect::CopyOnSelect => {}
-            // The efficiency controller re-evaluates here (step 3).
-            Effect::Efficiency => {}
+            Effect::Efficiency => self
+                .efficiency
+                .set_enabled(self.settings.efficiency_mode, Instant::now()),
             Effect::NextSpawn => self.restart_notice = self.page.is_some(),
         }
     }
@@ -1359,13 +1378,19 @@ impl App {
         if let Some(title) = restored.and_then(|r| r.manual_title.as_deref()) {
             tab.rename(title);
         }
-        match spawn::launch_with(
-            &PortablePtyBackend,
-            &self.settings,
-            geometry.pty_size(),
-            dir.as_deref(),
-            self.config_dir.as_deref(),
-        ) {
+        // The shell (and conhost on Windows) is created unthrottled: the idle class is inherited.
+        let settings = &self.settings;
+        let config_dir = self.config_dir.as_deref();
+        let launched = self.efficiency.lifted(Instant::now(), || {
+            spawn::launch_with(
+                &PortablePtyBackend,
+                settings,
+                geometry.pty_size(),
+                dir.as_deref(),
+                config_dir,
+            )
+        });
+        match launched {
             Err(failure) => {
                 eprintln!(
                     "luneterm: failed to start a shell: {:?} ({})",
@@ -1388,7 +1413,12 @@ impl App {
                 let waker = Box::new(move || {
                     let _ = proxy.send_event(UserEvent::Wake);
                 });
-                match Session::start(pty, config, waker) {
+                // Its reader, engine and writer threads inherit this thread's QoS on macOS: they
+                // too are created unthrottled.
+                let started = self
+                    .efficiency
+                    .lifted(Instant::now(), || Session::start(pty, config, waker));
+                match started {
                     Ok(session) => {
                         let shell = if program == "login shell" {
                             std::env::var("SHELL").unwrap_or(program)
@@ -1779,6 +1809,10 @@ impl App {
             if let Some(update) = tab.session.as_ref().and_then(Session::take_update) {
                 seen.push((id, tab.apply(update)));
             }
+        }
+        // Output in any tab, hidden ones too: the Windows throttle waits for a quiet period.
+        if seen.iter().any(|(_, fx)| fx.output) {
+            self.efficiency.output(Instant::now());
         }
         let mut worth_a_frame = false;
         let mut exited = Vec::new();
@@ -2699,6 +2733,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Wake => Callback::Wake,
             UserEvent::TraceSwitch(_) => Callback::Auto,
         };
+        self.efficiency.tick(Instant::now());
         self.urgent_scope = pacing::is_urgent(match event {
             UserEvent::Wake => EventKind::Wake,
             UserEvent::TraceSwitch(_) => EventKind::TraceSwitch,
@@ -2720,6 +2755,7 @@ impl ApplicationHandler<UserEvent> for App {
         } else {
             Callback::Window
         };
+        self.efficiency.tick(Instant::now());
         self.urgent_scope = pacing::is_urgent(event_kind(&event));
         self.window_event_inner(event_loop, id, event);
         self.urgent_scope = false;
@@ -2730,6 +2766,8 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        // The quiet period of a background window may have passed (its deadline is in the flow).
+        self.efficiency.tick(Instant::now());
         // A paced frame's moment, or a `Repaint::At`, blink, workspace, settings or new-tab
         // deadline came due: one ask serves them all (a due pacer deadline means the slot is
         // free). An app deadline (`pending_flow`) that is due asks at once: held for the slot,
@@ -2850,6 +2888,7 @@ impl App {
                 self.refresh_hover();
             }
             WindowEvent::Focused(focused) => {
+                self.efficiency.set_focused(*focused, Instant::now());
                 self.focused = *focused;
                 if let Some(tab) = self.tabs.active_item_mut() {
                     tab.set_focus(*focused);

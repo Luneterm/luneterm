@@ -89,6 +89,9 @@ pub struct Update {
     pub selection: Option<Option<SelectionView>>,
     /// The text a `Command::CopySelection` asked for (or why there is none); never in a `Debug`.
     pub selection_text: Option<CopyResult>,
+    /// PTY bytes were parsed since the last published Update (false for one caused only by a
+    /// command: select, resize, theme). The app's efficiency mode reads it as "a tab is busy".
+    pub output: bool,
     pub exited: Option<Exit>,
 }
 
@@ -119,6 +122,7 @@ impl fmt::Debug for Update {
             .field("link_uris", &self.link_uris.len())
             .field("selection", &self.selection)
             .field("selection_text", &self.selection_text)
+            .field("output", &self.output)
             .field("exited", &self.exited)
             .finish_non_exhaustive()
     }

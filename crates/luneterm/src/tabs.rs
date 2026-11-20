@@ -198,6 +198,8 @@ pub struct Effects {
     pub cwd: bool,
     /// Something the strip or the title band shows may have changed (title, command, exit).
     pub chrome: bool,
+    /// The Update parsed PTY bytes (the tab is busy): the efficiency controller's input.
+    pub output: bool,
 }
 
 /// One terminal tab: its session (or why there is none) and the mirror of what the session
@@ -439,6 +441,7 @@ impl Tab {
             self.selection = selection;
         }
         fx.copy = update.selection_text;
+        fx.output = update.output;
         fx.bells = update.bells;
         fx.clipboard_write = update.clipboard_write;
         if update.exited.is_some() {
@@ -966,6 +969,7 @@ mod tests {
             link_uris: Vec::new(),
             selection: None,
             selection_text: None,
+            output: false,
             exited: None,
         }
     }

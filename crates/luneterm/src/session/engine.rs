@@ -108,6 +108,8 @@ struct Acc {
     selection: bool,
     /// The answer to a `CopySelection`.
     copy: Option<CopyResult>,
+    /// PTY bytes were parsed (`Update.output`); not part of `any`: it publishes nothing alone.
+    output: bool,
 }
 
 impl Acc {
@@ -655,6 +657,7 @@ impl EngineCore {
         }
         let start = self.clock.now();
         self.last_output = Some(start);
+        self.acc.output = true;
         let mut log = SliceLog::default();
         while let Some(front) = self.pending.front() {
             let end = front.len().min(self.offset.saturating_add(self.step));
@@ -957,6 +960,7 @@ impl EngineCore {
             link_uris,
             selection: acc.selection.then(|| self.selection.view(&self.terminal)),
             selection_text: acc.copy,
+            output: acc.output,
             exited: self.exit_pending.take(),
         };
         self.last = Some(Published { state: st, modes });
