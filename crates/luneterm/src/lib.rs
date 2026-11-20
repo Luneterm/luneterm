@@ -9,6 +9,7 @@
 pub mod app;
 pub mod cwd;
 pub mod demo;
+pub mod double_click;
 pub mod dump;
 pub mod efficiency;
 pub mod fade;

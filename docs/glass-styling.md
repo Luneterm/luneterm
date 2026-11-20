@@ -28,7 +28,7 @@ material) is the look's own theme with `with_acrylic(Opaque)`, the near-black on
 step-7 dump of `opaque@2x.png` measures its body at `#101010` and Lunegit's (`lunegit-opaque@2x.png`)
 at `#161616`, not the light grey the earlier note feared (that note read the layer's material opacity
 without the opaque backdrop under it). The glass does not depend on the window's active state, so the look is the same
-active and inactive. `shell::DIALOG_FILL` (`[16,16,16,235]`) is the dialog card's own fill and is judged
+active and inactive. The dialog card uses the theme's `menu_glass` (as menus do), frosted over an unblurred scrim; it is judged
 on the near-black dumps.
 
 ## Layer stack (back to front)

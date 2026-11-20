@@ -876,7 +876,8 @@ global state (M10: a `Tab` owns a session and everything that used to be per-ses
 | Module | Holds |
 |---|---|
 | `app` | winit event loop (user event = session wake), window, frame loop, session wiring, bell, exit |
-| `shell` | Layout (34 px title band, card radius 8, margins 10, body padding 10), the Windows chrome (caption buttons, drag, double-press maximize, edge resize), scrollbar thumb geometry and drag |
+| `shell` | Layout (34 px title band, card radius 8, margins 10, body padding 10), the Windows chrome (caption buttons, drag, edge resize), the band double press (Windows: maximize; macOS: the System Settings action via `double_click`; Linux: drag), scrollbar thumb geometry and drag |
+| `double_click` | What a double click on the title band does on macOS: the `AppleActionOnDoubleClick` setting (zoom, minimize or nothing) mapped to a `WindowCommand`; elsewhere maximize |
 | `render` | `Renderer`: one `Ui`, `TermView`, `FrameRenderer` and `TextCache`, shared by the window and by dump mode |
 | `session` | The three-thread session below, `Update`, `apply_update`, the fake PTY and the protocol tests |
 | `input` | `keys` (winit `KeyEvent` to `KeyRoute`), `shortcuts`, `pointer` (mouse, wheel) |

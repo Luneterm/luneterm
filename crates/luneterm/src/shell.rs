@@ -46,10 +46,6 @@ pub const STRIP_HEIGHT: f32 = tab_strip::HEIGHT;
 pub const STRIP_RESERVE: f32 = 40.0;
 /// The `⋯` button: 24 px square, 32 px from the card's right edge and 4 px under its top.
 pub const OVERFLOW_SIZE: f32 = 24.0;
-/// The dialog card's fill. The toolkit's `frost` composites the fill over the scrim, so the window
-/// layer's own token would come out brighter than the spike's replacing layer; this is the value
-/// that matches the spike's dialog (director, step 2). Step 13 re-checks it on the dark preset.
-pub const DIALOG_FILL: [u8; 4] = [16, 16, 16, 235];
 /// The header's darker band, punched out by the tab outline (luneui-rs D131: the gallery's value;
 /// the header layer is a material of the app's preset, so the app passes it). Lunegit's look; the
 /// near-black look passes its own (`render::header_tint`).
@@ -68,6 +64,9 @@ pub struct Chrome {
     pub drawn_caption: bool,
     /// The title is clipped this far from both sides of the window.
     pub title_inset: f32,
+    /// A double press on the band is the app's to answer (the OS never sees it): maximize on a
+    /// borderless window, the System Settings choice on macOS ([`crate::double_click`]).
+    pub band_double_click: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -75,6 +74,7 @@ pub const HOST: Chrome = Chrome {
     drawn_caption: true,
     // Three 46 px buttons and a margin.
     title_inset: 3.0 * 46.0 + 8.0,
+    band_double_click: true,
 };
 
 /// macOS keeps its traffic lights (the band is drawn under them).
@@ -82,6 +82,7 @@ pub const HOST: Chrome = Chrome {
 pub const HOST: Chrome = Chrome {
     drawn_caption: false,
     title_inset: 90.0,
+    band_double_click: true,
 };
 
 /// Linux keeps the native decorations.
@@ -89,6 +90,7 @@ pub const HOST: Chrome = Chrome {
 pub const HOST: Chrome = Chrome {
     drawn_caption: false,
     title_inset: 90.0,
+    band_double_click: false,
 };
 
 /// Whether this OS gets an OS glass material at all (Linux has none: an opaque theme instead).
@@ -379,13 +381,18 @@ pub fn caption_command(button: CaptionButton) -> WindowCommand {
     }
 }
 
-/// What a press in the title band does: a double click maximizes or restores (borderless windows
-/// only: elsewhere the OS owns that), any other press drags the window.
-pub fn band_command(press_count: u8, chrome: Chrome) -> WindowCommand {
-    if press_count >= 2 && chrome.drawn_caption {
-        WindowCommand::ToggleMaximize
+/// What a press in the title band does: a double click (the second press; a third drags like a single one) runs `double` (where the app answers it:
+/// [`Chrome::band_double_click`]; `None` = the OS setting says do nothing), any other press drags
+/// the window.
+pub fn band_command(
+    press_count: u8,
+    chrome: Chrome,
+    double: impl FnOnce() -> Option<WindowCommand>,
+) -> Option<WindowCommand> {
+    if press_count == 2 && chrome.band_double_click {
+        double()
     } else {
-        WindowCommand::DragMove
+        Some(WindowCommand::DragMove)
     }
 }
 
@@ -437,7 +444,10 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
             (win.w - 2.0 * side).max(0.0),
             TITLE_BAND,
         )));
-        p.text_centered(&spec, Rect::new(0.0, 0.0, win.w, TITLE_BAND - 2.0));
+        // Optically centred: the line box's centre is 2 pt above the cap block's (room for
+        // descenders), so the box moves down 2 pt. Measured on a 2x screenshot: caps 9 pt from the
+        // band's top and 13.5 pt from the card before; with descenders the lower gap filled in.
+        p.text_centered(&spec, Rect::new(0.0, 2.0, win.w, TITLE_BAND - 2.0));
         p.set_clip(None);
 
         if !view.page_open {
@@ -472,7 +482,13 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
     let band_id = ui.id("title-band");
     let band = ui.interact(band_id, layout.band, Sense::CLICK);
     if band.press_started && pressed_edge.is_none() {
-        commands.push(band_command(band.press_count, view.chrome));
+        // A borderless window maximizes; a native one (macOS) does what the OS setting asks.
+        let double: fn() -> Option<WindowCommand> = if view.chrome.drawn_caption {
+            || Some(WindowCommand::ToggleMaximize)
+        } else {
+            crate::double_click::system_action
+        };
+        commands.extend(band_command(band.press_count, view.chrome, double));
     }
     if view.chrome.drawn_caption {
         let opts = CaptionOptions {
@@ -504,7 +520,7 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         // (count 1): the band is where a double press maximizes.
         let drag = ui.interact(header_id, header, Sense::CLICK);
         if drag.press_started && pressed_edge.is_none() {
-            commands.push(band_command(1, view.chrome));
+            commands.push(WindowCommand::DragMove);
         }
 
         let modal_open = view.modal.is_some();
@@ -572,12 +588,11 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
 
 /// The close-confirm or rename dialog (Lunegit's copy, `en.json`; layout as the spike's).
 fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
-    // The card's own fill over an unblurred scrim, so the terminal stays readable behind the
-    // dialog (director verdict, step 2 batch 1). Step 6's dialogs use the same.
-    let glass = DialogGlass {
-        fill: premul(DIALOG_FILL),
-        noise: true,
-    };
+    // The card is the menus' glass (the theme's `menu_glass`, raised by Window opacity), frosted
+    // over an unblurred scrim: the card blurs what is under it, the terminal around it stays
+    // readable (director verdict, step 2 batch 1). The near-opaque fill of before (alpha 235)
+    // hid the frost entirely.
+    let glass = DialogGlass::of(ui.theme());
     let options = DialogOptions {
         scrim_blur: false,
         ..DialogOptions::default()
@@ -820,14 +835,27 @@ mod tests {
         let drawn = Chrome {
             drawn_caption: true,
             title_inset: 146.0,
+            band_double_click: true,
         };
         let native = Chrome {
             drawn_caption: false,
+            band_double_click: false,
             ..drawn
         };
-        assert_eq!(band_command(1, drawn), WindowCommand::DragMove);
-        assert_eq!(band_command(2, drawn), WindowCommand::ToggleMaximize);
-        assert_eq!(band_command(2, native), WindowCommand::DragMove);
+        let mac = Chrome {
+            drawn_caption: false,
+            ..drawn
+        };
+        let max = || Some(WindowCommand::ToggleMaximize);
+        let min = || Some(WindowCommand::Minimize);
+        let drag = Some(WindowCommand::DragMove);
+        assert_eq!(band_command(1, drawn, max), drag);
+        assert_eq!(band_command(2, drawn, max), max());
+        assert_eq!(band_command(3, drawn, max), drag, "a third press drags");
+        assert_eq!(band_command(2, native, max), drag);
+        assert_eq!(band_command(1, mac, min), drag);
+        assert_eq!(band_command(2, mac, min), min());
+        assert_eq!(band_command(2, mac, || None), None);
     }
 
     /// One toolkit frame of the shell at 1040 x 660, scale 1, no GPU: what `draw` asks of the window.
@@ -913,6 +941,7 @@ mod tests {
     const BORDERLESS: Chrome = Chrome {
         drawn_caption: true,
         title_inset: 146.0,
+        band_double_click: true,
     };
 
     /// The chrome through a real `Ui` frame: the first frame registers the hit regions, later
@@ -941,6 +970,7 @@ mod tests {
         let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
         let native = Chrome {
             drawn_caption: false,
+            band_double_click: false,
             ..BORDERLESS
         };
         let mut go = |events| frame(&mut store, &mut text, events, native, false).commands;
