@@ -1413,12 +1413,9 @@ impl App {
                 let waker = Box::new(move || {
                     let _ = proxy.send_event(UserEvent::Wake);
                 });
-                // Its reader, engine and writer threads inherit this thread's QoS on macOS: they
-                // too are created unthrottled.
-                let started = self
-                    .efficiency
-                    .lifted(Instant::now(), || Session::start(pty, config, waker));
-                match started {
+                // Its threads need no lift: a new thread starts at the default QoS on macOS (not
+                // its creator's, measured) and Windows has one priority class per process.
+                match Session::start(pty, config, waker) {
                     Ok(session) => {
                         let shell = if program == "login shell" {
                             std::env::var("SHELL").unwrap_or(program)
@@ -2783,6 +2780,9 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // The saves below must not run at the idle class (Windows) while the window is in the
+        // background.
+        self.efficiency.release_for_exit(Instant::now());
         if let Some(win) = &self.win {
             win.window.set_visible(false);
         }

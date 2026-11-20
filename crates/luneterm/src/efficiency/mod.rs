@@ -126,6 +126,12 @@ impl<O: OsThrottle> Controller<O> {
         self.sync(now);
     }
 
+    /// The process is ending: lifts the throttle (if on) and keeps it off, so the last writes
+    /// (workspace, settings) never run at the idle class.
+    pub fn release_for_exit(&mut self, now: Instant) {
+        self.set_enabled(false, now);
+    }
+
     /// The window gained or lost focus (a minimized window is not focused).
     pub fn set_focused(&mut self, focused: bool, now: Instant) {
         self.focused = focused;
@@ -314,6 +320,34 @@ mod tests {
         c.set_enabled(false, at(2, t0));
         assert_eq!(c.os.0.calls, ["apply", "lift"]);
         assert!(!c.applied());
+    }
+
+    #[test]
+    fn release_for_exit_lifts_when_applied_and_stays_off() {
+        let t0 = Instant::now();
+        let mut c = Controller::new(Plain::default(), true);
+        c.set_focused(false, t0);
+        assert_eq!(c.os.0.calls, ["apply"]);
+        c.release_for_exit(at(1, t0));
+        assert_eq!(c.os.0.calls, ["apply", "lift"]);
+        assert!(!c.applied());
+        c.tick(at(10_000, t0));
+        c.set_focused(false, at(10_001, t0));
+        assert_eq!(c.os.0.calls, ["apply", "lift"], "no re-apply after exit");
+
+        // Windows-like backend (slows_io): applied after the quiet period.
+        let mut g = Controller::new(Gated::default(), true);
+        g.set_focused(false, t0);
+        g.tick(at(3_000, t0));
+        assert!(g.applied());
+        g.release_for_exit(at(3_001, t0));
+        assert_eq!(g.os.0.calls, ["apply", "lift"]);
+        assert!(!g.applied());
+
+        // Not applied: no OS call.
+        let mut u = Controller::new(Plain::default(), true);
+        u.release_for_exit(t0);
+        assert!(u.os.0.calls.is_empty());
     }
 
     #[test]

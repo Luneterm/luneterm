@@ -1088,8 +1088,11 @@ Update; hidden tabs publish at most every 100 ms, so any tab's output reaches it
   has no effect; the backend is never called.
 
 Every child creation runs inside `Controller::lifted`, which lifts the throttle first and re-evaluates
-after: `open_tab`'s spawn (conhost included), the `Session::start` that follows it (on macOS its
-threads inherit the creating thread's QoS) and `open_link`. Luneterm is never throttled at the moment
+after: `open_tab`'s spawn (conhost included) and `open_link`. `Session::start` needs no lift: a thread
+starts at the default QoS on macOS, not its creator's (measured: threads made from a thread at
+user-initiated, utility and background all start at default), and Windows has one priority class
+per process, so the session threads are never throttled. On exit the controller is released first
+(`release_for_exit`), so the final workspace and settings saves never run at the idle class. Luneterm is never throttled at the moment
 it creates a process. Failure: any OS call that fails lifts what can be lifted, prints one
 `luneterm: efficiency mode off: <call> failed (<code>)` line and turns the controller off for the
 run; an error never leaves the process throttled. The controller's wake deadline (the end of the quiet
@@ -1258,6 +1261,6 @@ PTY threads (`lune-pty`):
 
 Efficiency mode (see "luneterm app") changes the UI thread's QoS class to utility on macOS while the
 window is in the background, and nothing else about threads: the session threads are created
-unthrottled (their `Session::start` runs inside `Controller::lifted`) and keep their QoS. On Windows
+unthrottled (a new thread starts at the default QoS, not its creator's, measured) and keep their QoS. On Windows
 it changes the whole process's priority class and EcoQoS state, only after a quiet period and never
 while a tab prints.
