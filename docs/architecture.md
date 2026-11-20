@@ -276,7 +276,7 @@ XTVERSION name `ExtensionError::InvalidXtversion` (nothing is registered then).
 - Selection (M10 step 3): the model and the word, line and wrapped-line rules are a port of
   xterm.js's `SelectionModel` and `SelectionService` in `crates/luneterm/src/session/selection.rs`,
   on the engine thread (the UI never holds a `Terminal`). The UI sends `Command::Select` with
-  viewport cells and `Command::CopySelection`; an Update carries `selection` (buffer coordinates,
+  viewport cells and `Command::CopySelection`; the mouse-up that ends a selection is `SelectCmd::End { copy }`, and with the Copy on select setting on (Terminal > Behavior, `copy_on_select`, default on; `copy` true) the engine copies in that same command when something is selected (`has_selection`: a plain click selects nothing and never writes the clipboard); the focus-loss and overlay releases, Select All and the menu and keyboard copies are not mouse-ups and send `copy: false` or `CopySelection` as before; an Update carries `selection` (buffer coordinates,
   only when it changed) and `selection_text` (at most 32 MiB, else `CopyResult::TooLarge` and a
   toast). A marker on the anchor line follows trim (`Terminal::dispose_marker` frees it); a
   vertical resize, a buffer switch and typing clear the selection.
@@ -869,7 +869,7 @@ foreground process changes; serialize calls per handle.
 
 ## luneterm app
 
-`crates/luneterm` is lib + bin (`#![forbid(unsafe_code)]`; the Windows calls live in `lune-pty`). The
+`crates/luneterm` is lib + bin (`#![deny(unsafe_code)]`: `unsafe` only in the platform modules, each block with a `// SAFETY:` comment: `links/open.rs` and `efficiency/windows.rs` on Windows, `os_event.rs` and `efficiency/macos.rs` on macOS; the PTY calls live in `lune-pty`). The
 bin is `luneterm::app::run()` after `lune_pty::restrict_dll_search()`. One session per tab and no
 global state (M10: a `Tab` owns a session and everything that used to be per-session on `App`). Modules:
 
@@ -883,6 +883,7 @@ global state (M10: a `Tab` owns a session and everything that used to be per-ses
 | `spawn` | Shell candidates, cwd, environment, `WindowsPty` |
 | `shell_integration` | The scripts the user's shell sources (OSC 7, OSC 133), their checked install under the config directory, and what they add to a spawn (see "Shell integration" above) |
 | `tabs` | `Tab` (one session plus its UI-side state), `TabSet` (order, active, next focus after a close: pure list logic), the close rules (`asks_on_close`, `ClosePlan`), tab names |
+| `efficiency` | Efficiency mode in the background: the pure policy `wanted`, the `Controller` (UI thread only), and the OS backends (`windows.rs` EcoQoS + idle class, `macos.rs` utility QoS; none elsewhere); see "Efficiency mode" below |
 | `links` | `scan` (OSC 8 runs and bare `http(s)://` text), `open` (the closed URL grammar and the only code that opens anything), hover state |
 | `persist` | `settings.json` and `workspace.json`: bounded JSON reader and writer, atomic 0600 writes, versioned, `.bak` on a file it cannot read, `SaveGuard` (ledger 12) |
 | `cwd` | The host's check of a directory a shell reported (`syntax`, `validated`) |
@@ -1059,6 +1060,48 @@ a failed start, nor after a tab that died within 3 s of its start until the user
 **Selection and links** are described with the host duties above (engine-thread selection
 model; the closed URL grammar and the argv or `ShellExecuteW` open).
 
+**Efficiency mode (copy-select-efficiency, D4 to D12).** The setting "Efficiency mode in the
+background" (Terminal > Behavior, `efficiency_mode`, default on) throttles Luneterm itself while its
+window is not focused or is minimized, and never the shells it starts. `efficiency::Controller<O>`
+is an `App` field used on the UI thread only (no global, no mutex); an `OsThrottle` backend does the
+OS calls, and only on a change of state. Inputs: the setting (`Effect::Efficiency`), window focus
+(`WindowEvent::Focused`, first statement of its arm; a minimized window is not focused, there is no
+separate minimized input), and `Update.output` (PTY bytes were parsed since the last published
+Update; hidden tabs publish at most every 100 ms, so any tab's output reaches it). The rule is
+`wanted = enabled && !focused && (quiet || !slows_io)`, `quiet` being no output in any tab for
+`QUIET` = 2 s. Backends:
+
+- **Windows:** EcoQoS (`SetProcessInformation(ProcessPowerThrottling)`, control and state mask
+  `EXECUTION_SPEED`) plus `IDLE_PRIORITY_CLASS`, Task Manager's own recipe (the green leaf). The
+  step 0 probe on a Windows 11 VM showed neither half alone gives the leaf; a child created without a
+  priority-class flag inherits the idle class and not the EcoQoS tag. The idle class is
+  process-wide, so it also slows the PTY reader: `slows_io` is true and the throttle waits for the
+  quiet period (D6), and output lifts it. The leaf therefore shows on an idle background Luneterm,
+  not on one that is printing. Lift = control mask 0 (system-managed, not an explicit high QoS) and
+  the priority class found at the first apply.
+- **macOS:** the UI thread's QoS class to utility (`pthread_set_qos_class_self_np`), restored to the
+  class and relative priority found at the first apply; the PTY threads are untouched (`slows_io`
+  false, no quiet gate), and a child's QoS is reset by exec (measured). The backend acts on the thread
+  that first called it (debug assertion). The calls are declared with `u32` classes, not `libc`'s enum.
+- **Linux:** none: `nice` and `SCHED_IDLE` cannot be undone without privileges and there is no OS
+  indicator. The row exists on every OS (like Option as Meta) with a Linux description that says it
+  has no effect; the backend is never called.
+
+Every child creation runs inside `Controller::lifted`, which lifts the throttle first and re-evaluates
+after: `open_tab`'s spawn (conhost included), the `Session::start` that follows it (on macOS its
+threads inherit the creating thread's QoS) and `open_link`. Luneterm is never throttled at the moment
+it creates a process. Failure: any OS call that fails lifts what can be lifted, prints one
+`luneterm: efficiency mode off: <call> failed (<code>)` line and turns the controller off for the
+run; an error never leaves the process throttled. The controller's wake deadline (the end of the quiet
+period) is merged into the control flow in `settle_flow`, also while the window is hidden, and
+`Controller::tick` runs first in every callback, so a due deadline is consumed and cannot spin the
+loop. Tests: fake-backend unit tests for every state change (`efficiency/mod.rs`), and
+`tests/efficiency_os.rs` against the real OS (Windows: the own process's class and EcoQoS state, a
+lifted child at normal class and a control child that shows the inheritance; macOS: the thread's
+QoS and a child that reports its own QoS). Checked by hand so far: the leaf recipe in a PowerShell
+probe on the VM (step 0); not yet by hand with the Luneterm window: the leaf in Task Manager, and the
+first click after the window was unfocused on a busy Mac.
+
 **Spawn (D11, D12).** Shell: the setting if set, else the Unix login shell (`program: None`, as
 Lunegit's `$SHELL -l`); on Windows `pwsh.exe`, then `powershell.exe`, then `%ComSpec%`. A candidate
 that is not found moves on to the next; any other error stops. cwd: the setting if it is an existing
@@ -1212,3 +1255,9 @@ PTY threads (`lune-pty`):
   threads), which is what gives the reader its `Ok(0)`.
 - **Drop** never blocks: an unfinished child is killed and everything is closed and reaped on a
   detached thread.
+
+Efficiency mode (see "luneterm app") changes the UI thread's QoS class to utility on macOS while the
+window is in the background, and nothing else about threads: the session threads are created
+unthrottled (their `Session::start` runs inside `Controller::lifted`) and keep their QoS. On Windows
+it changes the whole process's priority class and EcoQoS state, only after a quiet period and never
+while a tab prints.
