@@ -1088,10 +1088,12 @@ Update; hidden tabs publish at most every 100 ms, so any tab's output reaches it
   has no effect; the backend is never called.
 
 Every child creation runs inside `Controller::lifted`, which lifts the throttle first and re-evaluates
-after: `open_tab`'s spawn (conhost included) and `open_link`. `Session::start` needs no lift: a thread
-starts at the default QoS on macOS, not its creator's (measured: threads made from a thread at
-user-initiated, utility and background all start at default), and Windows has one priority class
-per process, so the session threads are never throttled. On exit the controller is released first
+after: `open_tab`'s spawn (conhost included) and `open_link`. `Session::start` needs no lift. On
+macOS a thread starts at the default QoS, not its creator's (measured: threads made from a thread at
+user-initiated, utility and background all start at default), so the session threads are never
+throttled. On Windows the priority class is per process, so a lift around thread creation would
+change nothing: the session threads share the process's class and are throttled whenever the process
+is, which is why the quiet gate exists (D6). On exit the controller is released first
 (`release_for_exit`), so the final workspace and settings saves never run at the idle class. Luneterm is never throttled at the moment
 it creates a process. Failure: any OS call that fails lifts what can be lifted, prints one
 `luneterm: efficiency mode off: <call> failed (<code>)` line and turns the controller off for the
@@ -1260,7 +1262,7 @@ PTY threads (`lune-pty`):
   detached thread.
 
 Efficiency mode (see "luneterm app") changes the UI thread's QoS class to utility on macOS while the
-window is in the background, and nothing else about threads: the session threads are created
-unthrottled (a new thread starts at the default QoS, not its creator's, measured) and keep their QoS. On Windows
-it changes the whole process's priority class and EcoQoS state, only after a quiet period and never
-while a tab prints.
+window is in the background, and nothing else about threads there: on macOS the session threads are
+created unthrottled (a new thread starts at the default QoS, not its creator's, measured) and keep
+their QoS. On Windows it changes the whole process's priority class and EcoQoS state, so the session
+threads are throttled with it, only after a quiet period and never while a tab prints.
