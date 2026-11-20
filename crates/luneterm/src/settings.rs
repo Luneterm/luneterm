@@ -196,6 +196,13 @@ pub struct Settings {
     pub confirm_close: bool,
     pub osc_clipboard: bool,
     pub option_as_meta: bool,
+    /// Copy a finished mouse selection to the clipboard on the mouse-up that ends it. A
+    /// Luneterm-only setting: Lunegit has none.
+    pub copy_on_select: bool,
+    /// Throttle Luneterm itself while its window is unfocused or minimized and no tab prints
+    /// output; shells keep normal priority. Linux has no mechanism, so it has no effect there. A
+    /// Luneterm-only setting: Lunegit has none.
+    pub efficiency_mode: bool,
 }
 
 impl Default for Settings {
@@ -223,6 +230,8 @@ impl Default for Settings {
             confirm_close: true,
             osc_clipboard: true,
             option_as_meta: false,
+            copy_on_select: true,
+            efficiency_mode: true,
         }
     }
 }
@@ -346,6 +355,8 @@ impl Settings {
             confirm_close,
             osc_clipboard,
             option_as_meta,
+            copy_on_select,
+            efficiency_mode,
         } = self;
         let flags = [
             (SettingId::Theme, *theme != other.theme),
@@ -397,6 +408,14 @@ impl Settings {
                 SettingId::OptionAsMeta,
                 *option_as_meta != other.option_as_meta,
             ),
+            (
+                SettingId::CopyOnSelect,
+                *copy_on_select != other.copy_on_select,
+            ),
+            (
+                SettingId::EfficiencyMode,
+                *efficiency_mode != other.efficiency_mode,
+            ),
         ];
         flags
             .into_iter()
@@ -430,11 +449,13 @@ pub enum SettingId {
     ConfirmClose,
     OscClipboard,
     OptionAsMeta,
+    CopyOnSelect,
+    EfficiencyMode,
 }
 
 impl SettingId {
     /// Every setting, in the order of the [`Settings`] fields.
-    pub const ALL: [SettingId; 22] = [
+    pub const ALL: [SettingId; 24] = [
         SettingId::Theme,
         SettingId::Glass,
         SettingId::MenuBlur,
@@ -457,6 +478,8 @@ impl SettingId {
         SettingId::ConfirmClose,
         SettingId::OscClipboard,
         SettingId::OptionAsMeta,
+        SettingId::CopyOnSelect,
+        SettingId::EfficiencyMode,
     ];
 
     /// What changing this setting does (plan M10 step 6's table).
@@ -475,6 +498,8 @@ impl SettingId {
             SettingId::Scrollback => Effect::Scrollback,
             SettingId::OscClipboard => Effect::OscClipboard,
             SettingId::OptionAsMeta => Effect::OptionAsMeta,
+            SettingId::CopyOnSelect => Effect::CopyOnSelect,
+            SettingId::EfficiencyMode => Effect::Efficiency,
             SettingId::ConfirmClose => Effect::ConfirmClose,
             SettingId::DefaultCwd
             | SettingId::Shell
@@ -514,6 +539,10 @@ pub enum Effect {
     OptionAsMeta,
     /// Read when a tab closes (`plan_close`).
     ConfirmClose,
+    /// Read on each mouse-up that ends a selection.
+    CopyOnSelect,
+    /// The efficiency controller re-evaluates now (step 3).
+    Efficiency,
     /// Tabs opened from now on; the page says so (its restart notice).
     NextSpawn,
 }
@@ -760,6 +789,8 @@ mod tests {
             (S::ConfirmClose, E::ConfirmClose),
             (S::OscClipboard, E::OscClipboard),
             (S::OptionAsMeta, E::OptionAsMeta),
+            (S::CopyOnSelect, E::CopyOnSelect),
+            (S::EfficiencyMode, E::Efficiency),
         ];
         assert_eq!(table.len(), SettingId::ALL.len());
         for (id, want) in table {
@@ -772,7 +803,7 @@ mod tests {
     #[test]
     fn changing_one_field_changes_exactly_its_id() {
         let d = Settings::default();
-        let cases: [(SettingId, Settings); 22] = [
+        let cases: [(SettingId, Settings); 24] = [
             (
                 SettingId::Theme,
                 Settings {
@@ -924,6 +955,20 @@ mod tests {
                 SettingId::OptionAsMeta,
                 Settings {
                     option_as_meta: true,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::CopyOnSelect,
+                Settings {
+                    copy_on_select: false,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::EfficiencyMode,
+                Settings {
+                    efficiency_mode: false,
                     ..d.clone()
                 },
             ),

@@ -1147,6 +1147,10 @@ impl App {
             }
             // Read each frame (the strip's cue) and when a tab closes.
             Effect::Outline | Effect::ConfirmClose => {}
+            // Read on each mouse-up that ends a selection (step 2).
+            Effect::CopyOnSelect => {}
+            // The efficiency controller re-evaluates here (step 3).
+            Effect::Efficiency => {}
             Effect::NextSpawn => self.restart_notice = self.page.is_some(),
         }
     }
