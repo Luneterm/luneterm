@@ -27,7 +27,7 @@ pub struct SettingsDoc {
 }
 
 /// The names this build writes, in the order it writes them.
-const KEYS: [&str; 22] = [
+const KEYS: [&str; 24] = [
     "theme",
     "glass",
     "menu_blur",
@@ -50,6 +50,8 @@ const KEYS: [&str; 22] = [
     "confirm_close",
     "osc_clipboard",
     "option_as_meta",
+    "copy_on_select",
+    "efficiency_mode",
 ];
 
 fn member<'a>(members: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
@@ -126,6 +128,8 @@ pub fn parse_settings(bytes: &[u8]) -> Result<SettingsDoc, Reject> {
     flag(members, "confirm_close", &mut s.confirm_close);
     flag(members, "osc_clipboard", &mut s.osc_clipboard);
     flag(members, "option_as_meta", &mut s.option_as_meta);
+    flag(members, "copy_on_select", &mut s.copy_on_select);
+    flag(members, "efficiency_mode", &mut s.efficiency_mode);
     let unknown = members
         .iter()
         .filter(|(k, _)| k != "version" && !KEYS.contains(&k.as_str()))
@@ -171,6 +175,8 @@ pub fn render_settings(doc: &SettingsDoc) -> Result<String, WriteError> {
         ("confirm_close".into(), Json::Bool(s.confirm_close)),
         ("osc_clipboard".into(), Json::Bool(s.osc_clipboard)),
         ("option_as_meta".into(), Json::Bool(s.option_as_meta)),
+        ("copy_on_select".into(), Json::Bool(s.copy_on_select)),
+        ("efficiency_mode".into(), Json::Bool(s.efficiency_mode)),
     ];
     members.extend(doc.unknown.iter().cloned());
     Json::Object(members).to_text()
@@ -204,6 +210,8 @@ mod tests {
             confirm_close: false,
             osc_clipboard: false,
             option_as_meta: true,
+            copy_on_select: false,
+            efficiency_mode: false,
         }
     }
 
@@ -382,6 +390,34 @@ mod tests {
         };
         let text = render_settings(&doc).expect("writes");
         assert!(text.contains("\"ligatures\":true"), "{text}");
+    }
+
+    /// A file with neither `copy_on_select` nor `efficiency_mode`: both are on. A value of the
+    /// wrong type keeps the default (on); `false` reads off; both keys are written.
+    #[test]
+    fn copy_on_select_and_efficiency_default_on_and_read_off() {
+        let read = |json: &str| parse_settings(json.as_bytes()).expect("parses").settings;
+        let missing = read(r#"{"version":1,"palette":"Nord"}"#);
+        assert!(missing.copy_on_select && missing.efficiency_mode);
+        let wrong = read(r#"{"version":1,"copy_on_select":"off","efficiency_mode":"off"}"#);
+        assert!(
+            wrong.copy_on_select,
+            "a string is no bool: the default stays on"
+        );
+        assert!(
+            wrong.efficiency_mode,
+            "a string is no bool: the default stays on"
+        );
+        let off = read(r#"{"version":1,"copy_on_select":false,"efficiency_mode":false}"#);
+        assert!(!off.copy_on_select && !off.efficiency_mode);
+        let doc = SettingsDoc {
+            settings: off,
+            unknown: Vec::new(),
+        };
+        let text = render_settings(&doc).expect("writes");
+        assert!(text.contains("\"copy_on_select\":false"), "{text}");
+        assert!(text.contains("\"efficiency_mode\":false"), "{text}");
+        assert_eq!(parse_settings(text.as_bytes()), Ok(doc));
     }
 
     #[test]

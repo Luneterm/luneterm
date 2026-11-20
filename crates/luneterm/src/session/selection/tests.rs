@@ -421,7 +421,7 @@ fn drag(sel: &mut Selection, t: &mut Terminal, from: (usize, usize), to: (usize,
         },
         T0,
     );
-    sel.apply(t, SelectCmd::End, T0);
+    sel.apply(t, SelectCmd::End { copy: false }, T0);
 }
 
 #[test]
@@ -462,7 +462,7 @@ fn a_shift_click_extends_the_selection_from_its_start() {
     put(&mut t, "hello world");
     let mut sel = Selection::new();
     click(&mut sel, &mut t, 0, 0, 1);
-    sel.apply(&mut t, SelectCmd::End, T0);
+    sel.apply(&mut t, SelectCmd::End { copy: false }, T0);
     sel.apply(
         &mut t,
         SelectCmd::Start {
@@ -721,7 +721,7 @@ fn a_drag_beyond_the_viewport_scrolls_on_the_timer_and_keeps_the_end_at_the_edge
         ms(70),
     );
     assert!(sel.drag_deadline().is_some());
-    sel.apply(&mut t, SelectCmd::End, ms(80));
+    sel.apply(&mut t, SelectCmd::End { copy: false }, ms(80));
     assert_eq!(sel.drag_deadline(), None);
 }
 

@@ -19,7 +19,7 @@ use lune_vt::{
 };
 
 use super::host::{ColorState, window_report};
-use super::selection::{CopyResult, Selection};
+use super::selection::{CopyResult, SelectCmd, Selection};
 use super::threads::{Stats, WriteKind, WriteQueue};
 use super::update::{
     Exit, ForegroundState, LINK_URIS_CAP, MARKS_CAP, MAX_LINK_URI, Update, UpdateModes, to_cell,
@@ -108,6 +108,8 @@ struct Acc {
     selection: bool,
     /// The answer to a `CopySelection`.
     copy: Option<CopyResult>,
+    /// PTY bytes were parsed (`Update.output`); not part of `any`: it publishes nothing alone.
+    output: bool,
 }
 
 impl Acc {
@@ -582,14 +584,18 @@ impl EngineCore {
             Command::Select(cmd) => {
                 let now = self.clock.now();
                 self.with_selection(|s, t| s.apply(t, cmd, now));
+                // Copy on select: the release that ends a selection copies it, in this same
+                // command so a later update cannot change the text. A plain click selects nothing
+                // (`text` would answer `""`), so it must not reach the clipboard.
+                if matches!(cmd, SelectCmd::End { copy: true })
+                    && self.selection.has_selection(&self.terminal)
+                {
+                    self.copy_selection();
+                }
                 typed = false;
             }
             Command::CopySelection => {
-                self.acc.copy = match self.selection.text(&self.terminal, MAX_COPY_BYTES) {
-                    Some(Ok(text)) => Some(CopyResult::Text(text)),
-                    Some(Err(super::selection::CopyError::TooLarge)) => Some(CopyResult::TooLarge),
-                    None => None,
-                };
+                self.copy_selection();
                 typed = false;
             }
             Command::SetTheme(theme) => {
@@ -618,6 +624,15 @@ impl EngineCore {
         self.drain(typed);
     }
 
+    /// Answers the next update with the selected text (`None`: nothing is selected).
+    fn copy_selection(&mut self) {
+        self.acc.copy = match self.selection.text(&self.terminal, MAX_COPY_BYTES) {
+            Some(Ok(text)) => Some(CopyResult::Text(text)),
+            Some(Err(super::selection::CopyError::TooLarge)) => Some(CopyResult::TooLarge),
+            None => None,
+        };
+    }
+
     /// Runs `f` on the selection and the terminal, and marks the selection for publishing when
     /// what the UI sees of it changed.
     fn with_selection(&mut self, f: impl FnOnce(&mut Selection, &mut Terminal)) {
@@ -642,6 +657,7 @@ impl EngineCore {
         }
         let start = self.clock.now();
         self.last_output = Some(start);
+        self.acc.output = true;
         let mut log = SliceLog::default();
         while let Some(front) = self.pending.front() {
             let end = front.len().min(self.offset.saturating_add(self.step));
@@ -944,6 +960,7 @@ impl EngineCore {
             link_uris,
             selection: acc.selection.then(|| self.selection.view(&self.terminal)),
             selection_text: acc.copy,
+            output: acc.output,
             exited: self.exit_pending.take(),
         };
         self.last = Some(Published { state: st, modes });

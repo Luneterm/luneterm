@@ -243,6 +243,11 @@ static TERMINAL: [Group; 3] = [
         header: "settings.terminal.behavior.header",
         rows: &[
             row(
+                SettingId::CopyOnSelect,
+                Control::Toggle,
+                "settings.terminal.behavior.copyOnSelect",
+            ),
+            row(
                 SettingId::ConfirmClose,
                 Control::Toggle,
                 "settings.terminal.behavior.confirmClose",
@@ -256,6 +261,11 @@ static TERMINAL: [Group; 3] = [
                 SettingId::OptionAsMeta,
                 Control::Toggle,
                 "settings.terminal.behavior.optionAsMeta",
+            ),
+            row(
+                SettingId::EfficiencyMode,
+                Control::Toggle,
+                "settings.terminal.behavior.efficiencyMode",
             ),
         ],
     },
@@ -302,9 +312,9 @@ const NOTICES: [(&str, &str); 7] = [
     ),
 ];
 
-/// The key of the description of `row`: the glass row's depends on the OS.
+/// The key of the description of `row`: the glass and efficiency rows' depend on the OS.
 fn desc_key(row: &Row) -> String {
-    if row.id == SettingId::Glass {
+    if row.id == SettingId::Glass || row.id == SettingId::EfficiencyMode {
         format!("{}.desc.{OS}", row.key)
     } else {
         format!("{}.desc", row.key)
@@ -517,6 +527,8 @@ pub fn flag(settings: &Settings, id: SettingId) -> Option<bool> {
         SettingId::ConfirmClose => settings.confirm_close,
         SettingId::OscClipboard => settings.osc_clipboard,
         SettingId::OptionAsMeta => settings.option_as_meta,
+        SettingId::CopyOnSelect => settings.copy_on_select,
+        SettingId::EfficiencyMode => settings.efficiency_mode,
         _ => return None,
     })
 }
@@ -533,6 +545,8 @@ pub fn set_flag(settings: &mut Settings, id: SettingId, on: bool) {
         SettingId::ConfirmClose => settings.confirm_close = on,
         SettingId::OscClipboard => settings.osc_clipboard = on,
         SettingId::OptionAsMeta => settings.option_as_meta = on,
+        SettingId::CopyOnSelect => settings.copy_on_select = on,
+        SettingId::EfficiencyMode => settings.efficiency_mode = on,
         _ => {}
     }
 }
@@ -1425,6 +1439,8 @@ mod tests {
             SettingId::ConfirmClose,
             SettingId::OscClipboard,
             SettingId::OptionAsMeta,
+            SettingId::CopyOnSelect,
+            SettingId::EfficiencyMode,
         ] {
             let mut s = Settings::default();
             let before = flag(&s, id).expect("a toggle");

@@ -47,9 +47,9 @@ pub const DRAG_SCROLL_MAX_SPEED: f32 = 15.0;
 
 /// The line break of copied text.
 #[cfg(windows)]
-const EOL: &str = "\r\n";
+pub(super) const EOL: &str = "\r\n";
 #[cfg(not(windows))]
-const EOL: &str = "\n";
+pub(super) const EOL: &str = "\n";
 
 /// `[x, y]` as upstream's arrays: x a column (the end is exclusive), y a buffer line. `y` can be
 /// negative for a moment while a trim is applied.
@@ -639,8 +639,12 @@ pub enum SelectCmd {
         top: usize,
         scroll: i32,
     },
-    /// The button was released.
-    End,
+    /// The button was released. `copy` asks for the selection to be copied in the same command
+    /// (copy on select): the engine does it only when something is selected, so a plain click
+    /// never answers with an empty copy.
+    End {
+        copy: bool,
+    },
     Clear,
     /// Select everything: the whole buffer, scrollback included (`selectAll`).
     All,
@@ -939,7 +943,7 @@ impl Selection {
                 column,
             } => self.start(term, cell, top, clicks, extend, column),
             SelectCmd::Drag { cell, top, scroll } => self.drag(term, cell, top, scroll, now),
-            SelectCmd::End => {
+            SelectCmd::End { .. } => {
                 self.selecting = false;
                 self.drag_amount = 0;
                 self.next_drag = None;

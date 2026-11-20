@@ -1911,7 +1911,10 @@ fn selection_is_published_only_when_it_changes() {
     // A click elsewhere replaces it; a plain click selects nothing, which is published once.
     let u = rig.command(press(1, 3, 1)).expect("an update");
     assert_eq!(u.selection, Some(None));
-    assert!(rig.command(select(SelectCmd::End)).is_none());
+    assert!(
+        rig.command(select(SelectCmd::End { copy: false }))
+            .is_none()
+    );
 }
 
 #[test]
@@ -2006,9 +2009,162 @@ fn selection_drag_scroll_runs_on_the_engines_clock() {
     assert_eq!(u.viewport_top, top - 1);
     assert!(u.full);
     // A release stops it.
-    rig.command(select(SelectCmd::End));
+    rig.command(select(SelectCmd::End { copy: false }));
     rig.clock.advance(Duration::from_millis(200));
     assert!(rig.idle().is_none());
+}
+
+#[test]
+fn update_output_is_true_for_pty_bytes_and_false_for_a_command() {
+    let mut rig = selection_rig();
+    // The first Update came from the printed bytes (selection_rig fed them).
+    let u = rig.command(press(0, 0, 3)).expect("a selection");
+    assert!(!u.output, "a select command parsed no PTY bytes");
+    let u = rig
+        .command(Command::Resize(geometry(30, 5)))
+        .expect("update");
+    assert!(!u.output, "a resize parsed no PTY bytes");
+    let u = rig.feed(b"\r\nmore").expect("update");
+    assert!(u.output, "PTY bytes were parsed");
+    // The flag is per Update: the next one, from a command, is false again.
+    let u = rig.command(press(0, 7, 2)).expect("update");
+    assert!(!u.output);
+    // A published first Update that came from bytes carries it too.
+    let mut fresh = Rig::new(&config(20, 5));
+    let u = fresh.feed(b"x").expect("first update");
+    assert!(u.output);
+}
+
+// ---------------------------------------------------------------- copy on select
+
+fn drag_to(row: usize, col: usize) -> Command {
+    select(SelectCmd::Drag {
+        cell: (row, col),
+        top: 0,
+        scroll: 0,
+    })
+}
+
+fn release(copy: bool) -> Command {
+    select(SelectCmd::End { copy })
+}
+
+fn copied(u: Option<Update>) -> Option<CopyResult> {
+    u.and_then(|u| u.selection_text)
+}
+
+#[test]
+fn copy_on_select_a_drag_release_copies_the_selection() {
+    let mut rig = selection_rig();
+    rig.command(press(0, 0, 1));
+    rig.command(drag_to(0, 5)).expect("the selection grew");
+    let u = rig.command(release(true)).expect("the copy's update");
+    assert_eq!(u.selection_text, Some(CopyResult::Text("hello".to_owned())));
+    assert!(u.selection.is_none(), "the selection stays as it was");
+    assert!(!format!("{u:?}").contains("hello"), "Debug hides the text");
+    assert!(rig.idle().is_none());
+}
+
+#[test]
+fn copy_on_select_off_copies_nothing() {
+    let mut rig = selection_rig();
+    rig.command(press(0, 0, 1));
+    rig.command(drag_to(0, 5)).expect("the selection grew");
+    assert!(rig.command(release(false)).is_none(), "no update, no copy");
+}
+
+#[test]
+fn copy_on_select_a_plain_click_copies_nothing_not_even_an_empty_text() {
+    let mut rig = selection_rig();
+    rig.command(press(1, 3, 1));
+    assert!(rig.command(release(true)).is_none());
+    // A click that replaces a selection leaves none to copy.
+    rig.command(press(0, 7, 2)).expect("a word");
+    let u = rig.command(press(1, 3, 1)).expect("the selection went");
+    assert_eq!(u.selection, Some(None));
+    assert!(copied(rig.command(release(true))).is_none());
+}
+
+#[test]
+fn copy_on_select_a_double_click_copies_the_word_and_a_triple_click_the_line() {
+    let mut rig = selection_rig();
+    rig.command(press(0, 7, 2)).expect("a word");
+    assert_eq!(
+        copied(rig.command(release(true))),
+        Some(CopyResult::Text("world".to_owned()))
+    );
+    rig.command(press(1, 3, 3)).expect("a line");
+    assert_eq!(
+        copied(rig.command(release(true))),
+        Some(CopyResult::Text("second line".to_owned()))
+    );
+}
+
+#[test]
+fn copy_on_select_a_shift_extend_copies_the_extended_text() {
+    let mut rig = selection_rig();
+    rig.command(press(0, 0, 1));
+    assert!(rig.command(release(true)).is_none(), "a click: nothing");
+    rig.command(select(SelectCmd::Start {
+        cell: (0, 5),
+        top: 0,
+        clicks: 1,
+        extend: true,
+        column: false,
+    }))
+    .expect("extended");
+    assert_eq!(
+        copied(rig.command(release(true))),
+        Some(CopyResult::Text("hello".to_owned()))
+    );
+}
+
+#[test]
+fn copy_on_select_an_alt_column_selection_copies_the_block() {
+    let mut rig = selection_rig();
+    rig.command(select(SelectCmd::Start {
+        cell: (0, 0),
+        top: 0,
+        clicks: 1,
+        extend: false,
+        column: true,
+    }));
+    rig.command(drag_to(1, 3)).expect("the block");
+    assert_eq!(
+        copied(rig.command(release(true))),
+        Some(CopyResult::Text(format!("hel{}sec", super::selection::EOL)))
+    );
+}
+
+#[test]
+fn copy_on_select_select_all_alone_copies_nothing() {
+    let mut rig = selection_rig();
+    rig.command(select(SelectCmd::All)).expect("update");
+    assert!(rig.idle().is_none());
+    // Only a release that asks for the copy writes it; a release with the setting off does not.
+    assert!(copied(rig.command(release(false))).is_none());
+}
+
+#[test]
+fn copy_on_select_an_over_size_selection_answers_too_large_once() {
+    use crate::session::MAX_COPY_BYTES;
+    // Three-byte cells, filled by REP so the input stays small. The grid is as wide as it gets
+    // (4096), and the scrollback holds the rest of the bytes.
+    let cols = 4096;
+    let lines = MAX_COPY_BYTES / (cols * 3) + 100;
+    let mut cfg = config(cols, 10);
+    cfg.scrollback = lines;
+    let mut rig = Rig::new(&cfg);
+    let row = format!("\u{20ac}\x1b[{}b", cols - 1);
+    let text = vec![row; lines].join("\r\n");
+    rig.feed(text.as_bytes());
+    rig.command(select(SelectCmd::All)).expect("update");
+    assert_eq!(rig.core.terminal.cols(), cols, "the grid kept its size");
+    assert_eq!(
+        copied(rig.command(release(true))),
+        Some(CopyResult::TooLarge)
+    );
+    assert!(rig.idle().is_none(), "once per release");
 }
 
 // ---------------------------------------------------------------- step 6: live theme, select all, clear
