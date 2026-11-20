@@ -851,6 +851,7 @@ mod tests {
         let drag = Some(WindowCommand::DragMove);
         assert_eq!(band_command(1, drawn, max), drag);
         assert_eq!(band_command(2, drawn, max), max());
+        assert_eq!(band_command(3, drawn, max), drag, "a third press drags");
         assert_eq!(band_command(2, native, max), drag);
         assert_eq!(band_command(1, mac, min), drag);
         assert_eq!(band_command(2, mac, min), min());

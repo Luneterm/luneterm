@@ -62,7 +62,15 @@ mod tests {
         assert_eq!(mac_action(Some("Maximize"), true), max, "the new key wins");
         assert_eq!(mac_action(Some("Minimize"), false), min);
         assert_eq!(mac_action(Some("None"), false), None);
-        assert_eq!(mac_action(Some("Fill"), false), max, "Fill (macOS 15+) zooms");
-        assert_eq!(mac_action(Some("SomeFutureValue"), true), max, "unknown zooms");
+        assert_eq!(
+            mac_action(Some("Fill"), false),
+            max,
+            "Fill (macOS 15+) zooms"
+        );
+        assert_eq!(
+            mac_action(Some("SomeFutureValue"), true),
+            max,
+            "unknown zooms"
+        );
     }
 }
