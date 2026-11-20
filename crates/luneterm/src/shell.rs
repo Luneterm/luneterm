@@ -381,7 +381,7 @@ pub fn caption_command(button: CaptionButton) -> WindowCommand {
     }
 }
 
-/// What a press in the title band does: a double click runs `double` (where the app answers it:
+/// What a press in the title band does: a double click (the second press; a third drags like a single one) runs `double` (where the app answers it:
 /// [`Chrome::band_double_click`]; `None` = the OS setting says do nothing), any other press drags
 /// the window.
 pub fn band_command(
@@ -389,7 +389,7 @@ pub fn band_command(
     chrome: Chrome,
     double: impl FnOnce() -> Option<WindowCommand>,
 ) -> Option<WindowCommand> {
-    if press_count >= 2 && chrome.band_double_click {
+    if press_count == 2 && chrome.band_double_click {
         double()
     } else {
         Some(WindowCommand::DragMove)

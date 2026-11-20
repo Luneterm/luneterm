@@ -3,8 +3,9 @@
 //! macOS: the band is the app's own drawing under a transparent title bar, and a press there drags
 //! the window by `drag_window`, so the OS never sees the double click of its own title bar. The app
 //! does what System Settings > Desktop & Dock > "Double-click a window's title bar to" asks: the
-//! user default `AppleActionOnDoubleClick` (`Maximize` = zoom, the default when unset; `Minimize`;
-//! `None`/`Do Nothing`), or, without it, the older `AppleMiniaturizeOnDoubleClick` boolean.
+//! user default `AppleActionOnDoubleClick` (`Maximize` and `Fill` = zoom, the default when unset;
+//! `Minimize`; `None` = Do Nothing; an unknown value zooms), or, without it, the older
+//! `AppleMiniaturizeOnDoubleClick` boolean.
 
 use lune_ui::input::WindowCommand;
 
@@ -12,9 +13,10 @@ use lune_ui::input::WindowCommand;
 /// boolean (`miniaturize`, `AppleMiniaturizeOnDoubleClick`). `None`: the click does nothing.
 pub fn mac_action(action: Option<&str>, miniaturize: bool) -> Option<WindowCommand> {
     match action {
-        Some("Maximize") => Some(WindowCommand::ToggleMaximize),
+        Some("None") => None,
         Some("Minimize") => Some(WindowCommand::Minimize),
-        Some(_) => None,
+        // `Maximize`, `Fill` (macOS 15+, zoom like the other apps) and any future value: zoom.
+        Some(_) => Some(WindowCommand::ToggleMaximize),
         None if miniaturize => Some(WindowCommand::Minimize),
         None => Some(WindowCommand::ToggleMaximize),
     }
@@ -60,6 +62,7 @@ mod tests {
         assert_eq!(mac_action(Some("Maximize"), true), max, "the new key wins");
         assert_eq!(mac_action(Some("Minimize"), false), min);
         assert_eq!(mac_action(Some("None"), false), None);
-        assert_eq!(mac_action(Some("Do Nothing"), false), None);
+        assert_eq!(mac_action(Some("Fill"), false), max, "Fill (macOS 15+) zooms");
+        assert_eq!(mac_action(Some("SomeFutureValue"), true), max, "unknown zooms");
     }
 }
