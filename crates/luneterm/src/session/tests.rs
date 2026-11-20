@@ -2132,7 +2132,7 @@ fn copy_on_select_an_alt_column_selection_copies_the_block() {
     rig.command(drag_to(1, 3)).expect("the block");
     assert_eq!(
         copied(rig.command(release(true))),
-        Some(CopyResult::Text("hel\nsec".to_owned()))
+        Some(CopyResult::Text(format!("hel{}sec", super::selection::EOL)))
     );
 }
 

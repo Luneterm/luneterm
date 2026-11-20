@@ -47,9 +47,9 @@ pub const DRAG_SCROLL_MAX_SPEED: f32 = 15.0;
 
 /// The line break of copied text.
 #[cfg(windows)]
-const EOL: &str = "\r\n";
+pub(super) const EOL: &str = "\r\n";
 #[cfg(not(windows))]
-const EOL: &str = "\n";
+pub(super) const EOL: &str = "\n";
 
 /// `[x, y]` as upstream's arrays: x a column (the end is exclusive), y a buffer line. `y` can be
 /// negative for a moment while a trim is applied.
