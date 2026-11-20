@@ -69,6 +69,7 @@ cat > "$contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key><string>$minos</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>A program running in Luneterm wants to use the microphone.</string>
 </dict>
 </plist>
 PLIST
