@@ -624,8 +624,6 @@ impl EngineCore {
         self.drain(typed);
     }
 
-    /// Runs `f` on the selection and the terminal, and marks the selection for publishing when
-    /// what the UI sees of it changed.
     /// Answers the next update with the selected text (`None`: nothing is selected).
     fn copy_selection(&mut self) {
         self.acc.copy = match self.selection.text(&self.terminal, MAX_COPY_BYTES) {
@@ -635,6 +633,8 @@ impl EngineCore {
         };
     }
 
+    /// Runs `f` on the selection and the terminal, and marks the selection for publishing when
+    /// what the UI sees of it changed.
     fn with_selection(&mut self, f: impl FnOnce(&mut Selection, &mut Terminal)) {
         let before = self.selection.view(&self.terminal);
         f(&mut self.selection, &mut self.terminal);
