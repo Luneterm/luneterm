@@ -1200,7 +1200,7 @@ bounds are 5x the debug median, not a product claim.
   and E9 need a Unix tty (`stty`) and skip there; the GPU initialized on the runner.
 
 **M10 closed what M9 left:** tabs, selection and copy, the settings file and page, the kitty reset
-and the consumers of cwd, progress and marks, and the Windows GUI run (windows-vm, step 8; the
+and the consumers of cwd, progress and marks, and the Windows GUI run (a Windows VM, step 8; the
 results are in `docs/luneui-rs-handoff.md`). Real IME typing is still verified only by hand (no
 input method was installed on the VM).
 
