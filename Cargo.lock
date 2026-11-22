@@ -1025,8 +1025,8 @@ dependencies = [
 
 [[package]]
 name = "lune-ui"
-version = "0.7.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=cbeae0109f970eaede7f1826414f139bb8eace65#cbeae0109f970eaede7f1826414f139bb8eace65"
+version = "0.7.6"
+source = "git+https://github.com/lune-rs/luneui?rev=a038521ba2821d0f9dfb55cb04aa5201869a1469#a038521ba2821d0f9dfb55cb04aa5201869a1469"
 dependencies = [
  "lune-ui-core",
  "lune-ui-platform",
@@ -1036,17 +1036,23 @@ dependencies = [
 
 [[package]]
 name = "lune-ui-core"
-version = "0.7.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=cbeae0109f970eaede7f1826414f139bb8eace65#cbeae0109f970eaede7f1826414f139bb8eace65"
+version = "0.7.6"
+source = "git+https://github.com/lune-rs/luneui?rev=a038521ba2821d0f9dfb55cb04aa5201869a1469#a038521ba2821d0f9dfb55cb04aa5201869a1469"
 
 [[package]]
 name = "lune-ui-platform"
-version = "0.7.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=cbeae0109f970eaede7f1826414f139bb8eace65#cbeae0109f970eaede7f1826414f139bb8eace65"
+version = "0.7.6"
+source = "git+https://github.com/lune-rs/luneui?rev=a038521ba2821d0f9dfb55cb04aa5201869a1469#a038521ba2821d0f9dfb55cb04aa5201869a1469"
 dependencies = [
+ "block2 0.6.2",
+ "jni",
  "lune-ui-core",
+ "ndk-context",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "objc2-ui-kit 0.3.2",
  "raw-window-handle",
  "tray-icon",
  "window-vibrancy",
@@ -1056,8 +1062,8 @@ dependencies = [
 
 [[package]]
 name = "lune-ui-wgpu"
-version = "0.7.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=cbeae0109f970eaede7f1826414f139bb8eace65#cbeae0109f970eaede7f1826414f139bb8eace65"
+version = "0.7.6"
+source = "git+https://github.com/lune-rs/luneui?rev=a038521ba2821d0f9dfb55cb04aa5201869a1469#a038521ba2821d0f9dfb55cb04aa5201869a1469"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -1073,8 +1079,8 @@ dependencies = [
 
 [[package]]
 name = "lune-ui-winit"
-version = "0.7.0"
-source = "git+https://github.com/lune-rs/luneui-rs?rev=cbeae0109f970eaede7f1826414f139bb8eace65#cbeae0109f970eaede7f1826414f139bb8eace65"
+version = "0.7.6"
+source = "git+https://github.com/lune-rs/luneui?rev=a038521ba2821d0f9dfb55cb04aa5201869a1469#a038521ba2821d0f9dfb55cb04aa5201869a1469"
 dependencies = [
  "arboard",
  "lune-ui-core",
@@ -1557,6 +1563,18 @@ dependencies = [
  "objc2-symbols",
  "objc2-uniform-type-identifiers",
  "objc2-user-notifications",
+]
+
+[[package]]
+name = "objc2-ui-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d87d638e33c06f577498cbcc50491496a3ed4246998a7fbba7ccb98b1e7eab22"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -3114,7 +3132,7 @@ dependencies = [
  "objc2 0.5.3",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
- "objc2-ui-kit",
+ "objc2-ui-kit 0.2.2",
  "orbclient",
  "percent-encoding",
  "pin-project",
