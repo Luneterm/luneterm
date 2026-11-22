@@ -12,7 +12,7 @@ missing or unknown value reads as `luneterm`), under every glass style: Luneterm
 look, Lunegit is the layer stack below. The glass style picks only the OS material, and its
 `default` follows the theme: `near_black::MATERIAL` for Luneterm, `Material::Vibrancy` (light
 vibrancy, acrylic on Windows) for Lunegit; the liquid styles and Off are the same under both. The
-near-black look is luneui-rs's `near_black` (landed at luneui-rs `5be5dbe`; the pin is now v0.5.1,
+near-black look is luneui-rs's `near_black` (landed at luneui-rs `5be5dbe`; the pin is now luneui v0.7.6 (`https://github.com/lune-rs/luneui`, renamed from luneui-rs),
 `crates/lune-ui-core/src/theme/near_black.rs`, the user-approved test build), as one value:
 
 | What | Value |
@@ -28,7 +28,7 @@ material) is the look's own theme with `with_acrylic(Opaque)`, the near-black on
 step-7 dump of `opaque@2x.png` measures its body at `#101010` and Lunegit's (`lunegit-opaque@2x.png`)
 at `#161616`, not the light grey the earlier note feared (that note read the layer's material opacity
 without the opaque backdrop under it). The glass does not depend on the window's active state, so the look is the same
-active and inactive. The dialog card uses the theme's `menu_glass` (as menus do), frosted over an unblurred scrim; it is judged
+active and inactive. The dialog card uses the theme's `menu_glass` (as menus do), frosted over an unblurred scrim (its blur of what is under it is luneui D411, since v0.7.3); it is judged
 on the near-black dumps.
 
 ## Layer stack (back to front)

@@ -20,8 +20,8 @@
 # Out of scope (not visible from the repo): $CARGO_HOME/config and `.cargo` dirs above the root.
 set -euo pipefail
 
-ALLOWED_REPO="https://github.com/lune-rs/luneui-rs"
-ALLOWED_REV="cbeae0109f970eaede7f1826414f139bb8eace65"
+ALLOWED_REPO="https://github.com/lune-rs/luneui"
+ALLOWED_REV="a038521ba2821d0f9dfb55cb04aa5201869a1469"
 
 mode="check"
 case "${1:-}" in

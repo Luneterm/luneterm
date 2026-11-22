@@ -589,9 +589,9 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
 /// The close-confirm or rename dialog (Lunegit's copy, `en.json`; layout as the spike's).
 fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
     // The card is the menus' glass (the theme's `menu_glass`, raised by Window opacity), frosted
-    // over an unblurred scrim: the card blurs what is under it, the terminal around it stays
-    // readable (director verdict, step 2 batch 1). The near-opaque fill of before (alpha 235)
-    // hid the frost entirely.
+    // over an unblurred scrim: the card blurs what is under it (luneui D411, since v0.7.3, under
+    // `scrim_blur: false`), the terminal around it stays readable (director verdict, step 2
+    // batch 1). The near-opaque fill of before (alpha 235) hid the frost entirely.
     let glass = DialogGlass::of(ui.theme());
     let options = DialogOptions {
         scrim_blur: false,
