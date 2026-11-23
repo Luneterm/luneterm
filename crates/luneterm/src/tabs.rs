@@ -26,7 +26,7 @@ use crate::session::{
 };
 use crate::shell::ScrollView;
 use crate::spawn::SpawnFailure;
-use crate::title::{self, DEFAULT_TITLE};
+use crate::title::{self, DEFAULT_TITLE, NOTICE_BODY_CHARS, NOTICE_TITLE_CHARS};
 
 /// The app's identity of a tab: stable across reorders and closes, never reused.
 pub type TabId = u64;
@@ -184,10 +184,32 @@ impl<T> TabSet<T> {
 
 // ------------------------------------------------------------------------------------ one tab
 
+/// A program's notification (OSC 9 or OSC 777 `notify`) after [`Tab::apply`] sanitised it: both
+/// fields are clean display text within [`NOTICE_TITLE_CHARS`] and [`NOTICE_BODY_CHARS`] chars,
+/// and at least one is not empty. `title` is empty for OSC 9.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Message {
+    pub title: String,
+    pub body: String,
+}
+
+impl std::fmt::Debug for Message {
+    /// Lengths only, as every program text is kept out of a `Debug` (I16).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Message")
+            .field("title_chars", &self.title.chars().count())
+            .field("body_chars", &self.body.chars().count())
+            .finish()
+    }
+}
+
 /// What one Update changed that the app acts on beyond the tab's own mirror.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Effects {
     pub bells: u32,
+    /// The Update's notifications, sanitised, in order, the empty ones dropped. They do not set
+    /// `chrome`: they change nothing the strip draws by themselves.
+    pub messages: Vec<Message>,
     pub clipboard_write: Option<String>,
     /// The answer to a copy: the text, or that it was too large.
     pub copy: Option<CopyResult>,
@@ -443,6 +465,17 @@ impl Tab {
         fx.copy = update.selection_text;
         fx.output = update.output;
         fx.bells = update.bells;
+        // The only place program text from a notification becomes app text: every string leaves
+        // here cleaned and capped (D9).
+        fx.messages = update
+            .notifications
+            .into_iter()
+            .filter_map(|n| {
+                let title = title::sanitize_text(&n.title, NOTICE_TITLE_CHARS);
+                let body = title::sanitize_text(&n.body, NOTICE_BODY_CHARS);
+                (!title.is_empty() || !body.is_empty()).then_some(Message { title, body })
+            })
+            .collect();
         fx.clipboard_write = update.clipboard_write;
         if update.exited.is_some() {
             fx.exited = true;
@@ -963,6 +996,7 @@ mod tests {
             cwd: None,
             progress: None,
             marks: Vec::new(),
+            notifications: Vec::new(),
             sync_update_in_command: false,
             foreground: None,
             command: None,
@@ -1022,5 +1056,66 @@ mod tests {
         t.apply(empty_update());
         assert!(t.take_rehover());
         assert!(!t.take_rehover(), "asked once");
+    }
+
+    fn note(title: &str, body: &str) -> lune_vt::Notification {
+        lune_vt::Notification {
+            title: title.to_owned(),
+            body: body.to_owned(),
+        }
+    }
+
+    #[test]
+    fn notifications_leave_apply_cleaned_capped_in_order_and_without_chrome() {
+        let mut t = Tab::empty(TermTheme::lunegit_one_dark());
+        let mut update = empty_update();
+        update.notifications = vec![
+            // a bidi override, a newline and a control character
+            note("\u{202E}Build\nfinished\u{1b}", &"x".repeat(500)),
+            note("", "  plain \t message  "),
+            // nothing printable: dropped
+            note("\u{202E}\n ", " \u{2028}\u{1} "),
+            note("only title", ""),
+        ];
+        let fx = t.apply(update);
+        assert!(!fx.chrome, "messages are not chrome");
+        assert_eq!(fx.messages.len(), 3);
+        assert_eq!(fx.messages[0].title, "Build finished");
+        assert_eq!(fx.messages[0].body, "x".repeat(240));
+        assert_eq!(
+            fx.messages[1],
+            Message {
+                title: String::new(),
+                body: "plain message".to_owned()
+            }
+        );
+        assert_eq!(fx.messages[2].title, "only title");
+        // a long title is capped in chars, not bytes
+        let mut update = empty_update();
+        update.notifications = vec![note(&"é".repeat(200), "b")];
+        let fx = t.apply(update);
+        assert_eq!(fx.messages[0].title.chars().count(), 80);
+    }
+
+    #[test]
+    fn a_whitespace_only_notification_is_dropped_and_a_quiet_update_has_none() {
+        let mut t = Tab::empty(TermTheme::lunegit_one_dark());
+        let mut update = empty_update();
+        update.notifications = vec![note(" \t\n", "\u{2028}  ")];
+        assert!(t.apply(update).messages.is_empty());
+        assert!(t.apply(empty_update()).messages.is_empty());
+    }
+
+    #[test]
+    fn the_effects_debug_shows_message_sizes_never_text() {
+        let fx = Effects {
+            messages: vec![Message {
+                title: "hunter2".to_owned(),
+                body: "hunter2".to_owned(),
+            }],
+            ..Effects::default()
+        };
+        let shown = format!("{fx:?}");
+        assert!(!shown.contains("hunter2"), "{shown}");
     }
 }

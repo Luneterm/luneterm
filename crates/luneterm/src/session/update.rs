@@ -7,8 +7,8 @@ use std::sync::Arc;
 use lune_pty::RawMode;
 use lune_termview::{Attrs, Cell, Color, Grid, UnderlineStyle};
 use lune_vt::{
-    CellColor, CommandMark, MouseEncoding, MouseTracking, Progress, UnderlineStyle as VtUnderline,
-    ViewportCell, ViewportCursor,
+    CellColor, CommandMark, MouseEncoding, MouseTracking, Notification, Progress,
+    UnderlineStyle as VtUnderline, ViewportCell, ViewportCursor,
 };
 
 use crate::outline::CommandState;
@@ -76,6 +76,10 @@ pub struct Update {
     pub progress: Option<Progress>,
     /// OSC 133 marks in order, at most [`MARKS_CAP`] (the oldest are dropped).
     pub marks: Vec<CommandMark>,
+    /// OSC 9 messages and OSC 777 `notify` requests in order, at most [`NOTIFICATIONS_CAP`] (the
+    /// oldest are dropped). Raw program text: the app sanitises it in `Tab::apply` before any of
+    /// it becomes UI text. Never in a `Debug`.
+    pub notifications: Vec<Notification>,
     pub sync_update_in_command: bool,
     /// The PTY probes, only when they changed.
     pub foreground: Option<ForegroundState>,
@@ -96,8 +100,8 @@ pub struct Update {
 }
 
 impl fmt::Debug for Update {
-    /// Sizes, positions and counts only: never cell text, the title, clipboard text or a
-    /// directory (I16).
+    /// Sizes, positions and counts only: never cell text, the title, clipboard text,
+    /// notification text or a directory (I16).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Update")
             .field("seq", &self.seq)
@@ -117,6 +121,7 @@ impl fmt::Debug for Update {
             .field("palette", &self.palette.is_some())
             .field("cwd", &self.cwd.is_some())
             .field("marks", &self.marks.len())
+            .field("notifications", &self.notifications.len())
             .field("foreground", &self.foreground)
             .field("command", &self.command)
             .field("link_uris", &self.link_uris.len())
@@ -130,6 +135,8 @@ impl fmt::Debug for Update {
 
 /// At most this many marks per Update.
 pub const MARKS_CAP: usize = 64;
+/// At most this many notifications per Update (D10 of the bell-notifications plan).
+pub const NOTIFICATIONS_CAP: usize = 16;
 /// At most this many link uris per Update; the rest follow in the next ones.
 pub const LINK_URIS_CAP: usize = 256;
 /// A link uri longer than this (bytes) is not published.
