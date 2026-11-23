@@ -47,8 +47,9 @@ pub mod windows_mode;
 
 pub use engine::{
     CellColor, ColorIndex, ColorRequest, CommandMark, CommandMarkKind, CursorStyle, Damage,
-    HostEvent, Modes, MouseEncoding, MouseTracking, Progress, ProgressState, UnderlineStyle,
-    Viewport, ViewportCell, ViewportCursor, ViewportState, VtEngine, WindowReportKind,
+    HostEvent, Modes, MouseEncoding, MouseTracking, Notification, Progress, ProgressState,
+    UnderlineStyle, Viewport, ViewportCell, ViewportCursor, ViewportState, VtEngine,
+    WindowReportKind,
 };
 pub use ext::{ExtensionError, StandardExtensions};
 pub use extension::Extension;

@@ -244,12 +244,18 @@ XTVERSION name `ExtensionError::InvalidXtversion` (nothing is registered then).
 - **Extensions** (`ext/`, one file each): kitty keyboard flags (1 and 4; stack of 8 per screen) and
   modifyOtherKeys; XTVERSION (`DCS > | name ST`, name from the host); the unknown-OSC report;
   `"11-vs16"` Unicode version; OSC 52 clipboard write; OSC 7 and 9;9 cwd; OSC 9;4 progress;
-  OSC 133 marks with the synchronized-update latch. They are handlers on the parser's own registry
+  OSC 133 marks with the synchronized-update latch; and, only with
+  `StandardExtensions::notifications`, the notification extension (`ext/osc_notify.rs`: a plain
+  OSC 9 message and `OSC 777;notify;<title>;<body>` become `Notification`; an OSC 9 whose first
+  field is digits is a sub-command and never a message; the payload is capped at 4096 bytes and
+  dropped whole over it; the text is never logged; with the flag off, OSC 777 stays an
+  `UnknownOsc` and a plain OSC 9 stays silent). They are handlers on the parser's own registry
   (no second dispatch path); an extension that registers CSI `t` bypasses the window-option guard
   (`extension.rs`).
 - **Events** the host receives from `drain_events`: `CwdChanged(String)`, `Progress(Progress {
   state, percent })`, `CommandMark(CommandMark { kind, exit_code })`, `SyncUpdateInCommand`,
-  `ClipboardWrite(String)` and `UnknownOsc { ident, len }`. `Modes` gains `kitty_keyboard_flags`
+  `ClipboardWrite(String)`, `UnknownOsc { ident, len }` and `Notification(Notification { title,
+  body })` (raw program text, flag-gated, at most 8 per drain). `Modes` gains `kitty_keyboard_flags`
   (active screen) and `modify_other_keys`.
 - **Encoders** on `Terminal`, all returning the bytes to write to the PTY (`Option<Vec<u8>>`, `None`
   when nothing is sent: `disable_stdin`, mouse not reported, focus reporting off, empty paste),
@@ -444,7 +450,9 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
   `FocusReportRequested`, `WindowReport(WindowReportKind)`, `A11yText` and `A11yTab` (only with
   `screen_reader_mode`), and `UnknownOsc` and `ClipboardWrite`, which the core never produces
   (M7; the core never produces them, the standard extensions do), `CwdChanged`, `Progress`,
-  `CommandMark` and `SyncUpdateInCommand` (M7, standard extensions only). Without
+  `CommandMark` and `SyncUpdateInCommand` (M7, standard extensions only), and `Notification`
+  (the notification extension, behind `StandardExtensions::notifications`; the C ABI never
+  produces it, below). Without
   `install_standard_extensions`, OSC 52, queries included, reaches only the fallback that logs
   (ledger row 13).
 - **Bounded queues** (user decisions Q10 and Q11). `TitleChanged` has no payload and at most one
@@ -455,7 +463,8 @@ The M7 additions on `Terminal` are listed under "Lunegit's additions (M7)".
   `engine_fuzz.rs` `event_cost`: a payload byte weighs 1, a payload-free event 1); without
   them a few bytes of XTWINOPS 22/23 or REP queued gigabytes. The M7 events fit the same bound:
   `ClipboardWrite`, `CwdChanged` and `Progress` are last-wins per drain, replaced in place (O(1));
-  `CommandMark` is exact; `UnknownOsc` is capped at 64 per drain (`UNKNOWN_OSC_LIMIT`); each
+  `CommandMark` is exact; `UnknownOsc` is capped at 64 per drain (`UNKNOWN_OSC_LIMIT`) and `Notification` at 8
+  (`NOTIFICATION_LIMIT`); each
   payload is at most the bytes that produced it, except `ClipboardWrite`: invalid UTF-8 in the
   decoded data becomes U+FFFD (3 bytes per bad byte), so its text can reach about 2.25x the
   base64 that produced it (`////` gives 9 bytes); the drain bound still holds (`event_cost`
@@ -843,7 +852,10 @@ The Lunegit-side swap (P/Invoke, deleting the V8 host) is not part of M8.
   `UNKNOWN_OSC` carries its payload length in `value2` (saturated to `INT32_MAX`; `offset` and `len`
   are 0) without a bump: `offset`/`len` are a data-pool range for every event.
 - **Construction (D9).** `luneterm_engine_new(const LunetermConfig*, LunetermEngine**)` always
-  installs the standard extensions. An all-zero config is the safe default: 2 x 1, no scrollback,
+  installs the standard extensions, with `notifications` off (D3 of the bell-notifications plan):
+  the C ABI has no notification event and `ABI_VERSION` stays 1, so OSC 777 is still
+  `UNKNOWN_OSC` and a plain OSC 9 is silent; `flatten_events` skips a `Notification` so no event
+  of kind 0 can reach the host. An all-zero config is the safe default: 2 x 1, no scrollback,
   Unicode 6, XTVERSION unanswered, clipboard writes off. The XTVERSION name is passed as bytes
   (1 to 64 bytes of 0x20..=0x7E, else `ERR_INVALID_ARGUMENT` / `ERR_INVALID_UTF8`; length 0 = not
   answered), never truncated. No logger is installed, so payloads are never logged. Window

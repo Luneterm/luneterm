@@ -11,7 +11,7 @@
 //! have the standard extensions installed (`install_standard_extensions`, a random OSC 52 gate and
 //! VS16, a fixed valid XTVERSION name); the grammar then reaches them with hostile parameters
 //! (kitty and modifyOtherKeys CSI forms, XTVERSION forms, `CSI ? 2026 h`) and with OSC 7, 9;9,
-//! 9;4, 52 and 133 payloads around each cap, and one seed in 30 writes an OSC 52 of exactly the
+//! 9;4, 52, 133, plain 9 and 777 payloads around each cap, and one seed in 30 writes an OSC 52 of exactly the
 //! character cap, one over, and half. Each seed runs under `catch_unwind`; a failure reports the
 //! seed and the last operations (kind and sizes, never the input bytes or the payloads).
 //!
@@ -22,7 +22,7 @@
 //!    `viewport_state` against `viewport()`, kitty stacks
 //!    (at most 8 entries, flags within the supported bits) and modifyOtherKeys (at most 2); per
 //!    drain at most one each of `ClipboardWrite`, `CwdChanged` and `Progress` and at most 64
-//!    `UnknownOsc`; a reset leaves the keyboard protocol cleared;
+//!    `UnknownOsc` and at most 8 `Notification`; a reset leaves the keyboard protocol cleared;
 //!  - chunk invariance: the same operations with each write cut into 1-byte chunks, and into
 //!    random chunks, end with the same `screen::dump` lines, the same `Viewport` and `Modes`, the
 //!    same event sequence (payloads as length and hash, `A11yText` and `A11yTab` left out: their
@@ -91,7 +91,7 @@ const OSC52_CAP_SEED_EVERY: u64 = 30;
 const XTVERSION_NAME: &str = "lune-vt-fuzz";
 
 /// Event kinds counted by the instrument check and the per-drain weights.
-const SLOT_NAMES: [&str; 13] = [
+const SLOT_NAMES: [&str; 14] = [
     "response",
     "bell",
     "title",
@@ -105,6 +105,7 @@ const SLOT_NAMES: [&str; 13] = [
     "progress",
     "command mark",
     "sync update in command",
+    "notification",
 ];
 
 /// splitmix64.
@@ -450,7 +451,67 @@ fn base64_of_random(rng: &mut Rng, len: usize) -> String {
     out
 }
 
-/// An OSC 7, 9;9, 9;4, 52 or 133 with a payload that is valid, hostile, or around its cap.
+/// An OSC 9 message, a numbered OSC 9 form, an OSC 777 (notify or another verb), or one of them
+/// around the 4096-byte payload cap (the notification extension; with it off the same bytes are
+/// consumed silently or reported as `UnknownOsc`).
+fn notify_osc(rng: &mut Rng, out: &mut Vec<u8>) {
+    match rng.below(10) {
+        0..=2 => {
+            out.extend_from_slice(b"9;");
+            out.extend_from_slice(
+                rng.pick(&[
+                    "build finished",
+                    "3 tests failed",
+                    "v2;x",
+                    ";lead",
+                    "a;b;c",
+                    "\u{1b}[31mred",
+                    "日本語 \u{2028} \u{202e}",
+                    " ",
+                ])
+                .as_bytes(),
+            );
+        }
+        3 | 4 => {
+            out.extend_from_slice(b"9;");
+            out.extend_from_slice(
+                rng.pick(&["12", "404", "3;x", "4", "4;1;5;x", "9", "0;", "7;hello"])
+                    .as_bytes(),
+            );
+        }
+        5..=7 => {
+            out.extend_from_slice(b"777;");
+            out.extend_from_slice(
+                rng.pick(&[
+                    "notify;Title;Body; with; semis",
+                    "notify;Only",
+                    "notify;;Body",
+                    "notify;;",
+                    "notify",
+                    "precmd",
+                    "Notify;a;b",
+                    "notify;t;\u{1}b\n",
+                    "",
+                ])
+                .as_bytes(),
+            );
+        }
+        _ => {
+            // 4094 to 4099 bytes of payload (the cap is 4096)
+            let (head, head_payload): (&[u8], usize) = *rng.pick(&[
+                (b"9;".as_slice(), 0usize),
+                (b"777;notify;;".as_slice(), "notify;;".len()),
+                (b"777;notify;".as_slice(), "notify;".len()),
+            ]);
+            out.extend_from_slice(head);
+            let len = 4094 + rng.usize_between(0, 5);
+            out.resize(out.len() + len - head_payload, b'n');
+        }
+    }
+}
+
+/// An OSC 7, 9;9, 9;4, 52, 133, 9 (message) or 777 with a payload that is valid, hostile, or
+/// around its cap.
 fn ext_osc(rng: &mut Rng, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\x1b]");
     match rng.below(100) {
@@ -528,7 +589,7 @@ fn ext_osc(rng: &mut Rng, out: &mut Vec<u8>) {
                 .as_bytes(),
             );
         }
-        60..=79 => {
+        60..=74 => {
             out.extend_from_slice(b"52;");
             out.extend_from_slice(rng.pick(&["c;", "p;", ";", "", "cp;"]).as_bytes());
             match rng.below(8) {
@@ -542,6 +603,7 @@ fn ext_osc(rng: &mut Rng, out: &mut Vec<u8>) {
                 }
             }
         }
+        75..=84 => notify_osc(rng, out),
         _ => {
             // a payload around the cap of its form (the caps count the identifier too)
             let (head, cap): (&[u8], usize) = *rng.pick(&[
@@ -1132,6 +1194,13 @@ fn event_digest(event: &HostEvent) -> Option<String> {
             format!("clipboard {} {:016x}", text.len(), fnv(text.as_bytes()))
         }
         HostEvent::CwdChanged(text) => format!("cwd {} {:016x}", text.len(), fnv(text.as_bytes())),
+        HostEvent::Notification(note) => format!(
+            "notification {} {:016x} {} {:016x}",
+            note.title.len(),
+            fnv(note.title.as_bytes()),
+            note.body.len(),
+            fnv(note.body.as_bytes())
+        ),
         other => format!("{other:?}"),
     })
 }
@@ -1153,6 +1222,7 @@ fn event_cost(event: &HostEvent) -> u64 {
         HostEvent::A11yTab(_) | HostEvent::UnknownOsc { .. } => 16,
         HostEvent::ClipboardWrite(text) | HostEvent::CwdChanged(text) => n(text.len()),
         HostEvent::Progress(_) | HostEvent::CommandMark(_) => 8,
+        HostEvent::Notification(note) => n(note.title.len() + note.body.len()),
         HostEvent::Bell
         | HostEvent::TitleChanged
         | HostEvent::FocusReportRequested
@@ -1176,6 +1246,7 @@ fn event_slot(event: &HostEvent) -> usize {
         HostEvent::Progress(_) => 10,
         HostEvent::CommandMark(_) => 11,
         HostEvent::SyncUpdateInCommand => 12,
+        HostEvent::Notification(_) => 13,
     }
 }
 
@@ -1268,6 +1339,11 @@ impl Sim {
                 counts[7] <= 64,
                 "{} unknown-osc events in one drain",
                 counts[7]
+            );
+            assert!(
+                counts[13] <= 8,
+                "{} notification events in one drain",
+                counts[13]
             );
         }
         self.since_drain = 0;
@@ -1605,6 +1681,8 @@ fn extensions_of(seed: u64) -> Option<StandardExtensions> {
         xtversion: Some(XTVERSION_NAME.to_string()),
         vs16: rng.chance(50),
         clipboard_write: cap_seed || rng.chance(50),
+        // drawn last, so a replayed seed keeps its other values
+        notifications: rng.chance(50),
     })
 }
 

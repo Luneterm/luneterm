@@ -385,6 +385,7 @@ mod tests {
                     xtversion: None,
                     vs16: false,
                     clipboard_write: false,
+                    notifications: false,
                 })
                 .expect("extensions");
             Twin { engine, reference }

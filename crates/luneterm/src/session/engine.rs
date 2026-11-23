@@ -259,6 +259,7 @@ pub(crate) fn build_terminal(config: &SessionConfig) -> io::Result<Terminal> {
             xtversion: Some(config.xtversion.clone()),
             vs16: true,
             clipboard_write: config.clipboard_write,
+            notifications: true,
         })
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
     Ok(terminal)
@@ -744,6 +745,8 @@ impl EngineCore {
                     self.acc.sync_in_command = true;
                     self.tracker.sync_update();
                 }
+                // Step 2 of the bell-notifications plan carries it to the UI; dropped until then.
+                HostEvent::Notification(_) => {}
                 // Dropped, never logged (I16).
                 HostEvent::A11yText(_) | HostEvent::A11yTab(_) | HostEvent::UnknownOsc { .. } => {}
             }

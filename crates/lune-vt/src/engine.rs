@@ -23,8 +23,9 @@ pub use crate::services::options_service::CursorStyle;
 /// exceptions keep one write's events proportional to its bytes: [`HostEvent::TitleChanged`] (one
 /// per drain, no payload), [`HostEvent::A11yText`] (merged, capped per drain),
 /// [`HostEvent::ClipboardWrite`], [`HostEvent::CwdChanged`] and [`HostEvent::Progress`] (last
-/// wins: a later one replaces the queued one in place) and [`HostEvent::UnknownOsc`] (at most
-/// [`crate::input_handler::UNKNOWN_OSC_LIMIT`] per drain).
+/// wins: a later one replaces the queued one in place), [`HostEvent::UnknownOsc`] (at most
+/// [`crate::input_handler::UNKNOWN_OSC_LIMIT`] per drain) and [`HostEvent::Notification`] (at most
+/// [`crate::input_handler::NOTIFICATION_LIMIT`] per drain).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostEvent {
     /// Bytes to send back to the application: the UTF-8 of an upstream `onData` string, or one
@@ -66,6 +67,11 @@ pub enum HostEvent {
     CwdChanged(String),
     /// A progress report (OSC 9;4). Last wins within one drain.
     Progress(Progress),
+    /// A desktop-notification request: a plain OSC 9 message or `OSC 777;notify`. The text is
+    /// untrusted, unsanitised program output. Produced only with
+    /// [`crate::StandardExtensions::notifications`] on; at most
+    /// [`crate::input_handler::NOTIFICATION_LIMIT`] per drain.
+    Notification(Notification),
     /// A shell-integration mark (OSC 133). Exact: never merged or dropped.
     CommandMark(CommandMark),
     /// Synchronized output (`CSI ? 2026 h`) was turned on while a command was running (between
@@ -90,6 +96,14 @@ pub struct Progress {
     pub state: ProgressState,
     /// 0..=100.
     pub percent: u8,
+}
+
+/// A notification request (`OSC 9;<message>` or `OSC 777;notify;<title>;<body>`): raw, untrusted
+/// text, at most 4096 UTF-8 bytes in all. `title` is empty for OSC 9.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notification {
+    pub title: String,
+    pub body: String,
 }
 
 /// Which OSC 133 mark arrived.

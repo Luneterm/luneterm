@@ -43,6 +43,7 @@ pub fn standard_extensions() -> StandardExtensions {
         xtversion: Some("lune-vt-test".to_string()),
         vs16: false,
         clipboard_write: true,
+        notifications: true,
     }
 }
 

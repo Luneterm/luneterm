@@ -1174,6 +1174,7 @@ fn reference_grid(recorded: &[u8]) -> Result<(Grid, ViewportCursor), String> {
             xtversion: Some(spawn::xtversion()),
             vs16: true,
             clipboard_write: true,
+            notifications: true,
         })
         .map_err(|e| e.to_string())?;
     terminal.write(recorded);

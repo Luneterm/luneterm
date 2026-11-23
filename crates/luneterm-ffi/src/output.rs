@@ -334,9 +334,15 @@ fn put_data(pool: &mut Vec<u8>, event: &mut LunetermEvent, bytes: &[u8]) {
     pool.extend_from_slice(bytes);
 }
 
-fn convert_event(event: &HostEvent, slot: &mut EventsSlot) -> LunetermEvent {
+/// The C event of `event`, `None` for a host event the C ABI has no kind for. The only one is
+/// [`HostEvent::Notification`], which this library never produces: its engines are built with
+/// `StandardExtensions::notifications` off (D3 of the bell-notifications plan), so OSC 777 stays
+/// `UNKNOWN_OSC`. The arm is here so the match stays exhaustive, and so that an event of kind 0
+/// can never reach the host.
+fn convert_event(event: &HostEvent, slot: &mut EventsSlot) -> Option<LunetermEvent> {
     let mut out = LunetermEvent::default();
     match event {
+        HostEvent::Notification(_) => return None,
         HostEvent::Response(bytes) => {
             out.kind = LUNETERM_EVENT_RESPONSE;
             put_data(&mut slot.data, &mut out, bytes);
@@ -407,7 +413,7 @@ fn convert_event(event: &HostEvent, slot: &mut EventsSlot) -> LunetermEvent {
         }
         HostEvent::SyncUpdateInCommand => out.kind = LUNETERM_EVENT_SYNC_UPDATE_IN_COMMAND,
     }
-    out
+    Some(out)
 }
 
 /// Refills `slot` from `events` and returns the struct pointing into it.
@@ -416,8 +422,9 @@ fn flatten_events(events: &[HostEvent], slot: &mut EventsSlot) -> LunetermEvents
     slot.data.clear();
     slot.colors.clear();
     for event in events {
-        let converted = convert_event(event, slot);
-        slot.events.push(converted);
+        if let Some(converted) = convert_event(event, slot) {
+            slot.events.push(converted);
+        }
     }
     trim(&mut slot.events, ARRAY_FLOOR);
     trim(&mut slot.data, POOL_FLOOR);
@@ -1121,6 +1128,7 @@ mod tests {
                     xtversion: None,
                     vs16: unicode == LUNETERM_UNICODE_11_VS16,
                     clipboard_write: clipboard,
+                    notifications: false,
                 })
                 .expect("extensions");
             if unicode == LUNETERM_UNICODE_11 {
@@ -1238,6 +1246,8 @@ mod tests {
             HostEvent::Progress(_) => 12,
             HostEvent::CommandMark(_) => 13,
             HostEvent::SyncUpdateInCommand => 14,
+            // no C kind: 0 fails the `1..=14` check on `kinds` if one is ever produced
+            HostEvent::Notification(_) => 0,
         }
     }
 
@@ -1579,6 +1589,17 @@ mod tests {
             ),
             (9, 9999, 5, 0, 0)
         );
+        // notifications are off through the FFI: OSC 777 stays UNKNOWN_OSC, plain OSC 9 is silent
+        let (events, _, _) = run("\x1b]777;notify;a;b\x07");
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| (e.kind, e.value, e.value2, e.offset, e.len))
+                .collect::<Vec<_>>(),
+            [(9, 777, 10, 0, 0)]
+        );
+        let (events, _, _) = run("\x1b]9;hello\x07");
+        assert!(events.is_empty(), "{events:?}");
         let (events, _, _) = run("\x1b]9;4;2;77\x07");
         assert_eq!(
             (events[0].kind, events[0].value, events[0].value2),
