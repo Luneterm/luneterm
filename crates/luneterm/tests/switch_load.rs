@@ -277,6 +277,7 @@ fn draw(
         clipboard_read: false,
         page: None,
         menu: None,
+        inbox: None,
         busy: None,
         busy_tone: Tone::Neutral,
         grid_alpha: alphas.incoming,

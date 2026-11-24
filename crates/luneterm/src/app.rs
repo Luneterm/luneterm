@@ -64,20 +64,23 @@ use crate::input::{
 };
 use crate::links::{self, open::OpenError};
 use crate::menus::{self, MenuAction, MenuKind, MenuModel, TabOp};
-use crate::notices::{Admit, Inbox, TOAST_LIFE, ToastSlots, route};
+use crate::notices::{self, Admit, Inbox, TOAST_LIFE, ToastSlots, route};
 use crate::pacing::{self, EventKind, Pacer, PresentAsk};
 use crate::palettes;
 use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, snapshot,
 };
-use crate::render::{Content, FadingGrid, LinkTip, MenuDraw, Placed, Renderer};
+use crate::render::{Content, FadingGrid, InboxDraw, LinkTip, MenuDraw, Placed, Renderer};
 use crate::session::{
     Command, CopyResult, HostPalette, MAX_COPY_BYTES, Scroll, SelectCmd, Session, SessionConfig,
     UpdateModes, view_range,
 };
 use crate::settings::{Effect, Settings, effects};
 use crate::settings_page::{PageState, PageView, Section};
-use crate::shell::{self, HOST, Modal, ModalOut, ScrollView, StripTab, TAB_CLOSABLE, ThumbDrag};
+use crate::shell::{
+    self, HOST, InboxButton, InboxList, Modal, ModalOut, ScrollView, StripTab, TAB_CLOSABLE,
+    ThumbDrag,
+};
 use crate::spawn::{self, SpawnFailure};
 use crate::tabs::{
     ClosePlan, CwdCheck, CwdState, Message, PasteState, Tab, TabId, TabSet, confirm_message,
@@ -270,6 +273,18 @@ fn hear(
         }
     }
     heard
+}
+
+/// Whether the inbox list is open after a frame: a press on the button toggles it; Escape, a
+/// press outside, a focus loss (all `dismissed`), Clear all and a row press close it.
+fn inbox_open_after(was_open: bool, clicked: bool, out: Option<&shell::InboxOut>) -> bool {
+    if clicked {
+        return !was_open;
+    }
+    match out {
+        Some(o) if o.dismissed.is_some() || o.clear_all || o.clicked.is_some() => false,
+        _ => was_open,
+    }
 }
 
 /// Keeps the inbox true against the tab set (D13): rows of closed tabs go, and while the window is
@@ -756,6 +771,9 @@ struct App {
     /// Bells and program notifications, the one store behind the tab dots, the badge and the list.
     /// In memory only (D15).
     inbox: Inbox,
+    /// The inbox list is open (a popover under the header button). While it is, the toolkit has
+    /// the keyboard and the pointer, like an open menu.
+    inbox_open: bool,
     /// Messages that earned a toast in this pump; shown (or skipped by the slots) at its end.
     toast_candidates: Vec<ToastCandidate>,
     focused: bool,
@@ -836,6 +854,7 @@ impl App {
             thumb_drag: None,
             bell: BellLimiter::default(),
             inbox: Inbox::new(),
+            inbox_open: false,
             toast_candidates: Vec::new(),
             focused: false,
             efficiency,
@@ -1153,7 +1172,7 @@ impl App {
     /// Whether the keyboard and the pointer belong to the toolkit: a dialog, the settings page
     /// or an open menu is over the terminal.
     fn overlay_open(&self) -> bool {
-        self.modal.is_some() || self.page.is_some() || self.menu.is_some()
+        self.modal.is_some() || self.page.is_some() || self.menu.is_some() || self.inbox_open
     }
 
     /// Opens the settings page on `section` (the app menu's `About` opens the About section).
@@ -2162,6 +2181,14 @@ impl App {
         // Nothing between the pump and the frame changes the tabs, but the frame is what the user
         // sees: it never shows a row for a closed tab or an unread one for the tab in view.
         self.settle_inbox();
+        // The list closes with its last entry, and when a dialog, the page or a menu opens over it.
+        if self.inbox.is_empty()
+            || self.modal.is_some()
+            || self.page.is_some()
+            || self.menu.is_some()
+        {
+            self.inbox_open = false;
+        }
         // The hovered link: underlined, and while the modifier is held a hand. (Read before the
         // window and the renderer are borrowed.)
         let overlay = self.overlay_open();
@@ -2301,6 +2328,29 @@ impl App {
         {
             self.menu = None;
         }
+        // The inbox: its rows (while the list is open) from the sanitised entries, the tab names as
+        // they are now (D17), and the tab each row belongs to.
+        let inbox_now = input.time;
+        let inbox_rows: Vec<(TabId, shell::RowText)> = if self.inbox_open {
+            let tabs = &self.tabs;
+            shell::inbox_rows(&self.inbox, inbox_now, stack.renderer.strings(), |id| {
+                tabs.get(id).map(|t| t.strip_title().to_owned())
+            })
+        } else {
+            Vec::new()
+        };
+        let inbox_message_rows: Vec<_> = inbox_rows.iter().map(|(_, r)| r.row()).collect();
+        let inbox_unread = self.inbox.unread();
+        let inbox_badge = shell::badge_text(inbox_unread);
+        let (inbox_list_name, inbox_title, inbox_clear_all) = {
+            let strings = stack.renderer.strings();
+            (
+                strings.tr("inbox.name").to_owned(),
+                strings.tr("inbox.title").to_owned(),
+                strings.tr("inbox.clearAll").to_owned(),
+            )
+        };
+        let inbox_name = shell::inbox_button_name(&inbox_list_name, inbox_unread);
         let menu_model = self
             .menu
             .map(|m| (m, MenuModel::new(m.kind, stack.renderer.strings(), macos)));
@@ -2398,6 +2448,19 @@ impl App {
                 place: m.place,
                 name: menu_name.as_deref().unwrap_or(""),
             }),
+            inbox: (!self.inbox.is_empty()).then(|| InboxDraw {
+                button: InboxButton {
+                    name: &inbox_name,
+                    badge: inbox_badge.as_deref(),
+                    open: self.inbox_open,
+                },
+                list: self.inbox_open.then(|| InboxList {
+                    name: &inbox_list_name,
+                    title: &inbox_title,
+                    clear_all: &inbox_clear_all,
+                    rows: &inbox_message_rows,
+                }),
+            }),
             busy: busy.then_some(outline_cue).flatten(),
             busy_tone: busy_tone.unwrap_or_default(),
             grid_alpha: alphas.incoming,
@@ -2413,6 +2476,7 @@ impl App {
         let mut out = drawn.output;
         let (tab_events, modal_out) = (drawn.tab_events, drawn.modal);
         let (page_out, menu_out, overflow) = (drawn.page, drawn.menu, drawn.overflow);
+        let (inbox_clicked, inbox_out) = (drawn.inbox_clicked, drawn.inbox);
         let tab_context = drawn.tab_context;
         // Closing the window is closing every tab: it asks like they do.
         let close_asked = out
@@ -2489,6 +2553,7 @@ impl App {
                 }
             }
         }
+        self.on_inbox(inbox_clicked, inbox_out, &inbox_rows, inbox_now, event_loop);
         if let Some(ctx) = tab_context {
             self.menu = Some(OpenMenu {
                 kind: MenuKind::Tab {
@@ -2533,6 +2598,50 @@ impl App {
             .is_some_and(|s| s.renderer.gpu.is_lost())
         {
             self.rebuild(event_loop);
+        }
+    }
+
+    /// What the frame's inbox button and list asked. `rows` are the tabs of the rows the list
+    /// drew, in order. A press on the button toggles the list; a row press activates its tab (the
+    /// strip-click path) and closes it, its rows turn read at the next settle; Clear all empties
+    /// the inbox; Escape, a press outside and a focus loss closed it in the toolkit already.
+    fn on_inbox(
+        &mut self,
+        clicked: bool,
+        out: Option<shell::InboxOut>,
+        rows: &[(TabId, shell::RowText)],
+        now: Duration,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let was_open = self.inbox_open;
+        let open = inbox_open_after(was_open, clicked, out.as_ref());
+        if let Some(out) = out {
+            if out.clear_all {
+                self.inbox.clear();
+            } else if let Some((tab, _)) = out.clicked.and_then(|i| rows.get(i))
+                && self.tabs.get(*tab).is_some()
+            {
+                self.tab_event(TabEvent::Activate(TabKey(*tab)), event_loop);
+            }
+        }
+        if open && !was_open {
+            // The list covers the terminal: what belonged to its pointer is dropped, a menu closes.
+            self.menu = None;
+            self.pointer_left_terminal();
+        }
+        self.inbox_open = open && !self.inbox.is_empty();
+        if self.inbox_open != was_open {
+            self.request_redraw();
+        }
+        // The age labels change on the minute (the hour, the day): one frame for the next change.
+        if self.inbox_open
+            && let Some(next) = self
+                .inbox
+                .entries()
+                .map(|n| notices::next_change(now.saturating_sub(n.at)))
+                .min()
+        {
+            self.ask_frame(now + next);
         }
     }
 
@@ -3129,6 +3238,7 @@ impl App {
                     tab.set_focus(*focused);
                 }
                 if !focused {
+                    self.inbox_open = false;
                     self.tip_hidden = true;
                     // Every press of ours ends here, the program's too: the window may never
                     // see the release.
@@ -4172,6 +4282,48 @@ mod tests {
             "a candidate per message; the toast slots decide"
         );
         assert!(h.recorded);
+    }
+
+    #[test]
+    fn the_inbox_list_opens_on_the_button_and_closes_on_each_way_out() {
+        use lune_ui::ui::Dismissal;
+        let out = |dismissed, clicked, clear_all| shell::InboxOut {
+            rect: Rect::new(0.0, 0.0, 360.0, 100.0),
+            dismissed,
+            clicked,
+            clear_all,
+        };
+        // The button toggles.
+        assert!(inbox_open_after(false, true, None));
+        assert!(!inbox_open_after(true, true, Some(&out(None, None, false))));
+        // Nothing asked: it stays as it is.
+        assert!(inbox_open_after(true, false, Some(&out(None, None, false))));
+        assert!(!inbox_open_after(false, false, None));
+        // Escape, an outside press, a focus loss, a row press, Clear all.
+        for dismissal in [
+            Dismissal::Escape,
+            Dismissal::OutsidePress,
+            Dismissal::FocusLoss,
+        ] {
+            assert!(!inbox_open_after(
+                true,
+                false,
+                Some(&out(Some(dismissal), None, false))
+            ));
+        }
+        assert!(!inbox_open_after(
+            true,
+            false,
+            Some(&out(None, Some(0), false))
+        ));
+        assert!(!inbox_open_after(true, false, Some(&out(None, None, true))));
+        // An outside press on the button itself, in the one frame: it stays closed (the button
+        // toggled it shut, the dismissal agrees).
+        assert!(!inbox_open_after(
+            true,
+            true,
+            Some(&out(Some(Dismissal::OutsidePress), None, false))
+        ));
     }
 
     #[test]

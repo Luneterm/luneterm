@@ -1244,6 +1244,7 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
             clipboard_read: false,
             page: None,
             menu: None,
+            inbox: None,
             busy: None,
             busy_tone: lune_ui::widgets::tone::Tone::Neutral,
             grid_alpha: 1.0,
