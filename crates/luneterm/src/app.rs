@@ -64,6 +64,7 @@ use crate::input::{
 };
 use crate::links::{self, open::OpenError};
 use crate::menus::{self, MenuAction, MenuKind, MenuModel, TabOp};
+use crate::notices::{Inbox, route};
 use crate::pacing::{self, EventKind, Pacer, PresentAsk};
 use crate::palettes;
 use crate::persist::{
@@ -79,7 +80,8 @@ use crate::settings_page::{PageState, PageView, Section};
 use crate::shell::{self, HOST, Modal, ModalOut, ScrollView, StripTab, TAB_CLOSABLE, ThumbDrag};
 use crate::spawn::{self, SpawnFailure};
 use crate::tabs::{
-    ClosePlan, CwdCheck, CwdState, PasteState, Tab, TabId, TabSet, confirm_message, plan_close,
+    ClosePlan, CwdCheck, CwdState, Message, PasteState, Tab, TabId, TabSet, confirm_message,
+    plan_close,
 };
 use crate::title::DEFAULT_TITLE;
 
@@ -206,6 +208,76 @@ impl BellLimiter {
         self.last = Some(now);
         true
     }
+}
+
+/// A message that earned a toast (D6): the tab it came from and its sanitised text. The toast step
+/// consumes them; until then `pump` drops them at its end.
+#[allow(dead_code)] // read by the toast step
+struct ToastCandidate {
+    tab: TabId,
+    title: String,
+    body: String,
+}
+
+/// What `hear` found in one tab's Update.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Heard {
+    /// A row was recorded: the badge, a dot or the list changed.
+    recorded: bool,
+    /// A bell or an accepted message wants the OS attention request (the limiter still decides).
+    attention: bool,
+}
+
+/// Routes one tab's bells and messages through the D6 table into the inbox. `messages_on` is the
+/// "Notifications from programs" setting: off, the messages change nothing at all; bells are not
+/// affected. Message texts are already sanitised (`Tab::apply`). Toast candidates are appended to
+/// `candidates`. Nothing here logs or formats text.
+#[allow(clippy::too_many_arguments)]
+fn hear(
+    inbox: &mut Inbox,
+    candidates: &mut Vec<ToastCandidate>,
+    tab: TabId,
+    bells: u32,
+    messages: Vec<Message>,
+    focused: bool,
+    active: bool,
+    messages_on: bool,
+    now: Duration,
+) -> Heard {
+    let mut heard = Heard::default();
+    if bells > 0 {
+        let r = route(true, focused, active);
+        if r.record {
+            inbox.bell(tab, bells, now);
+            heard.recorded = true;
+        }
+        heard.attention |= r.os_attention;
+    }
+    if messages_on {
+        for m in messages {
+            let r = route(false, focused, active);
+            heard.attention |= r.os_attention;
+            if r.record {
+                inbox.message(tab, m.title.clone(), m.body.clone(), now);
+                heard.recorded = true;
+            }
+            if r.toast {
+                candidates.push(ToastCandidate {
+                    tab,
+                    title: m.title,
+                    body: m.body,
+                });
+            }
+        }
+    }
+    heard
+}
+
+/// Keeps the inbox true against the tab set (D13): rows of closed tabs go, and while the window is
+/// focused the active tab has nothing unread. One call covers every way the active tab changes or
+/// a tab closes. Returns whether anything changed.
+fn settle_inbox<T>(inbox: &mut Inbox, tabs: &TabSet<T>, focused: bool) -> bool {
+    inbox.settle(tabs.active(), focused, |id| tabs.get(id).is_some())
 }
 
 /// The termview cursor of the engine's. A pending wrap puts the column one past the last; the cursor
@@ -663,6 +735,11 @@ struct App {
     wheel: WheelState,
     thumb_drag: Option<ThumbDrag>,
     bell: BellLimiter,
+    /// Bells and program notifications, the one store behind the tab dots, the badge and the list.
+    /// In memory only (D15).
+    inbox: Inbox,
+    /// Messages that earned a toast in this pump; dropped at its end until the toast step.
+    toast_candidates: Vec<ToastCandidate>,
     focused: bool,
     /// Efficiency mode in the background (UI thread only; every child creation runs inside its
     /// `lifted`).
@@ -738,6 +815,8 @@ impl App {
             wheel: WheelState::default(),
             thumb_drag: None,
             bell: BellLimiter::default(),
+            inbox: Inbox::new(),
+            toast_candidates: Vec::new(),
             focused: false,
             efficiency,
             start: Instant::now(),
@@ -1815,7 +1894,7 @@ impl App {
         }
         let mut worth_a_frame = false;
         let mut exited = Vec::new();
-        for (id, fx) in seen {
+        for (id, mut fx) in seen {
             worth_a_frame |= Some(id) == active || fx.chrome;
             if fx.palette
                 && Some(id) == active
@@ -1823,7 +1902,19 @@ impl App {
             {
                 stack.renderer.set_term_theme(tab.theme.clone());
             }
-            if fx.bells > 0
+            let heard = hear(
+                &mut self.inbox,
+                &mut self.toast_candidates,
+                id,
+                fx.bells,
+                std::mem::take(&mut fx.messages),
+                self.focused,
+                Some(id) == active,
+                self.settings.osc_notifications,
+                self.start.elapsed(),
+            );
+            worth_a_frame |= heard.recorded;
+            if heard.attention
                 && self.bell.due(Instant::now(), self.focused)
                 && let Some(win) = &self.win
             {
@@ -1892,9 +1983,18 @@ impl App {
             self.modal = None;
             worth_a_frame = true;
         }
+        // The toast step turns these into toasts; until then they are dropped.
+        self.toast_candidates.clear();
+        // The one place that keeps the inbox true (D13), after every change of the tab set.
+        worth_a_frame |= self.settle_inbox();
         // An update hid the hovered link's cells; show the link again if it is still there.
         self.refresh_hover_after_output();
         worth_a_frame
+    }
+
+    /// `settle_inbox` on the app's own state.
+    fn settle_inbox(&mut self) -> bool {
+        settle_inbox(&mut self.inbox, &self.tabs, self.focused)
     }
 
     /// When a waiting new tab gives up on its directory check.
@@ -1948,6 +2048,9 @@ impl App {
         if event_loop.exiting() || self.tabs.is_empty() {
             return;
         }
+        // Nothing between the pump and the frame changes the tabs, but the frame is what the user
+        // sees: it never shows a row for a closed tab or an unread one for the tab in view.
+        self.settle_inbox();
         // The hovered link: underlined, and while the modifier is held a hand. (Read before the
         // window and the renderer are borrowed.)
         let overlay = self.overlay_open();
@@ -3786,6 +3889,182 @@ mod tests {
         assert_eq!(b.tick(t0 + ms(5001), false), None);
         assert!(b.on());
         assert_eq!(b, Blink::default());
+    }
+
+    fn msg(title: &str, body: &str) -> Message {
+        Message {
+            title: title.to_owned(),
+            body: body.to_owned(),
+        }
+    }
+
+    /// `hear` over a fresh inbox: (inbox, candidates, heard).
+    fn heard(
+        bells: u32,
+        messages: Vec<Message>,
+        focused: bool,
+        active: bool,
+        on: bool,
+    ) -> (Inbox, Vec<ToastCandidate>, Heard) {
+        let mut inbox = Inbox::new();
+        let mut cands = Vec::new();
+        let h = hear(
+            &mut inbox,
+            &mut cands,
+            7,
+            bells,
+            messages,
+            focused,
+            active,
+            on,
+            Duration::from_secs(1),
+        );
+        (inbox, cands, h)
+    }
+
+    #[test]
+    fn a_bell_is_routed_by_focus_and_by_whether_its_tab_is_active() {
+        // focused, active: nothing.
+        let (i, c, h) = heard(1, vec![], true, true, true);
+        assert!(i.is_empty() && c.is_empty());
+        assert_eq!(h, Heard::default());
+        // focused, other tab: a row, no attention, no toast.
+        let (i, c, h) = heard(2, vec![], true, false, true);
+        assert_eq!((i.unread(), i.tab_unread(7), c.len()), (1, 1, 0));
+        assert_eq!(i.entries().next().map(|n| n.count), Some(2));
+        assert_eq!(
+            h,
+            Heard {
+                recorded: true,
+                attention: false
+            }
+        );
+        // unfocused, active: attention only.
+        let (i, _, h) = heard(1, vec![], false, true, true);
+        assert!(i.is_empty());
+        assert_eq!(
+            h,
+            Heard {
+                recorded: false,
+                attention: true
+            }
+        );
+        // unfocused, other tab: row and attention.
+        let (i, c, h) = heard(1, vec![], false, false, true);
+        assert_eq!((i.unread(), c.len()), (1, 0));
+        assert_eq!(
+            h,
+            Heard {
+                recorded: true,
+                attention: true
+            }
+        );
+        // No bell: nothing, whatever the state.
+        let (i, _, h) = heard(0, vec![], false, false, true);
+        assert!(i.is_empty());
+        assert_eq!(h, Heard::default());
+    }
+
+    #[test]
+    fn a_message_is_routed_by_the_d6_table_and_only_a_background_focused_one_earns_a_toast() {
+        let m = || vec![msg("T", "B")];
+        let (i, c, h) = heard(0, m(), true, true, true);
+        assert!(i.is_empty() && c.is_empty());
+        assert_eq!(h, Heard::default());
+        let (i, c, h) = heard(0, m(), true, false, true);
+        assert_eq!((i.unread(), c.len()), (1, 1));
+        assert_eq!(
+            (c[0].tab, c[0].title.as_str(), c[0].body.as_str()),
+            (7, "T", "B")
+        );
+        assert!(h.recorded && !h.attention);
+        let (i, c, h) = heard(0, m(), false, true, true);
+        assert!(i.is_empty() && c.is_empty());
+        assert!(!h.recorded && h.attention);
+        let (i, c, h) = heard(0, m(), false, false, true);
+        assert_eq!((i.unread(), c.len()), (1, 0));
+        assert!(h.recorded && h.attention);
+    }
+
+    #[test]
+    fn with_the_setting_off_messages_change_nothing_and_bells_still_work() {
+        for (focused, active) in [(true, true), (true, false), (false, true), (false, false)] {
+            let (i, c, h) = heard(0, vec![msg("T", "B"), msg("", "x")], focused, active, false);
+            assert!(i.is_empty() && c.is_empty(), "{focused} {active}");
+            assert_eq!(h, Heard::default());
+        }
+        // A bell next to messages is the same with the setting on or off.
+        let off = heard(1, vec![msg("T", "B")], false, false, false);
+        let on_bell_only = heard(1, vec![], false, false, true);
+        assert_eq!(off.2, on_bell_only.2);
+        assert_eq!(off.0.len(), on_bell_only.0.len());
+    }
+
+    #[test]
+    fn several_messages_and_a_bell_in_one_update_are_all_recorded() {
+        let (i, c, h) = heard(
+            3,
+            vec![msg("a", "1"), msg("a", "1"), msg("", "2")],
+            true,
+            false,
+            true,
+        );
+        // A bell row, one coalesced message row (x2) and a title-less one.
+        assert_eq!(i.len(), 3);
+        assert_eq!(
+            c.len(),
+            3,
+            "a candidate per message; the toast slots decide"
+        );
+        assert!(h.recorded);
+    }
+
+    #[test]
+    fn settle_keeps_the_inbox_true_after_every_way_the_tabs_change() {
+        let mut tabs: TabSet<()> = TabSet::new();
+        let a = tabs.push(());
+        let b = tabs.push(());
+        let c = tabs.push(());
+        tabs.activate(a);
+        let mut inbox = Inbox::new();
+        let now = Duration::from_secs(1);
+        for t in [a, b, c] {
+            inbox.bell(t, 1, now);
+        }
+        // Focused: the active tab's row is read, the others stay.
+        assert!(settle_inbox(&mut inbox, &tabs, true));
+        assert_eq!(
+            (
+                inbox.tab_unread(a),
+                inbox.tab_unread(b),
+                inbox.tab_unread(c)
+            ),
+            (0, 1, 1)
+        );
+        assert!(
+            !settle_inbox(&mut inbox, &tabs, true),
+            "nothing more to change"
+        );
+        // Each way of switching: the new active tab reads at the next settle.
+        tabs.activate(b);
+        assert!(settle_inbox(&mut inbox, &tabs, true));
+        assert_eq!(inbox.tab_unread(b), 0);
+        tabs.activate_step(1);
+        settle_inbox(&mut inbox, &tabs, true);
+        assert_eq!(tabs.active(), Some(c));
+        assert_eq!(inbox.tab_unread(c), 0);
+        assert_eq!(inbox.unread(), 0);
+        // Unfocused: a bell for the active tab stays unread until focus returns.
+        inbox.bell(c, 1, now);
+        assert!(!settle_inbox(&mut inbox, &tabs, false));
+        assert_eq!(inbox.tab_unread(c), 1);
+        assert!(settle_inbox(&mut inbox, &tabs, true));
+        assert_eq!(inbox.tab_unread(c), 0);
+        // A closed tab's rows go.
+        inbox.bell(a, 1, now);
+        tabs.close(a);
+        assert!(settle_inbox(&mut inbox, &tabs, true));
+        assert!(inbox.entries().all(|n| n.tab != a));
     }
 
     #[test]
