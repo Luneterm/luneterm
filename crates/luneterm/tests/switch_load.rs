@@ -235,6 +235,7 @@ fn draw(
             id: i as TabId,
             title: t,
             progress: None,
+            attention: false,
         })
         .collect();
     let mut grid = None;
@@ -276,6 +277,7 @@ fn draw(
         clipboard_read: false,
         page: None,
         menu: None,
+        inbox: None,
         busy: None,
         busy_tone: Tone::Neutral,
         grid_alpha: alphas.incoming,

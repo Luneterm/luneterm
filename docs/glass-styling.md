@@ -12,7 +12,7 @@ missing or unknown value reads as `luneterm`), under every glass style: Luneterm
 look, Lunegit is the layer stack below. The glass style picks only the OS material, and its
 `default` follows the theme: `near_black::MATERIAL` for Luneterm, `Material::Vibrancy` (light
 vibrancy, acrylic on Windows) for Lunegit; the liquid styles and Off are the same under both. The
-near-black look is luneui-rs's `near_black` (landed at luneui-rs `5be5dbe`; the pin is now luneui v0.7.6 (`https://github.com/lune-rs/luneui`, renamed from luneui-rs),
+near-black look is luneui-rs's `near_black` (landed at luneui-rs `5be5dbe`; the pin is now luneui v0.8.0 (`https://github.com/lune-rs/luneui`, renamed from luneui-rs),
 `crates/lune-ui-core/src/theme/near_black.rs`, the user-approved test build), as one value:
 
 | What | Value |
@@ -30,6 +30,14 @@ at `#161616`, not the light grey the earlier note feared (that note read the lay
 without the opaque backdrop under it). The glass does not depend on the window's active state, so the look is the same
 active and inactive. The dialog card uses the theme's `menu_glass` (as menus do), frosted over an unblurred scrim (its blur of what is under it is luneui D411, since v0.7.3); it is judged
 on the near-black dumps.
+
+The notification toast and the inbox list are luneui surfaces too, both introduced by luneui v0.8.0
+(the pin; `docs/architecture.md` "Bell and notifications"): the toast is luneui's `Toasts` card in the
+card's bottom-right corner, 22 px in, and the list is a `Ui::popover` under the header bell button.
+Both fill from the theme's `menu_glass` like the menus, so the Theme and Window opacity settings move
+them with the menus, and Luneterm draws no colour of its own for them: the amber of the tab dot, the
+toast's bell and the header bell is the theme's `attention()` (luneui's warn). On the opaque look they are
+opaque (`opaque-toast@2x.png`, `opaque-inbox@2x.png` hold alpha 255 everywhere in the dump test).
 
 ## Layer stack (back to front)
 

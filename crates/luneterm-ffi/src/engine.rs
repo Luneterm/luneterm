@@ -105,6 +105,8 @@ impl Settings {
                 xtversion,
                 vs16: config.unicode == LUNETERM_UNICODE_11_VS16,
                 clipboard_write: config.clipboard_write != 0,
+                // D3: the C ABI has no notification event; OSC 777 stays UNKNOWN_OSC
+                notifications: false,
             },
         })
     }

@@ -23,6 +23,7 @@ use lune_ui::paint::Rect;
 use lune_ui::text::TextRendering;
 use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
+use lune_ui::widgets::toast::Toasts;
 use lune_ui::widgets::tone::Tone;
 
 use crate::app::failure_grid;
@@ -30,10 +31,14 @@ use crate::demo::{demo_cursor, demo_grid};
 use crate::fonts;
 use crate::links;
 use crate::menus::{MenuKind, MenuModel};
-use crate::render::{Content, LinkTip, MenuDraw, Renderer};
+use crate::notices::{Admit, Inbox, TOAST_LIFE, ToastSlots};
+use crate::render::{Content, InboxDraw, LinkTip, MenuDraw, Renderer};
 use crate::settings::{Settings, Theme};
 use crate::settings_page::{PageState, PageView, Section};
-use crate::shell::{HOST, Layout, Modal, ScrollView, StripTab, TAB_CLOSABLE};
+use crate::shell::{
+    HOST, InboxButton, InboxList, Layout, Modal, NoticeTexts, ScrollView, StripTab, TAB_CLOSABLE,
+    notice_toast,
+};
 use crate::spawn::SpawnFailure;
 use crate::tabs::confirm_message;
 
@@ -50,6 +55,94 @@ enum Overlay {
     Confirm(usize),
     /// The rename dialog with this text in its field.
     Rename(&'static str),
+}
+
+/// One notice a scene's inbox receives, for the tab at this index (the real `Inbox` calls, so the
+/// strip's cue comes from the same rule the app uses).
+#[derive(Debug, Clone, Copy)]
+enum SceneNotice {
+    Bell(usize),
+    Message(usize, &'static str, &'static str),
+}
+
+/// A scene whose inbox holds more than a few notices: how it is filled (the real `Inbox` calls,
+/// with explicit times; tab `n` is the scene's `n`-th tab, counted from 1), whether the list is
+/// open, how far it is scrolled (wheel lines at its middle), and whether the bell is mid-ring: how
+/// long before the scene's last frame the ring started (the last frame is the picture).
+#[derive(Debug, Clone, Copy)]
+struct InboxScene {
+    fill: fn(&mut Inbox),
+    open: bool,
+    scroll: f32,
+    ring_ago_ms: Option<u64>,
+}
+
+/// The clock of the inbox scenes: the entries' ages are counted from here.
+const INBOX_NOW: Duration = Duration::from_secs(100_000);
+
+/// The mockup's four rows: a message from `claude` now, two bells from `cargo build` 2 min ago, an
+/// older message from `claude`, and an OSC 777 `Build finished` from `colors` an hour ago that is
+/// read (the tab was looked at: `settle` on it, as the app does).
+fn fill_four(inbox: &mut Inbox) {
+    let ago = |secs: u64| INBOX_NOW - Duration::from_secs(secs);
+    inbox.message(
+        3,
+        "Claude Code".to_owned(),
+        "Claude is waiting for your input".to_owned(),
+        ago(540),
+    );
+    inbox.message(4, "Build finished".to_owned(), String::new(), ago(3600));
+    inbox.bell(2, 2, ago(120));
+    inbox.message(
+        3,
+        "Claude Code".to_owned(),
+        "Claude needs your permission to use Bash".to_owned(),
+        ago(0),
+    );
+    inbox.settle(Some(4), true, |_| true);
+}
+
+/// The mockup's four rows, every one read: each tab looked at once through `settle`, as the app does
+/// (the bell goes back to the plain one).
+fn fill_read(inbox: &mut Inbox) {
+    fill_four(inbox);
+    for tab in 1..=4 {
+        inbox.settle(Some(tab), true, |_| true);
+    }
+    assert_eq!(inbox.unread(), 0);
+}
+
+/// 50 rows: a list that scrolls, with an 80-character title and a 240-character body in it.
+fn fill_long(inbox: &mut Inbox) {
+    // Exact lengths: the caps of D9 (title 80, body 240) are what a program can send at most.
+    let exact = |text: &str, n: usize| -> String { text.chars().cycle().take(n).collect() };
+    let title80 = exact(
+        "A program title that is far too long for one line of the list. ",
+        80,
+    );
+    let body240 = exact(
+        "A message body that runs on and on: it is wrapped to two lines under its title and cut with an ellipsis, so that no row grows past what the panel can show, whatever the program printed. ",
+        240,
+    );
+    assert_eq!(
+        (title80.chars().count(), body240.chars().count()),
+        (80, 240)
+    );
+    for i in 0..50u64 {
+        let at = INBOX_NOW - Duration::from_secs(i * 420);
+        let tab = i % 4 + 1;
+        let (title, body) = match i {
+            10 => (title80.clone(), "A short body".to_owned()),
+            11 => ("Claude Code".to_owned(), body240.clone()),
+            _ if i % 3 == 0 => (String::new(), format!("Build {i} finished: 1342 passed")),
+            _ => (
+                "Claude Code".to_owned(),
+                format!("Claude needs your permission to run command {i}"),
+            ),
+        };
+        inbox.message(tab, title, body, at);
+    }
+    inbox.settle(Some(4), true, |_| true);
 }
 
 /// The settings page a scene shows.
@@ -142,6 +235,15 @@ struct Scene {
     /// A URL on the demo grid under the pointer: underlined, and its tooltip once the delay has
     /// passed.
     link: Option<LinkScene>,
+    /// What the inbox holds: the strip cues the tabs with unread entries that are not active.
+    notices: &'static [SceneNotice],
+    /// Each message of `notices` also earns a notification toast, pushed through the app's own
+    /// path (the slots, then `notice_toast`).
+    toasts: bool,
+    /// The tab (index) that shows an OSC 9;4 progress report, if any.
+    progress: Option<usize>,
+    /// A full inbox (the header button, and the list when open); the clock is [`INBOX_NOW`].
+    inbox: Option<InboxScene>,
 }
 
 /// 200 lines of history above a 35-line screen, scrolled to the middle: the thumb shows.
@@ -158,6 +260,18 @@ const MANY: &[&str] = &[
 ];
 const LONG: &[&str] =
     &["A tab title far longer than the widest tab the strip will ever draw for it, 80 chars!!"];
+
+const ATTENTION: &[SceneNotice] = &[
+    SceneNotice::Bell(1),
+    SceneNotice::Message(2, "Claude Code", "Claude needs your permission to use Bash"),
+];
+
+const TOAST: &[SceneNotice] = &[SceneNotice::Message(
+    2,
+    "Claude Code",
+    "Claude needs your permission to use Bash",
+)];
+const TOAST_PLAIN: &[SceneNotice] = &[SceneNotice::Message(2, "", "Build finished: 1342 passed")];
 
 const BASE: Scene = Scene {
     name: "",
@@ -176,6 +290,10 @@ const BASE: Scene = Scene {
     script: &[],
     selected: false,
     link: None,
+    notices: &[],
+    toasts: false,
+    progress: None,
+    inbox: None,
 };
 
 const fn page(section: Section) -> Option<PageScene> {
@@ -194,7 +312,7 @@ const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
-const SCENES: [Scene; 38] = [
+const SCENES: [Scene; 51] = [
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -451,7 +569,142 @@ const SCENES: [Scene; 38] = [
         overlay: Overlay::Confirm(1),
         ..BASE
     },
+    // The attention cue: the second and third tabs have unread entries (a bell, a message), the
+    // third also reports progress; the active first tab shows none.
+    Scene {
+        name: "tabs-attention@2x.png",
+        tabs: FOUR,
+        notices: ATTENTION,
+        progress: Some(2),
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-attention@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        notices: ATTENTION,
+        progress: Some(2),
+        ..BASE
+    },
+    // The notification toast: a message from the third tab while the first is in view (the
+    // third also shows its dot); the toast sits in the card's corner.
+    Scene {
+        name: "toast@2x.png",
+        tabs: FOUR,
+        notices: TOAST,
+        toasts: true,
+        ..BASE
+    },
+    // An OSC 9 message has no title: the header names the tab, then the message.
+    Scene {
+        name: "toast-plain@2x.png",
+        tabs: FOUR,
+        notices: TOAST_PLAIN,
+        toasts: true,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-toast@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        notices: TOAST,
+        toasts: true,
+        ..BASE
+    },
+    Scene {
+        name: "opaque-toast@2x.png",
+        tabs: FOUR,
+        glass: false,
+        notices: TOAST,
+        toasts: true,
+        ..BASE
+    },
+    // The inbox: the header bell (the list closed), and the list open with the mockup's four rows,
+    // long and many rows scrolled, in both looks and the opaque one; then the bell with everything
+    // read, and the bell 83 ms into its ring.
+    Scene {
+        name: "inbox-button@2x.png",
+        tabs: FOUR,
+        inbox: Some(InboxScene {
+            fill: fill_four,
+            open: false,
+            scroll: 0.0,
+            ring_ago_ms: None,
+        }),
+        ..BASE
+    },
+    Scene {
+        name: "inbox@2x.png",
+        tabs: FOUR,
+        inbox: Some(InboxScene {
+            fill: fill_four,
+            open: true,
+            scroll: 0.0,
+            ring_ago_ms: None,
+        }),
+        ..BASE
+    },
+    Scene {
+        name: "inbox-long@2x.png",
+        tabs: FOUR,
+        inbox: Some(InboxScene {
+            fill: fill_long,
+            open: true,
+            scroll: -8.0,
+            ring_ago_ms: None,
+        }),
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-inbox@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        inbox: Some(InboxScene {
+            fill: fill_four,
+            open: true,
+            scroll: 0.0,
+            ring_ago_ms: None,
+        }),
+        ..BASE
+    },
+    Scene {
+        name: "opaque-inbox@2x.png",
+        tabs: FOUR,
+        glass: false,
+        inbox: Some(InboxScene {
+            fill: fill_four,
+            open: true,
+            scroll: 0.0,
+            ring_ago_ms: None,
+        }),
+        ..BASE
+    },
+    Scene {
+        name: "inbox-read@2x.png",
+        tabs: FOUR,
+        inbox: Some(InboxScene {
+            fill: fill_read,
+            open: false,
+            scroll: 0.0,
+            ring_ago_ms: None,
+        }),
+        ..BASE
+    },
+    Scene {
+        name: "inbox-ring@2x.png",
+        tabs: FOUR,
+        inbox: Some(InboxScene {
+            fill: fill_four,
+            open: false,
+            scroll: 0.0,
+            ring_ago_ms: Some(RING_SCENE_AGO_MS),
+        }),
+        ..BASE
+    },
 ];
+
+/// How long before the last frame the ring scene's ring started: the first peak of the swing.
+const RING_SCENE_AGO_MS: u64 = 83;
 
 /// The menu rows' area for a scene: the app menu hangs from the `⋯` button, the terminal's
 /// opens at a point on the demo grid.
@@ -572,16 +825,59 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     // The strip's tabs: ids are the places, so a scene's tabs are the same every run.
     let labelled = !scene.tabs.is_empty();
     let titles: &[&str] = if labelled { scene.tabs } else { &["Terminal"] };
+    let active = scene.active.min(titles.len().saturating_sub(1));
+    let mut inbox = Inbox::new();
+    for notice in scene.notices {
+        match *notice {
+            SceneNotice::Bell(i) => inbox.bell(i as u64 + 1, 1, Duration::ZERO),
+            SceneNotice::Message(i, title, body) => inbox.message(
+                i as u64 + 1,
+                title.to_owned(),
+                body.to_owned(),
+                Duration::ZERO,
+            ),
+        }
+    }
+    if let Some(i) = scene.inbox {
+        (i.fill)(&mut inbox);
+    }
     let strip: Vec<StripTab<'_>> = titles
         .iter()
         .enumerate()
         .map(|(i, title)| StripTab {
             id: i as u64 + 1,
             title,
-            progress: None,
+            progress: (scene.progress == Some(i)).then_some(Tone::Neutral),
+            attention: inbox.tab_unread(i as u64 + 1) > 0 && i != active,
         })
         .collect();
-    let active = scene.active.min(strip.len().saturating_sub(1));
+    // The toasts, through the app's path: the slots admit, `notice_toast` builds, the slots are told.
+    let strings = crate::strings::english();
+    let inbox_rows = crate::shell::inbox_rows(&inbox, INBOX_NOW, &strings, |id| {
+        titles.get(id as usize - 1).map(|t| (*t).to_owned())
+    });
+    let inbox_message_rows: Vec<_> = inbox_rows.iter().map(|(_, r)| r.row()).collect();
+    let inbox_open = scene.inbox.is_some_and(|i| i.open);
+    let inbox_name = crate::shell::inbox_button_name(strings.tr("inbox.name"), inbox.unread());
+    let mut inbox_rect: Option<Rect> = None;
+    let mut toasts = Toasts::default();
+    let mut slots: ToastSlots<_, Rect> = ToastSlots::new();
+    if scene.toasts {
+        let texts = NoticeTexts::of(&strings);
+        let accent = r.theme().attention();
+        for notice in scene.notices {
+            let SceneNotice::Message(i, title, body) = *notice else {
+                continue;
+            };
+            let tab = i as u64 + 1;
+            let Admit::New { .. } = slots.admit(tab, Duration::ZERO) else {
+                return Err("a scene toast was not admitted".to_owned());
+            };
+            let (spec, extras) = notice_toast(titles[i], title, body, &texts, accent, TOAST_LIFE);
+            let id = toasts.push_with(spec, extras, Duration::ZERO);
+            slots.shown(id, tab, Duration::ZERO);
+        }
+    }
     let label = labelled.then(|| titles[active]);
     let message = match scene.overlay {
         Overlay::Confirm(n) => confirm_message(n),
@@ -601,7 +897,6 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         end: (4, 30),
         kind: SelectionKind::Linear,
     }];
-    let strings = crate::strings::english();
     let mut model = match scene.menu {
         MenuScene::None => None,
         MenuScene::App => Some(MenuModel::new(
@@ -638,6 +933,18 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             events.push(Event::PointerMoved {
                 pos: (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0),
             });
+        }
+        // The list scrolled: the wheel at its middle, once it has been drawn.
+        if let (Some(i), Some(rect)) = (scene.inbox, inbox_rect)
+            && k == 2
+            && i.scroll != 0.0
+        {
+            events.push(Event::PointerMoved {
+                pos: (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0),
+            });
+            events.extend(
+                Input::Wheel(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0, i.scroll).events(),
+            );
         }
         let input = RawInput {
             size: SIZE,
@@ -679,7 +986,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
                     url,
                     key: 1,
                 }),
-            toasts: None,
+            toasts: scene.toasts.then_some(&mut toasts),
             cursor,
             blink_on: true,
             scroll: scene.scroll,
@@ -700,6 +1007,25 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
                 place,
                 name: strings.tr(m.name_key()),
             }),
+            inbox: scene.inbox.map(|_| InboxDraw {
+                button: InboxButton {
+                    name: &inbox_name,
+                    unread: inbox.unread() > 0,
+                    // Explicit times: the ring began before the last frame, and only that frame
+                    // is the picture (the earlier ones draw the plain yellow bell).
+                    ring: scene.inbox.and_then(|i| i.ring_ago_ms).and_then(|ago| {
+                        let last = *FRAME_TIMES_MS.last().unwrap_or(&0);
+                        (*ms == last).then(|| Duration::from_millis(last - ago))
+                    }),
+                    open: inbox_open,
+                },
+                list: inbox_open.then(|| InboxList {
+                    name: strings.tr("inbox.name"),
+                    title: strings.tr("inbox.title"),
+                    clear_all: strings.tr("inbox.clearAll"),
+                    rows: &inbox_message_rows,
+                }),
+            }),
             busy: None,
             busy_tone: Tone::Neutral,
             grid_alpha: 1.0,
@@ -717,6 +1043,10 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             ));
             place = MenuPlace::At(ctx.at);
         }
+        if let Some(out) = drawn.inbox {
+            inbox_rect = Some(out.rect);
+        }
+        slots.sync(toasts.live(), input.time, |id| toasts.is_live(id));
         r.gpu.end_frame(&mut r.text);
     }
     let rgba = read_rgba(&r.gpu.device, &r.gpu.queue, &texture)?;
@@ -868,7 +1198,7 @@ mod tests {
                 .iter()
                 .filter(|(p, _)| p.to_string_lossy().contains("opaque"))
                 .count(),
-            6
+            8
         );
         let first: Vec<PathBuf> = gated.into_iter().map(|(p, _)| p).collect();
         let second = dump_frames(&b).expect("second dump");

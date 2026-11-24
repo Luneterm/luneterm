@@ -22,7 +22,8 @@ use super::host::{ColorState, window_report};
 use super::selection::{CopyResult, SelectCmd, Selection};
 use super::threads::{Stats, WriteKind, WriteQueue};
 use super::update::{
-    Exit, ForegroundState, LINK_URIS_CAP, MARKS_CAP, MAX_LINK_URI, Update, UpdateModes, to_cell,
+    Exit, ForegroundState, LINK_URIS_CAP, MARKS_CAP, MAX_LINK_URI, NOTIFICATIONS_CAP, Update,
+    UpdateModes, to_cell,
 };
 use super::{Command, Geometry, MAX_COPY_BYTES, MAX_SCROLLBACK, Scroll, SessionConfig};
 use crate::outline::{CommandState, CommandTracker};
@@ -101,6 +102,8 @@ struct Acc {
     cwd: Option<String>,
     progress: Option<lune_vt::Progress>,
     marks: VecDeque<lune_vt::CommandMark>,
+    /// Raw notification text (at most `NOTIFICATIONS_CAP`, the oldest dropped).
+    notifications: VecDeque<lune_vt::Notification>,
     sync_in_command: bool,
     foreground: Option<ForegroundState>,
     command: Option<CommandState>,
@@ -123,6 +126,7 @@ impl Acc {
             || self.cwd.is_some()
             || self.progress.is_some()
             || !self.marks.is_empty()
+            || !self.notifications.is_empty()
             || self.sync_in_command
             || self.foreground.is_some()
             || self.command.is_some()
@@ -259,6 +263,7 @@ pub(crate) fn build_terminal(config: &SessionConfig) -> io::Result<Terminal> {
             xtversion: Some(config.xtversion.clone()),
             vs16: true,
             clipboard_write: config.clipboard_write,
+            notifications: true,
         })
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
     Ok(terminal)
@@ -744,6 +749,12 @@ impl EngineCore {
                     self.acc.sync_in_command = true;
                     self.tracker.sync_update();
                 }
+                HostEvent::Notification(note) => {
+                    if self.acc.notifications.len() >= NOTIFICATIONS_CAP {
+                        self.acc.notifications.pop_front();
+                    }
+                    self.acc.notifications.push_back(note);
+                }
                 // Dropped, never logged (I16).
                 HostEvent::A11yText(_) | HostEvent::A11yTab(_) | HostEvent::UnknownOsc { .. } => {}
             }
@@ -954,6 +965,7 @@ impl EngineCore {
             cwd: acc.cwd,
             progress: acc.progress,
             marks: acc.marks.into(),
+            notifications: acc.notifications.into(),
             sync_update_in_command: acc.sync_in_command,
             foreground: acc.foreground,
             command: acc.command,

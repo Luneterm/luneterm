@@ -9,7 +9,10 @@
 //! clamped to 0 to 100; later fields are ignored. A payload over [`MAX_PAYLOAD_BYTES`] bytes is
 //! discarded whole (Lunegit's 64-byte body, less the `9;` the parser has consumed).
 //!
-//! The other OSC 9 forms belong to the cwd handler (`9;9;`) or are consumed without effect.
+//! The other OSC 9 forms belong to the cwd handler (`9;9;`) or, with
+//! [`crate::StandardExtensions::notifications`] on, to the notification handler (`osc_notify.rs`:
+//! a plain message is an event, the other numbered forms are ignored); with it off they are
+//! consumed without effect.
 
 use crate::engine::{HostEvent, Progress, ProgressState};
 use crate::input_handler::InputHandler;

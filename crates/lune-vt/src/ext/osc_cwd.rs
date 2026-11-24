@@ -379,8 +379,9 @@ impl OscHandler<InputHandler> for Osc7Handler {
 }
 
 /// OSC 9 whose payload starts `9;`: the ConEmu / Windows Terminal cwd. Any other OSC 9 form is
-/// left to the other OSC 9 handlers (9;4 progress); the unknown-OSC report does not run for a
-/// registered identifier, so forms nobody owns produce nothing.
+/// left to the other OSC 9 handlers (9;4 progress, and the notification handler when
+/// `StandardExtensions::notifications` is on); the unknown-OSC report does not run for a
+/// registered identifier, so a form nobody owns produces nothing.
 struct Osc99Handler {
     payload: BoundedPayload,
 }

@@ -44,6 +44,7 @@ pub mod keyboard_protocol;
 pub mod osc52;
 mod osc_command;
 mod osc_cwd;
+mod osc_notify;
 mod osc_progress;
 mod unknown_osc;
 pub mod vs16;
@@ -59,6 +60,8 @@ mod osc52_tests;
 mod osc_command_tests;
 #[cfg(test)]
 mod osc_cwd_tests;
+#[cfg(test)]
+mod osc_notify_tests;
 #[cfg(test)]
 mod osc_progress_tests;
 #[cfg(test)]
@@ -86,6 +89,11 @@ pub struct StandardExtensions {
     /// The host can flip it at any time ([`crate::Terminal::set_clipboard_write`]). Queries are
     /// never answered either way.
     pub clipboard_write: bool,
+    /// Register the notification handlers (`ext/osc_notify.rs`): a plain OSC 9 message and
+    /// `OSC 777;notify;<title>;<body>` become [`crate::HostEvent::Notification`]. `false` (the
+    /// default): nothing is registered, so OSC 777 stays an [`crate::HostEvent::UnknownOsc`] and
+    /// a plain OSC 9 produces nothing, as before.
+    pub notifications: bool,
 }
 
 /// Why [`crate::Terminal::install_standard_extensions`] refused.
@@ -164,6 +172,7 @@ impl ExtState {
 /// The extension [`install`] registers: every handler of the standard set on one parser.
 struct StandardSet {
     xtversion: Option<String>,
+    notifications: bool,
 }
 
 impl Extension<InputHandler> for StandardSet {
@@ -180,6 +189,11 @@ impl Extension<InputHandler> for StandardSet {
         }
         keyboard_protocol::register(parser)?;
         osc52::register(parser);
+        if self.notifications {
+            // before the cwd and progress handlers: newer handlers run first and a form they do
+            // not own passes on to this one
+            osc_notify::register(parser);
+        }
         osc_cwd::register(parser);
         osc_progress::register(parser);
         osc_command::register(parser)?;
@@ -214,6 +228,7 @@ pub(crate) fn install(
     }
     StandardSet {
         xtversion: config.xtversion.clone(),
+        notifications: config.notifications,
     }
     .register(parser)?;
     Ok(())

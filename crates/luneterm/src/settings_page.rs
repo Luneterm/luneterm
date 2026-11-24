@@ -258,6 +258,11 @@ static TERMINAL: [Group; 3] = [
                 "settings.terminal.behavior.oscClipboard",
             ),
             row(
+                SettingId::OscNotifications,
+                Control::Toggle,
+                "settings.terminal.behavior.oscNotifications",
+            ),
+            row(
                 SettingId::OptionAsMeta,
                 Control::Toggle,
                 "settings.terminal.behavior.optionAsMeta",
@@ -528,6 +533,7 @@ pub fn flag(settings: &Settings, id: SettingId) -> Option<bool> {
         SettingId::OscClipboard => settings.osc_clipboard,
         SettingId::OptionAsMeta => settings.option_as_meta,
         SettingId::CopyOnSelect => settings.copy_on_select,
+        SettingId::OscNotifications => settings.osc_notifications,
         SettingId::EfficiencyMode => settings.efficiency_mode,
         _ => return None,
     })
@@ -546,6 +552,7 @@ pub fn set_flag(settings: &mut Settings, id: SettingId, on: bool) {
         SettingId::OscClipboard => settings.osc_clipboard = on,
         SettingId::OptionAsMeta => settings.option_as_meta = on,
         SettingId::CopyOnSelect => settings.copy_on_select = on,
+        SettingId::OscNotifications => settings.osc_notifications = on,
         SettingId::EfficiencyMode => settings.efficiency_mode = on,
         _ => {}
     }
@@ -1440,6 +1447,7 @@ mod tests {
             SettingId::OscClipboard,
             SettingId::OptionAsMeta,
             SettingId::CopyOnSelect,
+            SettingId::OscNotifications,
             SettingId::EfficiencyMode,
         ] {
             let mut s = Settings::default();

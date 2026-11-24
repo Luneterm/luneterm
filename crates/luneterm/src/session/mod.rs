@@ -35,8 +35,8 @@ pub use selection::{
     drag_scroll_amount, edge_of, selection_text, view_range,
 };
 pub use update::{
-    Exit, ForegroundState, LINK_URIS_CAP, MARKS_CAP, MAX_LINK_URI, Update, UpdateModes,
-    apply_update,
+    Exit, ForegroundState, LINK_URIS_CAP, MARKS_CAP, MAX_LINK_URI, NOTIFICATIONS_CAP, Update,
+    UpdateModes, apply_update,
 };
 
 use engine::{EngineCore, RealClock, build_terminal};

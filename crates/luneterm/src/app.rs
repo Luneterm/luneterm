@@ -43,8 +43,8 @@ use lune_ui::paint::Rect;
 use lune_ui::surface::{Acquired, SurfaceOptions, WindowSurface};
 use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
-use lune_ui::widgets::tab_strip::TabEvent;
-use lune_ui::widgets::toast::{ToastKind, ToastSpec, Toasts};
+use lune_ui::widgets::tab_strip::{TabEvent, TabKey};
+use lune_ui::widgets::toast::{ToastId, ToastKind, ToastSpec, Toasts};
 use lune_ui::widgets::tone::Tone;
 use lune_ui::window::glass_attributes;
 use lune_vt::{
@@ -64,22 +64,27 @@ use crate::input::{
 };
 use crate::links::{self, open::OpenError};
 use crate::menus::{self, MenuAction, MenuKind, MenuModel, TabOp};
+use crate::notices::{self, Admit, DrawnRows, Inbox, PressClock, TOAST_LIFE, ToastSlots, route};
 use crate::pacing::{self, EventKind, Pacer, PresentAsk};
 use crate::palettes;
 use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, snapshot,
 };
-use crate::render::{Content, FadingGrid, LinkTip, MenuDraw, Placed, Renderer};
+use crate::render::{Content, FadingGrid, InboxDraw, LinkTip, MenuDraw, Placed, Renderer};
 use crate::session::{
     Command, CopyResult, HostPalette, MAX_COPY_BYTES, Scroll, SelectCmd, Session, SessionConfig,
     UpdateModes, view_range,
 };
 use crate::settings::{Effect, Settings, effects};
 use crate::settings_page::{PageState, PageView, Section};
-use crate::shell::{self, HOST, Modal, ModalOut, ScrollView, StripTab, TAB_CLOSABLE, ThumbDrag};
+use crate::shell::{
+    self, HOST, InboxButton, InboxList, Modal, ModalOut, ScrollView, StripTab, TAB_CLOSABLE,
+    ThumbDrag,
+};
 use crate::spawn::{self, SpawnFailure};
 use crate::tabs::{
-    ClosePlan, CwdCheck, CwdState, PasteState, Tab, TabId, TabSet, confirm_message, plan_close,
+    ClosePlan, CwdCheck, CwdState, Message, PasteState, Tab, TabId, TabSet, confirm_message,
+    plan_close,
 };
 use crate::title::DEFAULT_TITLE;
 
@@ -206,6 +211,127 @@ impl BellLimiter {
         self.last = Some(now);
         true
     }
+}
+
+/// A message that earned a toast (D6): the tab it came from and its sanitised text. `pump` turns
+/// them into toasts at its end (`show_notice_toasts`).
+struct ToastCandidate {
+    tab: TabId,
+    title: String,
+    body: String,
+}
+
+/// What `hear` found in one tab's Update.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Heard {
+    /// A row was recorded: the bell, a dot or the list changed.
+    recorded: bool,
+    /// A bell or an accepted message wants the OS attention request (the limiter still decides).
+    attention: bool,
+}
+
+/// Routes one tab's bells and messages through the D6 table into the inbox. `messages_on` is the
+/// "Notifications from programs" setting: off, the messages change nothing at all; bells are not
+/// affected. Message texts are already sanitised (`Tab::apply`). Toast candidates are appended to
+/// `candidates`. Nothing here logs or formats text.
+#[allow(clippy::too_many_arguments)]
+fn hear(
+    inbox: &mut Inbox,
+    candidates: &mut Vec<ToastCandidate>,
+    tab: TabId,
+    bells: u32,
+    messages: Vec<Message>,
+    focused: bool,
+    active: bool,
+    messages_on: bool,
+    now: Duration,
+) -> Heard {
+    let mut heard = Heard::default();
+    if bells > 0 {
+        let r = route(true, focused, active);
+        if r.record {
+            inbox.bell(tab, bells, now);
+            heard.recorded = true;
+        }
+        heard.attention |= r.os_attention;
+    }
+    if messages_on {
+        for m in messages {
+            let r = route(false, focused, active);
+            heard.attention |= r.os_attention;
+            if r.record {
+                inbox.message(tab, m.title.clone(), m.body.clone(), now);
+                heard.recorded = true;
+            }
+            if r.toast {
+                candidates.push(ToastCandidate {
+                    tab,
+                    title: m.title,
+                    body: m.body,
+                });
+            }
+        }
+    }
+    heard
+}
+
+/// The start of the bell's last ring after a tab's Update was heard (D19): a new ring begins at
+/// `now` when a row was recorded in a focused window and the last ring began [`shell::RING_GAP`]
+/// ago or more; an unfocused window never starts one, and arrivals inside the gap change nothing.
+fn ring_after(
+    last: Option<Duration>,
+    recorded: bool,
+    focused: bool,
+    now: Duration,
+) -> Option<Duration> {
+    if recorded && focused && shell::ring_due(last, now) {
+        Some(now)
+    } else {
+        last
+    }
+}
+
+/// The ring the button is handed for a frame at `now`: the start of the last ring while anything is
+/// unread, the window is focused and the ring has not run its [`shell::RING_LEN`] out.
+fn ring_for_frame(
+    start: Option<Duration>,
+    unread: usize,
+    focused: bool,
+    now: Duration,
+) -> Option<Duration> {
+    start.filter(|s| unread > 0 && focused && now < *s + shell::RING_LEN)
+}
+
+/// Whether the inbox list is open after a frame: a press on the button toggles it; Escape, a
+/// press outside, a focus loss (all `dismissed`), Clear all and a row press close it.
+fn inbox_open_after(was_open: bool, clicked: bool, out: Option<&shell::InboxOut>) -> bool {
+    if clicked {
+        return !was_open;
+    }
+    match out {
+        Some(o) if o.dismissed.is_some() || o.clear_all || o.clicked.is_some() => false,
+        _ => was_open,
+    }
+}
+
+/// Keeps the inbox true against the tab set (D13): rows of closed tabs go, and while the window is
+/// focused the active tab has nothing unread. One call covers every way the active tab changes or
+/// a tab closes. Returns whether anything changed.
+fn settle_inbox<T>(inbox: &mut Inbox, tabs: &TabSet<T>, focused: bool) -> bool {
+    inbox.settle(tabs.active(), focused, |id| tabs.get(id).is_some())
+}
+
+/// Whether `pos` is inside one of `rects` (the toasts of the last drawn frame).
+fn over_any(rects: &[Rect], pos: (f32, f32)) -> bool {
+    rects.iter().any(|r| r.contains(pos))
+}
+
+/// Whether the pointer at `pos` is the terminal's: inside the body and under no toast. Every
+/// pointer path into the terminal (press, move report, selection start, link hover, the context
+/// menu, the wheel) asks this; a drag that began in the terminal does not (it keeps its capture
+/// across a toast).
+fn terminal_hit(body: Rect, toasts: &[Rect], pos: (f32, f32)) -> bool {
+    body.contains(pos) && !over_any(toasts, pos)
 }
 
 /// The termview cursor of the engine's. A pending wrap puts the column one past the last; the cursor
@@ -660,9 +786,31 @@ struct App {
     pending_link: Option<PendingLink>,
     clicks: ClickCounter,
     toasts: Toasts,
+    /// The notification toasts that are up (one per tab, three in all) and when each may take a
+    /// press; learned from every drawn frame (`sync_toasts`).
+    toast_slots: ToastSlots<ToastId, Rect>,
+    /// Where the toasts were in the last drawn frame: the pointer is theirs there, not the
+    /// terminal's.
+    toast_rects: Vec<Rect>,
+    /// When the pointer's latest primary press was: a toast button or an inbox row is judged at
+    /// the press, not at the frame that reports the click (D14).
+    press_clock: PressClock,
+    /// The inbox rows the last frame drew and since when (a row press acts only on a still list).
+    inbox_drawn: DrawnRows,
     wheel: WheelState,
     thumb_drag: Option<ThumbDrag>,
     bell: BellLimiter,
+    /// Bells and program notifications, the one store behind the tab dots, the bell and the list.
+    /// In memory only (D15).
+    inbox: Inbox,
+    /// When the bell's last ring started (the `start.elapsed()` clock): the next ring waits
+    /// [`shell::RING_GAP`] after it (D19).
+    inbox_ring: Option<Duration>,
+    /// The inbox list is open (a popover under the header button). While it is, the toolkit has
+    /// the keyboard and the pointer, like an open menu.
+    inbox_open: bool,
+    /// Messages that earned a toast in this pump; shown (or skipped by the slots) at its end.
+    toast_candidates: Vec<ToastCandidate>,
     focused: bool,
     /// Efficiency mode in the background (UI thread only; every child creation runs inside its
     /// `lifted`).
@@ -735,9 +883,17 @@ impl App {
             pending_link: None,
             clicks: ClickCounter::default(),
             toasts: Toasts::default(),
+            toast_slots: ToastSlots::new(),
+            toast_rects: Vec::new(),
+            press_clock: PressClock::default(),
+            inbox_drawn: DrawnRows::default(),
             wheel: WheelState::default(),
             thumb_drag: None,
             bell: BellLimiter::default(),
+            inbox: Inbox::new(),
+            inbox_ring: None,
+            inbox_open: false,
+            toast_candidates: Vec::new(),
             focused: false,
             efficiency,
             start: Instant::now(),
@@ -1054,7 +1210,7 @@ impl App {
     /// Whether the keyboard and the pointer belong to the toolkit: a dialog, the settings page
     /// or an open menu is over the terminal.
     fn overlay_open(&self) -> bool {
-        self.modal.is_some() || self.page.is_some() || self.menu.is_some()
+        self.modal.is_some() || self.page.is_some() || self.menu.is_some() || self.inbox_open
     }
 
     /// Opens the settings page on `section` (the app menu's `About` opens the About section).
@@ -1167,6 +1323,8 @@ impl App {
             Effect::Outline | Effect::ConfirmClose => {}
             // Read on each mouse-up that ends a selection (step 2).
             Effect::CopyOnSelect => {}
+            // Nothing to do live: `pump` reads the field (step 5).
+            Effect::OscNotifications => {}
             Effect::Efficiency => self
                 .efficiency
                 .set_enabled(self.settings.efficiency_mode, Instant::now()),
@@ -1813,7 +1971,7 @@ impl App {
         }
         let mut worth_a_frame = false;
         let mut exited = Vec::new();
-        for (id, fx) in seen {
+        for (id, mut fx) in seen {
             worth_a_frame |= Some(id) == active || fx.chrome;
             if fx.palette
                 && Some(id) == active
@@ -1821,7 +1979,21 @@ impl App {
             {
                 stack.renderer.set_term_theme(tab.theme.clone());
             }
-            if fx.bells > 0
+            let now = self.start.elapsed();
+            let heard = hear(
+                &mut self.inbox,
+                &mut self.toast_candidates,
+                id,
+                fx.bells,
+                std::mem::take(&mut fx.messages),
+                self.focused,
+                Some(id) == active,
+                self.settings.osc_notifications,
+                now,
+            );
+            worth_a_frame |= heard.recorded;
+            self.inbox_ring = ring_after(self.inbox_ring, heard.recorded, self.focused, now);
+            if heard.attention
                 && self.bell.due(Instant::now(), self.focused)
                 && let Some(win) = &self.win
             {
@@ -1890,9 +2062,110 @@ impl App {
             self.modal = None;
             worth_a_frame = true;
         }
+        self.show_notice_toasts();
+        // The one place that keeps the inbox true (D13), after every change of the tab set.
+        worth_a_frame |= self.settle_inbox();
         // An update hid the hovered link's cells; show the link again if it is still there.
         self.refresh_hover_after_output();
         worth_a_frame
+    }
+
+    /// `settle_inbox` on the app's own state, and the toasts that settling makes pointless: the
+    /// toast of a tab that is closed or is the focused active tab leaves (what it said is read,
+    /// or its tab is gone, so it can never switch to it).
+    fn settle_inbox(&mut self) -> bool {
+        let mut changed = settle_inbox(&mut self.inbox, &self.tabs, self.focused);
+        let (tabs, focused) = (&self.tabs, self.focused);
+        let active = tabs.active();
+        let stale = self
+            .toast_slots
+            .drop_where(|tab| tabs.get(tab).is_none() || (focused && Some(tab) == active));
+        let now = self.start.elapsed();
+        for id in stale {
+            self.toasts.dismiss(id, now);
+            changed = true;
+        }
+        changed
+    }
+
+    /// Turns the pump's toast candidates into notification toasts through the slots: a new tab
+    /// gets a toast (the oldest goes when three are up), a tab that has one gets its text replaced
+    /// at most once a second, anything else only keeps its inbox row.
+    fn show_notice_toasts(&mut self) {
+        let candidates = std::mem::take(&mut self.toast_candidates);
+        if candidates.is_empty() {
+            return;
+        }
+        let Some(stack) = &self.stack else { return };
+        let texts = shell::NoticeTexts::of(stack.renderer.strings());
+        let accent = stack.renderer.theme().attention();
+        let now = self.start.elapsed();
+        for c in candidates {
+            let Some(tab) = self.tabs.get(c.tab) else {
+                continue;
+            };
+            // The tab's name as it is now (D17); the toast keeps it until its text is replaced.
+            let source = tab.strip_title().to_owned();
+            let (spec, extras) =
+                shell::notice_toast(&source, &c.title, &c.body, &texts, accent, TOAST_LIFE);
+            match self.toast_slots.admit(c.tab, now) {
+                Admit::New { evict } => {
+                    if let Some(old) = evict {
+                        self.toasts.dismiss(old, now);
+                        self.toast_slots.gone(old);
+                    }
+                    let id = self.toasts.push_with(spec, extras, now);
+                    self.toast_slots.shown(id, c.tab, now);
+                }
+                Admit::Replace(id) => {
+                    self.toasts.update_with(id, spec, extras);
+                    self.toast_slots.shown(id, c.tab, now);
+                }
+                Admit::Skip => {}
+            }
+        }
+    }
+
+    /// A button of a notification toast was clicked, pressed at `now` (the press, not the frame
+    /// that reports the release; the toast leaves with it). Dismiss only frees the slot. Go to tab
+    /// switches to the toast's tab only when the toast was drawn and had stood still for the arm
+    /// delay at the press (D14, `press_target`) and the tab
+    /// still exists; the inbox rows of that tab turn read at the next settle. Called before
+    /// `sync_toasts`, which would already have dropped the toast from the frame's list.
+    fn on_toast_action(
+        &mut self,
+        id: ToastId,
+        action: u64,
+        now: Duration,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let target = self
+            .toast_slots
+            .press_target(id, now)
+            .filter(|tab| self.tabs.get(*tab).is_some());
+        self.toast_slots.gone(id);
+        if action == shell::TOAST_GO_TO_TAB
+            && let Some(tab) = target
+        {
+            self.tab_event(TabEvent::Activate(TabKey(tab)), event_loop);
+        }
+        self.request_redraw();
+    }
+
+    /// Learns from the frame just drawn which toasts are up and where (D18): frees the slots of
+    /// those that left, restarts the arm of those that appeared or moved, and keeps the places
+    /// the pointer is kept off the terminal at.
+    fn sync_toasts(&mut self, now: Duration) {
+        let toasts = &self.toasts;
+        self.toast_slots
+            .sync(toasts.live(), now, |id| toasts.is_live(id));
+        let rects: Vec<Rect> = toasts.live().iter().map(|(_, r)| *r).collect();
+        if rects != self.toast_rects {
+            self.toast_rects = rects;
+            // A toast appearing under a still pointer hides the link hover there, and the other
+            // way round.
+            self.refresh_hover();
+        }
     }
 
     /// When a waiting new tab gives up on its directory check.
@@ -1945,6 +2218,17 @@ impl App {
         self.flush_settings(false);
         if event_loop.exiting() || self.tabs.is_empty() {
             return;
+        }
+        // Nothing between the pump and the frame changes the tabs, but the frame is what the user
+        // sees: it never shows a row for a closed tab or an unread one for the tab in view.
+        self.settle_inbox();
+        // The list closes with its last entry, and when a dialog, the page or a menu opens over it.
+        if self.inbox.is_empty()
+            || self.modal.is_some()
+            || self.page.is_some()
+            || self.menu.is_some()
+        {
+            self.inbox_open = false;
         }
         // The hovered link: underlined, and while the modifier is held a hand. (Read before the
         // window and the renderer are borrowed.)
@@ -2032,20 +2316,25 @@ impl App {
         }
 
         // The strip's tabs and the window's title, from the tabs as they are now.
-        let titles: Vec<(TabId, String, Option<Tone>)> = self
+        let active_tab = self.tabs.active();
+        // The cue (D2): an unread entry in a tab that is not the active one, focused or not.
+        let titles: Vec<(TabId, String, Option<Tone>, bool)> = self
             .tabs
             .iter()
-            .map(|(id, t)| (id, t.strip_title().to_owned(), t.progress_tone()))
+            .map(|(id, t)| {
+                let attention = self.inbox.tab_unread(id) > 0 && Some(id) != active_tab;
+                (id, t.strip_title().to_owned(), t.progress_tone(), attention)
+            })
             .collect();
         let strip: Vec<StripTab<'_>> = titles
             .iter()
-            .map(|(id, title, progress)| StripTab {
+            .map(|(id, title, progress, attention)| StripTab {
                 id: *id,
                 title,
                 progress: *progress,
+                attention: *attention,
             })
             .collect();
-        let active_tab = self.tabs.active();
         if let Some(t) = &mut self.trace {
             t.frame.slot0 = active_tab;
         }
@@ -2080,6 +2369,34 @@ impl App {
         {
             self.menu = None;
         }
+        // The inbox: its rows (while the list is open) from the sanitised entries, the tab names as
+        // they are now (D17), and the tab each row belongs to.
+        let inbox_now = input.time;
+        let inbox_rows: Vec<(TabId, shell::RowText)> = if self.inbox_open {
+            let tabs = &self.tabs;
+            shell::inbox_rows(&self.inbox, inbox_now, stack.renderer.strings(), |id| {
+                tabs.get(id).map(|t| t.strip_title().to_owned())
+            })
+        } else {
+            Vec::new()
+        };
+        let inbox_message_rows: Vec<_> = inbox_rows.iter().map(|(_, r)| r.row()).collect();
+        // The rows' ids, in the same order (`inbox_rows` maps every entry, in order).
+        let inbox_ids: Vec<u64> = if self.inbox_open {
+            self.inbox.entries().map(|n| n.id).collect()
+        } else {
+            Vec::new()
+        };
+        let inbox_unread = self.inbox.unread();
+        let (inbox_list_name, inbox_title, inbox_clear_all) = {
+            let strings = stack.renderer.strings();
+            (
+                strings.tr("inbox.name").to_owned(),
+                strings.tr("inbox.title").to_owned(),
+                strings.tr("inbox.clearAll").to_owned(),
+            )
+        };
+        let inbox_name = shell::inbox_button_name(&inbox_list_name, inbox_unread);
         let menu_model = self
             .menu
             .map(|m| (m, MenuModel::new(m.kind, stack.renderer.strings(), macos)));
@@ -2177,6 +2494,20 @@ impl App {
                 place: m.place,
                 name: menu_name.as_deref().unwrap_or(""),
             }),
+            inbox: (!self.inbox.is_empty()).then(|| InboxDraw {
+                button: InboxButton {
+                    name: &inbox_name,
+                    unread: inbox_unread > 0,
+                    ring: ring_for_frame(self.inbox_ring, inbox_unread, input.focused, input.time),
+                    open: self.inbox_open,
+                },
+                list: self.inbox_open.then(|| InboxList {
+                    name: &inbox_list_name,
+                    title: &inbox_title,
+                    clear_all: &inbox_clear_all,
+                    rows: &inbox_message_rows,
+                }),
+            }),
             busy: busy.then_some(outline_cue).flatten(),
             busy_tone: busy_tone.unwrap_or_default(),
             grid_alpha: alphas.incoming,
@@ -2192,6 +2523,7 @@ impl App {
         let mut out = drawn.output;
         let (tab_events, modal_out) = (drawn.tab_events, drawn.modal);
         let (page_out, menu_out, overflow) = (drawn.page, drawn.menu, drawn.overflow);
+        let (inbox_clicked, inbox_out) = (drawn.inbox_clicked, drawn.inbox);
         let tab_context = drawn.tab_context;
         // Closing the window is closing every tab: it asks like they do.
         let close_asked = out
@@ -2235,6 +2567,16 @@ impl App {
             self.ask_frame(b.saturating_duration_since(self.start));
         }
 
+        // The toasts first: a pressed button's toast is already gone from this frame's list, so
+        // its slot is read before the list frees it.
+        // A click is judged at its press (the toolkit reports it on the release).
+        let press = self.press_clock.moment(input.time);
+        let toast_acted = drawn.toast.action.is_some();
+        if let Some((id, action)) = drawn.toast.action {
+            self.on_toast_action(id, action, press, event_loop);
+        }
+        self.sync_toasts(input.time);
+
         // What the frame asked of the page, the menu, the tabs and the dialog, now that the
         // frame is out.
         if edited != self.settings {
@@ -2261,6 +2603,20 @@ impl App {
                 }
             }
         }
+        let row_acted = inbox_out.as_ref().is_some_and(|o| o.clicked.is_some());
+        self.on_inbox(
+            inbox_clicked,
+            inbox_out,
+            &inbox_ids,
+            press,
+            inbox_now,
+            event_loop,
+        );
+        self.inbox_drawn.drawn(&inbox_ids, input.time);
+        if toast_acted || row_acted {
+            self.press_clock.clear();
+        }
+        self.press_clock.frame_done();
         if let Some(ctx) = tab_context {
             self.menu = Some(OpenMenu {
                 kind: MenuKind::Tab {
@@ -2305,6 +2661,62 @@ impl App {
             .is_some_and(|s| s.renderer.gpu.is_lost())
         {
             self.rebuild(event_loop);
+        }
+    }
+
+    /// What the frame's inbox button and list asked. `ids` are the rows this frame built, in
+    /// order; `press` is when the click was pressed. A press on the button toggles the list; a row
+    /// press activates the tab of the row the previous frame drew at that index (the strip-click
+    /// path) and closes the list, only when that list had stood still for the arm delay at the press
+    /// and this frame changes nothing in it (D14, `DrawnRows::press_target`); otherwise the press
+    /// does nothing and the list stays. The activated tab's rows turn read at the next settle. Clear all empties the inbox; Escape, a press outside
+    /// and a focus loss closed it in the toolkit already.
+    fn on_inbox(
+        &mut self,
+        clicked: bool,
+        out: Option<shell::InboxOut>,
+        ids: &[u64],
+        press: Duration,
+        now: Duration,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let was_open = self.inbox_open;
+        let mut open = inbox_open_after(was_open, clicked, out.as_ref());
+        if let Some(out) = out {
+            if out.clear_all {
+                self.inbox.clear();
+            } else if let Some(i) = out.clicked {
+                match self
+                    .inbox_drawn
+                    .press_target(i, press, ids)
+                    .and_then(|id| self.inbox.tab_of(id))
+                    .filter(|tab| self.tabs.get(*tab).is_some())
+                {
+                    Some(tab) => self.tab_event(TabEvent::Activate(TabKey(tab)), event_loop),
+                    // Too soon after the rows changed: the press does nothing, the list stays.
+                    None if !clicked && out.dismissed.is_none() => open = was_open,
+                    None => {}
+                }
+            }
+        }
+        if open && !was_open {
+            // The list covers the terminal: what belonged to its pointer is dropped, a menu closes.
+            self.menu = None;
+            self.pointer_left_terminal();
+        }
+        self.inbox_open = open && !self.inbox.is_empty();
+        if self.inbox_open != was_open {
+            self.request_redraw();
+        }
+        // The age labels change on the minute (the hour, the day): one frame for the next change.
+        if self.inbox_open
+            && let Some(next) = self
+                .inbox
+                .entries()
+                .map(|n| notices::next_change(now.saturating_sub(n.at)))
+                .min()
+        {
+            self.ask_frame(now + next);
         }
     }
 
@@ -2425,7 +2837,13 @@ impl App {
     }
 
     fn over_body(&self, pos: (f32, f32)) -> bool {
-        self.placed.is_some_and(|p| p.layout.body.contains(pos))
+        self.placed
+            .is_some_and(|p| terminal_hit(p.layout.body, &self.toast_rects, pos))
+    }
+
+    /// Whether `pos` is over a toast of the last drawn frame: a toast has the pointer there.
+    fn over_toast(&self, pos: (f32, f32)) -> bool {
+        over_any(&self.toast_rects, pos)
     }
 
     /// Sends the report for `ev` at `pos`, if there is one. Returns whether it was sent.
@@ -2482,6 +2900,14 @@ impl App {
     }
 
     fn on_mouse_button(&mut self, state: ElementState, button: MouseButton) {
+        // Every primary press, the ones on a toast or the open list included (D14).
+        if button == MouseButton::Left {
+            if state.is_pressed() {
+                self.press_clock.press(self.start.elapsed());
+            } else {
+                self.press_clock.release();
+            }
+        }
         if state.is_pressed() {
             self.hide_tip();
         }
@@ -2506,6 +2932,7 @@ impl App {
         if button == MouseButton::Left {
             if state.is_pressed() {
                 if let Some(scroll) = self.scroll_view()
+                    && !self.over_toast(pos)
                     && shell::thumb_hit(placed.layout.body, placed.cell_h_logical(), scroll, pos)
                 {
                     self.thumb_drag = Some(ThumbDrag::start(pos.1));
@@ -2625,7 +3052,7 @@ impl App {
         let (Some(pos), Some(placed)) = (self.pointer.over(), self.placed) else {
             return;
         };
-        if !self.has_session() || !placed.layout.body.contains(pos) {
+        if !self.has_session() || !terminal_hit(placed.layout.body, &self.toast_rects, pos) {
             return;
         }
         let Some(delta) = wheel_delta(delta) else {
@@ -2894,6 +3321,8 @@ impl App {
                     tab.set_focus(*focused);
                 }
                 if !focused {
+                    self.inbox_open = false;
+                    self.press_clock.clear();
                     self.tip_hidden = true;
                     // Every press of ours ends here, the program's too: the window may never
                     // see the release.
@@ -3784,6 +4213,308 @@ mod tests {
         assert_eq!(b.tick(t0 + ms(5001), false), None);
         assert!(b.on());
         assert_eq!(b, Blink::default());
+    }
+
+    /// D19: a ring starts when a row was recorded in a focused window and the last one began 3 s
+    /// or more ago; never unfocused, never inside the gap, never without a recorded row.
+    #[test]
+    fn a_ring_starts_on_a_recorded_row_in_a_focused_window_outside_the_gap() {
+        let ms = Duration::from_millis;
+        let t = ms(10_000);
+        // Focused + recorded, no ring before: starts now.
+        assert_eq!(ring_after(None, true, true, t), Some(t));
+        // Unfocused: none, and the last start is kept.
+        assert_eq!(ring_after(None, true, false, t), None);
+        assert_eq!(ring_after(Some(ms(1)), true, false, t), Some(ms(1)));
+        // Nothing recorded: no change.
+        assert_eq!(ring_after(None, false, true, t), None);
+        // Inside the gap: the last start stays (the ring is not restarted).
+        assert_eq!(ring_after(Some(t), true, true, t + ms(2999)), Some(t));
+        // At the gap: a new ring.
+        assert_eq!(
+            ring_after(Some(t), true, true, t + ms(3000)),
+            Some(t + ms(3000))
+        );
+    }
+
+    /// The ring the button is handed: only while unread, focused and inside `RING_LEN`.
+    #[test]
+    fn the_button_is_handed_a_ring_only_while_unread_focused_and_inside_its_second() {
+        let ms = Duration::from_millis;
+        let s = Some(ms(5000));
+        assert_eq!(ring_for_frame(s, 3, true, ms(5000)), s);
+        assert_eq!(ring_for_frame(s, 3, true, ms(5999)), s);
+        assert_eq!(
+            ring_for_frame(s, 3, true, ms(6000)),
+            None,
+            "the ring is over"
+        );
+        assert_eq!(
+            ring_for_frame(s, 0, true, ms(5100)),
+            None,
+            "all read mid-ring"
+        );
+        assert_eq!(ring_for_frame(s, 3, false, ms(5100)), None, "unfocused");
+        assert_eq!(ring_for_frame(None, 3, true, ms(5100)), None);
+    }
+
+    /// The arrival path end to end through `hear` and the rule: a bell in a background tab of a
+    /// focused window rings; the same bell unfocused does not, and nothing is recorded for the
+    /// active tab.
+    #[test]
+    fn hear_then_the_rule_rings_for_a_background_bell_only() {
+        let now = Duration::from_secs(1);
+        let (_, _, h) = heard(1, vec![], true, false, true);
+        assert_eq!(ring_after(None, h.recorded, true, now), Some(now));
+        let (_, _, h) = heard(1, vec![], false, false, true);
+        assert!(h.recorded);
+        assert_eq!(ring_after(None, h.recorded, false, now), None);
+        let (_, _, h) = heard(1, vec![], true, true, true);
+        assert!(!h.recorded);
+        assert_eq!(ring_after(None, h.recorded, true, now), None);
+    }
+
+    fn msg(title: &str, body: &str) -> Message {
+        Message {
+            title: title.to_owned(),
+            body: body.to_owned(),
+        }
+    }
+
+    /// `hear` over a fresh inbox: (inbox, candidates, heard).
+    fn heard(
+        bells: u32,
+        messages: Vec<Message>,
+        focused: bool,
+        active: bool,
+        on: bool,
+    ) -> (Inbox, Vec<ToastCandidate>, Heard) {
+        let mut inbox = Inbox::new();
+        let mut cands = Vec::new();
+        let h = hear(
+            &mut inbox,
+            &mut cands,
+            7,
+            bells,
+            messages,
+            focused,
+            active,
+            on,
+            Duration::from_secs(1),
+        );
+        (inbox, cands, h)
+    }
+
+    #[test]
+    fn a_bell_is_routed_by_focus_and_by_whether_its_tab_is_active() {
+        // focused, active: nothing.
+        let (i, c, h) = heard(1, vec![], true, true, true);
+        assert!(i.is_empty() && c.is_empty());
+        assert_eq!(h, Heard::default());
+        // focused, other tab: a row, no attention, no toast.
+        let (i, c, h) = heard(2, vec![], true, false, true);
+        assert_eq!((i.unread(), i.tab_unread(7), c.len()), (1, 1, 0));
+        assert_eq!(i.entries().next().map(|n| n.count), Some(2));
+        assert_eq!(
+            h,
+            Heard {
+                recorded: true,
+                attention: false
+            }
+        );
+        // unfocused, active: attention only.
+        let (i, _, h) = heard(1, vec![], false, true, true);
+        assert!(i.is_empty());
+        assert_eq!(
+            h,
+            Heard {
+                recorded: false,
+                attention: true
+            }
+        );
+        // unfocused, other tab: row and attention.
+        let (i, c, h) = heard(1, vec![], false, false, true);
+        assert_eq!((i.unread(), c.len()), (1, 0));
+        assert_eq!(
+            h,
+            Heard {
+                recorded: true,
+                attention: true
+            }
+        );
+        // No bell: nothing, whatever the state.
+        let (i, _, h) = heard(0, vec![], false, false, true);
+        assert!(i.is_empty());
+        assert_eq!(h, Heard::default());
+    }
+
+    #[test]
+    fn a_point_under_a_toast_is_not_the_terminals_but_a_point_beside_it_is() {
+        let body = Rect::new(10.0, 40.0, 800.0, 500.0);
+        let toast = Rect::new(500.0, 400.0, 300.0, 100.0);
+        let other = Rect::new(500.0, 290.0, 300.0, 100.0);
+        // Inside the body, outside every toast: the terminal's.
+        assert!(terminal_hit(body, &[toast, other], (100.0, 100.0)));
+        assert!(terminal_hit(body, &[toast, other], (499.0, 450.0)));
+        // Inside a toast (any of them, its buttons included): no press, report, selection start,
+        // hover or wheel reaches the terminal.
+        assert!(!terminal_hit(body, &[toast, other], (600.0, 450.0)));
+        assert!(!terminal_hit(body, &[toast, other], (600.0, 300.0)));
+        // The rect's edges: left and top inside, right and bottom outside (the toolkit's rule).
+        assert!(!terminal_hit(body, &[toast], (500.0, 400.0)));
+        assert!(terminal_hit(body, &[toast], (800.0, 450.0)));
+        // Outside the body is never the terminal's, a toast or not.
+        assert!(!terminal_hit(body, &[], (5.0, 100.0)));
+        // No toast live: exactly the body test of before.
+        for pos in [(10.0, 40.0), (809.9, 539.9), (810.0, 300.0), (400.0, 540.0)] {
+            assert_eq!(terminal_hit(body, &[], pos), body.contains(pos), "{pos:?}");
+        }
+        assert!(over_any(&[toast], (600.0, 450.0)));
+        assert!(!over_any(&[], (600.0, 450.0)));
+    }
+
+    #[test]
+    fn a_message_is_routed_by_the_d6_table_and_only_a_background_focused_one_earns_a_toast() {
+        let m = || vec![msg("T", "B")];
+        let (i, c, h) = heard(0, m(), true, true, true);
+        assert!(i.is_empty() && c.is_empty());
+        assert_eq!(h, Heard::default());
+        let (i, c, h) = heard(0, m(), true, false, true);
+        assert_eq!((i.unread(), c.len()), (1, 1));
+        assert_eq!(
+            (c[0].tab, c[0].title.as_str(), c[0].body.as_str()),
+            (7, "T", "B")
+        );
+        assert!(h.recorded && !h.attention);
+        let (i, c, h) = heard(0, m(), false, true, true);
+        assert!(i.is_empty() && c.is_empty());
+        assert!(!h.recorded && h.attention);
+        let (i, c, h) = heard(0, m(), false, false, true);
+        assert_eq!((i.unread(), c.len()), (1, 0));
+        assert!(h.recorded && h.attention);
+    }
+
+    #[test]
+    fn with_the_setting_off_messages_change_nothing_and_bells_still_work() {
+        for (focused, active) in [(true, true), (true, false), (false, true), (false, false)] {
+            let (i, c, h) = heard(0, vec![msg("T", "B"), msg("", "x")], focused, active, false);
+            assert!(i.is_empty() && c.is_empty(), "{focused} {active}");
+            assert_eq!(h, Heard::default());
+        }
+        // A bell next to messages is the same with the setting on or off.
+        let off = heard(1, vec![msg("T", "B")], false, false, false);
+        let on_bell_only = heard(1, vec![], false, false, true);
+        assert_eq!(off.2, on_bell_only.2);
+        assert_eq!(off.0.len(), on_bell_only.0.len());
+    }
+
+    #[test]
+    fn several_messages_and_a_bell_in_one_update_are_all_recorded() {
+        let (i, c, h) = heard(
+            3,
+            vec![msg("a", "1"), msg("a", "1"), msg("", "2")],
+            true,
+            false,
+            true,
+        );
+        // A bell row, one coalesced message row (x2) and a title-less one.
+        assert_eq!(i.len(), 3);
+        assert_eq!(
+            c.len(),
+            3,
+            "a candidate per message; the toast slots decide"
+        );
+        assert!(h.recorded);
+    }
+
+    #[test]
+    fn the_inbox_list_opens_on_the_button_and_closes_on_each_way_out() {
+        use lune_ui::ui::Dismissal;
+        let out = |dismissed, clicked, clear_all| shell::InboxOut {
+            rect: Rect::new(0.0, 0.0, 360.0, 100.0),
+            dismissed,
+            clicked,
+            clear_all,
+        };
+        // The button toggles.
+        assert!(inbox_open_after(false, true, None));
+        assert!(!inbox_open_after(true, true, Some(&out(None, None, false))));
+        // Nothing asked: it stays as it is.
+        assert!(inbox_open_after(true, false, Some(&out(None, None, false))));
+        assert!(!inbox_open_after(false, false, None));
+        // Escape, an outside press, a focus loss, a row press, Clear all.
+        for dismissal in [
+            Dismissal::Escape,
+            Dismissal::OutsidePress,
+            Dismissal::FocusLoss,
+        ] {
+            assert!(!inbox_open_after(
+                true,
+                false,
+                Some(&out(Some(dismissal), None, false))
+            ));
+        }
+        assert!(!inbox_open_after(
+            true,
+            false,
+            Some(&out(None, Some(0), false))
+        ));
+        assert!(!inbox_open_after(true, false, Some(&out(None, None, true))));
+        // An outside press on the button itself, in the one frame: it stays closed (the button
+        // toggled it shut, the dismissal agrees).
+        assert!(!inbox_open_after(
+            true,
+            true,
+            Some(&out(Some(Dismissal::OutsidePress), None, false))
+        ));
+    }
+
+    #[test]
+    fn settle_keeps_the_inbox_true_after_every_way_the_tabs_change() {
+        let mut tabs: TabSet<()> = TabSet::new();
+        let a = tabs.push(());
+        let b = tabs.push(());
+        let c = tabs.push(());
+        tabs.activate(a);
+        let mut inbox = Inbox::new();
+        let now = Duration::from_secs(1);
+        for t in [a, b, c] {
+            inbox.bell(t, 1, now);
+        }
+        // Focused: the active tab's row is read, the others stay.
+        assert!(settle_inbox(&mut inbox, &tabs, true));
+        assert_eq!(
+            (
+                inbox.tab_unread(a),
+                inbox.tab_unread(b),
+                inbox.tab_unread(c)
+            ),
+            (0, 1, 1)
+        );
+        assert!(
+            !settle_inbox(&mut inbox, &tabs, true),
+            "nothing more to change"
+        );
+        // Each way of switching: the new active tab reads at the next settle.
+        tabs.activate(b);
+        assert!(settle_inbox(&mut inbox, &tabs, true));
+        assert_eq!(inbox.tab_unread(b), 0);
+        tabs.activate_step(1);
+        settle_inbox(&mut inbox, &tabs, true);
+        assert_eq!(tabs.active(), Some(c));
+        assert_eq!(inbox.tab_unread(c), 0);
+        assert_eq!(inbox.unread(), 0);
+        // Unfocused: a bell for the active tab stays unread until focus returns.
+        inbox.bell(c, 1, now);
+        assert!(!settle_inbox(&mut inbox, &tabs, false));
+        assert_eq!(inbox.tab_unread(c), 1);
+        assert!(settle_inbox(&mut inbox, &tabs, true));
+        assert_eq!(inbox.tab_unread(c), 0);
+        // A closed tab's rows go.
+        inbox.bell(a, 1, now);
+        tabs.close(a);
+        assert!(settle_inbox(&mut inbox, &tabs, true));
+        assert!(inbox.entries().all(|n| n.tab != a));
     }
 
     #[test]

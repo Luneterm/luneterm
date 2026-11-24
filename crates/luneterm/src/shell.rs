@@ -7,27 +7,36 @@
 //! card); the terminal's body sits under it, inset 10 px inside the card. The close-confirm and
 //! rename dialogs are drawn here too, on the modal layer.
 
+use std::time::Duration;
+
 use lune_termview::{CellMetrics, GridLayout};
 use lune_ui::chrome::CARD_RADIUS;
-use lune_ui::color::{premul, with_alpha};
+use lune_ui::color::{Rgba, premul, with_alpha};
 use lune_ui::icon;
 use lune_ui::input::{CursorIcon, Event, PointerButton, WindowCommand};
 use lune_ui::layout::Axis;
+use lune_ui::motion::MotionTier;
 use lune_ui::paint::Rect;
 use lune_ui::scene::LayerId;
 use lune_ui::text::{Spec, Style};
-use lune_ui::ui::{Sense, Ui};
-use lune_ui::widgets::button::IconButton;
+use lune_ui::ui::{Dismissal, Sense, Ui};
+use lune_ui::widgets::button::{IconButton, IconButtonExtras};
 use lune_ui::widgets::caption::{CaptionButton, CaptionOptions};
 use lune_ui::widgets::dialog::{Cancel, Dialog, DialogGlass, DialogOptions};
 use lune_ui::widgets::field::FieldOptions;
+use lune_ui::widgets::message_list::{self, HEADER_HEIGHT, MessageListOptions, MessageRow};
+use lune_ui::widgets::popover::{PlaceAlign, PopoverOptions, Side};
 use lune_ui::widgets::scrollbar::{self, ThumbGeometry, thumb_geometry};
 use lune_ui::widgets::tab_strip::{
-    self, BusyCue, Tab as StripItem, TabEvent, TabKey, TabStripOptions,
+    self, BusyCue, Tab as StripItem, TabEvent, TabKey, TabStripExtras, TabStripOptions,
 };
-use lune_ui::widgets::toast::Toasts;
+use lune_ui::widgets::toast::{
+    ToastAction, ToastExtras, ToastKind, ToastResponse, ToastSpec, ToastStackOptions, Toasts,
+};
 use lune_ui::widgets::tone::Tone;
 use lune_ui::window::{ResizeEdge, edge_at};
+
+use crate::notices::{self, Age, Inbox, NoticeKind};
 
 /// The title band's height.
 pub const TITLE_BAND: f32 = 34.0;
@@ -46,6 +55,25 @@ pub const STRIP_HEIGHT: f32 = tab_strip::HEIGHT;
 pub const STRIP_RESERVE: f32 = 40.0;
 /// The `⋯` button: 24 px square, 32 px from the card's right edge and 4 px under its top.
 pub const OVERFLOW_SIZE: f32 = 24.0;
+/// The gap between the inbox button and the `⋯` button on its right.
+pub const INBOX_GAP: f32 = 4.0;
+/// The inbox list's width.
+pub const INBOX_WIDTH: f32 = 360.0;
+/// The most height of the inbox list (header included); the body's height caps it too.
+pub const INBOX_MAX_HEIGHT: f32 = 480.0;
+/// The inbox button's glyph (the bell, as on a notification toast).
+pub const INBOX_GLYPH: &str = "\u{eaa2}";
+/// How long the bell rings when something new arrives (D19).
+pub const RING_LEN: Duration = Duration::from_millis(1000);
+/// A ring starts only if the last one began this long ago or more: a program that rings in a
+/// loop makes at most `RING_LEN` of frames per `RING_GAP`.
+pub const RING_GAP: Duration = Duration::from_millis(3000);
+/// The swing's first peak, degrees (clockwise positive); the swing shrinks to still over `RING_LEN`.
+const RING_PEAK_DEGREES: f32 = 14.0;
+/// Swings (full back-and-forth cycles) in one ring.
+const RING_SWINGS: f32 = 3.0;
+/// Half the bell glyph's size: the swing turns about the bell's top, this far above its centre.
+const RING_PIVOT: f32 = 8.0;
 /// The header's darker band, punched out by the tab outline (luneui-rs D131: the gallery's value;
 /// the header layer is a material of the app's preset, so the app passes it). Lunegit's look; the
 /// near-black look passes its own (`render::header_tint`).
@@ -109,12 +137,21 @@ pub struct Layout {
     pub strip: Rect,
     /// The `⋯` button in the strip's reserved right end.
     pub overflow: Rect,
+    /// The inbox button, left of `⋯` ([`INBOX_GAP`] between them); drawn only while the inbox
+    /// has entries, and then the strip is narrower by its width plus the gap.
+    pub inbox: Rect,
     pub body: Rect,
 }
 
 impl Layout {
-    /// The layout of the window `window` (its origin is the window's).
+    /// The layout of the window `window` (its origin is the window's) with no inbox button.
     pub fn new(window: Rect) -> Layout {
+        Layout::with_inbox(window, false)
+    }
+
+    /// The layout with the inbox button shown or not. Only the strip changes: the button sits in
+    /// the strip's right end and the body is the same, so the terminal never resizes for it.
+    pub fn with_inbox(window: Rect, inbox_shown: bool) -> Layout {
         let card = Rect::new(
             window.x + CARD_MARGIN,
             window.y + TITLE_BAND,
@@ -124,8 +161,21 @@ impl Layout {
         let strip = Rect::new(
             card.x,
             card.y,
-            (card.w - STRIP_RESERVE).max(0.0),
+            (card.w
+                - STRIP_RESERVE
+                - if inbox_shown {
+                    OVERFLOW_SIZE + INBOX_GAP
+                } else {
+                    0.0
+                })
+            .max(0.0),
             STRIP_HEIGHT.min(card.h),
+        );
+        let overflow = Rect::new(
+            card.right() - 32.0,
+            card.y + 4.0,
+            OVERFLOW_SIZE,
+            OVERFLOW_SIZE,
         );
         let body = Rect::new(
             card.x + BODY_PAD,
@@ -138,9 +188,10 @@ impl Layout {
             band: Rect::new(window.x, window.y, window.w, TITLE_BAND.min(window.h)),
             card,
             strip,
-            overflow: Rect::new(
-                card.right() - 32.0,
-                card.y + 4.0,
+            overflow,
+            inbox: Rect::new(
+                overflow.x - INBOX_GAP - OVERFLOW_SIZE,
+                overflow.y,
                 OVERFLOW_SIZE,
                 OVERFLOW_SIZE,
             ),
@@ -259,6 +310,9 @@ pub struct StripTab<'a> {
     pub title: &'a str,
     /// An OSC 9;4 report is active in this tab: its title shines in the tone.
     pub progress: Option<Tone>,
+    /// The tab has an unread notice and is not the active one: luneui draws its attention cue (a
+    /// dot before the title, a bright title). Independent of `progress`: a tab may have both.
+    pub attention: bool,
 }
 
 /// The dialog the frame shows over everything, if any. The text is the app's state: the dialog
@@ -273,6 +327,72 @@ pub enum Modal<'a> {
     /// Rename Tab: the field's text. `focus` asks to put the caret in the field (once, a frame
     /// after the dialog opened: the open focus goes to the confirm button).
     Rename { text: &'a mut String, focus: bool },
+}
+
+/// A notification toast's `Go to tab` button: the number its action reports.
+pub const TOAST_GO_TO_TAB: u64 = 1;
+/// A notification toast's `Dismiss` button.
+pub const TOAST_DISMISS: u64 = 2;
+/// The gap between the toast stack and the card's right and bottom edges (the mockup's 22 px).
+pub const TOAST_MARGIN: f32 = 22.0;
+/// The bell glyph of a notification toast.
+pub const TOAST_GLYPH: &str = "\u{eaa2}";
+
+/// The toolkit toast of a program notification (D16): the header names the tab (`source`, the
+/// tab's title now) with the age `now_text`; `title` (when not empty) is the bold line; `body` is
+/// the message. Two buttons, `Dismiss` (plain) then `Go to tab` (primary); it lives `life` with
+/// the drain line, and its hold on hover is the toolkit's. The one place a notification toast is
+/// built, for the app and for the dump scenes. The texts are the sanitised ones.
+pub fn notice_toast(
+    source: &str,
+    title: &str,
+    body: &str,
+    texts: &NoticeTexts<'_>,
+    accent: Rgba,
+    life: Duration,
+) -> (ToastSpec, ToastExtras) {
+    let mut spec = ToastSpec::new(ToastKind::Info, body);
+    spec.actions = vec![
+        ToastAction {
+            label: texts.dismiss.to_owned(),
+            primary: false,
+            id: TOAST_DISMISS,
+        },
+        ToastAction {
+            label: texts.go_to_tab.to_owned(),
+            primary: true,
+            id: TOAST_GO_TO_TAB,
+        },
+    ];
+    let mut extras = ToastExtras::new()
+        .with_source(source)
+        .with_age(texts.now)
+        .with_glyph(TOAST_GLYPH)
+        .with_accent(accent)
+        .with_timeout(life)
+        .with_drain(true);
+    if !title.is_empty() {
+        extras = extras.with_title(title);
+    }
+    (spec, extras)
+}
+
+/// The words of a notification toast, from the string table.
+#[derive(Debug, Clone, Copy)]
+pub struct NoticeTexts<'a> {
+    pub go_to_tab: &'a str,
+    pub dismiss: &'a str,
+    pub now: &'a str,
+}
+
+impl<'a> NoticeTexts<'a> {
+    pub fn of(strings: &'a lune_ui::strings::StringTable) -> Self {
+        NoticeTexts {
+            go_to_tab: strings.tr("toast.goToTab"),
+            dismiss: strings.tr("toast.dismiss"),
+            now: strings.tr("toast.now"),
+        }
+    }
 }
 
 /// What the shell draws a frame from.
@@ -303,11 +423,56 @@ pub struct ShellView<'a> {
     pub busy_tone: Tone,
     /// The accessible name of the `⋯` button.
     pub overflow_name: &'a str,
+    /// The inbox button, left of `⋯`: `Some` while the inbox has entries and no page is open.
+    pub inbox_button: Option<InboxButton<'a>>,
     /// The wash over the card that makes the tab header: the look's own (`render::header_tint`).
     pub header_tint: [u8; 4],
     /// Grids fading out under the terminal's (a tab-switch crossfade): custom slots
     /// `TERM_SLOT + 1 ..= TERM_SLOT + fading_slots`, drawn first so the active grid is over them.
     pub fading_slots: usize,
+}
+
+/// The inbox button of a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InboxButton<'a> {
+    /// The accessible name: "Notifications", and the unread count when there is one.
+    pub name: &'a str,
+    /// Something is unread: the bell is drawn in the attention colour; at rest (all read) it has
+    /// the look of the `⋯` button's glyph.
+    pub unread: bool,
+    /// The start of the bell's ring (the app's clock) while one is running, else `None`. The
+    /// shell draws it only under `MotionTier::Full`, and only while `unread`.
+    pub ring: Option<Duration>,
+    /// The list is open: the button rests on its hover fill.
+    pub open: bool,
+}
+
+/// The bell's angle `elapsed` after a ring began, radians (clockwise positive): three swings
+/// shrinking to still over [`RING_LEN`]; `None` once the ring is over.
+pub fn ring_angle(elapsed: Duration) -> Option<f32> {
+    if elapsed >= RING_LEN {
+        return None;
+    }
+    let t = elapsed.as_secs_f32() / RING_LEN.as_secs_f32();
+    Some(
+        RING_PEAK_DEGREES.to_radians()
+            * (1.0 - t)
+            * (std::f32::consts::TAU * RING_SWINGS * t).sin(),
+    )
+}
+
+/// Whether a ring may start at `now`: no ring before, or the last one began [`RING_GAP`] ago or more.
+pub fn ring_due(last_start: Option<Duration>, now: Duration) -> bool {
+    last_start.is_none_or(|last| now.saturating_sub(last) >= RING_GAP)
+}
+
+/// The inbox button's accessible name: `name`, and the unread count when there is one.
+pub fn inbox_button_name(name: &str, unread: usize) -> String {
+    if unread == 0 {
+        name.to_owned()
+    } else {
+        format!("{name} ({unread})")
+    }
 }
 
 /// What the dialog of a frame asked.
@@ -332,8 +497,12 @@ pub struct ShellOut {
     pub ime_area: Option<Rect>,
     /// The `⋯` button was pressed: its rect, to anchor the app menu to.
     pub overflow: Option<Rect>,
+    /// The inbox button was pressed this frame.
+    pub inbox_clicked: bool,
     /// A tab asked for its context menu (a right-click or the assistive "show menu" action).
     pub tab_context: Option<TabContext>,
+    /// What the toasts reported: the button pressed (the toast leaves with it).
+    pub toast: ToastResponse,
 }
 
 /// A tab's request for its context menu: the app opens the menu (the strip owns none).
@@ -426,7 +595,7 @@ fn band_title(label: Option<&str>, theme: &lune_ui::theme::Theme) -> Spec {
 pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
     let theme = *ui.theme();
     let win = ui.painter().window;
-    let layout = Layout::new(win);
+    let layout = Layout::with_inbox(win, view.inbox_button.is_some() && !view.page_open);
     {
         let p = ui.painter();
         p.on(LayerId::Base);
@@ -512,6 +681,7 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
     let header_id = ui.id("strip-drag");
     let mut tab_events = Vec::new();
     let mut overflow = None;
+    let mut inbox_clicked = false;
     let mut tab_context = None;
     if !view.page_open {
         // Since the luneui-rs pin 32d1904 (D290) the strip's viewport is as wide as its tabs and the
@@ -543,7 +713,15 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
             name: "Terminal sessions",
             header_tint: Some(view.header_tint),
         };
-        let strip = ui.tab_strip("strip", layout.strip, &tabs, &opts);
+        // The keys of the cued tabs; luneui draws the cue in its attention colour.
+        let attention: Vec<TabKey> = view
+            .tabs
+            .iter()
+            .filter(|t| t.attention)
+            .map(|t| TabKey(t.id))
+            .collect();
+        let extras = TabStripExtras::new().with_attention(&attention);
+        let strip = ui.tab_strip_with("strip", layout.strip, &tabs, &opts, &extras);
         tab_events = strip.events;
         tab_context = strip.context.map(|(key, rect)| TabContext {
             id: key.0,
@@ -563,6 +741,40 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         if ui.icon_button("overflow", layout.overflow, &more).clicked {
             overflow = Some(layout.overflow);
         }
+        if let Some(button) = view.inbox_button {
+            // Unread: the attention colour; all read: the `⋯` button's own (`color: None`).
+            let color = button.unread.then(|| theme.attention());
+            // The swing replaces the button's own glyph for its 1 s; the fill, hover, press, open
+            // state, focus ring and name stay the button's, and its rect never moves (D19).
+            let swing = button
+                .ring
+                .filter(|_| button.unread && ui.tier() == MotionTier::Full)
+                .and_then(|start| ring_angle(ui.time().saturating_sub(start)));
+            let bell = IconButton {
+                glyph: if swing.is_some() { "" } else { INBOX_GLYPH },
+                glyph_size: 16.0,
+                color,
+                radius: theme.item_radius,
+                name: button.name,
+            };
+            let extras = IconButtonExtras::new().with_open(button.open);
+            inbox_clicked = ui
+                .icon_button_with("inbox-button", layout.inbox, &bell, &extras)
+                .clicked;
+            if let (Some(theta), Some(color)) = (swing, color) {
+                let r = layout.inbox;
+                let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+                // Turned about the bell's top: the centre swings round the pivot above it.
+                let centre = (
+                    cx - RING_PIVOT * theta.sin(),
+                    cy - RING_PIVOT + RING_PIVOT * theta.cos(),
+                );
+                ui.painter()
+                    .text_rotated(&icon::glyph(INBOX_GLYPH, 16.0, color), centre, theta);
+                let next = ui.time() + Duration::from_millis(1);
+                ui.request_repaint_at(next);
+            }
+        }
     }
 
     let (modal, ime_area) = match view.modal {
@@ -572,9 +784,17 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         }
         None => (None, None),
     };
-    if let Some(toasts) = view.toasts {
-        ui.toasts("toasts", toasts);
-    }
+    // Inside the card, for every toast of the app (the warning toasts too).
+    let toast = match view.toasts {
+        Some(toasts) => ui.toasts_with(
+            "toasts",
+            toasts,
+            &ToastStackOptions::new()
+                .with_area(layout.card)
+                .with_margin(TOAST_MARGIN),
+        ),
+        None => ToastResponse::default(),
+    };
     ShellOut {
         body: layout.body,
         commands,
@@ -582,8 +802,178 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         modal,
         ime_area,
         overflow,
+        inbox_clicked,
         tab_context,
+        toast,
     }
+}
+
+/// What the inbox list shows: the words and the rows (D16 maps entries onto them).
+#[derive(Debug)]
+pub struct InboxList<'a> {
+    /// The list's accessible name.
+    pub name: &'a str,
+    /// The header's title.
+    pub title: &'a str,
+    /// The header's text button.
+    pub clear_all: &'a str,
+    /// Newest first.
+    pub rows: &'a [MessageRow<'a>],
+}
+
+/// What the inbox list reported.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InboxOut {
+    /// Where the popover is, logical px.
+    pub rect: Rect,
+    /// Escape, a press outside or a focus loss asked it to close.
+    pub dismissed: Option<Dismissal>,
+    /// The row a press, Enter or Space activated (an index into the rows).
+    pub clicked: Option<usize>,
+    /// The header's "Clear all" was pressed.
+    pub clear_all: bool,
+}
+
+/// The popover of the inbox: below the button, right edges aligned, [`INBOX_GAP`] between,
+/// [`INBOX_WIDTH`] wide, as tall as its content up to the smaller of [`INBOX_MAX_HEIGHT`] and the
+/// body's height, then it scrolls. `layout` is the frame's. Text is drawn as plain text by the
+/// toolkit's rows: never markup, never a link.
+pub fn draw_inbox(ui: &mut Ui<'_>, layout: &Layout, list: &InboxList<'_>) -> InboxOut {
+    let most = INBOX_MAX_HEIGHT.min(layout.body.h).max(HEADER_HEIGHT);
+    let list_h = message_list::height(ui.painter(), list.rows, INBOX_WIDTH, most - HEADER_HEIGHT);
+    let size = (INBOX_WIDTH, HEADER_HEIGHT + list_h);
+    let mut options = PopoverOptions::new(layout.inbox, size);
+    options.anchor_id = Some(ui.id("inbox-button"));
+    options.side = Side::Bottom;
+    options.align = PlaceAlign::End;
+    options.gap = INBOX_GAP;
+    let (frame, placement, (clear_all, clicked)) =
+        ui.popover("inbox-list", &options, |ui, rect| {
+            let head = Rect::new(rect.x, rect.y, rect.w, HEADER_HEIGHT);
+            let clear =
+                ui.message_list_header("inbox-head", head, list.title, Some(list.clear_all));
+            let body = Rect::new(rect.x, rect.y + HEADER_HEIGHT, rect.w, list_h);
+            let opts = MessageListOptions::new(list.name).with_max_height(list_h);
+            let response = ui.message_list("inbox-rows", body, list.rows, &opts);
+            (clear, response.clicked)
+        });
+    InboxOut {
+        rect: placement.rect,
+        dismissed: frame.dismissed,
+        clicked,
+        clear_all,
+    }
+}
+
+/// One inbox row as owned text: what [`inbox_rows`] makes of an entry (D16), borrowed by
+/// [`RowText::row`] for the toolkit's list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowText {
+    pub title: String,
+    pub age: String,
+    pub body: Option<String>,
+    pub meta: Option<String>,
+    pub unread: bool,
+}
+
+impl RowText {
+    /// The toolkit's row over this text.
+    pub fn row(&self) -> MessageRow<'_> {
+        let mut row = MessageRow::new(&self.title)
+            .with_age(&self.age)
+            .with_unread(self.unread);
+        if let Some(body) = &self.body {
+            row = row.with_body(body);
+        }
+        if let Some(meta) = &self.meta {
+            row = row.with_meta(meta);
+        }
+        row
+    }
+}
+
+/// The age label of an entry: "now" under a minute, then "2 min", "1 h", "3 d".
+pub fn age_label(strings: &lune_ui::strings::StringTable, age: Age) -> String {
+    let (key, n) = match age {
+        Age::Now => return strings.tr("toast.now").to_owned(),
+        Age::Minutes(n) => ("inbox.minutes", n),
+        Age::Hours(n) => ("inbox.hours", n),
+        Age::Days(n) => ("inbox.days", n),
+    };
+    strings.tr_fmt(key, &[&n], &lune_ui::strings::DisplayFormat)
+}
+
+/// The rows of the list, newest first, with the tab each one belongs to (a row press activates
+/// it). `now` is the app clock the entries' times come from; `tab_name` is a tab's title now
+/// (D17). The mapping is D16: a bell is "Bell" or "Bell ×N" with the tab name as meta; a titled
+/// message shows its title, its body and the tab name; a message without a title shows the tab
+/// name as its first line and the message under it, with no meta; a read row's meta ends in
+/// "seen" (alone, for a row with no other meta). Only the sanitised text of the inbox is used.
+pub fn inbox_rows(
+    inbox: &Inbox,
+    now: Duration,
+    strings: &lune_ui::strings::StringTable,
+    tab_name: impl Fn(u64) -> Option<String>,
+) -> Vec<(u64, RowText)> {
+    let seen = strings.tr("inbox.seen");
+    inbox
+        .entries()
+        .map(|n| {
+            let name = tab_name(n.tab).unwrap_or_default();
+            let age = age_label(strings, notices::age(now.saturating_sub(n.at)));
+            let (title, body, meta) = match &n.kind {
+                NoticeKind::Bell => {
+                    let bell = strings.tr("inbox.bell");
+                    let title = if n.count > 1 {
+                        format!("{bell} \u{d7}{}", n.count)
+                    } else {
+                        bell.to_owned()
+                    };
+                    (title, None, Some(name))
+                }
+                NoticeKind::Message { title, body } if title.is_empty() => {
+                    (name, Some(body.clone()).filter(|b| !b.is_empty()), None)
+                }
+                NoticeKind::Message { title, body } => (
+                    title.clone(),
+                    Some(body.clone()).filter(|b| !b.is_empty()),
+                    Some(name),
+                ),
+            };
+            let meta = match (n.unread, meta) {
+                (true, meta) => meta.filter(|m| !m.is_empty()),
+                (false, Some(m)) if !m.is_empty() => Some(format!("{m} \u{b7} {seen}")),
+                (false, _) => Some(seen.to_owned()),
+            };
+            (
+                n.tab,
+                RowText {
+                    title,
+                    age,
+                    body,
+                    meta,
+                    unread: n.unread,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Every string key the inbox asks for (the toast's "now" is the notices module's).
+pub fn inbox_required_keys() -> Vec<String> {
+    [
+        "inbox.name",
+        "inbox.title",
+        "inbox.clearAll",
+        "inbox.bell",
+        "inbox.seen",
+        "inbox.minutes",
+        "inbox.hours",
+        "inbox.days",
+    ]
+    .iter()
+    .map(|k| (*k).to_owned())
+    .collect()
 }
 
 /// The close-confirm or rename dialog (Lunegit's copy, `en.json`; layout as the spike's).
@@ -873,11 +1263,13 @@ mod tests {
         id: 1,
         title: "zsh",
         progress: None,
+        attention: false,
     };
     const TAB_B: StripTab<'static> = StripTab {
         id: 2,
         title: "cargo build",
         progress: None,
+        attention: false,
     };
 
     fn frame_with(
@@ -888,6 +1280,18 @@ mod tests {
         maximized: bool,
         tabs: &[StripTab<'_>],
     ) -> ShellOut {
+        frame_tree(store, text, events, chrome, maximized, tabs).0
+    }
+
+    /// `frame_with`, and the frame's semantic tree too.
+    fn frame_tree(
+        store: &mut UiStore,
+        text: &mut TextCache,
+        events: Vec<Event>,
+        chrome: Chrome,
+        maximized: bool,
+        tabs: &[StripTab<'_>],
+    ) -> (ShellOut, String) {
         let input = RawInput {
             size: (1040.0, 660.0),
             scale: 1.0,
@@ -920,6 +1324,57 @@ mod tests {
             busy: None,
             busy_tone: Tone::Neutral,
             overflow_name: "More",
+            inbox_button: None,
+            header_tint: HEADER_TINT,
+            fading_slots: 0,
+        };
+        let mut ui = Ui::begin(store, &input, config, text);
+        let out = draw(&mut ui, view);
+        let (_, frame) = ui.finish();
+        (out, format!("{:?}", frame.tree))
+    }
+
+    /// One frame with `toasts` drawn, at `ms` (tier Off: nothing animates), and what it handed back.
+    fn toast_frame(
+        store: &mut UiStore,
+        text: &mut TextCache,
+        toasts: &mut Toasts,
+        ms: u64,
+    ) -> ShellOut {
+        let input = RawInput {
+            size: (1040.0, 660.0),
+            scale: 1.0,
+            time: Duration::from_millis(ms),
+            focused: true,
+            events: Vec::new(),
+        };
+        let (strings, shortcuts) = (StringTable::default(), Shortcuts::default());
+        let config = FrameConfig {
+            theme: THEME,
+            tier: MotionTier::Off,
+            busy_cadence: Cadence::BUSY,
+            strings: &strings,
+            arg_format: &DisplayFormat,
+            keymap: keymap(),
+            shortcuts: &shortcuts,
+        };
+        let tabs = [TAB_A, TAB_B];
+        let view = ShellView {
+            title: None,
+            maximized: false,
+            focused: true,
+            scroll: None,
+            cell_h: 17.0,
+            chrome: HOST,
+            tabs: &tabs,
+            active_tab: Some(1),
+            modal: None,
+            toasts: Some(toasts),
+            page_open: false,
+            busy: None,
+            busy_tone: Tone::Neutral,
+            overflow_name: "More",
+            inbox_button: None,
             header_tint: HEADER_TINT,
             fading_slots: 0,
         };
@@ -927,6 +1382,108 @@ mod tests {
         let out = draw(&mut ui, view);
         let _ = ui.finish();
         out
+    }
+
+    const TEXTS: NoticeTexts<'static> = NoticeTexts {
+        go_to_tab: "Go to tab",
+        dismiss: "Dismiss",
+        now: "now",
+    };
+
+    /// A real `Toasts` through real frames: a notification toast is listed once drawn, sits in
+    /// the card's corner 22 px in, leaves the list when its 6 s are up, and the slots follow.
+    #[test]
+    fn a_notice_toast_is_listed_when_drawn_sits_in_the_card_corner_and_leaves_with_its_timeout() {
+        use crate::notices::{Admit, TOAST_LIFE, ToastSlots};
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let mut toasts = Toasts::default();
+        let mut slots: ToastSlots<_, Rect> = ToastSlots::new();
+        let (spec, extras) = notice_toast(
+            "claude",
+            "Claude Code",
+            "Claude needs your permission to use Bash",
+            &TEXTS,
+            THEME.attention(),
+            TOAST_LIFE,
+        );
+        let id = toasts.push_with(spec, extras, Duration::from_millis(1_000));
+        slots.shown(id, 3, Duration::from_millis(1_000));
+        // Not drawn yet: live for the toolkit, in no list, slot kept.
+        assert!(toasts.is_live(id) && toasts.live().is_empty());
+        assert!(
+            slots
+                .sync(toasts.live(), Duration::from_millis(1_010), |i| toasts
+                    .is_live(i))
+                .is_empty()
+        );
+        assert!(!slots.seen(id));
+
+        let layout = Layout::new(Rect::new(0.0, 0.0, 1040.0, 660.0));
+        let out = toast_frame(&mut store, &mut text, &mut toasts, 1_100);
+        assert_eq!(out.toast, ToastResponse::default());
+        let live = toasts.live().to_vec();
+        assert_eq!(live.len(), 1, "one toast listed");
+        assert_eq!(live[0].0, id);
+        let r = live[0].1;
+        assert!(
+            (layout.card.right() - r.right() - TOAST_MARGIN).abs() <= 1.0
+                && (layout.card.bottom() - r.bottom() - TOAST_MARGIN).abs() <= 1.0,
+            "{r:?} in {:?}",
+            layout.card
+        );
+        slots.sync(&live, Duration::from_millis(1_100), |i| toasts.is_live(i));
+        assert!(slots.seen(id));
+        // Still listed, same place, 400 ms later: armed.
+        toast_frame(&mut store, &mut text, &mut toasts, 1_500);
+        slots.sync(toasts.live(), Duration::from_millis(1_500), |i| {
+            toasts.is_live(i)
+        });
+        assert_eq!(
+            slots.press_target(id, Duration::from_millis(1_500)),
+            Some(3)
+        );
+        assert_eq!(slots.press_target(id, Duration::from_millis(1_499)), None);
+        // 6 s after the push the toast times out: the next frames drop it from the list.
+        for ms in [6_900, 7_000, 7_500] {
+            toast_frame(&mut store, &mut text, &mut toasts, ms);
+        }
+        assert!(toasts.live().is_empty(), "{:?}", toasts.live());
+        assert!(!toasts.is_live(id));
+        assert_eq!(
+            slots.sync(toasts.live(), Duration::from_millis(7_500), |i| toasts
+                .is_live(i)),
+            [id]
+        );
+        // The P1 case: the tab's next message gets a toast again.
+        assert_eq!(
+            slots.admit(3, Duration::from_millis(7_600)),
+            Admit::New { evict: None }
+        );
+    }
+
+    #[test]
+    fn a_tab_with_attention_is_cued_and_the_others_are_not() {
+        let mut cued = TAB_B;
+        cued.attention = true;
+        let draw_tabs = |tabs: &[StripTab<'_>]| {
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            frame_tree(&mut store, &mut text, Vec::new(), HOST, false, tabs).1
+        };
+        let plain = draw_tabs(&[TAB_A, TAB_B]);
+        let with = draw_tabs(&[TAB_A, cued]);
+        assert!(!plain.contains("Needs attention"), "no tab is cued");
+        assert_eq!(
+            with.matches("Needs attention").count(),
+            1,
+            "only the cued tab"
+        );
+        // Both at once: a progress report and the cue are both passed (no app-side priority).
+        let mut both = cued;
+        both.progress = Some(Tone::Warn);
+        assert_eq!(
+            draw_tabs(&[TAB_A, both]).matches("Needs attention").count(),
+            1
+        );
     }
 
     fn button(pos: (f32, f32), pressed: bool) -> Event {
@@ -1187,5 +1744,456 @@ mod tests {
         assert_eq!(two.runs.len(), 2);
         assert_eq!(two.runs[0].0, "zsh");
         assert_eq!(two.runs[1].0, "  \u{b7}  Luneterm");
+    }
+
+    // -------------------------------------------------------------------------- the inbox
+
+    #[test]
+    fn the_inbox_button_narrows_only_the_strip() {
+        for win in [
+            Rect::new(0.0, 0.0, 1040.0, 660.0),
+            Rect::new(0.0, 0.0, 640.0, 400.0),
+        ] {
+            let (off, on) = (
+                Layout::with_inbox(win, false),
+                Layout::with_inbox(win, true),
+            );
+            assert_eq!(off, Layout::new(win), "hidden = today's layout");
+            assert_eq!(
+                on.body, off.body,
+                "the terminal never resizes for the button"
+            );
+            assert_eq!(
+                (on.band, on.card, on.overflow),
+                (off.band, off.card, off.overflow)
+            );
+            assert_eq!(on.inbox, off.inbox);
+            assert_eq!(on.strip.w, off.strip.w - (on.inbox.w + INBOX_GAP));
+            assert_eq!(
+                (on.strip.x, on.strip.y, on.strip.h),
+                (off.strip.x, off.strip.y, off.strip.h)
+            );
+            // Same size as `⋯`, 4 px to its left, on its row.
+            assert_eq!((on.inbox.w, on.inbox.h), (on.overflow.w, on.overflow.h));
+            assert_eq!(on.overflow.x - on.inbox.right(), INBOX_GAP);
+            assert_eq!(on.inbox.y, on.overflow.y);
+            assert!(
+                on.strip.right() <= on.inbox.x,
+                "the strip stops before the button"
+            );
+        }
+        // The first window: the exact numbers.
+        let on = Layout::with_inbox(Rect::new(0.0, 0.0, 1040.0, 660.0), true);
+        assert_eq!(on.inbox, Rect::new(970.0, 38.0, 24.0, 24.0));
+        assert_eq!(on.strip, Rect::new(10.0, 34.0, 952.0, 32.0));
+    }
+
+    #[test]
+    fn the_button_name_carries_the_count_and_is_plain_at_zero() {
+        assert_eq!(inbox_button_name("Notifications", 0), "Notifications");
+        assert_eq!(inbox_button_name("Notifications", 3), "Notifications (3)");
+    }
+
+    #[test]
+    fn the_ring_swings_three_times_and_dies_out_in_one_second() {
+        let ms = Duration::from_millis;
+        assert_eq!(ring_angle(ms(0)), Some(0.0));
+        // The first peak at a quarter of the first swing (83 ms): about 14 degrees times (1 - t).
+        let peak = ring_angle(ms(83)).expect("inside the ring").to_degrees();
+        let want = 14.0 * (1.0 - 0.083);
+        assert!(peak > 0.0 && (peak - want).abs() < 1.0, "peak {peak}");
+        // Three swings: the sign flips six times between 0 and 1000 ms.
+        let flips = (1..1000u64)
+            .map(|t| ring_angle(ms(t)).expect("inside the ring").signum())
+            .collect::<Vec<_>>()
+            .windows(2)
+            .filter(|w| w[0] != w[1])
+            .count();
+        assert_eq!(flips, 5, "five zero crossings inside the ring");
+        // It shrinks to still, and is over at 1 s.
+        let late = ring_angle(ms(999)).expect("inside the ring").to_degrees();
+        assert!(late.abs() < 0.2, "late {late}");
+        assert_eq!(ring_angle(ms(1000)), None);
+        assert_eq!(ring_angle(ms(5000)), None);
+    }
+
+    #[test]
+    fn a_ring_starts_with_no_ring_before_or_three_seconds_after_the_last() {
+        let ms = Duration::from_millis;
+        let t = ms(10_000);
+        assert!(ring_due(None, t));
+        assert!(!ring_due(Some(t), t));
+        assert!(!ring_due(Some(t), t + ms(2999)));
+        assert!(ring_due(Some(t), t + ms(3000)));
+        // A clock that did not move forward never underflows.
+        assert!(!ring_due(Some(t), ms(5)));
+    }
+
+    fn english() -> StringTable {
+        crate::strings::english()
+    }
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    #[test]
+    fn age_labels_are_now_minutes_hours_days() {
+        let t = english();
+        let label = |s: u64| age_label(&t, notices::age(secs(s)));
+        assert_eq!(label(0), "now");
+        assert_eq!(label(59), "now");
+        assert_eq!(label(120), "2 min");
+        assert_eq!(label(3600), "1 h");
+        assert_eq!(label(3 * 86_400), "3 d");
+    }
+
+    /// D16: bell, titled message, untitled message; read rows end in "seen".
+    #[test]
+    fn rows_follow_d16() {
+        let t = english();
+        let mut inbox = Inbox::new();
+        let now = secs(10_000);
+        inbox.message(4, "Build finished".into(), String::new(), secs(6_400));
+        inbox.message(3, String::new(), "Plain message".into(), secs(9_000));
+        inbox.bell(2, 1, secs(9_500));
+        inbox.bell(5, 2, secs(9_700));
+        inbox.message(3, "Claude Code".into(), "Needs Bash".into(), secs(9_950));
+        inbox.settle(Some(4), true, |_| true);
+        let names =
+            |id: u64| Some(["", "zsh", "cargo build", "claude", "colors"][id as usize].to_owned());
+        let mut rows = inbox_rows(&inbox, now, &t, |id| match id {
+            5 => Some("five".to_owned()),
+            id => names(id),
+        });
+        let texts: Vec<_> = rows
+            .drain(..)
+            .map(|(tab, r)| (tab, r.title, r.age, r.body, r.meta, r.unread))
+            .collect();
+        let row = |tab, title: &str, age: &str, body: Option<&str>, meta: Option<&str>, unread| {
+            (
+                tab,
+                title.to_owned(),
+                age.to_owned(),
+                body.map(str::to_owned),
+                meta.map(str::to_owned),
+                unread,
+            )
+        };
+        assert_eq!(
+            texts,
+            vec![
+                row(
+                    3,
+                    "Claude Code",
+                    "now",
+                    Some("Needs Bash"),
+                    Some("claude"),
+                    true
+                ),
+                row(5, "Bell \u{d7}2", "5 min", None, Some("five"), true),
+                row(2, "Bell", "8 min", None, Some("cargo build"), true),
+                // No title: the tab's name is the first line, no meta while unread.
+                row(3, "claude", "16 min", Some("Plain message"), None, true),
+                // Read: dimmed by the toolkit, meta ends in "seen".
+                row(
+                    4,
+                    "Build finished",
+                    "1 h",
+                    None,
+                    Some("colors \u{b7} seen"),
+                    false
+                ),
+            ]
+        );
+        // A read row with no other meta: "seen" alone.
+        let mut one = Inbox::new();
+        one.message(3, String::new(), "Plain".into(), secs(1));
+        one.settle(Some(3), true, |_| true);
+        let rows = inbox_rows(&one, secs(2), &t, |_| Some("claude".to_owned()));
+        assert_eq!(rows[0].1.meta.as_deref(), Some("seen"));
+        assert!(!rows[0].1.unread);
+        // The tab's name is read now (D17): a rename shows.
+        let rows = inbox_rows(&one, secs(2), &t, |_| Some("renamed".to_owned()));
+        assert_eq!(rows[0].1.title, "renamed");
+    }
+
+    /// One frame of the shell with the inbox button, and the list when `open`, at `ms`.
+    fn inbox_frame(
+        store: &mut UiStore,
+        text: &mut TextCache,
+        rows: &[MessageRow<'_>],
+        open: bool,
+        events: Vec<Event>,
+        ms: u64,
+    ) -> (ShellOut, Option<InboxOut>) {
+        let button = InboxButton {
+            name: "Notifications (3)",
+            unread: true,
+            ring: None,
+            open,
+        };
+        let (out, inbox, _, _) =
+            button_frame(store, text, rows, Some(button), events, ms, MotionTier::Off);
+        (out, inbox)
+    }
+
+    /// One frame of the shell with `button` (the list is drawn when it is `open`), at `ms`, under
+    /// motion tier `tier`; returns the frame's scene and output too.
+    fn button_frame(
+        store: &mut UiStore,
+        text: &mut TextCache,
+        rows: &[MessageRow<'_>],
+        button: Option<InboxButton<'_>>,
+        events: Vec<Event>,
+        ms: u64,
+        tier: MotionTier,
+    ) -> (
+        ShellOut,
+        Option<InboxOut>,
+        lune_ui::scene::Scene,
+        lune_ui::input::FrameOutput,
+    ) {
+        let open = button.is_some_and(|b| b.open);
+        let input = RawInput {
+            size: (1040.0, 660.0),
+            scale: 1.0,
+            time: Duration::from_millis(ms),
+            focused: true,
+            events,
+        };
+        let (strings, shortcuts) = (StringTable::default(), Shortcuts::default());
+        let config = FrameConfig {
+            theme: THEME,
+            tier,
+            busy_cadence: Cadence::BUSY,
+            strings: &strings,
+            arg_format: &DisplayFormat,
+            keymap: keymap(),
+            shortcuts: &shortcuts,
+        };
+        let tabs = [TAB_A, TAB_B];
+        let view = ShellView {
+            title: None,
+            maximized: false,
+            focused: true,
+            scroll: None,
+            cell_h: 17.0,
+            chrome: HOST,
+            tabs: &tabs,
+            active_tab: Some(1),
+            modal: None,
+            toasts: None,
+            page_open: false,
+            busy: None,
+            busy_tone: Tone::Neutral,
+            overflow_name: "More",
+            inbox_button: button,
+            header_tint: HEADER_TINT,
+            fading_slots: 0,
+        };
+        let mut ui = Ui::begin(store, &input, config, text);
+        let out = draw(&mut ui, view);
+        let layout = Layout::new(Rect::new(0.0, 0.0, 1040.0, 660.0));
+        let list = InboxList {
+            name: "Notifications",
+            title: "Notifications",
+            clear_all: "Clear all",
+            rows,
+        };
+        let inbox = open.then(|| draw_inbox(&mut ui, &layout, &list));
+        let (scene, frame) = ui.finish();
+        (out, inbox, scene, frame)
+    }
+
+    fn some_rows(n: usize) -> Vec<RowText> {
+        (0..n)
+            .map(|i| RowText {
+                title: format!("Title {i}"),
+                age: "now".to_owned(),
+                body: Some(format!("Body {i}")),
+                meta: Some("claude".to_owned()),
+                unread: true,
+            })
+            .collect()
+    }
+
+    /// Real frames: the button toggles through `inbox_clicked`; the popover sits 4 px under the
+    /// button with its right edge on the button's, 360 wide, as tall as its content up to the
+    /// smaller of 480 and the body's height; a row press, Clear all, an outside press and
+    /// Escape each report what they are.
+    #[test]
+    fn the_inbox_button_and_list_report_presses_and_sit_under_the_button() {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let layout = Layout::new(Rect::new(0.0, 0.0, 1040.0, 660.0));
+        let centre = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        // The first frame registers the regions; a press and release on the button click it.
+        let go = |store: &mut UiStore, text: &mut TextCache, open, events, ms| {
+            let rows = some_rows(3);
+            let rows: Vec<_> = rows.iter().map(RowText::row).collect();
+            inbox_frame(store, text, &rows, open, events, ms)
+        };
+        let (out, _) = go(&mut store, &mut text, false, vec![], 0);
+        assert!(!out.inbox_clicked);
+        go(
+            &mut store,
+            &mut text,
+            false,
+            vec![button(centre(layout.inbox), true)],
+            10,
+        );
+        let (out, _) = go(
+            &mut store,
+            &mut text,
+            false,
+            vec![button(centre(layout.inbox), false)],
+            20,
+        );
+        assert!(out.inbox_clicked, "a press on the button");
+
+        // Open: geometry of the popover.
+        let (_, list) = go(&mut store, &mut text, true, vec![], 100);
+        let list = list.expect("the list is drawn");
+        assert_eq!(list.rect.right(), layout.inbox.right());
+        assert_eq!(list.rect.y - layout.inbox.bottom(), INBOX_GAP);
+        assert_eq!(list.rect.w, INBOX_WIDTH);
+        assert!(
+            list.rect.h > HEADER_HEIGHT && list.rect.h < INBOX_MAX_HEIGHT,
+            "{:?}",
+            list.rect
+        );
+        assert!(list.dismissed.is_none() && list.clicked.is_none() && !list.clear_all);
+
+        // A row press: the first row's middle.
+        let row0 = (list.rect.x + 100.0, list.rect.y + HEADER_HEIGHT + 20.0);
+        go(&mut store, &mut text, true, vec![button(row0, true)], 110);
+        let (_, hit) = go(&mut store, &mut text, true, vec![button(row0, false)], 120);
+        assert_eq!(hit.expect("list").clicked, Some(0));
+
+        // Clear all, in the header's right end.
+        let clear = (list.rect.right() - 40.0, list.rect.y + HEADER_HEIGHT / 2.0);
+        go(&mut store, &mut text, true, vec![button(clear, true)], 130);
+        let (_, hit) = go(&mut store, &mut text, true, vec![button(clear, false)], 140);
+        assert!(hit.expect("list").clear_all);
+
+        // A press outside closes it (and is not a click on anything).
+        let outside = (300.0, 400.0);
+        let (_, hit) = go(
+            &mut store,
+            &mut text,
+            true,
+            vec![button(outside, true)],
+            150,
+        );
+        let hit = hit.expect("list");
+        assert!(hit.dismissed.is_some(), "an outside press dismisses");
+        assert!(hit.clicked.is_none() && !hit.clear_all);
+    }
+
+    #[test]
+    fn the_list_is_as_tall_as_its_rows_up_to_the_cap_then_scrolls() {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let many = some_rows(50);
+        let rows: Vec<_> = many.iter().map(RowText::row).collect();
+        let (_, list) = inbox_frame(&mut store, &mut text, &rows, true, vec![], 0);
+        assert_eq!(list.expect("list").rect.h, INBOX_MAX_HEIGHT);
+        // The body's height is the other cap.
+        let few = some_rows(1);
+        let rows: Vec<_> = few.iter().map(RowText::row).collect();
+        let (_, list) = inbox_frame(&mut store, &mut text, &rows, true, vec![], 0);
+        assert!(list.expect("list").rect.h < 120.0);
+    }
+
+    fn bell_button(unread: bool, ring: Option<Duration>) -> InboxButton<'static> {
+        InboxButton {
+            name: "Notifications (3)",
+            unread,
+            ring,
+            open: false,
+        }
+    }
+
+    /// Two warm frames (the second is the one judged), the button as given, tier and time as given.
+    fn bell_frames(
+        button: Option<InboxButton<'_>>,
+        tier: MotionTier,
+        ms: u64,
+    ) -> (ShellOut, lune_ui::scene::Scene, lune_ui::input::FrameOutput) {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let _ = button_frame(&mut store, &mut text, &[], button, vec![], ms, tier);
+        let (out, _, scene, frame) =
+            button_frame(&mut store, &mut text, &[], button, vec![], ms, tier);
+        (out, scene, frame)
+    }
+
+    fn texts_in(scene: &lune_ui::scene::Scene) -> usize {
+        scene.in_order().iter().map(|l| l.texts.len()).sum()
+    }
+
+    /// No badge (D19): the button adds one text to the frame (its glyph), not a pill with a count;
+    /// the accessible name still carries the count.
+    #[test]
+    fn the_bell_has_no_badge_and_its_name_keeps_the_count() {
+        let tier = MotionTier::Full;
+        let (_, hidden, _) = bell_frames(None, tier, 5000);
+        let (_, shown, frame) = bell_frames(Some(bell_button(true, None)), tier, 5000);
+        assert_eq!(texts_in(&shown), texts_in(&hidden) + 1);
+        assert!(
+            frame
+                .tree
+                .nodes
+                .iter()
+                .any(|n| n.name == "Notifications (3)"),
+            "the count stays in the name"
+        );
+        // Read: the same one text, the same name.
+        let (_, read, _) = bell_frames(Some(bell_button(false, None)), tier, 5000);
+        assert_eq!(texts_in(&read), texts_in(&hidden) + 1);
+    }
+
+    /// The ring draws the swinging glyph over the button (one more text, the button's own glyph
+    /// is empty) and asks for the next frame; at rest, read, past the ring and under Reduced or
+    /// Off nothing is asked and the glyph is the button's own. The button's rect never moves.
+    #[test]
+    fn the_ring_asks_for_frames_only_while_it_runs_and_never_moves_the_button() {
+        let ms = Duration::from_millis;
+        let start = Some(ms(5000));
+        let full = MotionTier::Full;
+        let rest = bell_frames(Some(bell_button(true, None)), full, 5083);
+        assert_eq!(
+            rest.2.repaint,
+            lune_ui::input::Repaint::Idle,
+            "yellow at rest"
+        );
+        let ringing = bell_frames(Some(bell_button(true, start)), full, 5083);
+        match ringing.2.repaint {
+            lune_ui::input::Repaint::At(t) => assert!(t <= ms(5084), "asked for {t:?}"),
+            other => panic!("a ringing bell asks for the next frame, got {other:?}"),
+        }
+        assert_eq!(texts_in(&ringing.1), texts_in(&rest.1), "one glyph, turned");
+        assert_eq!(ringing.0.body, rest.0.body);
+        let node = |f: &lune_ui::input::FrameOutput| {
+            f.tree
+                .nodes
+                .iter()
+                .find(|n| n.name == "Notifications (3)")
+                .map(|n| n.bounds)
+        };
+        assert_eq!(node(&ringing.2), node(&rest.2));
+        assert!(node(&rest.2).is_some());
+        // Over (1 s after the start), read mid-ring, and the other tiers: nothing asked.
+        for (button, tier, at) in [
+            (bell_button(true, start), full, 6000),
+            (bell_button(false, start), full, 5083),
+            (bell_button(true, start), MotionTier::Reduced, 5083),
+            (bell_button(true, start), MotionTier::Off, 5083),
+        ] {
+            let (_, _, frame) = bell_frames(Some(button), tier, at);
+            assert_eq!(
+                frame.repaint,
+                lune_ui::input::Repaint::Idle,
+                "{button:?} {tier:?} {at}"
+            );
+        }
     }
 }

@@ -35,8 +35,8 @@ use crate::session::Geometry;
 use crate::settings::{Settings, Theme as LookTheme, WindowOpacity};
 use crate::settings_page::{self, PageOut, PageView};
 use crate::shell::{
-    self, Chrome, GridPlacement, Layout, Modal, ModalOut, ScrollView, ShellView, StripTab,
-    TabContext,
+    self, Chrome, GridPlacement, InboxButton, InboxList, InboxOut, Layout, Modal, ModalOut,
+    ScrollView, ShellView, StripTab, TabContext,
 };
 use crate::tabs::TabId;
 
@@ -132,6 +132,8 @@ pub struct Content<'a> {
     pub page: Option<PageView<'a>>,
     /// An open menu, drawn over everything but the dialog.
     pub menu: Option<MenuDraw<'a>>,
+    /// The inbox: its button, and its list while it is open; `None` while the inbox is empty.
+    pub inbox: Option<InboxDraw<'a>>,
     /// The cue the active tab's outline runs, `None` when it is not busy or the setting is off.
     pub busy: Option<BusyCue>,
     /// The outline's colour while it runs.
@@ -164,6 +166,13 @@ pub struct LinkTip<'a> {
     pub url: &'a str,
     /// Names the link, so another link starts its own delay.
     pub key: u64,
+}
+
+/// The inbox of a frame: the header button, and the list under it while it is open.
+#[derive(Debug)]
+pub struct InboxDraw<'a> {
+    pub button: InboxButton<'a>,
+    pub list: Option<InboxList<'a>>,
 }
 
 /// A menu to draw this frame.
@@ -246,8 +255,14 @@ pub struct Drawn {
     pub menu: Option<MenuResponse>,
     /// The `⋯` button was pressed: its rect.
     pub overflow: Option<Rect>,
+    /// The inbox button was pressed.
+    pub inbox_clicked: bool,
+    /// What the open inbox list reported; `None` while it is not shown.
+    pub inbox: Option<InboxOut>,
     /// A tab asked for its context menu: which tab, and where it opens.
     pub tab_context: Option<TabContext>,
+    /// The toast button pressed this frame (the toast leaves with it).
+    pub toast: lune_ui::widgets::toast::ToastResponse,
     /// The grid size the frame was laid out for.
     pub cols: usize,
     pub rows: usize,
@@ -642,6 +657,7 @@ impl Renderer {
             busy: content.busy,
             busy_tone: content.busy_tone,
             overflow_name: self.strings.tr("menu.more"),
+            inbox_button: content.inbox.as_ref().map(|i| i.button),
             header_tint: self.header_tint,
             fading_slots: content.fading.len(),
         };
@@ -663,6 +679,13 @@ impl Renderer {
             };
             ui.menu_with("app-menu", &m.rows, &options)
         });
+        // The list hangs from the button, on the popup layer over the card and the menu's place.
+        let inbox_out = (page_out.is_none())
+            .then(|| {
+                let list = content.inbox.as_ref()?.list.as_ref()?;
+                Some(shell::draw_inbox(&mut ui, &layout, list))
+            })
+            .flatten();
         if content.link_hand {
             ui.set_cursor(lune_ui::input::CursorIcon::Pointer);
         }
@@ -810,7 +833,10 @@ impl Renderer {
             page: page_out,
             menu: menu_resp,
             overflow: shell_out.overflow,
+            inbox_clicked: shell_out.inbox_clicked,
+            inbox: inbox_out,
             tab_context: shell_out.tab_context,
+            toast: shell_out.toast,
             cols: placement.cols,
             rows: placement.rows,
         })
@@ -1224,6 +1250,7 @@ mod text_tests {
                 clipboard_read: false,
                 page: None,
                 menu: None,
+                inbox: None,
                 busy: None,
                 busy_tone: Tone::Neutral,
                 grid_alpha: 1.0,
@@ -1373,11 +1400,13 @@ mod switch_harness {
                 id: 0,
                 title: "a",
                 progress: None,
+                attention: false,
             },
             StripTab {
                 id: 1,
                 title: "b",
                 progress: None,
+                attention: false,
             },
         ];
         let [a, b] = tabs;
@@ -1418,6 +1447,7 @@ mod switch_harness {
             clipboard_read: false,
             page: None,
             menu: None,
+            inbox: None,
             busy: None,
             busy_tone: Tone::Neutral,
             grid_alpha: alphas.incoming,

@@ -181,6 +181,11 @@ pub const A11Y_TEXT_LIMIT: usize = 2048;
 /// unknown-OSC channel, `driver.js`): a stream cycling identifiers cannot grow the queue.
 pub const UNKNOWN_OSC_LIMIT: usize = 64;
 
+/// Most [`HostEvent::Notification`] events queued per drain (D10 of the bell-notifications plan):
+/// a stream of OSC 9 / OSC 777 messages cannot grow the queue, and the host gets few enough to
+/// show. Later ones in the same drain are dropped.
+pub const NOTIFICATION_LIMIT: usize = 8;
+
 /// The services every handler reads or writes (upstream's constructor arguments).
 #[derive(Debug)]
 pub struct CoreServices {
@@ -275,7 +280,8 @@ impl DirtyRowTracker {
 /// value), replaced in place at the position of the first one queued since the last drain, so a
 /// stream of them costs one event and one payload ([`HostEvent::ClipboardWrite`],
 /// [`HostEvent::CwdChanged`], [`HostEvent::Progress`]); [`HostEvent::UnknownOsc`] stops after
-/// [`UNKNOWN_OSC_LIMIT`] per drain.
+/// [`UNKNOWN_OSC_LIMIT`] per drain, and [`HostEvent::Notification`] stops after
+/// [`NOTIFICATION_LIMIT`] per drain.
 ///
 /// Every other event is queued as fired.
 #[derive(Debug, Default)]
@@ -290,6 +296,8 @@ struct EventQueue {
     last_wins: [Option<usize>; 3],
     /// [`HostEvent::UnknownOsc`] events queued since the last drain.
     unknown_osc: usize,
+    /// [`HostEvent::Notification`] events queued since the last drain.
+    notifications: usize,
 }
 
 impl EventQueue {
@@ -303,6 +311,11 @@ impl EventQueue {
             HostEvent::UnknownOsc { .. } if self.unknown_osc >= UNKNOWN_OSC_LIMIT => {}
             event @ HostEvent::UnknownOsc { .. } => {
                 self.unknown_osc += 1;
+                self.events.push(event);
+            }
+            HostEvent::Notification(_) if self.notifications >= NOTIFICATION_LIMIT => {}
+            event @ HostEvent::Notification(_) => {
+                self.notifications += 1;
                 self.events.push(event);
             }
             event => self.events.push(event),
@@ -372,6 +385,7 @@ impl EventQueue {
         self.a11y_bytes = 0;
         self.last_wins = [None; 3];
         self.unknown_osc = 0;
+        self.notifications = 0;
         mem::take(&mut self.events)
     }
 }

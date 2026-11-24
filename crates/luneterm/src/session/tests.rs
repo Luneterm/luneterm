@@ -898,6 +898,87 @@ fn session_events_reach_the_update() {
     assert!(u.clipboard_write.is_none());
 }
 
+fn note_pairs(u: &Update) -> Vec<(&str, &str)> {
+    u.notifications
+        .iter()
+        .map(|n| (n.title.as_str(), n.body.as_str()))
+        .collect()
+}
+
+#[test]
+fn notifications_reach_the_update_raw_and_in_order() {
+    let mut rig = rig_published();
+    let u = rig.feed(b"\x1b]777;notify;T;B\x07").expect("update");
+    assert_eq!(note_pairs(&u), [("T", "B")]);
+    let u = rig.feed(b"\x1b]9;hi\x07").expect("update");
+    assert_eq!(note_pairs(&u), [("", "hi")]);
+    // a bell and a notification in one feed: both arrive, neither hides the other
+    let u = rig
+        .feed(b"\x07\x1b]9;one\x07\x1b]777;notify;t2;b2\x1b\\")
+        .expect("update");
+    assert_eq!(u.bells, 1);
+    assert_eq!(note_pairs(&u), [("", "one"), ("t2", "b2")]);
+    // the text is raw here (the tab sanitises it): a bidi override and U+2028 survive the transport
+    let u = rig
+        .feed("\x1b]9;a\u{202E}b\u{2028}c\x07".as_bytes())
+        .expect("update");
+    assert_eq!(note_pairs(&u), [("", "a\u{202E}b\u{2028}c")]);
+    // nothing carried over
+    let u = rig.feed(b"z").expect("update");
+    assert!(u.notifications.is_empty());
+    // other 777 verbs and numbered OSC 9 forms are not notifications
+    let u = rig
+        .feed(b"\x1b]777;precmd\x07\x1b]9;4;1;50\x07\x1b]9;12\x07q")
+        .expect("update");
+    assert!(u.notifications.is_empty());
+}
+
+#[test]
+fn a_notification_alone_publishes_an_update() {
+    let mut rig = rig_published();
+    // an OSC that prints nothing: the Update exists because of `Acc::any`
+    let u = rig.feed(b"\x1b]9;only\x07");
+    assert!(u.is_some_and(|u| u.notifications.len() == 1));
+}
+
+#[test]
+fn at_most_sixteen_notifications_per_update_the_newest_kept() {
+    use super::engine::TickInput;
+    let mut rig = rig_published();
+    // three chunks of eight (the engine's per-drain limit), parsed while the UI has not taken
+    // the last Update, so they all pile up in the accumulator
+    let chunks: Vec<Vec<u8>> = (0..3)
+        .map(|c| {
+            (0..8)
+                .flat_map(|i| format!("\x1b]9;n{}\x07", c * 8 + i).into_bytes())
+                .collect()
+        })
+        .collect();
+    let held = rig.tick_with(TickInput {
+        chunks,
+        ui_ready: false,
+        visible: true,
+        ..TickInput::default()
+    });
+    assert!(held.is_none());
+    let u = rig.idle().expect("update");
+    let bodies: Vec<&str> = u.notifications.iter().map(|n| n.body.as_str()).collect();
+    assert_eq!(bodies.len(), NOTIFICATIONS_CAP);
+    assert_eq!(bodies.first(), Some(&"n8"), "the oldest eight are dropped");
+    assert_eq!(bodies.last(), Some(&"n23"));
+}
+
+#[test]
+fn an_update_debug_carries_the_notification_count_and_none_of_the_text() {
+    let mut rig = rig_published();
+    let u = rig
+        .feed(b"\x1b]777;notify;hunter2;hunter2\x07\x1b]9;hunter2\x07")
+        .expect("update");
+    let shown = format!("{u:?}");
+    assert!(shown.contains("notifications: 2"), "{shown}");
+    assert!(!shown.contains("hunter2"), "{shown}");
+}
+
 // ---------------------------------------------------------------- M10 step 1: probes, kitty reset
 
 const KITTY_ON: &[u8] = b"\x1b[>1u";

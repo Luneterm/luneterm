@@ -120,6 +120,11 @@ pub(crate) const CASES: &[Case] = &[
         name: "shell integration",
         run: e13_shell_integration,
     },
+    Case {
+        id: "E14",
+        name: "notifications",
+        run: e14_notifications,
+    },
 ];
 
 // ------------------------------------------------------------------------------- constants
@@ -272,6 +277,9 @@ struct Seen {
     cwds: Vec<String>,
     /// The OSC 133 marks the Updates carried, in order.
     marks: Vec<CommandMarkKind>,
+    /// The notifications (OSC 9 messages, OSC 777 `notify`) the Updates carried, as (title, body),
+    /// in order.
+    notifications: Vec<(String, String)>,
 }
 
 /// A running session and the UI side of it: the wake-up, the mirrored grid, what was seen.
@@ -309,6 +317,7 @@ impl Rig {
                 link_uris: Vec::new(),
                 cwds: Vec::new(),
                 marks: Vec::new(),
+                notifications: Vec::new(),
             },
         })
     }
@@ -350,6 +359,12 @@ impl Rig {
         self.seen.link_uris.extend(update.link_uris);
         self.seen.cwds.extend(update.cwd);
         self.seen.marks.extend(update.marks.iter().map(|m| m.kind));
+        self.seen.notifications.extend(
+            update
+                .notifications
+                .iter()
+                .map(|n| (n.title.clone(), n.body.clone())),
+        );
         true
     }
 
@@ -1174,6 +1189,7 @@ fn reference_grid(recorded: &[u8]) -> Result<(Grid, ViewportCursor), String> {
             xtversion: Some(spawn::xtversion()),
             vs16: true,
             clipboard_write: true,
+            notifications: true,
         })
         .map_err(|e| e.to_string())?;
     terminal.write(recorded);
@@ -1228,6 +1244,7 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
             clipboard_read: false,
             page: None,
             menu: None,
+            inbox: None,
             busy: None,
             busy_tone: lune_ui::widgets::tone::Tone::Neutral,
             grid_alpha: 1.0,
@@ -1713,4 +1730,31 @@ fn e13_shell_integration() -> CaseResult {
         eprintln!("E13: not run, shell absent: {absent:?}");
     }
     ok(done.join("; "))
+}
+
+// ------------------------------------------------------------------------------- E14
+
+/// A child writes `OSC 777;notify` and a plain `OSC 9` over a real PTY (ConPTY on Windows), then
+/// `DONE`; the Updates that show `DONE` carried exactly those two notifications, in order. Not
+/// `unix_only`: it is the measurement of whether ConPTY passes OSC 9 and OSC 777 through.
+fn e14_notifications() -> CaseResult {
+    let emit = [hex_encode(
+        b"\x1b]777;notify;E2E;hello\x07\x1b]9;plain\x07DONE",
+    )];
+    let pty = spawn_child("emit", &emit)?;
+    let mut rig = Rig::start(pty, config(true))?;
+    let took = rig.wait("DONE", WAIT, |r| r.contains("DONE"))?;
+    // everything before DONE is in the Updates up to the one that shows it
+    let seen = rig.seen.notifications.clone();
+    let want = vec![
+        ("E2E".to_owned(), "hello".to_owned()),
+        (String::new(), "plain".to_owned()),
+    ];
+    ensure(seen == want, || {
+        format!(
+            "the Updates carried {} notifications (wanted 2): {seen:?}",
+            seen.len()
+        )
+    })?;
+    ok(format!("2 notifications, DONE after {} ms", ms(took)))
 }
