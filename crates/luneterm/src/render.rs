@@ -1373,11 +1373,13 @@ mod switch_harness {
                 id: 0,
                 title: "a",
                 progress: None,
+                attention: false,
             },
             StripTab {
                 id: 1,
                 title: "b",
                 progress: None,
+                attention: false,
             },
         ];
         let [a, b] = tabs;

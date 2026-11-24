@@ -23,7 +23,7 @@ use lune_ui::widgets::dialog::{Cancel, Dialog, DialogGlass, DialogOptions};
 use lune_ui::widgets::field::FieldOptions;
 use lune_ui::widgets::scrollbar::{self, ThumbGeometry, thumb_geometry};
 use lune_ui::widgets::tab_strip::{
-    self, BusyCue, Tab as StripItem, TabEvent, TabKey, TabStripOptions,
+    self, BusyCue, Tab as StripItem, TabEvent, TabKey, TabStripExtras, TabStripOptions,
 };
 use lune_ui::widgets::toast::Toasts;
 use lune_ui::widgets::tone::Tone;
@@ -259,6 +259,9 @@ pub struct StripTab<'a> {
     pub title: &'a str,
     /// An OSC 9;4 report is active in this tab: its title shines in the tone.
     pub progress: Option<Tone>,
+    /// The tab has an unread notice and is not the active one: luneui draws its attention cue (a
+    /// dot before the title, a bright title). Independent of `progress`: a tab may have both.
+    pub attention: bool,
 }
 
 /// The dialog the frame shows over everything, if any. The text is the app's state: the dialog
@@ -543,7 +546,15 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
             name: "Terminal sessions",
             header_tint: Some(view.header_tint),
         };
-        let strip = ui.tab_strip("strip", layout.strip, &tabs, &opts);
+        // The keys of the cued tabs; luneui draws the cue in its attention colour.
+        let attention: Vec<TabKey> = view
+            .tabs
+            .iter()
+            .filter(|t| t.attention)
+            .map(|t| TabKey(t.id))
+            .collect();
+        let extras = TabStripExtras::new().with_attention(&attention);
+        let strip = ui.tab_strip_with("strip", layout.strip, &tabs, &opts, &extras);
         tab_events = strip.events;
         tab_context = strip.context.map(|(key, rect)| TabContext {
             id: key.0,
@@ -873,11 +884,13 @@ mod tests {
         id: 1,
         title: "zsh",
         progress: None,
+        attention: false,
     };
     const TAB_B: StripTab<'static> = StripTab {
         id: 2,
         title: "cargo build",
         progress: None,
+        attention: false,
     };
 
     fn frame_with(
@@ -888,6 +901,18 @@ mod tests {
         maximized: bool,
         tabs: &[StripTab<'_>],
     ) -> ShellOut {
+        frame_tree(store, text, events, chrome, maximized, tabs).0
+    }
+
+    /// `frame_with`, and the frame's semantic tree too.
+    fn frame_tree(
+        store: &mut UiStore,
+        text: &mut TextCache,
+        events: Vec<Event>,
+        chrome: Chrome,
+        maximized: bool,
+        tabs: &[StripTab<'_>],
+    ) -> (ShellOut, String) {
         let input = RawInput {
             size: (1040.0, 660.0),
             scale: 1.0,
@@ -925,8 +950,33 @@ mod tests {
         };
         let mut ui = Ui::begin(store, &input, config, text);
         let out = draw(&mut ui, view);
-        let _ = ui.finish();
-        out
+        let (_, frame) = ui.finish();
+        (out, format!("{:?}", frame.tree))
+    }
+
+    #[test]
+    fn a_tab_with_attention_is_cued_and_the_others_are_not() {
+        let mut cued = TAB_B;
+        cued.attention = true;
+        let draw_tabs = |tabs: &[StripTab<'_>]| {
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            frame_tree(&mut store, &mut text, Vec::new(), HOST, false, tabs).1
+        };
+        let plain = draw_tabs(&[TAB_A, TAB_B]);
+        let with = draw_tabs(&[TAB_A, cued]);
+        assert!(!plain.contains("Needs attention"), "no tab is cued");
+        assert_eq!(
+            with.matches("Needs attention").count(),
+            1,
+            "only the cued tab"
+        );
+        // Both at once: a progress report and the cue are both passed (no app-side priority).
+        let mut both = cued;
+        both.progress = Some(Tone::Warn);
+        assert_eq!(
+            draw_tabs(&[TAB_A, both]).matches("Needs attention").count(),
+            1
+        );
     }
 
     fn button(pos: (f32, f32), pressed: bool) -> Event {

@@ -30,6 +30,7 @@ use crate::demo::{demo_cursor, demo_grid};
 use crate::fonts;
 use crate::links;
 use crate::menus::{MenuKind, MenuModel};
+use crate::notices::Inbox;
 use crate::render::{Content, LinkTip, MenuDraw, Renderer};
 use crate::settings::{Settings, Theme};
 use crate::settings_page::{PageState, PageView, Section};
@@ -50,6 +51,14 @@ enum Overlay {
     Confirm(usize),
     /// The rename dialog with this text in its field.
     Rename(&'static str),
+}
+
+/// One notice a scene's inbox receives, for the tab at this index (the real `Inbox` calls, so the
+/// strip's cue comes from the same rule the app uses).
+#[derive(Debug, Clone, Copy)]
+enum SceneNotice {
+    Bell(usize),
+    Message(usize, &'static str, &'static str),
 }
 
 /// The settings page a scene shows.
@@ -142,6 +151,10 @@ struct Scene {
     /// A URL on the demo grid under the pointer: underlined, and its tooltip once the delay has
     /// passed.
     link: Option<LinkScene>,
+    /// What the inbox holds: the strip cues the tabs with unread entries that are not active.
+    notices: &'static [SceneNotice],
+    /// The tab (index) that shows an OSC 9;4 progress report, if any.
+    progress: Option<usize>,
 }
 
 /// 200 lines of history above a 35-line screen, scrolled to the middle: the thumb shows.
@@ -158,6 +171,11 @@ const MANY: &[&str] = &[
 ];
 const LONG: &[&str] =
     &["A tab title far longer than the widest tab the strip will ever draw for it, 80 chars!!"];
+
+const ATTENTION: &[SceneNotice] = &[
+    SceneNotice::Bell(1),
+    SceneNotice::Message(2, "Claude Code", "Claude needs your permission to use Bash"),
+];
 
 const BASE: Scene = Scene {
     name: "",
@@ -176,6 +194,8 @@ const BASE: Scene = Scene {
     script: &[],
     selected: false,
     link: None,
+    notices: &[],
+    progress: None,
 };
 
 const fn page(section: Section) -> Option<PageScene> {
@@ -194,7 +214,7 @@ const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
-const SCENES: [Scene; 38] = [
+const SCENES: [Scene; 40] = [
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -451,6 +471,23 @@ const SCENES: [Scene; 38] = [
         overlay: Overlay::Confirm(1),
         ..BASE
     },
+    // The attention cue: the second and third tabs have unread entries (a bell, a message), the
+    // third also reports progress; the active first tab shows none.
+    Scene {
+        name: "tabs-attention@2x.png",
+        tabs: FOUR,
+        notices: ATTENTION,
+        progress: Some(2),
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-attention@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        notices: ATTENTION,
+        progress: Some(2),
+        ..BASE
+    },
 ];
 
 /// The menu rows' area for a scene: the app menu hangs from the `⋯` button, the terminal's
@@ -572,16 +609,29 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     // The strip's tabs: ids are the places, so a scene's tabs are the same every run.
     let labelled = !scene.tabs.is_empty();
     let titles: &[&str] = if labelled { scene.tabs } else { &["Terminal"] };
+    let active = scene.active.min(titles.len().saturating_sub(1));
+    let mut inbox = Inbox::new();
+    for notice in scene.notices {
+        match *notice {
+            SceneNotice::Bell(i) => inbox.bell(i as u64 + 1, 1, Duration::ZERO),
+            SceneNotice::Message(i, title, body) => inbox.message(
+                i as u64 + 1,
+                title.to_owned(),
+                body.to_owned(),
+                Duration::ZERO,
+            ),
+        }
+    }
     let strip: Vec<StripTab<'_>> = titles
         .iter()
         .enumerate()
         .map(|(i, title)| StripTab {
             id: i as u64 + 1,
             title,
-            progress: None,
+            progress: (scene.progress == Some(i)).then_some(Tone::Neutral),
+            attention: inbox.tab_unread(i as u64 + 1) > 0 && i != active,
         })
         .collect();
-    let active = scene.active.min(strip.len().saturating_sub(1));
     let label = labelled.then(|| titles[active]);
     let message = match scene.overlay {
         Overlay::Confirm(n) => confirm_message(n),

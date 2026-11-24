@@ -2137,20 +2137,25 @@ impl App {
         }
 
         // The strip's tabs and the window's title, from the tabs as they are now.
-        let titles: Vec<(TabId, String, Option<Tone>)> = self
+        let active_tab = self.tabs.active();
+        // The cue (D2): an unread entry in a tab that is not the active one, focused or not.
+        let titles: Vec<(TabId, String, Option<Tone>, bool)> = self
             .tabs
             .iter()
-            .map(|(id, t)| (id, t.strip_title().to_owned(), t.progress_tone()))
+            .map(|(id, t)| {
+                let attention = self.inbox.tab_unread(id) > 0 && Some(id) != active_tab;
+                (id, t.strip_title().to_owned(), t.progress_tone(), attention)
+            })
             .collect();
         let strip: Vec<StripTab<'_>> = titles
             .iter()
-            .map(|(id, title, progress)| StripTab {
+            .map(|(id, title, progress, attention)| StripTab {
                 id: *id,
                 title,
                 progress: *progress,
+                attention: *attention,
             })
             .collect();
-        let active_tab = self.tabs.active();
         if let Some(t) = &mut self.trace {
             t.frame.slot0 = active_tab;
         }
