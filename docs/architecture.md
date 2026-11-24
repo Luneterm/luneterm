@@ -1158,13 +1158,15 @@ Windows child gets the inherited environment plus these, not portable-pty's regi
 **Title and bell (D13, D14).** The engine keeps titles up to 10 MB; the app scans at most 4,096
 characters, drops Unicode Cc and the bidi controls (U+061C, U+200E, U+200F, U+202A to U+202E,
 U+2066 to U+2069), trims, caps at 80 characters, and uses "Luneterm" when empty; the result goes to
-the window title and the title band (a 10 MB title takes under 10 ms in the test). A bell in the
-active tab of an unfocused window asks for user attention (`Informational`), at most every 2 s
-(`BELL_INTERVAL`); a bell in a background tab also leaves an inbox row (next part).
+the window title and the title band (a 10 MB title takes under 10 ms in the test). A bell in an
+unfocused window asks for user attention (`Informational`), at most every 2 s (`BELL_INTERVAL`),
+and so does a program message in a background tab of one (the D6 table below); a bell in a
+background tab also leaves an inbox row (next part).
 
 **Bell and notifications (bell-notifications plan).** A bell in a background tab shows an amber dot
 on that tab; a program message (plain OSC 9, or `OSC 777;notify;<title>;<body>`) shows an in-app
-toast and is kept in a header inbox. Nothing goes to the OS but the attention request above.
+toast and is kept in a header inbox. Nothing goes to the OS but the attention request above (the
+bell's, and a message's in an unfocused window).
 - *Path.* Bytes reach `lune-vt`: `ext/osc_notify.rs` turns a message into
   `HostEvent::Notification { title, body }`, only with `StandardExtensions::notifications` on (the
   app passes `true`; `luneterm-ffi` passes `false`, so through the C ABI `OSC 777` stays
@@ -1214,6 +1216,14 @@ toast and is kept in a header inbox. Nothing goes to the OS but the attention re
   has stood still, with its text unchanged, for `TOAST_ARM` (400 ms): `ToastSlots::sync` restarts
   the clock on the first frame that lists the toast and on every change of its rect (the stack
   slides when a neighbour leaves), and `press_target` is the one gate in front of the activation.
+  It is judged at the press, not at the frame that reports the click (luneui reports it on the
+  release): `PressClock` keeps the latest primary press until the frame that saw its release, and
+  forgets it on a focus loss; a click with no press kept (a key) is judged at its frame. The list
+  follows the same rule (`notices::armed_since`): luneui reports a row press as an index into the
+  frame the user saw, so `DrawnRows` keeps the ids of the rows the last frame drew and since when,
+  and a row press activates the row drawn at that index only when that list had stood still for
+  `TOAST_ARM` at the press and the click's own frame changes nothing in it; otherwise it does
+  nothing and the list stays open (so a row press right after opening the list waits too).
   While the pointer is over a toast, `terminal_hit` keeps every pointer path out of the terminal; a
   drag that began in the terminal keeps its capture. While the inbox list is open `overlay_open()`
   is true, so no key or pointer event reaches the terminal; it closes on Escape, a press outside, a
