@@ -7,9 +7,11 @@
 //! card); the terminal's body sits under it, inset 10 px inside the card. The close-confirm and
 //! rename dialogs are drawn here too, on the modal layer.
 
+use std::time::Duration;
+
 use lune_termview::{CellMetrics, GridLayout};
 use lune_ui::chrome::CARD_RADIUS;
-use lune_ui::color::{premul, with_alpha};
+use lune_ui::color::{Rgba, premul, with_alpha};
 use lune_ui::icon;
 use lune_ui::input::{CursorIcon, Event, PointerButton, WindowCommand};
 use lune_ui::layout::Axis;
@@ -25,7 +27,9 @@ use lune_ui::widgets::scrollbar::{self, ThumbGeometry, thumb_geometry};
 use lune_ui::widgets::tab_strip::{
     self, BusyCue, Tab as StripItem, TabEvent, TabKey, TabStripExtras, TabStripOptions,
 };
-use lune_ui::widgets::toast::Toasts;
+use lune_ui::widgets::toast::{
+    ToastAction, ToastExtras, ToastKind, ToastResponse, ToastSpec, ToastStackOptions, Toasts,
+};
 use lune_ui::widgets::tone::Tone;
 use lune_ui::window::{ResizeEdge, edge_at};
 
@@ -278,6 +282,72 @@ pub enum Modal<'a> {
     Rename { text: &'a mut String, focus: bool },
 }
 
+/// A notification toast's `Go to tab` button: the number its action reports.
+pub const TOAST_GO_TO_TAB: u64 = 1;
+/// A notification toast's `Dismiss` button.
+pub const TOAST_DISMISS: u64 = 2;
+/// The gap between the toast stack and the card's right and bottom edges (the mockup's 22 px).
+pub const TOAST_MARGIN: f32 = 22.0;
+/// The bell glyph of a notification toast.
+pub const TOAST_GLYPH: &str = "\u{eaa2}";
+
+/// The toolkit toast of a program notification (D16): the header names the tab (`source`, the
+/// tab's title now) with the age `now_text`; `title` (when not empty) is the bold line; `body` is
+/// the message. Two buttons, `Dismiss` (plain) then `Go to tab` (primary); it lives `life` with
+/// the drain line, and its hold on hover is the toolkit's. The one place a notification toast is
+/// built, for the app and for the dump scenes. The texts are the sanitised ones.
+pub fn notice_toast(
+    source: &str,
+    title: &str,
+    body: &str,
+    texts: &NoticeTexts<'_>,
+    accent: Rgba,
+    life: Duration,
+) -> (ToastSpec, ToastExtras) {
+    let mut spec = ToastSpec::new(ToastKind::Info, body);
+    spec.actions = vec![
+        ToastAction {
+            label: texts.dismiss.to_owned(),
+            primary: false,
+            id: TOAST_DISMISS,
+        },
+        ToastAction {
+            label: texts.go_to_tab.to_owned(),
+            primary: true,
+            id: TOAST_GO_TO_TAB,
+        },
+    ];
+    let mut extras = ToastExtras::new()
+        .with_source(source)
+        .with_age(texts.now)
+        .with_glyph(TOAST_GLYPH)
+        .with_accent(accent)
+        .with_timeout(life)
+        .with_drain(true);
+    if !title.is_empty() {
+        extras = extras.with_title(title);
+    }
+    (spec, extras)
+}
+
+/// The words of a notification toast, from the string table.
+#[derive(Debug, Clone, Copy)]
+pub struct NoticeTexts<'a> {
+    pub go_to_tab: &'a str,
+    pub dismiss: &'a str,
+    pub now: &'a str,
+}
+
+impl<'a> NoticeTexts<'a> {
+    pub fn of(strings: &'a lune_ui::strings::StringTable) -> Self {
+        NoticeTexts {
+            go_to_tab: strings.tr("toast.goToTab"),
+            dismiss: strings.tr("toast.dismiss"),
+            now: strings.tr("toast.now"),
+        }
+    }
+}
+
 /// What the shell draws a frame from.
 #[derive(Debug)]
 pub struct ShellView<'a> {
@@ -337,6 +407,8 @@ pub struct ShellOut {
     pub overflow: Option<Rect>,
     /// A tab asked for its context menu (a right-click or the assistive "show menu" action).
     pub tab_context: Option<TabContext>,
+    /// What the toasts reported: the button pressed (the toast leaves with it).
+    pub toast: ToastResponse,
 }
 
 /// A tab's request for its context menu: the app opens the menu (the strip owns none).
@@ -583,9 +655,17 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         }
         None => (None, None),
     };
-    if let Some(toasts) = view.toasts {
-        ui.toasts("toasts", toasts);
-    }
+    // Inside the card, for every toast of the app (the warning toasts too).
+    let toast = match view.toasts {
+        Some(toasts) => ui.toasts_with(
+            "toasts",
+            toasts,
+            &ToastStackOptions::new()
+                .with_area(layout.card)
+                .with_margin(TOAST_MARGIN),
+        ),
+        None => ToastResponse::default(),
+    };
     ShellOut {
         body: layout.body,
         commands,
@@ -594,6 +674,7 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         ime_area,
         overflow,
         tab_context,
+        toast,
     }
 }
 
@@ -952,6 +1033,132 @@ mod tests {
         let out = draw(&mut ui, view);
         let (_, frame) = ui.finish();
         (out, format!("{:?}", frame.tree))
+    }
+
+    /// One frame with `toasts` drawn, at `ms` (tier Off: nothing animates), and what it handed back.
+    fn toast_frame(
+        store: &mut UiStore,
+        text: &mut TextCache,
+        toasts: &mut Toasts,
+        ms: u64,
+    ) -> ShellOut {
+        let input = RawInput {
+            size: (1040.0, 660.0),
+            scale: 1.0,
+            time: Duration::from_millis(ms),
+            focused: true,
+            events: Vec::new(),
+        };
+        let (strings, shortcuts) = (StringTable::default(), Shortcuts::default());
+        let config = FrameConfig {
+            theme: THEME,
+            tier: MotionTier::Off,
+            busy_cadence: Cadence::BUSY,
+            strings: &strings,
+            arg_format: &DisplayFormat,
+            keymap: keymap(),
+            shortcuts: &shortcuts,
+        };
+        let tabs = [TAB_A, TAB_B];
+        let view = ShellView {
+            title: None,
+            maximized: false,
+            focused: true,
+            scroll: None,
+            cell_h: 17.0,
+            chrome: HOST,
+            tabs: &tabs,
+            active_tab: Some(1),
+            modal: None,
+            toasts: Some(toasts),
+            page_open: false,
+            busy: None,
+            busy_tone: Tone::Neutral,
+            overflow_name: "More",
+            header_tint: HEADER_TINT,
+            fading_slots: 0,
+        };
+        let mut ui = Ui::begin(store, &input, config, text);
+        let out = draw(&mut ui, view);
+        let _ = ui.finish();
+        out
+    }
+
+    const TEXTS: NoticeTexts<'static> = NoticeTexts {
+        go_to_tab: "Go to tab",
+        dismiss: "Dismiss",
+        now: "now",
+    };
+
+    /// A real `Toasts` through real frames: a notification toast is listed once drawn, sits in
+    /// the card's corner 22 px in, leaves the list when its 6 s are up, and the slots follow.
+    #[test]
+    fn a_notice_toast_is_listed_when_drawn_sits_in_the_card_corner_and_leaves_with_its_timeout() {
+        use crate::notices::{Admit, TOAST_LIFE, ToastSlots};
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let mut toasts = Toasts::default();
+        let mut slots: ToastSlots<_, Rect> = ToastSlots::new();
+        let (spec, extras) = notice_toast(
+            "claude",
+            "Claude Code",
+            "Claude needs your permission to use Bash",
+            &TEXTS,
+            THEME.attention(),
+            TOAST_LIFE,
+        );
+        let id = toasts.push_with(spec, extras, Duration::from_millis(1_000));
+        slots.shown(id, 3, Duration::from_millis(1_000));
+        // Not drawn yet: live for the toolkit, in no list, slot kept.
+        assert!(toasts.is_live(id) && toasts.live().is_empty());
+        assert!(
+            slots
+                .sync(toasts.live(), Duration::from_millis(1_010), |i| toasts
+                    .is_live(i))
+                .is_empty()
+        );
+        assert!(!slots.seen(id));
+
+        let layout = Layout::new(Rect::new(0.0, 0.0, 1040.0, 660.0));
+        let out = toast_frame(&mut store, &mut text, &mut toasts, 1_100);
+        assert_eq!(out.toast, ToastResponse::default());
+        let live = toasts.live().to_vec();
+        assert_eq!(live.len(), 1, "one toast listed");
+        assert_eq!(live[0].0, id);
+        let r = live[0].1;
+        assert!(
+            (layout.card.right() - r.right() - TOAST_MARGIN).abs() <= 1.0
+                && (layout.card.bottom() - r.bottom() - TOAST_MARGIN).abs() <= 1.0,
+            "{r:?} in {:?}",
+            layout.card
+        );
+        slots.sync(&live, Duration::from_millis(1_100), |i| toasts.is_live(i));
+        assert!(slots.seen(id));
+        // Still listed, same place, 400 ms later: armed.
+        toast_frame(&mut store, &mut text, &mut toasts, 1_500);
+        slots.sync(toasts.live(), Duration::from_millis(1_500), |i| {
+            toasts.is_live(i)
+        });
+        assert_eq!(
+            slots.press_target(id, Duration::from_millis(1_500)),
+            Some(3)
+        );
+        assert_eq!(slots.press_target(id, Duration::from_millis(1_499)), None);
+        // 6 s after the push the toast times out: the next frames drop it from the list.
+        for ms in [6_900, 7_000, 7_500] {
+            toast_frame(&mut store, &mut text, &mut toasts, ms);
+        }
+        assert!(toasts.live().is_empty(), "{:?}", toasts.live());
+        assert!(!toasts.is_live(id));
+        assert_eq!(
+            slots.sync(toasts.live(), Duration::from_millis(7_500), |i| toasts
+                .is_live(i)),
+            [id]
+        );
+        // The P1 case: the tab's next message gets a toast again.
+        assert_eq!(
+            slots.admit(3, Duration::from_millis(7_600)),
+            Admit::New { evict: None }
+        );
     }
 
     #[test]

@@ -43,8 +43,8 @@ use lune_ui::paint::Rect;
 use lune_ui::surface::{Acquired, SurfaceOptions, WindowSurface};
 use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
-use lune_ui::widgets::tab_strip::TabEvent;
-use lune_ui::widgets::toast::{ToastKind, ToastSpec, Toasts};
+use lune_ui::widgets::tab_strip::{TabEvent, TabKey};
+use lune_ui::widgets::toast::{ToastId, ToastKind, ToastSpec, Toasts};
 use lune_ui::widgets::tone::Tone;
 use lune_ui::window::glass_attributes;
 use lune_vt::{
@@ -64,7 +64,7 @@ use crate::input::{
 };
 use crate::links::{self, open::OpenError};
 use crate::menus::{self, MenuAction, MenuKind, MenuModel, TabOp};
-use crate::notices::{Inbox, route};
+use crate::notices::{Admit, Inbox, TOAST_LIFE, ToastSlots, route};
 use crate::pacing::{self, EventKind, Pacer, PresentAsk};
 use crate::palettes;
 use crate::persist::{
@@ -210,9 +210,8 @@ impl BellLimiter {
     }
 }
 
-/// A message that earned a toast (D6): the tab it came from and its sanitised text. The toast step
-/// consumes them; until then `pump` drops them at its end.
-#[allow(dead_code)] // read by the toast step
+/// A message that earned a toast (D6): the tab it came from and its sanitised text. `pump` turns
+/// them into toasts at its end (`show_notice_toasts`).
 struct ToastCandidate {
     tab: TabId,
     title: String,
@@ -278,6 +277,19 @@ fn hear(
 /// a tab closes. Returns whether anything changed.
 fn settle_inbox<T>(inbox: &mut Inbox, tabs: &TabSet<T>, focused: bool) -> bool {
     inbox.settle(tabs.active(), focused, |id| tabs.get(id).is_some())
+}
+
+/// Whether `pos` is inside one of `rects` (the toasts of the last drawn frame).
+fn over_any(rects: &[Rect], pos: (f32, f32)) -> bool {
+    rects.iter().any(|r| r.contains(pos))
+}
+
+/// Whether the pointer at `pos` is the terminal's: inside the body and under no toast. Every
+/// pointer path into the terminal (press, move report, selection start, link hover, the context
+/// menu, the wheel) asks this; a drag that began in the terminal does not (it keeps its capture
+/// across a toast).
+fn terminal_hit(body: Rect, toasts: &[Rect], pos: (f32, f32)) -> bool {
+    body.contains(pos) && !over_any(toasts, pos)
 }
 
 /// The termview cursor of the engine's. A pending wrap puts the column one past the last; the cursor
@@ -732,13 +744,19 @@ struct App {
     pending_link: Option<PendingLink>,
     clicks: ClickCounter,
     toasts: Toasts,
+    /// The notification toasts that are up (one per tab, three in all) and when each may take a
+    /// press; learned from every drawn frame (`sync_toasts`).
+    toast_slots: ToastSlots<ToastId, Rect>,
+    /// Where the toasts were in the last drawn frame: the pointer is theirs there, not the
+    /// terminal's.
+    toast_rects: Vec<Rect>,
     wheel: WheelState,
     thumb_drag: Option<ThumbDrag>,
     bell: BellLimiter,
     /// Bells and program notifications, the one store behind the tab dots, the badge and the list.
     /// In memory only (D15).
     inbox: Inbox,
-    /// Messages that earned a toast in this pump; dropped at its end until the toast step.
+    /// Messages that earned a toast in this pump; shown (or skipped by the slots) at its end.
     toast_candidates: Vec<ToastCandidate>,
     focused: bool,
     /// Efficiency mode in the background (UI thread only; every child creation runs inside its
@@ -812,6 +830,8 @@ impl App {
             pending_link: None,
             clicks: ClickCounter::default(),
             toasts: Toasts::default(),
+            toast_slots: ToastSlots::new(),
+            toast_rects: Vec::new(),
             wheel: WheelState::default(),
             thumb_drag: None,
             bell: BellLimiter::default(),
@@ -1983,8 +2003,7 @@ impl App {
             self.modal = None;
             worth_a_frame = true;
         }
-        // The toast step turns these into toasts; until then they are dropped.
-        self.toast_candidates.clear();
+        self.show_notice_toasts();
         // The one place that keeps the inbox true (D13), after every change of the tab set.
         worth_a_frame |= self.settle_inbox();
         // An update hid the hovered link's cells; show the link again if it is still there.
@@ -1992,9 +2011,101 @@ impl App {
         worth_a_frame
     }
 
-    /// `settle_inbox` on the app's own state.
+    /// `settle_inbox` on the app's own state, and the toasts that settling makes pointless: the
+    /// toast of a tab that is closed or is the focused active tab leaves (what it said is read,
+    /// or its tab is gone, so it can never switch to it).
     fn settle_inbox(&mut self) -> bool {
-        settle_inbox(&mut self.inbox, &self.tabs, self.focused)
+        let mut changed = settle_inbox(&mut self.inbox, &self.tabs, self.focused);
+        let (tabs, focused) = (&self.tabs, self.focused);
+        let active = tabs.active();
+        let stale = self
+            .toast_slots
+            .drop_where(|tab| tabs.get(tab).is_none() || (focused && Some(tab) == active));
+        let now = self.start.elapsed();
+        for id in stale {
+            self.toasts.dismiss(id, now);
+            changed = true;
+        }
+        changed
+    }
+
+    /// Turns the pump's toast candidates into notification toasts through the slots: a new tab
+    /// gets a toast (the oldest goes when three are up), a tab that has one gets its text replaced
+    /// at most once a second, anything else only keeps its inbox row.
+    fn show_notice_toasts(&mut self) {
+        let candidates = std::mem::take(&mut self.toast_candidates);
+        if candidates.is_empty() {
+            return;
+        }
+        let Some(stack) = &self.stack else { return };
+        let texts = shell::NoticeTexts::of(stack.renderer.strings());
+        let accent = stack.renderer.theme().attention();
+        let now = self.start.elapsed();
+        for c in candidates {
+            let Some(tab) = self.tabs.get(c.tab) else {
+                continue;
+            };
+            // The tab's name as it is now (D17); the toast keeps it until its text is replaced.
+            let source = tab.strip_title().to_owned();
+            let (spec, extras) =
+                shell::notice_toast(&source, &c.title, &c.body, &texts, accent, TOAST_LIFE);
+            match self.toast_slots.admit(c.tab, now) {
+                Admit::New { evict } => {
+                    if let Some(old) = evict {
+                        self.toasts.dismiss(old, now);
+                        self.toast_slots.gone(old);
+                    }
+                    let id = self.toasts.push_with(spec, extras, now);
+                    self.toast_slots.shown(id, c.tab, now);
+                }
+                Admit::Replace(id) => {
+                    self.toasts.update_with(id, spec, extras);
+                    self.toast_slots.shown(id, c.tab, now);
+                }
+                Admit::Skip => {}
+            }
+        }
+    }
+
+    /// A button of a notification toast was pressed in the frame at `now` (the toast leaves with
+    /// it). Dismiss only frees the slot. Go to tab switches to the toast's tab only when the
+    /// toast was drawn and has stood still for the arm delay (D14, `press_target`) and the tab
+    /// still exists; the inbox rows of that tab turn read at the next settle. Called before
+    /// `sync_toasts`, which would already have dropped the toast from the frame's list.
+    fn on_toast_action(
+        &mut self,
+        id: ToastId,
+        action: u64,
+        now: Duration,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let target = self
+            .toast_slots
+            .press_target(id, now)
+            .filter(|tab| self.tabs.get(*tab).is_some());
+        self.toast_slots.gone(id);
+        if action == shell::TOAST_GO_TO_TAB
+            && let Some(tab) = target
+        {
+            self.tab_event(TabEvent::Activate(TabKey(tab)), event_loop);
+        }
+        self.request_redraw();
+    }
+
+    /// Learns from the frame just drawn which toasts are up and where (D18): frees the slots of
+    /// those that left, restarts the arm of those that appeared or moved, and keeps the places
+    /// the pointer is kept off the terminal at.
+    fn sync_toasts(&mut self, now: Duration) {
+        let toasts = &self.toasts;
+        self.toast_slots
+            .sync(toasts.live(), now, |id| toasts.is_live(id));
+        let rects: Vec<Rect> = toasts.live().iter().map(|(_, r)| *r).collect();
+        if rects != self.toast_rects {
+            self.toast_rects = rects;
+            // A toast appearing under a still pointer hides the link hover there, and the other
+            // way round.
+            self.refresh_hover();
+        }
     }
 
     /// When a waiting new tab gives up on its directory check.
@@ -2345,6 +2456,13 @@ impl App {
             self.ask_frame(b.saturating_duration_since(self.start));
         }
 
+        // The toasts first: a pressed button's toast is already gone from this frame's list, so
+        // its slot is read before the list frees it.
+        if let Some((id, action)) = drawn.toast.action {
+            self.on_toast_action(id, action, input.time, event_loop);
+        }
+        self.sync_toasts(input.time);
+
         // What the frame asked of the page, the menu, the tabs and the dialog, now that the
         // frame is out.
         if edited != self.settings {
@@ -2535,7 +2653,13 @@ impl App {
     }
 
     fn over_body(&self, pos: (f32, f32)) -> bool {
-        self.placed.is_some_and(|p| p.layout.body.contains(pos))
+        self.placed
+            .is_some_and(|p| terminal_hit(p.layout.body, &self.toast_rects, pos))
+    }
+
+    /// Whether `pos` is over a toast of the last drawn frame: a toast has the pointer there.
+    fn over_toast(&self, pos: (f32, f32)) -> bool {
+        over_any(&self.toast_rects, pos)
     }
 
     /// Sends the report for `ev` at `pos`, if there is one. Returns whether it was sent.
@@ -2616,6 +2740,7 @@ impl App {
         if button == MouseButton::Left {
             if state.is_pressed() {
                 if let Some(scroll) = self.scroll_view()
+                    && !self.over_toast(pos)
                     && shell::thumb_hit(placed.layout.body, placed.cell_h_logical(), scroll, pos)
                 {
                     self.thumb_drag = Some(ThumbDrag::start(pos.1));
@@ -2735,7 +2860,7 @@ impl App {
         let (Some(pos), Some(placed)) = (self.pointer.over(), self.placed) else {
             return;
         };
-        if !self.has_session() || !placed.layout.body.contains(pos) {
+        if !self.has_session() || !terminal_hit(placed.layout.body, &self.toast_rects, pos) {
             return;
         }
         let Some(delta) = wheel_delta(delta) else {
@@ -3968,6 +4093,31 @@ mod tests {
         let (i, _, h) = heard(0, vec![], false, false, true);
         assert!(i.is_empty());
         assert_eq!(h, Heard::default());
+    }
+
+    #[test]
+    fn a_point_under_a_toast_is_not_the_terminals_but_a_point_beside_it_is() {
+        let body = Rect::new(10.0, 40.0, 800.0, 500.0);
+        let toast = Rect::new(500.0, 400.0, 300.0, 100.0);
+        let other = Rect::new(500.0, 290.0, 300.0, 100.0);
+        // Inside the body, outside every toast: the terminal's.
+        assert!(terminal_hit(body, &[toast, other], (100.0, 100.0)));
+        assert!(terminal_hit(body, &[toast, other], (499.0, 450.0)));
+        // Inside a toast (any of them, its buttons included): no press, report, selection start,
+        // hover or wheel reaches the terminal.
+        assert!(!terminal_hit(body, &[toast, other], (600.0, 450.0)));
+        assert!(!terminal_hit(body, &[toast, other], (600.0, 300.0)));
+        // The rect's edges: left and top inside, right and bottom outside (the toolkit's rule).
+        assert!(!terminal_hit(body, &[toast], (500.0, 400.0)));
+        assert!(terminal_hit(body, &[toast], (800.0, 450.0)));
+        // Outside the body is never the terminal's, a toast or not.
+        assert!(!terminal_hit(body, &[], (5.0, 100.0)));
+        // No toast live: exactly the body test of before.
+        for pos in [(10.0, 40.0), (809.9, 539.9), (810.0, 300.0), (400.0, 540.0)] {
+            assert_eq!(terminal_hit(body, &[], pos), body.contains(pos), "{pos:?}");
+        }
+        assert!(over_any(&[toast], (600.0, 450.0)));
+        assert!(!over_any(&[], (600.0, 450.0)));
     }
 
     #[test]

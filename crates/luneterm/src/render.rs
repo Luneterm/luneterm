@@ -248,6 +248,8 @@ pub struct Drawn {
     pub overflow: Option<Rect>,
     /// A tab asked for its context menu: which tab, and where it opens.
     pub tab_context: Option<TabContext>,
+    /// The toast button pressed this frame (the toast leaves with it).
+    pub toast: lune_ui::widgets::toast::ToastResponse,
     /// The grid size the frame was laid out for.
     pub cols: usize,
     pub rows: usize,
@@ -811,6 +813,7 @@ impl Renderer {
             menu: menu_resp,
             overflow: shell_out.overflow,
             tab_context: shell_out.tab_context,
+            toast: shell_out.toast,
             cols: placement.cols,
             rows: placement.rows,
         })

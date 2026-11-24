@@ -23,6 +23,7 @@ use lune_ui::paint::Rect;
 use lune_ui::text::TextRendering;
 use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
+use lune_ui::widgets::toast::Toasts;
 use lune_ui::widgets::tone::Tone;
 
 use crate::app::failure_grid;
@@ -30,11 +31,13 @@ use crate::demo::{demo_cursor, demo_grid};
 use crate::fonts;
 use crate::links;
 use crate::menus::{MenuKind, MenuModel};
-use crate::notices::Inbox;
+use crate::notices::{Admit, Inbox, TOAST_LIFE, ToastSlots};
 use crate::render::{Content, LinkTip, MenuDraw, Renderer};
 use crate::settings::{Settings, Theme};
 use crate::settings_page::{PageState, PageView, Section};
-use crate::shell::{HOST, Layout, Modal, ScrollView, StripTab, TAB_CLOSABLE};
+use crate::shell::{
+    HOST, Layout, Modal, NoticeTexts, ScrollView, StripTab, TAB_CLOSABLE, notice_toast,
+};
 use crate::spawn::SpawnFailure;
 use crate::tabs::confirm_message;
 
@@ -153,6 +156,9 @@ struct Scene {
     link: Option<LinkScene>,
     /// What the inbox holds: the strip cues the tabs with unread entries that are not active.
     notices: &'static [SceneNotice],
+    /// Each message of `notices` also earns a notification toast, pushed through the app's own
+    /// path (the slots, then `notice_toast`).
+    toasts: bool,
     /// The tab (index) that shows an OSC 9;4 progress report, if any.
     progress: Option<usize>,
 }
@@ -177,6 +183,13 @@ const ATTENTION: &[SceneNotice] = &[
     SceneNotice::Message(2, "Claude Code", "Claude needs your permission to use Bash"),
 ];
 
+const TOAST: &[SceneNotice] = &[SceneNotice::Message(
+    2,
+    "Claude Code",
+    "Claude needs your permission to use Bash",
+)];
+const TOAST_PLAIN: &[SceneNotice] = &[SceneNotice::Message(2, "", "Build finished: 1342 passed")];
+
 const BASE: Scene = Scene {
     name: "",
     scale: 2,
@@ -195,6 +208,7 @@ const BASE: Scene = Scene {
     selected: false,
     link: None,
     notices: &[],
+    toasts: false,
     progress: None,
 };
 
@@ -214,7 +228,7 @@ const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
-const SCENES: [Scene; 40] = [
+const SCENES: [Scene; 44] = [
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -488,6 +502,39 @@ const SCENES: [Scene; 40] = [
         progress: Some(2),
         ..BASE
     },
+    // The notification toast: a message from the third tab while the first is in view (the
+    // third also shows its dot); the toast sits in the card's corner.
+    Scene {
+        name: "toast@2x.png",
+        tabs: FOUR,
+        notices: TOAST,
+        toasts: true,
+        ..BASE
+    },
+    // An OSC 9 message has no title: the header names the tab, then the message.
+    Scene {
+        name: "toast-plain@2x.png",
+        tabs: FOUR,
+        notices: TOAST_PLAIN,
+        toasts: true,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-toast@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        notices: TOAST,
+        toasts: true,
+        ..BASE
+    },
+    Scene {
+        name: "opaque-toast@2x.png",
+        tabs: FOUR,
+        glass: false,
+        notices: TOAST,
+        toasts: true,
+        ..BASE
+    },
 ];
 
 /// The menu rows' area for a scene: the app menu hangs from the `⋯` button, the terminal's
@@ -632,6 +679,26 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             attention: inbox.tab_unread(i as u64 + 1) > 0 && i != active,
         })
         .collect();
+    // The toasts, through the app's path: the slots admit, `notice_toast` builds, the slots are told.
+    let strings = crate::strings::english();
+    let mut toasts = Toasts::default();
+    let mut slots: ToastSlots<_, Rect> = ToastSlots::new();
+    if scene.toasts {
+        let texts = NoticeTexts::of(&strings);
+        let accent = r.theme().attention();
+        for notice in scene.notices {
+            let SceneNotice::Message(i, title, body) = *notice else {
+                continue;
+            };
+            let tab = i as u64 + 1;
+            let Admit::New { .. } = slots.admit(tab, Duration::ZERO) else {
+                return Err("a scene toast was not admitted".to_owned());
+            };
+            let (spec, extras) = notice_toast(titles[i], title, body, &texts, accent, TOAST_LIFE);
+            let id = toasts.push_with(spec, extras, Duration::ZERO);
+            slots.shown(id, tab, Duration::ZERO);
+        }
+    }
     let label = labelled.then(|| titles[active]);
     let message = match scene.overlay {
         Overlay::Confirm(n) => confirm_message(n),
@@ -651,7 +718,6 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         end: (4, 30),
         kind: SelectionKind::Linear,
     }];
-    let strings = crate::strings::english();
     let mut model = match scene.menu {
         MenuScene::None => None,
         MenuScene::App => Some(MenuModel::new(
@@ -729,7 +795,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
                     url,
                     key: 1,
                 }),
-            toasts: None,
+            toasts: scene.toasts.then_some(&mut toasts),
             cursor,
             blink_on: true,
             scroll: scene.scroll,
@@ -767,6 +833,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             ));
             place = MenuPlace::At(ctx.at);
         }
+        slots.sync(toasts.live(), input.time, |id| toasts.is_live(id));
         r.gpu.end_frame(&mut r.text);
     }
     let rgba = read_rgba(&r.gpu.device, &r.gpu.queue, &texture)?;
@@ -918,7 +985,7 @@ mod tests {
                 .iter()
                 .filter(|(p, _)| p.to_string_lossy().contains("opaque"))
                 .count(),
-            6
+            7
         );
         let first: Vec<PathBuf> = gated.into_iter().map(|(p, _)| p).collect();
         let second = dump_frames(&b).expect("second dump");

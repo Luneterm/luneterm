@@ -301,31 +301,40 @@ pub enum Admit<Id> {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Slot<Id> {
+struct Slot<Id, R> {
     id: Id,
     tab: TabId,
     /// When the toast appeared or last had its text replaced.
     changed: Duration,
-    /// When the toast last moved on screen (the stack shifted under it); never before `changed`.
+    /// When the toast last moved on screen (the stack shifted under it) or was first drawn; never
+    /// before `changed`.
     moved: Duration,
+    /// Some frame listed this toast as drawn (never reset): from then on its absence from a
+    /// frame's list means it left.
+    seen: bool,
+    /// Where the newest frame that listed it drew it; reset by a replacement, so the first frame
+    /// after one counts as a move.
+    rect: Option<R>,
 }
 
 /// The live notification toasts: at most one per tab, at most [`TOAST_LIVE_CAP`] in all. The
 /// caller pushes what [`ToastSlots::admit`] says and then reports it with
-/// [`ToastSlots::shown`] (for a replacement too); a toast that left is reported with
-/// [`ToastSlots::gone`]. In creation order, oldest first.
+/// [`ToastSlots::shown`] (for a replacement too); [`ToastSlots::sync`] learns from each drawn
+/// frame which toasts are still up and where, and frees the slots of those that left. `R` is the
+/// type of a toast's place on screen (any `Copy + PartialEq`; the app uses the toolkit's rect).
+/// In creation order, oldest first.
 #[derive(Debug, Clone)]
-pub struct ToastSlots<Id> {
-    slots: Vec<Slot<Id>>,
+pub struct ToastSlots<Id, R = ()> {
+    slots: Vec<Slot<Id, R>>,
 }
 
-impl<Id> Default for ToastSlots<Id> {
+impl<Id, R> Default for ToastSlots<Id, R> {
     fn default() -> Self {
         ToastSlots { slots: Vec::new() }
     }
 }
 
-impl<Id: Copy + PartialEq> ToastSlots<Id> {
+impl<Id: Copy + PartialEq, R: Copy + PartialEq> ToastSlots<Id, R> {
     pub fn new() -> Self {
         ToastSlots::default()
     }
@@ -347,19 +356,23 @@ impl<Id: Copy + PartialEq> ToastSlots<Id> {
     }
 
     /// Toast `id` of `tab` appeared at `now`, or (when `id` is already known) had its text
-    /// replaced: either way its interval and arm delay restart.
+    /// replaced: either way its interval and arm delay restart, and its place is unknown until a
+    /// frame lists it again.
     pub fn shown(&mut self, id: Id, tab: TabId, now: Duration) {
         match self.slots.iter_mut().find(|s| s.id == id) {
             Some(slot) => {
                 slot.tab = tab;
                 slot.changed = now;
                 slot.moved = slot.moved.max(now);
+                slot.rect = None;
             }
             None => self.slots.push(Slot {
                 id,
                 tab,
                 changed: now,
                 moved: now,
+                seen: false,
+                rect: None,
             }),
         }
     }
@@ -375,9 +388,9 @@ impl<Id: Copy + PartialEq> ToastSlots<Id> {
     }
 
     /// Toast `id` is at another place on screen than in the frame before (the stack shifted when
-    /// a neighbour left): its arm delay restarts, so a button never takes a press at a place it
-    /// reached less than [`TOAST_ARM`] ago. The text-replacement interval is not touched. An
-    /// unknown id changes nothing.
+    /// a neighbour left), or was drawn for the first time: its arm delay restarts, so a button
+    /// never takes a press at a place it reached less than [`TOAST_ARM`] ago. The
+    /// text-replacement interval is not touched. An unknown id changes nothing.
     pub fn moved(&mut self, id: Id, now: Duration) {
         if let Some(slot) = self.slots.iter_mut().find(|s| s.id == id) {
             slot.moved = slot.moved.max(now);
@@ -392,6 +405,59 @@ impl<Id: Copy + PartialEq> ToastSlots<Id> {
             .iter()
             .find(|s| s.id == id)
             .is_some_and(|s| now.saturating_sub(s.changed.max(s.moved)) >= TOAST_ARM)
+    }
+
+    /// Whether some frame has listed toast `id` as drawn (the toast was on screen); false for an
+    /// unknown id. A press acts only on a toast that was.
+    pub fn seen(&self, id: Id) -> bool {
+        self.slots.iter().any(|s| s.id == id && s.seen)
+    }
+
+    /// The tab a press on toast `id` at `now` may act on: only a toast that was drawn and has been
+    /// still for [`TOAST_ARM`]. The one gate in front of Go to tab (D14).
+    pub fn press_target(&self, id: Id, now: Duration) -> Option<TabId> {
+        self.seen(id)
+            .then(|| self.armed(id, now))
+            .filter(|armed| *armed)
+            .and_then(|_| self.tab_of(id))
+    }
+
+    /// Learns from one drawn frame (D18, D14). `live` is that frame's list of drawn toasts with
+    /// their places, `now` the frame's time, `is_live` the toolkit's model answer for a toast
+    /// not in the list.
+    ///
+    ///  - A slot listed for the first time, or listed at another place than the frame before
+    ///    (also the first frame after a replacement), has its arm restarted ([`Self::moved`]).
+    ///  - A slot that is not listed is freed when it was listed before, or when the toolkit says
+    ///    it is not up (it left before it was ever drawn); a toast pushed but not drawn yet keeps
+    ///    its slot.
+    ///
+    /// Returns the ids freed. Ids in `live` that the table does not know (the warning toasts) are
+    /// ignored.
+    pub fn sync(
+        &mut self,
+        live: &[(Id, R)],
+        now: Duration,
+        is_live: impl Fn(Id) -> bool,
+    ) -> Vec<Id> {
+        let mut freed = Vec::new();
+        self.slots
+            .retain_mut(|slot| match live.iter().find(|(id, _)| *id == slot.id) {
+                Some((_, rect)) => {
+                    if slot.rect != Some(*rect) {
+                        slot.moved = slot.moved.max(now);
+                    }
+                    slot.rect = Some(*rect);
+                    slot.seen = true;
+                    true
+                }
+                None if slot.seen || !is_live(slot.id) => {
+                    freed.push(slot.id);
+                    false
+                }
+                None => true,
+            });
+        freed
     }
 
     /// Frees the slots whose tab satisfies `pred` and returns their ids (the caller dismisses the
@@ -415,6 +481,16 @@ impl<Id: Copy + PartialEq> ToastSlots<Id> {
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
+}
+
+// ----------------------------------------------------------------------------------------- strings
+
+/// Every string key the notification toast asks for (the inbox adds its own in step 9).
+pub fn required_keys() -> Vec<String> {
+    ["toast.goToTab", "toast.dismiss", "toast.now"]
+        .iter()
+        .map(|k| (*k).to_owned())
+        .collect()
 }
 
 // ------------------------------------------------------------------------------------------- age
@@ -859,6 +935,141 @@ mod tests {
         assert_eq!(slots.len(), 1);
         assert!(!slots.armed(99, s(31)));
         assert!(slots.armed(7, s(31)));
+    }
+
+    // ---- toast slots: sync (D18) and the arm (D14, S1)
+
+    type Slots = ToastSlots<u32, (u32, u32)>;
+
+    #[test]
+    fn a_pushed_toast_not_yet_drawn_keeps_its_slot_and_a_drawn_one_that_is_absent_loses_it() {
+        let mut slots = Slots::new();
+        slots.shown(1, 10, s(0));
+        // Not listed yet, the toolkit still has it up: the slot stays, however often.
+        assert!(slots.sync(&[], ms(50), |_| true).is_empty());
+        assert!(slots.sync(&[], ms(100), |_| true).is_empty());
+        assert_eq!(slots.len(), 1);
+        assert!(!slots.seen(1));
+        // Listed: seen. Absent afterwards (timed out, closed with the cross): freed.
+        assert!(slots.sync(&[(1, (0, 0))], ms(150), |_| true).is_empty());
+        assert!(slots.seen(1));
+        assert_eq!(slots.sync(&[], s(6), |_| true), [1]);
+        assert!(slots.is_empty());
+        // The P1 case: the tab's next message gets a toast again.
+        assert_eq!(slots.admit(10, ms(6_001)), Admit::New { evict: None });
+    }
+
+    #[test]
+    fn a_toast_that_left_before_it_was_drawn_is_freed_by_the_toolkits_answer() {
+        let mut slots = Slots::new();
+        slots.shown(1, 10, s(0));
+        slots.shown(2, 20, s(0));
+        // 1 is gone for the toolkit (window hidden, it timed out unseen); 2 is up, undrawn.
+        assert_eq!(slots.sync(&[], s(10), |id| id == 2), [1]);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots.tab_of(2), Some(20));
+    }
+
+    #[test]
+    fn unknown_ids_in_the_list_are_ignored() {
+        let mut slots = Slots::new();
+        slots.shown(1, 10, s(0));
+        assert!(
+            slots
+                .sync(&[(9, (1, 1)), (1, (0, 0))], ms(10), |_| true)
+                .is_empty()
+        );
+        assert_eq!(slots.len(), 1);
+    }
+
+    #[test]
+    fn four_tabs_with_one_timed_out_leave_room_without_an_eviction() {
+        let mut slots = Slots::new();
+        for (i, tab) in [1u64, 2, 3].into_iter().enumerate() {
+            slots.shown(i as u32, tab, ms(i as u64));
+        }
+        let all = [(0, (0, 0)), (1, (0, 1)), (2, (0, 2))];
+        assert!(slots.sync(&all, ms(100), |_| true).is_empty());
+        assert_eq!(slots.admit(4, ms(200)), Admit::New { evict: Some(0) });
+        // Toast 0 timed out: the next frame's list lacks it.
+        assert_eq!(slots.sync(&all[1..], s(6), |_| true), [0]);
+        assert_eq!(slots.admit(4, ms(6_100)), Admit::New { evict: None });
+    }
+
+    #[test]
+    fn the_arm_starts_at_the_first_frame_that_draws_the_toast_not_at_the_push() {
+        let mut slots = Slots::new();
+        slots.shown(1, 10, s(10));
+        // A slow first frame: first listed 300 ms after the push.
+        slots.sync(&[(1, (0, 0))], ms(10_300), |_| true);
+        assert!(!slots.armed(1, ms(10_699)));
+        assert!(slots.armed(1, ms(10_700)));
+        assert_eq!(slots.press_target(1, ms(10_699)), None);
+        assert_eq!(slots.press_target(1, ms(10_700)), Some(10));
+        // Listed at the same place frame after frame: no restart.
+        for t in [10_400, 10_500, 10_650, 10_900, 11_500] {
+            slots.sync(&[(1, (0, 0))], ms(t), |_| true);
+        }
+        assert!(slots.armed(1, ms(11_500)));
+    }
+
+    #[test]
+    fn a_toast_never_drawn_takes_no_press_however_late() {
+        let mut slots = Slots::new();
+        slots.shown(1, 10, s(0));
+        assert!(slots.armed(1, s(5)), "the clock alone says armed");
+        assert_eq!(slots.press_target(1, s(5)), None, "but it was never drawn");
+    }
+
+    #[test]
+    fn a_slide_restarts_the_arm_on_every_changed_frame_s1() {
+        let mut slots = Slots::new();
+        slots.shown(1, 10, s(0)); // B, older
+        slots.shown(2, 20, s(1)); // C, newer, below B
+        let (r1, r2) = ((0, 100), (0, 200));
+        slots.sync(&[(1, r1), (2, r2)], ms(1_100), |_| true);
+        assert!(slots.armed(1, s(3)));
+        // C leaves; B slides into C's place over a few frames, then rests at r2 from t.
+        slots.sync(&[(1, r1)], s(5), |_| true);
+        for (t, y) in [(5_016, 120), (5_032, 150), (5_048, 190)] {
+            slots.sync(&[(1, (0, y))], ms(t), |_| true);
+            assert!(!slots.armed(1, ms(t)));
+        }
+        let t = 5_064;
+        slots.sync(&[(1, r2)], ms(t), |_| true);
+        // Resting at r2 from t: unchanged frames do not restart it.
+        slots.sync(&[(1, r2)], ms(t + 100), |_| true);
+        slots.sync(&[(1, r2)], ms(t + 300), |_| true);
+        assert!(!slots.armed(1, ms(t + 399)));
+        assert!(slots.armed(1, ms(t + 400)));
+        // A press on Go to tab at t + 399 switches no tab; at t + 400 it does.
+        assert_eq!(slots.press_target(1, ms(t + 399)), None);
+        assert_eq!(slots.press_target(1, ms(t + 400)), Some(10));
+    }
+
+    #[test]
+    fn the_first_frame_after_a_replacement_restarts_the_arm() {
+        let mut slots = Slots::new();
+        slots.shown(1, 10, s(0));
+        slots.sync(&[(1, (0, 0))], ms(10), |_| true);
+        assert!(slots.armed(1, s(2)));
+        // Text replaced at 2 s (the same place): the stored place is forgotten.
+        slots.shown(1, 10, s(2));
+        // A slow frame draws it first at 2.3 s, same rect as before the replacement.
+        slots.sync(&[(1, (0, 0))], ms(2_300), |_| true);
+        assert!(!slots.armed(1, ms(2_699)));
+        assert!(slots.armed(1, ms(2_700)));
+        // Freed after a replacement too once absent (seen survives the replacement).
+        slots.shown(1, 10, s(4));
+        assert_eq!(slots.sync(&[], ms(4_100), |_| true), [1]);
+    }
+
+    #[test]
+    fn required_keys_are_the_three_toast_strings() {
+        assert_eq!(
+            required_keys(),
+            ["toast.goToTab", "toast.dismiss", "toast.now"]
+        );
     }
 
     #[test]
