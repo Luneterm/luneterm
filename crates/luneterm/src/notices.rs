@@ -306,6 +306,8 @@ struct Slot<Id> {
     tab: TabId,
     /// When the toast appeared or last had its text replaced.
     changed: Duration,
+    /// When the toast last moved on screen (the stack shifted under it); never before `changed`.
+    moved: Duration,
 }
 
 /// The live notification toasts: at most one per tab, at most [`TOAST_LIVE_CAP`] in all. The
@@ -351,11 +353,13 @@ impl<Id: Copy + PartialEq> ToastSlots<Id> {
             Some(slot) => {
                 slot.tab = tab;
                 slot.changed = now;
+                slot.moved = slot.moved.max(now);
             }
             None => self.slots.push(Slot {
                 id,
                 tab,
                 changed: now,
+                moved: now,
             }),
         }
     }
@@ -370,13 +374,24 @@ impl<Id: Copy + PartialEq> ToastSlots<Id> {
         self.slots.iter().find(|s| s.id == id).map(|s| s.tab)
     }
 
-    /// Whether a press on toast `id` may act yet: false within [`TOAST_ARM`] of its appearing or
-    /// of its text being replaced, and for a toast this table does not know.
+    /// Toast `id` is at another place on screen than in the frame before (the stack shifted when
+    /// a neighbour left): its arm delay restarts, so a button never takes a press at a place it
+    /// reached less than [`TOAST_ARM`] ago. The text-replacement interval is not touched. An
+    /// unknown id changes nothing.
+    pub fn moved(&mut self, id: Id, now: Duration) {
+        if let Some(slot) = self.slots.iter_mut().find(|s| s.id == id) {
+            slot.moved = slot.moved.max(now);
+        }
+    }
+
+    /// Whether a press on toast `id` may act yet: false within [`TOAST_ARM`] of its appearing, of
+    /// its text being replaced or of its last move on screen, and for a toast this table does not
+    /// know.
     pub fn armed(&self, id: Id, now: Duration) -> bool {
         self.slots
             .iter()
             .find(|s| s.id == id)
-            .is_some_and(|s| now.saturating_sub(s.changed) >= TOAST_ARM)
+            .is_some_and(|s| now.saturating_sub(s.changed.max(s.moved)) >= TOAST_ARM)
     }
 
     /// Frees the slots whose tab satisfies `pred` and returns their ids (the caller dismisses the
@@ -816,6 +831,34 @@ mod tests {
         // a toast the table does not know is never armed; a clock before `shown` is not armed
         assert!(!slots.armed(8, s(99)));
         assert!(!slots.armed(7, s(5)));
+    }
+
+    #[test]
+    fn a_move_on_screen_restarts_the_arm_delay_but_not_the_replace_interval() {
+        let mut slots: ToastSlots<u32> = ToastSlots::new();
+        slots.shown(7, 1, s(10));
+        assert!(slots.armed(7, s(12)));
+        // The stack shifts under it at 12 s: not clickable for 400 ms.
+        slots.moved(7, s(12));
+        assert!(!slots.armed(7, s(12)));
+        assert!(!slots.armed(7, ms(12_399)));
+        assert!(slots.armed(7, ms(12_400)));
+        // Another move restarts it again; an older timestamp never shortens it.
+        slots.moved(7, ms(13_000));
+        slots.moved(7, ms(12_900));
+        assert!(!slots.armed(7, ms(13_399)));
+        assert!(slots.armed(7, ms(13_400)));
+        // The move is not a text change: the tab's next message still replaces at once.
+        assert_eq!(slots.admit(1, ms(13_001)), Admit::Replace(7));
+        // A replacement after a move restarts the delay too.
+        slots.shown(7, 1, s(20));
+        assert!(!slots.armed(7, ms(20_399)));
+        assert!(slots.armed(7, ms(20_400)));
+        // An unknown id is a no-op.
+        slots.moved(99, s(30));
+        assert_eq!(slots.len(), 1);
+        assert!(!slots.armed(99, s(31)));
+        assert!(slots.armed(7, s(31)));
     }
 
     #[test]
