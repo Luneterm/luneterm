@@ -1167,6 +1167,8 @@ impl App {
             Effect::Outline | Effect::ConfirmClose => {}
             // Read on each mouse-up that ends a selection (step 2).
             Effect::CopyOnSelect => {}
+            // Nothing to do live: `pump` reads the field (step 5).
+            Effect::OscNotifications => {}
             Effect::Efficiency => self
                 .efficiency
                 .set_enabled(self.settings.efficiency_mode, Instant::now()),

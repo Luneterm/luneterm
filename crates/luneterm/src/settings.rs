@@ -199,6 +199,10 @@ pub struct Settings {
     /// Copy a finished mouse selection to the clipboard on the mouse-up that ends it. A
     /// Luneterm-only setting: Lunegit has none.
     pub copy_on_select: bool,
+    /// Let command-line programs show a notification (OSC 9 and OSC 777 `notify`): a toast when
+    /// their tab is in the background and an entry in the notification list. Off: such messages
+    /// are dropped (the bell is not affected). A Luneterm-only setting: Lunegit has none.
+    pub osc_notifications: bool,
     /// Throttle Luneterm itself while its window is unfocused or minimized and no tab prints
     /// output; shells keep normal priority. Linux has no mechanism, so it has no effect there. A
     /// Luneterm-only setting: Lunegit has none.
@@ -231,6 +235,7 @@ impl Default for Settings {
             osc_clipboard: true,
             option_as_meta: false,
             copy_on_select: true,
+            osc_notifications: true,
             efficiency_mode: true,
         }
     }
@@ -356,6 +361,7 @@ impl Settings {
             osc_clipboard,
             option_as_meta,
             copy_on_select,
+            osc_notifications,
             efficiency_mode,
         } = self;
         let flags = [
@@ -413,6 +419,10 @@ impl Settings {
                 *copy_on_select != other.copy_on_select,
             ),
             (
+                SettingId::OscNotifications,
+                *osc_notifications != other.osc_notifications,
+            ),
+            (
                 SettingId::EfficiencyMode,
                 *efficiency_mode != other.efficiency_mode,
             ),
@@ -450,12 +460,13 @@ pub enum SettingId {
     OscClipboard,
     OptionAsMeta,
     CopyOnSelect,
+    OscNotifications,
     EfficiencyMode,
 }
 
 impl SettingId {
     /// Every setting, in the order of the [`Settings`] fields.
-    pub const ALL: [SettingId; 24] = [
+    pub const ALL: [SettingId; 25] = [
         SettingId::Theme,
         SettingId::Glass,
         SettingId::MenuBlur,
@@ -479,6 +490,7 @@ impl SettingId {
         SettingId::OscClipboard,
         SettingId::OptionAsMeta,
         SettingId::CopyOnSelect,
+        SettingId::OscNotifications,
         SettingId::EfficiencyMode,
     ];
 
@@ -499,6 +511,7 @@ impl SettingId {
             SettingId::OscClipboard => Effect::OscClipboard,
             SettingId::OptionAsMeta => Effect::OptionAsMeta,
             SettingId::CopyOnSelect => Effect::CopyOnSelect,
+            SettingId::OscNotifications => Effect::OscNotifications,
             SettingId::EfficiencyMode => Effect::Efficiency,
             SettingId::ConfirmClose => Effect::ConfirmClose,
             SettingId::DefaultCwd
@@ -541,6 +554,8 @@ pub enum Effect {
     ConfirmClose,
     /// Read on each mouse-up that ends a selection.
     CopyOnSelect,
+    /// Nothing to do live: `pump` reads the field each time it handles a notification.
+    OscNotifications,
     /// The efficiency controller re-evaluates now (step 3).
     Efficiency,
     /// Tabs opened from now on; the page says so (its restart notice).
@@ -790,6 +805,7 @@ mod tests {
             (S::OscClipboard, E::OscClipboard),
             (S::OptionAsMeta, E::OptionAsMeta),
             (S::CopyOnSelect, E::CopyOnSelect),
+            (S::OscNotifications, E::OscNotifications),
             (S::EfficiencyMode, E::Efficiency),
         ];
         assert_eq!(table.len(), SettingId::ALL.len());
@@ -803,7 +819,7 @@ mod tests {
     #[test]
     fn changing_one_field_changes_exactly_its_id() {
         let d = Settings::default();
-        let cases: [(SettingId, Settings); 24] = [
+        let cases: [(SettingId, Settings); 25] = [
             (
                 SettingId::Theme,
                 Settings {
@@ -962,6 +978,13 @@ mod tests {
                 SettingId::CopyOnSelect,
                 Settings {
                     copy_on_select: false,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::OscNotifications,
+                Settings {
+                    osc_notifications: false,
                     ..d.clone()
                 },
             ),
