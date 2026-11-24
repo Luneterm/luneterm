@@ -35,7 +35,7 @@ pins included); CI runs it and builds with `--locked`.
 
 ## lune-ui (toolkit)
 
-The app and `lune-termview` use **luneui** (`https://github.com/lune-rs/luneui`, formerly luneui-rs; `lune-ui` 0.7.6, tag `v0.7.6`: `core`,
+The app and `lune-termview` use **luneui** (`https://github.com/lune-rs/luneui`, formerly luneui-rs; `lune-ui` 0.8.0, tag `v0.8.0`: `core`,
 `wgpu`, `winit`, `platform` crates behind one facade): its module map and component catalogue are in
 that repo's `docs/architecture.md` and `docs/components/INDEX.md`. What Luneterm found while being
 its first real consumer, and the two components it owes evidence for, is in
