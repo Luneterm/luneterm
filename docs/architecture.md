@@ -887,8 +887,9 @@ global state (M10: a `Tab` owns a session and everything that used to be per-ses
 
 | Module | Holds |
 |---|---|
-| `app` | winit event loop (user event = session wake), window, frame loop, session wiring, bell, exit |
-| `shell` | Layout (34 px title band, card radius 8, margins 10, body padding 10), the Windows chrome (caption buttons, drag, edge resize), the band double press (Windows: maximize; macOS: the System Settings action via `double_click`; Linux: drag), scrollbar thumb geometry and drag |
+| `app` | winit event loop (user event = session wake), window, frame loop, session wiring, bell and program notifications (`hear`, the inbox list's open state), exit |
+| `shell` | Layout (34 px title band, card radius 8, margins 10, body padding 10), the Windows chrome (caption buttons, drag, edge resize), the band double press (Windows: maximize; macOS: the System Settings action via `double_click`; Linux: drag), scrollbar thumb geometry and drag, the inbox button and its list (`draw_inbox`, `inbox_rows`), the notification toast (`notice_toast`) |
+| `notices` | The notification model, pure: `Inbox` (rows, coalescing, `settle`), the D6 `route` table, `ToastSlots` (the live toasts, their arm delay), age labels |
 | `double_click` | What a double click on the title band does on macOS: the `AppleActionOnDoubleClick` setting (zoom, minimize or nothing) mapped to a `WindowCommand`; elsewhere maximize |
 | `render` | `Renderer`: one `Ui`, `TermView`, `FrameRenderer` and `TextCache`, shared by the window and by dump mode |
 | `session` | The three-thread session below, `Update`, `apply_update`, the fake PTY and the protocol tests |
@@ -1157,8 +1158,66 @@ Windows child gets the inherited environment plus these, not portable-pty's regi
 **Title and bell (D13, D14).** The engine keeps titles up to 10 MB; the app scans at most 4,096
 characters, drops Unicode Cc and the bidi controls (U+061C, U+200E, U+200F, U+202A to U+202E,
 U+2066 to U+2069), trims, caps at 80 characters, and uses "Luneterm" when empty; the result goes to
-the window title and the title band (a 10 MB title takes under 10 ms in the test). A bell asks for
-user attention (`Informational`) only while the window is unfocused, at most every 2 s.
+the window title and the title band (a 10 MB title takes under 10 ms in the test). A bell in the
+active tab of an unfocused window asks for user attention (`Informational`), at most every 2 s
+(`BELL_INTERVAL`); a bell in a background tab also leaves an inbox row (next part).
+
+**Bell and notifications (bell-notifications plan).** A bell in a background tab shows an amber dot
+on that tab; a program message (plain OSC 9, or `OSC 777;notify;<title>;<body>`) shows an in-app
+toast and is kept in a header inbox. Nothing goes to the OS but the attention request above.
+- *Path.* Bytes reach `lune-vt`: `ext/osc_notify.rs` turns a message into
+  `HostEvent::Notification { title, body }`, only with `StandardExtensions::notifications` on (the
+  app passes `true`; `luneterm-ffi` passes `false`, so through the C ABI `OSC 777` stays
+  `UNKNOWN_OSC`, a plain OSC 9 stays silent, `flatten_events` skips the variant, and `ABI_VERSION`
+  stays 1). The session engine collects them in the Update (`Update.notifications`, raw text).
+  `Tab::apply` is the one place program text becomes app text: `title::sanitize_text` makes
+  `Effects.messages` (and the bell count becomes `Effects.bells`). `pump` hands both to `hear`,
+  which asks the `route` table and fills the `Inbox` (`notices.rs`, in memory), the single store.
+  The tab dot (`StripTab.attention` = the tab has an unread row and is not the active one), the
+  header button's badge (unread rows, "9+" above nine), the list (a luneui popover) and the toast
+  slots are all read from it.
+- *OSC 9 grammar (D4, D5).* The payload is a message unless its first field (up to the first `;`, or
+  all of it) is only ASCII digits, which keeps every ConEmu form (`9;4;...` progress, `9;9;...`
+  cwd, a bare `9;404`) out; `9;3 tests failed` is a message. `OSC 777` is `notify` only,
+  case-sensitive, the body is everything after the second `;`; both fields empty is nothing. An
+  aborted OSC emits nothing.
+- *Routing (D6).* `route(is_bell, focused, active)`:
+
+  | | focused, active tab | focused, other tab | unfocused, active tab | unfocused, other tab |
+  |---|---|---|---|---|
+  | bell | nothing | row + dot | OS attention | row + dot + OS attention |
+  | message | nothing | row + dot + toast | OS attention | row + dot + OS attention |
+
+  OS attention goes through the existing `BellLimiter`. No toast is shown for something that arrived
+  while unfocused, nor on return (the dot and badge show it). With the setting "Notifications from
+  programs" off (`osc_notifications`, Terminal > Behavior, default on) messages are dropped in `pump`
+  (no row, toast or attention; rows already there stay); bells are not affected. `Inbox::settle` runs
+  at the end of `pump` and before each frame: while focused it marks the active tab's rows read, and
+  rows of closed tabs go, so no hook is needed where the active tab changes. A bell folds into the
+  tab's unread "Bell ×N" row; an identical message folds into the tab's newest unread row.
+- *Sanitising (D9).* Per field, from at most `MAX_SCAN_CHARS` (4,096) chars: every whitespace char
+  becomes one space and runs collapse, `is_control()` and the bidi controls of `title.rs` are
+  dropped, trim, then at most `NOTICE_TITLE_CHARS` (80) for the title and `NOTICE_BODY_CHARS`
+  (240) for the body; a message with both empty is dropped. Titles keep their own rule above.
+- *Caps (D10).* One OSC payload at most `MAX_PAYLOAD_BYTES` (4,096, in `ext/osc_notify.rs`), over it
+  dropped whole, never cut; `NOTIFICATION_LIMIT` (8) events per engine drain;
+  `NOTIFICATIONS_CAP` (16) per Update, the oldest dropped; `INBOX_CAP` (50) rows and `TAB_CAP` (20)
+  per tab; toasts: `TOAST_LIVE_CAP` (3) alive, one per tab, a tab's toast text replaced at most
+  once per `TOAST_MIN_INTERVAL` (1 s), each lives `TOAST_LIFE` (6 s, luneui holds it while the
+  pointer is on it).
+- *Invariants.* The text is inert: luneui draws it as plain text (never markup, never a link), and
+  it is never copied, written to the clipboard, sent to the PTY, logged (the `Debug` of a notice
+  prints char counts, the engine's one debug line a byte count) or persisted (the inbox is not in
+  `workspace.json`). The source is always named: the toast header and every list row carry the
+  tab's current title (a toast keeps the title it had when pushed). Arm delay (D14): a program
+  controls when a toast appears, so `Go to tab` does nothing until that toast has been drawn and
+  has stood still, with its text unchanged, for `TOAST_ARM` (400 ms): `ToastSlots::sync` restarts
+  the clock on the first frame that lists the toast and on every change of its rect (the stack
+  slides when a neighbour leaves), and `press_target` is the one gate in front of the activation.
+  While the pointer is over a toast, `terminal_hit` keeps every pointer path out of the terminal; a
+  drag that began in the terminal keeps its capture. While the inbox list is open `overlay_open()`
+  is true, so no key or pointer event reaches the terminal; it closes on Escape, a press outside, a
+  focus loss, and when a dialog, the page or a menu opens.
 
 **Fonts and look (D15, D16; M10 D9a; rznmono-1000).** The six bundled faces live in `crates/luneterm/assets`:
 RznMono 1.003 Regular, Bold, Italic and Bold Italic (the terminal font, real faces for every
