@@ -64,7 +64,7 @@ use crate::input::{
 };
 use crate::links::{self, open::OpenError};
 use crate::menus::{self, MenuAction, MenuKind, MenuModel, TabOp};
-use crate::notices::{self, Admit, Inbox, TOAST_LIFE, ToastSlots, route};
+use crate::notices::{self, Admit, DrawnRows, Inbox, PressClock, TOAST_LIFE, ToastSlots, route};
 use crate::pacing::{self, EventKind, Pacer, PresentAsk};
 use crate::palettes;
 use crate::persist::{
@@ -765,6 +765,11 @@ struct App {
     /// Where the toasts were in the last drawn frame: the pointer is theirs there, not the
     /// terminal's.
     toast_rects: Vec<Rect>,
+    /// When the pointer's latest primary press was: a toast button or an inbox row is judged at
+    /// the press, not at the frame that reports the click (D14).
+    press_clock: PressClock,
+    /// The inbox rows the last frame drew and since when (a row press acts only on a still list).
+    inbox_drawn: DrawnRows,
     wheel: WheelState,
     thumb_drag: Option<ThumbDrag>,
     bell: BellLimiter,
@@ -850,6 +855,8 @@ impl App {
             toasts: Toasts::default(),
             toast_slots: ToastSlots::new(),
             toast_rects: Vec::new(),
+            press_clock: PressClock::default(),
+            inbox_drawn: DrawnRows::default(),
             wheel: WheelState::default(),
             thumb_drag: None,
             bell: BellLimiter::default(),
@@ -2086,9 +2093,10 @@ impl App {
         }
     }
 
-    /// A button of a notification toast was pressed in the frame at `now` (the toast leaves with
-    /// it). Dismiss only frees the slot. Go to tab switches to the toast's tab only when the
-    /// toast was drawn and has stood still for the arm delay (D14, `press_target`) and the tab
+    /// A button of a notification toast was clicked, pressed at `now` (the press, not the frame
+    /// that reports the release; the toast leaves with it). Dismiss only frees the slot. Go to tab
+    /// switches to the toast's tab only when the toast was drawn and had stood still for the arm
+    /// delay at the press (D14, `press_target`) and the tab
     /// still exists; the inbox rows of that tab turn read at the next settle. Called before
     /// `sync_toasts`, which would already have dropped the toast from the frame's list.
     fn on_toast_action(
@@ -2340,6 +2348,12 @@ impl App {
             Vec::new()
         };
         let inbox_message_rows: Vec<_> = inbox_rows.iter().map(|(_, r)| r.row()).collect();
+        // The rows' ids, in the same order (`inbox_rows` maps every entry, in order).
+        let inbox_ids: Vec<u64> = if self.inbox_open {
+            self.inbox.entries().map(|n| n.id).collect()
+        } else {
+            Vec::new()
+        };
         let inbox_unread = self.inbox.unread();
         let inbox_badge = shell::badge_text(inbox_unread);
         let (inbox_list_name, inbox_title, inbox_clear_all) = {
@@ -2522,8 +2536,11 @@ impl App {
 
         // The toasts first: a pressed button's toast is already gone from this frame's list, so
         // its slot is read before the list frees it.
+        // A click is judged at its press (the toolkit reports it on the release).
+        let press = self.press_clock.moment(input.time);
+        let toast_acted = drawn.toast.action.is_some();
         if let Some((id, action)) = drawn.toast.action {
-            self.on_toast_action(id, action, input.time, event_loop);
+            self.on_toast_action(id, action, press, event_loop);
         }
         self.sync_toasts(input.time);
 
@@ -2553,7 +2570,20 @@ impl App {
                 }
             }
         }
-        self.on_inbox(inbox_clicked, inbox_out, &inbox_rows, inbox_now, event_loop);
+        let row_acted = inbox_out.as_ref().is_some_and(|o| o.clicked.is_some());
+        self.on_inbox(
+            inbox_clicked,
+            inbox_out,
+            &inbox_ids,
+            press,
+            inbox_now,
+            event_loop,
+        );
+        self.inbox_drawn.drawn(&inbox_ids, input.time);
+        if toast_acted || row_acted {
+            self.press_clock.clear();
+        }
+        self.press_clock.frame_done();
         if let Some(ctx) = tab_context {
             self.menu = Some(OpenMenu {
                 kind: MenuKind::Tab {
@@ -2601,27 +2631,39 @@ impl App {
         }
     }
 
-    /// What the frame's inbox button and list asked. `rows` are the tabs of the rows the list
-    /// drew, in order. A press on the button toggles the list; a row press activates its tab (the
-    /// strip-click path) and closes it, its rows turn read at the next settle; Clear all empties
-    /// the inbox; Escape, a press outside and a focus loss closed it in the toolkit already.
+    /// What the frame's inbox button and list asked. `ids` are the rows this frame built, in
+    /// order; `press` is when the click was pressed. A press on the button toggles the list; a row
+    /// press activates the tab of the row the previous frame drew at that index (the strip-click
+    /// path) and closes the list, only when that list had stood still for the arm delay at the press
+    /// and this frame changes nothing in it (D14, `DrawnRows::press_target`); otherwise the press
+    /// does nothing and the list stays. The activated tab's rows turn read at the next settle. Clear all empties the inbox; Escape, a press outside
+    /// and a focus loss closed it in the toolkit already.
     fn on_inbox(
         &mut self,
         clicked: bool,
         out: Option<shell::InboxOut>,
-        rows: &[(TabId, shell::RowText)],
+        ids: &[u64],
+        press: Duration,
         now: Duration,
         event_loop: &ActiveEventLoop,
     ) {
         let was_open = self.inbox_open;
-        let open = inbox_open_after(was_open, clicked, out.as_ref());
+        let mut open = inbox_open_after(was_open, clicked, out.as_ref());
         if let Some(out) = out {
             if out.clear_all {
                 self.inbox.clear();
-            } else if let Some((tab, _)) = out.clicked.and_then(|i| rows.get(i))
-                && self.tabs.get(*tab).is_some()
-            {
-                self.tab_event(TabEvent::Activate(TabKey(*tab)), event_loop);
+            } else if let Some(i) = out.clicked {
+                match self
+                    .inbox_drawn
+                    .press_target(i, press, ids)
+                    .and_then(|id| self.inbox.tab_of(id))
+                    .filter(|tab| self.tabs.get(*tab).is_some())
+                {
+                    Some(tab) => self.tab_event(TabEvent::Activate(TabKey(tab)), event_loop),
+                    // Too soon after the rows changed: the press does nothing, the list stays.
+                    None if !clicked && out.dismissed.is_none() => open = was_open,
+                    None => {}
+                }
             }
         }
         if open && !was_open {
@@ -2825,6 +2867,14 @@ impl App {
     }
 
     fn on_mouse_button(&mut self, state: ElementState, button: MouseButton) {
+        // Every primary press, the ones on a toast or the open list included (D14).
+        if button == MouseButton::Left {
+            if state.is_pressed() {
+                self.press_clock.press(self.start.elapsed());
+            } else {
+                self.press_clock.release();
+            }
+        }
         if state.is_pressed() {
             self.hide_tip();
         }
@@ -3239,6 +3289,7 @@ impl App {
                 }
                 if !focused {
                     self.inbox_open = false;
+                    self.press_clock.clear();
                     self.tip_hidden = true;
                     // Every press of ours ends here, the program's too: the window may never
                     // see the release.

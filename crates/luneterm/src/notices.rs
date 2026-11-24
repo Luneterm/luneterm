@@ -34,7 +34,8 @@ pub const TOAST_LIFE: Duration = Duration::from_secs(6);
 pub const TOAST_LIVE_CAP: usize = 3;
 /// A tab's toast changes at most once in this time (D10).
 pub const TOAST_MIN_INTERVAL: Duration = Duration::from_secs(1);
-/// A toast ignores its Go to tab press for this long after it appeared or was replaced (D14).
+/// A toast ignores its Go to tab press for this long after it appeared, was replaced or moved, and
+/// the inbox list a row press for this long after its rows last changed (D14, [`armed_since`]).
 pub const TOAST_ARM: Duration = Duration::from_millis(400);
 
 // --------------------------------------------------------------------------------------- routing
@@ -260,6 +261,11 @@ impl Inbox {
             .count()
     }
 
+    /// The tab of row `id`, while the row exists (ids are never reused).
+    pub fn tab_of(&self, id: u64) -> Option<TabId> {
+        self.rows.iter().find(|r| r.id == id).map(|r| r.tab)
+    }
+
     /// Remove everything ("Clear all").
     pub fn clear(&mut self) {
         self.rows.clear();
@@ -404,7 +410,7 @@ impl<Id: Copy + PartialEq, R: Copy + PartialEq> ToastSlots<Id, R> {
         self.slots
             .iter()
             .find(|s| s.id == id)
-            .is_some_and(|s| now.saturating_sub(s.changed.max(s.moved)) >= TOAST_ARM)
+            .is_some_and(|s| armed_since(s.changed.max(s.moved), now))
     }
 
     /// Whether some frame has listed toast `id` as drawn (the toast was on screen); false for an
@@ -480,6 +486,90 @@ impl<Id: Copy + PartialEq, R: Copy + PartialEq> ToastSlots<Id, R> {
 
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
+    }
+}
+
+// ------------------------------------------------------------------------------------- press arm
+
+/// Whether something that has stood still on screen since `since` may take a press made at
+/// `press`: only once it has for [`TOAST_ARM`] (D14). A press before `since` never may. The one
+/// rule behind the toast's Go to tab and the inbox list's rows.
+pub fn armed_since(since: Duration, press: Duration) -> bool {
+    press
+        .checked_sub(since)
+        .is_some_and(|still| still >= TOAST_ARM)
+}
+
+/// The moment of the pointer's latest primary press, for judging a click by the press rather than
+/// by the frame that reports it (the toolkit reports a click on the release, a frame or more
+/// later). Kept from the press until the frame that has seen its release is done, and cleared on
+/// a focus loss; a click with no press kept (keyboard, assistive action) is judged at its frame.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PressClock {
+    at: Option<Duration>,
+    released: bool,
+}
+
+impl PressClock {
+    /// A primary press at `now`.
+    pub fn press(&mut self, now: Duration) {
+        self.at = Some(now);
+        self.released = false;
+    }
+
+    /// The primary button was released (the next frame reports the click, if any).
+    pub fn release(&mut self) {
+        self.released = true;
+    }
+
+    /// Forget the press (the window lost focus, or a click used it).
+    pub fn clear(&mut self) {
+        *self = PressClock::default();
+    }
+
+    /// When a click reported in the frame at `frame` was pressed: the kept press, never later
+    /// than the frame; the frame itself with no press kept.
+    pub fn moment(&self, frame: Duration) -> Duration {
+        self.at.map_or(frame, |at| at.min(frame))
+    }
+
+    /// The frame is done: a press whose release it has seen is forgotten, so a later keyboard
+    /// activation is not judged by it.
+    pub fn frame_done(&mut self) {
+        if self.released {
+            self.clear();
+        }
+    }
+}
+
+/// The rows of the inbox list as the last frame drew them (their ids, top to bottom) and the
+/// frame time at which that sequence last changed. The toolkit resolves a row press against the
+/// frame the user saw and reports only its index; this maps the index back to the row that was
+/// there, and only for a list that has stood still for [`TOAST_ARM`] before the press (D14), so
+/// a program cannot slide another tab's row under a click.
+#[derive(Debug, Clone, Default)]
+pub struct DrawnRows {
+    ids: Vec<u64>,
+    since: Duration,
+}
+
+impl DrawnRows {
+    /// The frame at `now` drew rows `ids` (empty while the list is closed).
+    pub fn drawn(&mut self, ids: &[u64], now: Duration) {
+        if self.ids != ids {
+            self.ids = ids.to_vec();
+            self.since = now;
+        }
+    }
+
+    /// The row a press at `press` on index `index` acts on, in the frame that is building rows
+    /// `now_ids`: the id the last drawn frame showed there, only when that list had stood still
+    /// for [`TOAST_ARM`] at the press and this frame changes nothing in it. `None` otherwise.
+    pub fn press_target(&self, index: usize, press: Duration, now_ids: &[u64]) -> Option<u64> {
+        if self.ids != now_ids || !armed_since(self.since, press) {
+            return None;
+        }
+        self.ids.get(index).copied()
     }
 }
 
@@ -1133,5 +1223,92 @@ mod tests {
             assert_ne!(age(elapsed + d), age(elapsed), "{elapsed:?}");
             assert_eq!(age(elapsed + d - ms(1)), age(elapsed), "{elapsed:?}");
         }
+    }
+
+    #[test]
+    fn armed_since_needs_the_arm_delay_before_the_press() {
+        assert!(!armed_since(s(5), s(5) + ms(399)));
+        assert!(armed_since(s(5), s(5) + ms(400)));
+        assert!(
+            !armed_since(s(5), s(4)),
+            "a press before the change never acts"
+        );
+    }
+
+    #[test]
+    fn a_toast_is_judged_at_the_press_not_at_the_release_frame() {
+        let mut slots: ToastSlots<u64, u8> = ToastSlots::new();
+        let t = 10_000;
+        slots.shown(1, 10, ms(t));
+        slots.sync(&[(1, 0)], ms(t), |_| true);
+        let mut clock = PressClock::default();
+        clock.press(ms(t + 300));
+        clock.release();
+        // The release is reported in the frame at +420: judged at the press (+300), not armed.
+        let press = clock.moment(ms(t + 420));
+        assert_eq!(press, ms(t + 300));
+        assert_eq!(slots.press_target(1, press), None);
+        clock.frame_done();
+        // A later keyboard activation is judged at its own frame, not by the old press.
+        assert_eq!(clock.moment(ms(t + 900)), ms(t + 900));
+        assert_eq!(slots.press_target(1, clock.moment(ms(t + 900))), Some(10));
+    }
+
+    #[test]
+    fn press_clock_keeps_a_held_press_and_forgets_it_on_release_or_focus_loss() {
+        let mut clock = PressClock::default();
+        assert_eq!(clock.moment(s(3)), s(3), "no press: the frame's time");
+        clock.press(s(1));
+        clock.frame_done();
+        assert_eq!(clock.moment(s(2)), s(1), "still held: kept across frames");
+        assert_eq!(clock.moment(ms(500)), ms(500), "never later than the frame");
+        clock.clear();
+        assert_eq!(clock.moment(s(2)), s(2), "focus loss forgets it");
+        clock.press(s(4));
+        clock.release();
+        assert_eq!(clock.moment(s(5)), s(4), "the release frame still sees it");
+        clock.frame_done();
+        assert_eq!(clock.moment(s(6)), s(6));
+    }
+
+    #[test]
+    fn an_inbox_row_press_acts_only_on_a_list_that_stood_still() {
+        let mut drawn = DrawnRows::default();
+        let t = 20_000;
+        // The list opens with rows C (id 3) and A (id 1).
+        drawn.drawn(&[3, 1], ms(t));
+        assert_eq!(drawn.press_target(0, ms(t + 399), &[3, 1]), None);
+        assert_eq!(drawn.press_target(0, ms(t + 400), &[3, 1]), Some(3));
+        // A row inserted at the front in the click frame: the press acts on nothing.
+        assert_eq!(drawn.press_target(0, ms(t + 5_000), &[7, 3, 1]), None);
+        // That frame is drawn; a press 399 ms after the reorder acts on nothing, at 400 ms on
+        // the row drawn at that index.
+        drawn.drawn(&[7, 3, 1], ms(t + 5_000));
+        assert_eq!(drawn.press_target(0, ms(t + 5_399), &[7, 3, 1]), None);
+        assert_eq!(drawn.press_target(0, ms(t + 5_400), &[7, 3, 1]), Some(7));
+        assert_eq!(drawn.press_target(1, ms(t + 5_400), &[7, 3, 1]), Some(3));
+        // A press made before the change, reported after it, acts on nothing.
+        assert_eq!(drawn.press_target(0, ms(t + 4_999), &[7, 3, 1]), None);
+        // An index past the end, and the same rows drawn again, change nothing.
+        assert_eq!(drawn.press_target(3, ms(t + 6_000), &[7, 3, 1]), None);
+        drawn.drawn(&[7, 3, 1], ms(t + 6_000));
+        assert_eq!(drawn.press_target(0, ms(t + 5_400), &[7, 3, 1]), Some(7));
+        // Closing and reopening the list restarts the delay.
+        drawn.drawn(&[], ms(t + 7_000));
+        drawn.drawn(&[7, 3, 1], ms(t + 8_000));
+        assert_eq!(drawn.press_target(0, ms(t + 8_399), &[7, 3, 1]), None);
+    }
+
+    #[test]
+    fn inbox_tab_of_follows_the_row_and_forgets_it() {
+        let mut inbox = Inbox::new();
+        msg(&mut inbox, 4, "t", "b", s(1));
+        inbox.bell(9, 1, s(2));
+        let ids: Vec<(u64, TabId)> = inbox.entries().map(|n| (n.id, n.tab)).collect();
+        for (id, tab) in &ids {
+            assert_eq!(inbox.tab_of(*id), Some(*tab));
+        }
+        inbox.clear();
+        assert_eq!(inbox.tab_of(ids[0].0), None);
     }
 }
