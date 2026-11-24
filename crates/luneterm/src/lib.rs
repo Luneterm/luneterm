@@ -17,6 +17,7 @@ pub mod fonts;
 pub mod input;
 pub mod links;
 pub mod menus;
+pub mod notices;
 mod os_event;
 pub mod outline;
 pub mod pacing;
