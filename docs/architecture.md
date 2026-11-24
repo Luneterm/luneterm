@@ -1176,7 +1176,9 @@ bell's, and a message's in an unfocused window).
   `Effects.messages` (and the bell count becomes `Effects.bells`). `pump` hands both to `hear`,
   which asks the `route` table and fills the `Inbox` (`notices.rs`, in memory), the single store.
   The tab dot (`StripTab.attention` = the tab has an unread row and is not the active one), the
-  header button's badge (unread rows, "9+" above nine), the list (a luneui popover) and the toast
+  header button's bell (yellow while any row is unread, plain once all are read; it rings for 1 s
+  when a new row arrives in a focused window, at most once per 3 s, under full motion only; the
+  count stays in its accessible name), the list (a luneui popover) and the toast
   slots are all read from it.
 - *OSC 9 grammar (D4, D5).* The payload is a message unless its first field (up to the first `;`, or
   all of it) is only ASCII digits, which keeps every ConEmu form (`9;4;...` progress, `9;9;...`
@@ -1191,7 +1193,7 @@ bell's, and a message's in an unfocused window).
   | message | nothing | row + dot + toast | OS attention | row + dot + OS attention |
 
   OS attention goes through the existing `BellLimiter`. No toast is shown for something that arrived
-  while unfocused, nor on return (the dot and badge show it). With the setting "Notifications from
+  while unfocused, nor on return (the dot and the yellow bell show it). With the setting "Notifications from
   programs" off (`osc_notifications`, Terminal > Behavior, default on) messages are dropped in `pump`
   (no row, toast or attention; rows already there stay); bells are not affected. `Inbox::settle` runs
   at the end of `pump` and before each frame: while focused it marks the active tab's rows read, and

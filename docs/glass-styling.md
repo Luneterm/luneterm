@@ -36,7 +36,7 @@ The notification toast and the inbox list are luneui surfaces too, both introduc
 card's bottom-right corner, 22 px in, and the list is a `Ui::popover` under the header bell button.
 Both fill from the theme's `menu_glass` like the menus, so the Theme and Window opacity settings move
 them with the menus, and Luneterm draws no colour of its own for them: the amber of the tab dot, the
-toast's bell and the badge is the theme's `attention()` (luneui's warn). On the opaque look they are
+toast's bell and the header bell is the theme's `attention()` (luneui's warn). On the opaque look they are
 opaque (`opaque-toast@2x.png`, `opaque-inbox@2x.png` hold alpha 255 everywhere in the dump test).
 
 ## Layer stack (back to front)

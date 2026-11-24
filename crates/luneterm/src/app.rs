@@ -224,7 +224,7 @@ struct ToastCandidate {
 /// What `hear` found in one tab's Update.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct Heard {
-    /// A row was recorded: the badge, a dot or the list changed.
+    /// A row was recorded: the bell, a dot or the list changed.
     recorded: bool,
     /// A bell or an accepted message wants the OS attention request (the limiter still decides).
     attention: bool,
@@ -273,6 +273,33 @@ fn hear(
         }
     }
     heard
+}
+
+/// The start of the bell's last ring after a tab's Update was heard (D19): a new ring begins at
+/// `now` when a row was recorded in a focused window and the last ring began [`shell::RING_GAP`]
+/// ago or more; an unfocused window never starts one, and arrivals inside the gap change nothing.
+fn ring_after(
+    last: Option<Duration>,
+    recorded: bool,
+    focused: bool,
+    now: Duration,
+) -> Option<Duration> {
+    if recorded && focused && shell::ring_due(last, now) {
+        Some(now)
+    } else {
+        last
+    }
+}
+
+/// The ring the button is handed for a frame at `now`: the start of the last ring while anything is
+/// unread, the window is focused and the ring has not run its [`shell::RING_LEN`] out.
+fn ring_for_frame(
+    start: Option<Duration>,
+    unread: usize,
+    focused: bool,
+    now: Duration,
+) -> Option<Duration> {
+    start.filter(|s| unread > 0 && focused && now < *s + shell::RING_LEN)
 }
 
 /// Whether the inbox list is open after a frame: a press on the button toggles it; Escape, a
@@ -773,9 +800,12 @@ struct App {
     wheel: WheelState,
     thumb_drag: Option<ThumbDrag>,
     bell: BellLimiter,
-    /// Bells and program notifications, the one store behind the tab dots, the badge and the list.
+    /// Bells and program notifications, the one store behind the tab dots, the bell and the list.
     /// In memory only (D15).
     inbox: Inbox,
+    /// When the bell's last ring started (the `start.elapsed()` clock): the next ring waits
+    /// [`shell::RING_GAP`] after it (D19).
+    inbox_ring: Option<Duration>,
     /// The inbox list is open (a popover under the header button). While it is, the toolkit has
     /// the keyboard and the pointer, like an open menu.
     inbox_open: bool,
@@ -861,6 +891,7 @@ impl App {
             thumb_drag: None,
             bell: BellLimiter::default(),
             inbox: Inbox::new(),
+            inbox_ring: None,
             inbox_open: false,
             toast_candidates: Vec::new(),
             focused: false,
@@ -1948,6 +1979,7 @@ impl App {
             {
                 stack.renderer.set_term_theme(tab.theme.clone());
             }
+            let now = self.start.elapsed();
             let heard = hear(
                 &mut self.inbox,
                 &mut self.toast_candidates,
@@ -1957,9 +1989,10 @@ impl App {
                 self.focused,
                 Some(id) == active,
                 self.settings.osc_notifications,
-                self.start.elapsed(),
+                now,
             );
             worth_a_frame |= heard.recorded;
+            self.inbox_ring = ring_after(self.inbox_ring, heard.recorded, self.focused, now);
             if heard.attention
                 && self.bell.due(Instant::now(), self.focused)
                 && let Some(win) = &self.win
@@ -2355,7 +2388,6 @@ impl App {
             Vec::new()
         };
         let inbox_unread = self.inbox.unread();
-        let inbox_badge = shell::badge_text(inbox_unread);
         let (inbox_list_name, inbox_title, inbox_clear_all) = {
             let strings = stack.renderer.strings();
             (
@@ -2465,7 +2497,8 @@ impl App {
             inbox: (!self.inbox.is_empty()).then(|| InboxDraw {
                 button: InboxButton {
                     name: &inbox_name,
-                    badge: inbox_badge.as_deref(),
+                    unread: inbox_unread > 0,
+                    ring: ring_for_frame(self.inbox_ring, inbox_unread, input.focused, input.time),
                     open: self.inbox_open,
                 },
                 list: self.inbox_open.then(|| InboxList {
@@ -4180,6 +4213,65 @@ mod tests {
         assert_eq!(b.tick(t0 + ms(5001), false), None);
         assert!(b.on());
         assert_eq!(b, Blink::default());
+    }
+
+    /// D19: a ring starts when a row was recorded in a focused window and the last one began 3 s
+    /// or more ago; never unfocused, never inside the gap, never without a recorded row.
+    #[test]
+    fn a_ring_starts_on_a_recorded_row_in_a_focused_window_outside_the_gap() {
+        let ms = Duration::from_millis;
+        let t = ms(10_000);
+        // Focused + recorded, no ring before: starts now.
+        assert_eq!(ring_after(None, true, true, t), Some(t));
+        // Unfocused: none, and the last start is kept.
+        assert_eq!(ring_after(None, true, false, t), None);
+        assert_eq!(ring_after(Some(ms(1)), true, false, t), Some(ms(1)));
+        // Nothing recorded: no change.
+        assert_eq!(ring_after(None, false, true, t), None);
+        // Inside the gap: the last start stays (the ring is not restarted).
+        assert_eq!(ring_after(Some(t), true, true, t + ms(2999)), Some(t));
+        // At the gap: a new ring.
+        assert_eq!(
+            ring_after(Some(t), true, true, t + ms(3000)),
+            Some(t + ms(3000))
+        );
+    }
+
+    /// The ring the button is handed: only while unread, focused and inside `RING_LEN`.
+    #[test]
+    fn the_button_is_handed_a_ring_only_while_unread_focused_and_inside_its_second() {
+        let ms = Duration::from_millis;
+        let s = Some(ms(5000));
+        assert_eq!(ring_for_frame(s, 3, true, ms(5000)), s);
+        assert_eq!(ring_for_frame(s, 3, true, ms(5999)), s);
+        assert_eq!(
+            ring_for_frame(s, 3, true, ms(6000)),
+            None,
+            "the ring is over"
+        );
+        assert_eq!(
+            ring_for_frame(s, 0, true, ms(5100)),
+            None,
+            "all read mid-ring"
+        );
+        assert_eq!(ring_for_frame(s, 3, false, ms(5100)), None, "unfocused");
+        assert_eq!(ring_for_frame(None, 3, true, ms(5100)), None);
+    }
+
+    /// The arrival path end to end through `hear` and the rule: a bell in a background tab of a
+    /// focused window rings; the same bell unfocused does not, and nothing is recorded for the
+    /// active tab.
+    #[test]
+    fn hear_then_the_rule_rings_for_a_background_bell_only() {
+        let now = Duration::from_secs(1);
+        let (_, _, h) = heard(1, vec![], true, false, true);
+        assert_eq!(ring_after(None, h.recorded, true, now), Some(now));
+        let (_, _, h) = heard(1, vec![], false, false, true);
+        assert!(h.recorded);
+        assert_eq!(ring_after(None, h.recorded, false, now), None);
+        let (_, _, h) = heard(1, vec![], true, true, true);
+        assert!(!h.recorded);
+        assert_eq!(ring_after(None, h.recorded, true, now), None);
     }
 
     fn msg(title: &str, body: &str) -> Message {

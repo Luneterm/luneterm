@@ -67,12 +67,14 @@ enum SceneNotice {
 
 /// A scene whose inbox holds more than a few notices: how it is filled (the real `Inbox` calls,
 /// with explicit times; tab `n` is the scene's `n`-th tab, counted from 1), whether the list is
-/// open, and how far it is scrolled (wheel lines at its middle).
+/// open, how far it is scrolled (wheel lines at its middle), and whether the bell is mid-ring: how
+/// long before the scene's last frame the ring started (the last frame is the picture).
 #[derive(Debug, Clone, Copy)]
 struct InboxScene {
     fill: fn(&mut Inbox),
     open: bool,
     scroll: f32,
+    ring_ago_ms: Option<u64>,
 }
 
 /// The clock of the inbox scenes: the entries' ages are counted from here.
@@ -98,6 +100,16 @@ fn fill_four(inbox: &mut Inbox) {
         ago(0),
     );
     inbox.settle(Some(4), true, |_| true);
+}
+
+/// The mockup's four rows, every one read: each tab looked at once through `settle`, as the app does
+/// (the bell goes back to the plain one).
+fn fill_read(inbox: &mut Inbox) {
+    fill_four(inbox);
+    for tab in 1..=4 {
+        inbox.settle(Some(tab), true, |_| true);
+    }
+    assert_eq!(inbox.unread(), 0);
 }
 
 /// 50 rows: a list that scrolls, with an 80-character title and a 240-character body in it.
@@ -300,7 +312,7 @@ const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
-const SCENES: [Scene; 49] = [
+const SCENES: [Scene; 51] = [
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -607,8 +619,9 @@ const SCENES: [Scene; 49] = [
         toasts: true,
         ..BASE
     },
-    // The inbox: the header button with its badge (the list closed), and the list open with the
-    // mockup's four rows, long and many rows scrolled, in both looks and the opaque one.
+    // The inbox: the header bell (the list closed), and the list open with the mockup's four rows,
+    // long and many rows scrolled, in both looks and the opaque one; then the bell with everything
+    // read, and the bell 83 ms into its ring.
     Scene {
         name: "inbox-button@2x.png",
         tabs: FOUR,
@@ -616,6 +629,7 @@ const SCENES: [Scene; 49] = [
             fill: fill_four,
             open: false,
             scroll: 0.0,
+            ring_ago_ms: None,
         }),
         ..BASE
     },
@@ -626,6 +640,7 @@ const SCENES: [Scene; 49] = [
             fill: fill_four,
             open: true,
             scroll: 0.0,
+            ring_ago_ms: None,
         }),
         ..BASE
     },
@@ -636,6 +651,7 @@ const SCENES: [Scene; 49] = [
             fill: fill_long,
             open: true,
             scroll: -8.0,
+            ring_ago_ms: None,
         }),
         ..BASE
     },
@@ -647,6 +663,7 @@ const SCENES: [Scene; 49] = [
             fill: fill_four,
             open: true,
             scroll: 0.0,
+            ring_ago_ms: None,
         }),
         ..BASE
     },
@@ -658,10 +675,36 @@ const SCENES: [Scene; 49] = [
             fill: fill_four,
             open: true,
             scroll: 0.0,
+            ring_ago_ms: None,
+        }),
+        ..BASE
+    },
+    Scene {
+        name: "inbox-read@2x.png",
+        tabs: FOUR,
+        inbox: Some(InboxScene {
+            fill: fill_read,
+            open: false,
+            scroll: 0.0,
+            ring_ago_ms: None,
+        }),
+        ..BASE
+    },
+    Scene {
+        name: "inbox-ring@2x.png",
+        tabs: FOUR,
+        inbox: Some(InboxScene {
+            fill: fill_four,
+            open: false,
+            scroll: 0.0,
+            ring_ago_ms: Some(RING_SCENE_AGO_MS),
         }),
         ..BASE
     },
 ];
+
+/// How long before the last frame the ring scene's ring started: the first peak of the swing.
+const RING_SCENE_AGO_MS: u64 = 83;
 
 /// The menu rows' area for a scene: the app menu hangs from the `⋯` button, the terminal's
 /// opens at a point on the demo grid.
@@ -815,7 +858,6 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     });
     let inbox_message_rows: Vec<_> = inbox_rows.iter().map(|(_, r)| r.row()).collect();
     let inbox_open = scene.inbox.is_some_and(|i| i.open);
-    let inbox_badge = crate::shell::badge_text(inbox.unread());
     let inbox_name = crate::shell::inbox_button_name(strings.tr("inbox.name"), inbox.unread());
     let mut inbox_rect: Option<Rect> = None;
     let mut toasts = Toasts::default();
@@ -968,7 +1010,13 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             inbox: scene.inbox.map(|_| InboxDraw {
                 button: InboxButton {
                     name: &inbox_name,
-                    badge: inbox_badge.as_deref(),
+                    unread: inbox.unread() > 0,
+                    // Explicit times: the ring began before the last frame, and only that frame
+                    // is the picture (the earlier ones draw the plain yellow bell).
+                    ring: scene.inbox.and_then(|i| i.ring_ago_ms).and_then(|ago| {
+                        let last = *FRAME_TIMES_MS.last().unwrap_or(&0);
+                        (*ms == last).then(|| Duration::from_millis(last - ago))
+                    }),
                     open: inbox_open,
                 },
                 list: inbox_open.then(|| InboxList {

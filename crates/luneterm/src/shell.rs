@@ -15,6 +15,7 @@ use lune_ui::color::{Rgba, premul, with_alpha};
 use lune_ui::icon;
 use lune_ui::input::{CursorIcon, Event, PointerButton, WindowCommand};
 use lune_ui::layout::Axis;
+use lune_ui::motion::MotionTier;
 use lune_ui::paint::Rect;
 use lune_ui::scene::LayerId;
 use lune_ui::text::{Spec, Style};
@@ -62,6 +63,17 @@ pub const INBOX_WIDTH: f32 = 360.0;
 pub const INBOX_MAX_HEIGHT: f32 = 480.0;
 /// The inbox button's glyph (the bell, as on a notification toast).
 pub const INBOX_GLYPH: &str = "\u{eaa2}";
+/// How long the bell rings when something new arrives (D19).
+pub const RING_LEN: Duration = Duration::from_millis(1000);
+/// A ring starts only if the last one began this long ago or more: a program that rings in a
+/// loop makes at most `RING_LEN` of frames per `RING_GAP`.
+pub const RING_GAP: Duration = Duration::from_millis(3000);
+/// The swing's first peak, degrees (clockwise positive); the swing shrinks to still over `RING_LEN`.
+const RING_PEAK_DEGREES: f32 = 14.0;
+/// Swings (full back-and-forth cycles) in one ring.
+const RING_SWINGS: f32 = 3.0;
+/// Half the bell glyph's size: the swing turns about the bell's top, this far above its centre.
+const RING_PIVOT: f32 = 8.0;
 /// The header's darker band, punched out by the tab outline (luneui-rs D131: the gallery's value;
 /// the header layer is a material of the app's preset, so the app passes it). Lunegit's look; the
 /// near-black look passes its own (`render::header_tint`).
@@ -425,19 +437,33 @@ pub struct ShellView<'a> {
 pub struct InboxButton<'a> {
     /// The accessible name: "Notifications", and the unread count when there is one.
     pub name: &'a str,
-    /// The badge's text: `None` at no unread entry, "9+" above nine ([`badge_text`]).
-    pub badge: Option<&'a str>,
+    /// Something is unread: the bell is drawn in the attention colour; at rest (all read) it has
+    /// the look of the `⋯` button's glyph.
+    pub unread: bool,
+    /// The start of the bell's ring (the app's clock) while one is running, else `None`. The
+    /// shell draws it only under `MotionTier::Full`, and only while `unread`.
+    pub ring: Option<Duration>,
     /// The list is open: the button rests on its hover fill.
     pub open: bool,
 }
 
-/// The badge's text for `unread` entries: none at 0, the number up to 9, "9+" above.
-pub fn badge_text(unread: usize) -> Option<String> {
-    match unread {
-        0 => None,
-        1..=9 => Some(unread.to_string()),
-        _ => Some("9+".to_owned()),
+/// The bell's angle `elapsed` after a ring began, radians (clockwise positive): three swings
+/// shrinking to still over [`RING_LEN`]; `None` once the ring is over.
+pub fn ring_angle(elapsed: Duration) -> Option<f32> {
+    if elapsed >= RING_LEN {
+        return None;
     }
+    let t = elapsed.as_secs_f32() / RING_LEN.as_secs_f32();
+    Some(
+        RING_PEAK_DEGREES.to_radians()
+            * (1.0 - t)
+            * (std::f32::consts::TAU * RING_SWINGS * t).sin(),
+    )
+}
+
+/// Whether a ring may start at `now`: no ring before, or the last one began [`RING_GAP`] ago or more.
+pub fn ring_due(last_start: Option<Duration>, now: Duration) -> bool {
+    last_start.is_none_or(|last| now.saturating_sub(last) >= RING_GAP)
 }
 
 /// The inbox button's accessible name: `name`, and the unread count when there is one.
@@ -716,20 +742,38 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
             overflow = Some(layout.overflow);
         }
         if let Some(button) = view.inbox_button {
+            // Unread: the attention colour; all read: the `⋯` button's own (`color: None`).
+            let color = button.unread.then(|| theme.attention());
+            // The swing replaces the button's own glyph for its 1 s; the fill, hover, press, open
+            // state, focus ring and name stay the button's, and its rect never moves (D19).
+            let swing = button
+                .ring
+                .filter(|_| button.unread && ui.tier() == MotionTier::Full)
+                .and_then(|start| ring_angle(ui.time().saturating_sub(start)));
             let bell = IconButton {
-                glyph: INBOX_GLYPH,
+                glyph: if swing.is_some() { "" } else { INBOX_GLYPH },
                 glyph_size: 16.0,
-                color: None,
+                color,
                 radius: theme.item_radius,
                 name: button.name,
             };
-            let mut extras = IconButtonExtras::new().with_open(button.open);
-            if let Some(badge) = button.badge {
-                extras = extras.with_badge(badge);
-            }
+            let extras = IconButtonExtras::new().with_open(button.open);
             inbox_clicked = ui
                 .icon_button_with("inbox-button", layout.inbox, &bell, &extras)
                 .clicked;
+            if let (Some(theta), Some(color)) = (swing, color) {
+                let r = layout.inbox;
+                let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+                // Turned about the bell's top: the centre swings round the pivot above it.
+                let centre = (
+                    cx - RING_PIVOT * theta.sin(),
+                    cy - RING_PIVOT + RING_PIVOT * theta.cos(),
+                );
+                ui.painter()
+                    .text_rotated(&icon::glyph(INBOX_GLYPH, 16.0, color), centre, theta);
+                let next = ui.time() + Duration::from_millis(1);
+                ui.request_repaint_at(next);
+            }
         }
     }
 
@@ -1745,14 +1789,44 @@ mod tests {
     }
 
     #[test]
-    fn the_badge_is_the_count_to_nine_then_nine_plus_and_none_at_zero() {
-        assert_eq!(badge_text(0), None);
-        assert_eq!(badge_text(1).as_deref(), Some("1"));
-        assert_eq!(badge_text(9).as_deref(), Some("9"));
-        assert_eq!(badge_text(10).as_deref(), Some("9+"));
-        assert_eq!(badge_text(50).as_deref(), Some("9+"));
+    fn the_button_name_carries_the_count_and_is_plain_at_zero() {
         assert_eq!(inbox_button_name("Notifications", 0), "Notifications");
         assert_eq!(inbox_button_name("Notifications", 3), "Notifications (3)");
+    }
+
+    #[test]
+    fn the_ring_swings_three_times_and_dies_out_in_one_second() {
+        let ms = Duration::from_millis;
+        assert_eq!(ring_angle(ms(0)), Some(0.0));
+        // The first peak at a quarter of the first swing (83 ms): about 14 degrees times (1 - t).
+        let peak = ring_angle(ms(83)).expect("inside the ring").to_degrees();
+        let want = 14.0 * (1.0 - 0.083);
+        assert!(peak > 0.0 && (peak - want).abs() < 1.0, "peak {peak}");
+        // Three swings: the sign flips six times between 0 and 1000 ms.
+        let flips = (1..1000u64)
+            .map(|t| ring_angle(ms(t)).expect("inside the ring").signum())
+            .collect::<Vec<_>>()
+            .windows(2)
+            .filter(|w| w[0] != w[1])
+            .count();
+        assert_eq!(flips, 5, "five zero crossings inside the ring");
+        // It shrinks to still, and is over at 1 s.
+        let late = ring_angle(ms(999)).expect("inside the ring").to_degrees();
+        assert!(late.abs() < 0.2, "late {late}");
+        assert_eq!(ring_angle(ms(1000)), None);
+        assert_eq!(ring_angle(ms(5000)), None);
+    }
+
+    #[test]
+    fn a_ring_starts_with_no_ring_before_or_three_seconds_after_the_last() {
+        let ms = Duration::from_millis;
+        let t = ms(10_000);
+        assert!(ring_due(None, t));
+        assert!(!ring_due(Some(t), t));
+        assert!(!ring_due(Some(t), t + ms(2999)));
+        assert!(ring_due(Some(t), t + ms(3000)));
+        // A clock that did not move forward never underflows.
+        assert!(!ring_due(Some(t), ms(5)));
     }
 
     fn english() -> StringTable {
@@ -1853,6 +1927,34 @@ mod tests {
         events: Vec<Event>,
         ms: u64,
     ) -> (ShellOut, Option<InboxOut>) {
+        let button = InboxButton {
+            name: "Notifications (3)",
+            unread: true,
+            ring: None,
+            open,
+        };
+        let (out, inbox, _, _) =
+            button_frame(store, text, rows, Some(button), events, ms, MotionTier::Off);
+        (out, inbox)
+    }
+
+    /// One frame of the shell with `button` (the list is drawn when it is `open`), at `ms`, under
+    /// motion tier `tier`; returns the frame's scene and output too.
+    fn button_frame(
+        store: &mut UiStore,
+        text: &mut TextCache,
+        rows: &[MessageRow<'_>],
+        button: Option<InboxButton<'_>>,
+        events: Vec<Event>,
+        ms: u64,
+        tier: MotionTier,
+    ) -> (
+        ShellOut,
+        Option<InboxOut>,
+        lune_ui::scene::Scene,
+        lune_ui::input::FrameOutput,
+    ) {
+        let open = button.is_some_and(|b| b.open);
         let input = RawInput {
             size: (1040.0, 660.0),
             scale: 1.0,
@@ -1863,7 +1965,7 @@ mod tests {
         let (strings, shortcuts) = (StringTable::default(), Shortcuts::default());
         let config = FrameConfig {
             theme: THEME,
-            tier: MotionTier::Off,
+            tier,
             busy_cadence: Cadence::BUSY,
             strings: &strings,
             arg_format: &DisplayFormat,
@@ -1886,11 +1988,7 @@ mod tests {
             busy: None,
             busy_tone: Tone::Neutral,
             overflow_name: "More",
-            inbox_button: Some(InboxButton {
-                name: "Notifications (3)",
-                badge: Some("3"),
-                open,
-            }),
+            inbox_button: button,
             header_tint: HEADER_TINT,
             fading_slots: 0,
         };
@@ -1904,8 +2002,8 @@ mod tests {
             rows,
         };
         let inbox = open.then(|| draw_inbox(&mut ui, &layout, &list));
-        let _ = ui.finish();
-        (out, inbox)
+        let (scene, frame) = ui.finish();
+        (out, inbox, scene, frame)
     }
 
     fn some_rows(n: usize) -> Vec<RowText> {
@@ -2004,5 +2102,98 @@ mod tests {
         let rows: Vec<_> = few.iter().map(RowText::row).collect();
         let (_, list) = inbox_frame(&mut store, &mut text, &rows, true, vec![], 0);
         assert!(list.expect("list").rect.h < 120.0);
+    }
+
+    fn bell_button(unread: bool, ring: Option<Duration>) -> InboxButton<'static> {
+        InboxButton {
+            name: "Notifications (3)",
+            unread,
+            ring,
+            open: false,
+        }
+    }
+
+    /// Two warm frames (the second is the one judged), the button as given, tier and time as given.
+    fn bell_frames(
+        button: Option<InboxButton<'_>>,
+        tier: MotionTier,
+        ms: u64,
+    ) -> (ShellOut, lune_ui::scene::Scene, lune_ui::input::FrameOutput) {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let _ = button_frame(&mut store, &mut text, &[], button, vec![], ms, tier);
+        let (out, _, scene, frame) =
+            button_frame(&mut store, &mut text, &[], button, vec![], ms, tier);
+        (out, scene, frame)
+    }
+
+    fn texts_in(scene: &lune_ui::scene::Scene) -> usize {
+        scene.in_order().iter().map(|l| l.texts.len()).sum()
+    }
+
+    /// No badge (D19): the button adds one text to the frame (its glyph), not a pill with a count;
+    /// the accessible name still carries the count.
+    #[test]
+    fn the_bell_has_no_badge_and_its_name_keeps_the_count() {
+        let tier = MotionTier::Full;
+        let (_, hidden, _) = bell_frames(None, tier, 5000);
+        let (_, shown, frame) = bell_frames(Some(bell_button(true, None)), tier, 5000);
+        assert_eq!(texts_in(&shown), texts_in(&hidden) + 1);
+        assert!(
+            frame
+                .tree
+                .nodes
+                .iter()
+                .any(|n| n.name == "Notifications (3)"),
+            "the count stays in the name"
+        );
+        // Read: the same one text, the same name.
+        let (_, read, _) = bell_frames(Some(bell_button(false, None)), tier, 5000);
+        assert_eq!(texts_in(&read), texts_in(&hidden) + 1);
+    }
+
+    /// The ring draws the swinging glyph over the button (one more text, the button's own glyph
+    /// is empty) and asks for the next frame; at rest, read, past the ring and under Reduced or
+    /// Off nothing is asked and the glyph is the button's own. The button's rect never moves.
+    #[test]
+    fn the_ring_asks_for_frames_only_while_it_runs_and_never_moves_the_button() {
+        let ms = Duration::from_millis;
+        let start = Some(ms(5000));
+        let full = MotionTier::Full;
+        let rest = bell_frames(Some(bell_button(true, None)), full, 5083);
+        assert_eq!(
+            rest.2.repaint,
+            lune_ui::input::Repaint::Idle,
+            "yellow at rest"
+        );
+        let ringing = bell_frames(Some(bell_button(true, start)), full, 5083);
+        match ringing.2.repaint {
+            lune_ui::input::Repaint::At(t) => assert!(t <= ms(5084), "asked for {t:?}"),
+            other => panic!("a ringing bell asks for the next frame, got {other:?}"),
+        }
+        assert_eq!(texts_in(&ringing.1), texts_in(&rest.1), "one glyph, turned");
+        assert_eq!(ringing.0.body, rest.0.body);
+        let node = |f: &lune_ui::input::FrameOutput| {
+            f.tree
+                .nodes
+                .iter()
+                .find(|n| n.name == "Notifications (3)")
+                .map(|n| n.bounds)
+        };
+        assert_eq!(node(&ringing.2), node(&rest.2));
+        assert!(node(&rest.2).is_some());
+        // Over (1 s after the start), read mid-ring, and the other tiers: nothing asked.
+        for (button, tier, at) in [
+            (bell_button(true, start), full, 6000),
+            (bell_button(false, start), full, 5083),
+            (bell_button(true, start), MotionTier::Reduced, 5083),
+            (bell_button(true, start), MotionTier::Off, 5083),
+        ] {
+            let (_, _, frame) = bell_frames(Some(button), tier, at);
+            assert_eq!(
+                frame.repaint,
+                lune_ui::input::Repaint::Idle,
+                "{button:?} {tier:?} {at}"
+            );
+        }
     }
 }
