@@ -80,6 +80,8 @@ struct Fixture {
     feed: Vec<u8>,
     /// The same feed signed by a key the key set does not list.
     feed_bad_signature: Vec<u8>,
+    /// The same release listed on the `beta` channel (`feed-beta.json`).
+    feed_beta: Vec<u8>,
     root_public: [u8; 32],
 }
 
@@ -157,6 +159,13 @@ fn build_fixture() -> Fixture {
     let payload = feed_doc.to_payload();
     let feed = fx.envelope(PayloadKind::Feed, &payload, &[1]);
     let feed_bad_signature = fx.envelope(PayloadKind::Feed, &payload, &[2]);
+    let mut beta_doc = fx.feed_document(
+        1,
+        Some(EXPIRES),
+        vec![fx.release(V100, &[(TARGET, &manifest)], None)],
+    );
+    beta_doc.channel = Channel::parse("beta").expect("channel");
+    let feed_beta = fx.envelope(PayloadKind::Feed, &beta_doc.to_payload(), &[1]);
     files.push((
         format!("{V100}/{}.manifest.json", TARGET.as_str()),
         manifest,
@@ -166,6 +175,7 @@ fn build_fixture() -> Fixture {
         files,
         feed,
         feed_bad_signature,
+        feed_beta,
         root_public: fx.public_key(0),
     }
 }
@@ -332,7 +342,7 @@ fn a_copy_lunepack_did_not_install_is_unavailable_and_ignores_every_command() {
     assert_eq!(launch, Launch::not_installed());
     assert!(!launch.exit());
     let (tx, rx) = mpsc::channel();
-    let mut u = Updater::spawn(&launch, move |e| {
+    let mut u = Updater::spawn(&launch, None, move |e| {
         let _ = tx.send(e);
     });
     assert_eq!(
@@ -584,4 +594,136 @@ fn unavailable_reasons_read_as_text() {
             .text()
             .ends_with("state")
     );
+}
+
+// ---------------------------------------------------------------------------------- channel (Q17)
+
+#[test]
+fn the_first_run_records_the_installed_channel_and_a_later_pack_does_not_change_it() {
+    use super::channel::{Settled, resolve};
+    let settled = |channel: &str, rewrite: bool| Settled {
+        channel: Some(channel.to_owned()),
+        rewrite,
+    };
+    // First run of a beta install: nothing recorded, the tree says beta -> record beta.
+    assert_eq!(resolve("", Some("beta")), settled("beta", true));
+    // After an update to a stable pack the tree says stable; the recorded beta wins, no rewrite.
+    assert_eq!(resolve("beta", Some("stable")), settled("beta", false));
+    // A stable install stays stable.
+    assert_eq!(resolve("", Some("stable")), settled("stable", true));
+    assert_eq!(resolve("stable", Some("stable")), settled("stable", false));
+    // Garbled values (not a channel name) fall back to the tree's channel and are rewritten.
+    for bad in ["Beta", "-beta", "be ta", "be/ta", &"a".repeat(33), "\u{7}"] {
+        assert_eq!(
+            resolve(bad, Some("stable")),
+            settled("stable", true),
+            "{bad:?}"
+        );
+    }
+    // Not installed: nothing followed, nothing written, whatever the settings hold.
+    for persisted in ["", "beta", "garbled value"] {
+        assert_eq!(
+            resolve(persisted, None),
+            Settled {
+                channel: None,
+                rewrite: false
+            },
+            "{persisted:?}"
+        );
+    }
+    // The copy under test is not installed.
+    assert_eq!(
+        channel::settle(&Launch::not_installed(), "beta"),
+        Settled {
+            channel: None,
+            rewrite: false
+        }
+    );
+}
+
+/// An updater over the fake origin, the install's own (baked) channel `baked`, following
+/// `follow`; the origin serves `feed-stable.json` and `feed-beta.json`.
+fn channel_harness(baked: &str, follow: Option<&str>) -> (Harness, FakeOrigin, Site) {
+    let site = Site::new(V090);
+    let origin = fixture().origin();
+    origin.put("feed-beta.json", fixture().feed_beta.clone());
+    let transport = FakeTransport::new(origin.clone());
+    let layout = Layout::User {
+        state_dir: site.dir("state"),
+        cache_dir: site.dir("cache"),
+        versions_dir: site.dir("versions"),
+        current_tree: None,
+    };
+    let builder = UpdaterBuilder::new(
+        app_id(),
+        fixture().root(),
+        &format!("{FAKE_BASE_URL}/feed-{baked}.json"),
+        Channel::parse(baked).expect("channel"),
+        layout,
+    )
+    .clock(Arc::new(FakeClock::new(SUITE_T0 + 3600)))
+    .workers(2)
+    .transport(Arc::new(transport));
+    let up = super::channel::follow(builder, follow)
+        .build()
+        .expect("build");
+    (Harness::new(blocking::Updater::from(up)), origin, site)
+}
+
+fn feeds_asked(origin: &FakeOrigin) -> Vec<String> {
+    origin
+        .requests()
+        .iter()
+        .filter_map(|r| r.url.rsplit('/').next().map(str::to_owned))
+        .filter(|name| name.starts_with("feed-"))
+        .collect()
+}
+
+#[test]
+fn a_beta_install_that_received_a_stable_pack_still_checks_beta() {
+    // The tree's own config now says stable (the pack replaced it); the persisted channel is beta.
+    let (h, origin, _site) = channel_harness("stable", Some("beta"));
+    assert!(h.updater.check(false));
+    assert_eq!(
+        h.states_until(settled),
+        vec![
+            UpdateState::Checking,
+            UpdateState::Available {
+                version: V100.to_owned(),
+                auto: false
+            }
+        ]
+    );
+    let asked = feeds_asked(&origin);
+    assert!(!asked.is_empty(), "no feed was asked for");
+    assert!(asked.iter().all(|n| n == "feed-beta.json"), "{asked:?}");
+}
+
+#[test]
+fn a_stable_install_stays_stable_and_no_channel_keeps_the_trees_own() {
+    for follow in [Some("stable"), None] {
+        let (h, origin, _site) = channel_harness("stable", follow);
+        assert!(h.updater.check(false));
+        assert_eq!(
+            h.states_until(settled).last(),
+            Some(&UpdateState::Available {
+                version: V100.to_owned(),
+                auto: false
+            })
+        );
+        let asked = feeds_asked(&origin);
+        assert!(!asked.is_empty(), "no feed was asked for");
+        assert!(asked.iter().all(|n| n == "feed-stable.json"), "{asked:?}");
+    }
+    // A name that is no channel is ignored at the builder (settle never hands one over).
+    let (h, origin, _site) = channel_harness("beta", Some("Not A Channel"));
+    assert!(h.updater.check(false));
+    assert_eq!(
+        h.states_until(settled).last(),
+        Some(&UpdateState::Available {
+            version: V100.to_owned(),
+            auto: false
+        })
+    );
+    assert!(feeds_asked(&origin).iter().all(|n| n == "feed-beta.json"));
 }

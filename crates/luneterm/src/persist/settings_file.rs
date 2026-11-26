@@ -27,7 +27,7 @@ pub struct SettingsDoc {
 }
 
 /// The names this build writes, in the order it writes them.
-const KEYS: [&str; 26] = [
+const KEYS: [&str; 27] = [
     "theme",
     "glass",
     "menu_blur",
@@ -54,6 +54,7 @@ const KEYS: [&str; 26] = [
     "osc_notifications",
     "efficiency_mode",
     "auto_update_check",
+    "update_channel",
 ];
 
 fn member<'a>(members: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
@@ -134,6 +135,7 @@ pub fn parse_settings(bytes: &[u8]) -> Result<SettingsDoc, Reject> {
     flag(members, "osc_notifications", &mut s.osc_notifications);
     flag(members, "efficiency_mode", &mut s.efficiency_mode);
     flag(members, "auto_update_check", &mut s.auto_update_check);
+    text(members, "update_channel", &mut s.update_channel);
     let unknown = members
         .iter()
         .filter(|(k, _)| k != "version" && !KEYS.contains(&k.as_str()))
@@ -183,6 +185,7 @@ pub fn render_settings(doc: &SettingsDoc) -> Result<String, WriteError> {
         ("osc_notifications".into(), Json::Bool(s.osc_notifications)),
         ("efficiency_mode".into(), Json::Bool(s.efficiency_mode)),
         ("auto_update_check".into(), Json::Bool(s.auto_update_check)),
+        ("update_channel".into(), Json::Str(s.update_channel)),
     ];
     members.extend(doc.unknown.iter().cloned());
     Json::Object(members).to_text()
@@ -220,6 +223,7 @@ mod tests {
             osc_notifications: false,
             efficiency_mode: false,
             auto_update_check: false,
+            update_channel: "beta".into(),
         }
     }
 
@@ -481,6 +485,36 @@ mod tests {
             .expect("parses")
             .unknown;
         assert!(unknown.is_empty(), "a known key is not unknown");
+    }
+
+    /// `update_channel` is empty in a file that never had it, round-trips, is not an unknown
+    /// member, and a value of the wrong type or length reads as not recorded.
+    #[test]
+    fn update_channel_round_trips_and_a_bad_value_reads_as_not_recorded() {
+        let read = |json: &str| parse_settings(json.as_bytes()).expect("parses");
+        assert_eq!(Settings::default().update_channel, "");
+        assert_eq!(read(r#"{"version":1}"#).settings.update_channel, "");
+        let beta = read(r#"{"version":1,"update_channel":"beta"}"#);
+        assert_eq!(beta.settings.update_channel, "beta");
+        assert!(beta.unknown.is_empty(), "a known key is not unknown");
+        let text = render_settings(&beta).expect("writes");
+        assert!(text.contains("\"update_channel\":\"beta\""), "{text}");
+        assert_eq!(parse_settings(text.as_bytes()), Ok(beta));
+        // Not a string: stays empty. A control character or 33 bytes: reset to empty.
+        assert_eq!(
+            read(r#"{"version":1,"update_channel":7}"#)
+                .settings
+                .update_channel,
+            ""
+        );
+        assert_eq!(
+            read(r#"{"version":1,"update_channel":"be\u0007ta"}"#)
+                .settings
+                .update_channel,
+            ""
+        );
+        let long = format!(r#"{{"version":1,"update_channel":"{}"}}"#, "a".repeat(33));
+        assert_eq!(read(&long).settings.update_channel, "");
     }
 
     #[test]

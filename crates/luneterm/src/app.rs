@@ -463,7 +463,16 @@ fn run_window(launch: Launch) -> ExitCode {
     // when a check or download is asked for.
     app.health_pending = launch.pending();
     let update_proxy = event_loop.create_proxy();
-    app.update = Updater::spawn(&launch, move |event| {
+    // The channel this copy follows: recorded in the settings on the first run of an installed
+    // copy, then kept whatever a later pack's own config says (Q17).
+    let settled = update::channel::settle(&launch, &app.settings.update_channel);
+    if settled.rewrite
+        && let Some(channel) = &settled.channel
+    {
+        app.settings.update_channel.clone_from(channel);
+        app.persist.save_settings(&app.settings);
+    }
+    app.update = Updater::spawn(&launch, settled.channel, move |event| {
         let _ = update_proxy.send_event(match event {
             update::Event::State(state) => UserEvent::Update(state),
             update::Event::Restart => UserEvent::UpdateRestart,

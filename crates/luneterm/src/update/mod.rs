@@ -18,6 +18,7 @@
 //!   in from [`root`], or the copy reports [`Unavailable::ForeignRoot`] and never checks.
 
 pub mod auto;
+pub mod channel;
 pub mod root;
 #[cfg(test)]
 mod tests;
@@ -116,6 +117,11 @@ impl Launch {
         self.exit
     }
 
+    /// This copy was installed by lunepack (its update config was found).
+    pub fn is_installed(&self) -> bool {
+        self.installed.is_ok()
+    }
+
     /// This version waits for [`confirm_healthy`] (it was just updated to).
     pub fn pending(&self) -> bool {
         self.pending
@@ -153,9 +159,10 @@ pub fn confirm_healthy() {
     }
 }
 
-/// Opens the running copy's updater: its install, the root check and lunepack's updater. Local
-/// files only; runs on the worker.
-fn open_installed() -> Result<blocking::Updater, Unavailable> {
+/// Opens the running copy's updater: its install, the root check and lunepack's updater, following
+/// `channel` (the persisted one, see [`channel`]) when given. Local files only; runs on the
+/// worker.
+fn open_installed(channel: Option<String>) -> Result<blocking::Updater, Unavailable> {
     let inst = Installation::from_current_exe().map_err(|e| match e {
         Error::NoUpdateConfig => Unavailable::NotInstalled,
         e => Unavailable::Broken(error_text(&e)),
@@ -171,6 +178,7 @@ fn open_installed() -> Result<blocking::Updater, Unavailable> {
         return Err(Unavailable::ForeignRoot);
     }
     inst.updater_builder()
+        .map(|b| channel::follow(b, channel.as_deref()))
         .and_then(|b| b.build())
         .map(blocking::Updater::from)
         .map_err(|e| Unavailable::Broken(error_text(&e)))
@@ -234,10 +242,16 @@ impl Updater {
     }
 
     /// The updater of the running copy as `launch` found it: a worker when it is installed,
-    /// [`Updater::unavailable`] otherwise. `sink` gets every event, on the worker thread.
-    pub fn spawn(launch: &Launch, sink: impl FnMut(Event) + Send + 'static) -> Updater {
+    /// [`Updater::unavailable`] otherwise. `channel` is the channel to follow ([`channel::settle`]);
+    /// `None` keeps the one the installed tree names. `sink` gets every event, on the worker
+    /// thread.
+    pub fn spawn(
+        launch: &Launch,
+        channel: Option<String>,
+        sink: impl FnMut(Event) + Send + 'static,
+    ) -> Updater {
         match &launch.installed {
-            Ok(()) => Updater::start(Box::new(open_installed), Box::new(sink)),
+            Ok(()) => Updater::start(Box::new(move || open_installed(channel)), Box::new(sink)),
             Err(why) => Updater::unavailable(why.clone()),
         }
     }

@@ -152,6 +152,8 @@ named!(OutlineAnim {
 
 /// Longest saved font or palette name, in bytes.
 pub const MAX_NAME_BYTES: usize = 64;
+/// Longest saved update channel name, in bytes (lunepack's own limit).
+pub const MAX_CHANNEL_BYTES: usize = 32;
 /// Longest saved shell program and its arguments, in bytes.
 pub const MAX_SHELL_BYTES: usize = 1024;
 
@@ -211,6 +213,11 @@ pub struct Settings {
     /// (Settings > About). On by default; no effect on a copy the installer did not install (it
     /// never touches the network). A Luneterm-only setting: Lunegit has none.
     pub auto_update_check: bool,
+    /// The update channel this copy follows (file key `update_channel`), recorded on the first
+    /// run of a copy the installer installed and never changed by an update, so a beta install
+    /// stays on beta when it later receives a stable pack. Empty until recorded (and for a copy
+    /// that is not installed). No row in the page: a Luneterm-only bookkeeping field.
+    pub update_channel: String,
 }
 
 impl Default for Settings {
@@ -242,6 +249,7 @@ impl Default for Settings {
             osc_notifications: true,
             efficiency_mode: true,
             auto_update_check: true,
+            update_channel: String::new(),
         }
     }
 }
@@ -275,6 +283,7 @@ impl Settings {
         if self.palette.is_empty() {
             self.palette = defaults.palette;
         }
+        fit(&mut self.update_channel, MAX_CHANNEL_BYTES, "");
         fit(&mut self.shell, MAX_SHELL_BYTES, "");
         fit(&mut self.shell_args, MAX_SHELL_BYTES, "");
         fit(&mut self.default_cwd, crate::cwd::MAX_CWD_BYTES, "");
@@ -369,6 +378,8 @@ impl Settings {
             osc_notifications,
             efficiency_mode,
             auto_update_check,
+            // Bookkeeping, not a row of the page: it never counts as a change.
+            update_channel: _,
         } = self;
         let flags = [
             (SettingId::Theme, *theme != other.theme),
@@ -1028,6 +1039,12 @@ mod tests {
         }
         assert_eq!(seen, SettingId::ALL);
         assert!(effects(&d, &d).is_empty());
+        // The recorded update channel is bookkeeping: no row, never a change.
+        let channel = Settings {
+            update_channel: "beta".into(),
+            ..d.clone()
+        };
+        assert!(d.changed(&channel).is_empty());
         // Two fields with one effect give it once; two effects give both, in field order.
         let both = Settings {
             font_size: 9,
