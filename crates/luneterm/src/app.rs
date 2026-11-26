@@ -87,6 +87,7 @@ use crate::tabs::{
     plan_close,
 };
 use crate::title::DEFAULT_TITLE;
+use crate::update::{self, Launch, UpdateState, Updater};
 
 /// The window's first size and its minimum, logical px.
 const WINDOW_SIZE: (f64, f64) = (1040.0, 660.0);
@@ -99,12 +100,19 @@ const MAX_PREEDIT_CHARS: usize = 256;
 const BELL_INTERVAL: Duration = Duration::from_secs(2);
 /// How long closing waits for the session's threads before the process leaves anyway.
 const CLOSE_WAIT: Duration = Duration::from_millis(500);
+/// How long quitting waits for the update worker once its operation is cancelled.
+const UPDATE_WAIT: Duration = Duration::from_secs(1);
 
 /// Events other threads post to the event loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserEvent {
     /// The session has an Update for the UI: draw a frame.
     Wake,
+    /// The update worker's new state (update.rs).
+    Update(UpdateState),
+    /// The update worker handed the staged version to lunepack's runtime: quit through the
+    /// normal path so the runtime can apply it.
+    UpdateRestart,
     /// `LUNETERM_TRACE_SWITCH_AUTO`: switch to the next tab, as the shortcut does; posted at the
     /// instant it carries, so the trace sees how long the event loop took to get to it.
     TraceSwitch(Instant),
@@ -380,14 +388,15 @@ pub fn failure_grid(cols: usize, rows: usize, failure: &SpawnFailure) -> Grid {
 
 /// Runs the app: a frame dump when `LUNETERM_DUMP_FRAMES` is set (this is the only place the
 /// variable is read), otherwise the window.
-pub fn run() -> ExitCode {
+/// `launch` is what `update::startup` found.
+pub fn run(launch: Launch) -> ExitCode {
     if let Some(dir) = std::env::var_os("LUNETERM_DUMP_FRAMES").filter(|v| !v.is_empty()) {
         return dump::run(Path::new(&dir));
     }
-    run_window()
+    run_window(launch)
 }
 
-fn run_window() -> ExitCode {
+fn run_window(launch: Launch) -> ExitCode {
     // The present mode knob (this is the only place the variable is read); checked before
     // anything is built, a value that is not UTF-8 is as wrong as any other.
     let present = {
@@ -445,6 +454,17 @@ fn run_window() -> ExitCode {
         config_dir,
     );
     app.present = present;
+    // The update worker (none for a copy lunepack did not install); it touches the network only
+    // when a check or download is asked for.
+    app.health_pending = launch.pending();
+    let update_proxy = event_loop.create_proxy();
+    app.update = Updater::spawn(&launch, move |event| {
+        let _ = update_proxy.send_event(match event {
+            update::Event::State(state) => UserEvent::Update(state),
+            update::Event::Restart => UserEvent::UpdateRestart,
+        });
+    });
+    app.update_state = app.update.initial_state();
     // The tab-switch trace (this is the only place the variable is read).
     if std::env::var_os("LUNETERM_TRACE_SWITCH").is_some_and(|v| v == "1") {
         app.trace = Some(Box::default());
@@ -831,6 +851,13 @@ struct App {
     /// The callback in progress handles discrete input (or is the post-frame section of a frame
     /// that took some): its asks draw at once.
     urgent_scope: bool,
+    /// The update worker's handle (update.rs).
+    update: Updater,
+    /// The update worker's last state (Settings > About shows it).
+    update_state: UpdateState,
+    /// This version waits for its health confirm (plan D8: after the first frame is presented and
+    /// the first shell spawned).
+    health_pending: bool,
 }
 
 impl App {
@@ -905,6 +932,9 @@ impl App {
             present: pacing::DEFAULT_PRESENT,
             pacer: Pacer::new(Cadence::hz(60)),
             urgent_scope: false,
+            update: Updater::unavailable(update::Unavailable::NotInstalled),
+            update_state: UpdateState::Unavailable(update::Unavailable::NotInstalled),
+            health_pending: false,
         }
     }
 
@@ -2576,6 +2606,12 @@ impl App {
             self.on_toast_action(id, action, press, event_loop);
         }
         self.sync_toasts(input.time);
+        // Plan D8: a version just updated to confirms its health once a frame is on screen and
+        // a shell runs (lunepack rolls it back otherwise).
+        if self.health_pending && self.tabs.iter().any(|(_, t)| t.session.is_some()) {
+            self.health_pending = false;
+            update::confirm_healthy();
+        }
 
         // What the frame asked of the page, the menu, the tabs and the dialog, now that the
         // frame is out.
@@ -3154,13 +3190,14 @@ impl ApplicationHandler<UserEvent> for App {
             t.callback_begin();
         }
         let kind = match event {
-            UserEvent::Wake => Callback::Wake,
+            UserEvent::Wake | UserEvent::Update(_) | UserEvent::UpdateRestart => Callback::Wake,
             UserEvent::TraceSwitch(_) => Callback::Auto,
         };
         self.efficiency.tick(Instant::now());
         self.urgent_scope = pacing::is_urgent(match event {
             UserEvent::Wake => EventKind::Wake,
             UserEvent::TraceSwitch(_) => EventKind::TraceSwitch,
+            UserEvent::Update(_) | UserEvent::UpdateRestart => EventKind::Other,
         });
         self.user_event_inner(event_loop, event);
         self.urgent_scope = false;
@@ -3207,6 +3244,8 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // An update check or download in flight stops now; the worker is waited for last.
+        self.update.cancel();
         // The saves below must not run at the idle class (Windows) while the window is in the
         // background.
         self.efficiency.release_for_exit(Instant::now());
@@ -3219,6 +3258,9 @@ impl ApplicationHandler<UserEvent> for App {
         // The last writes: a disk that hangs does not hang the exit for long.
         if !self.persist.flush(Duration::from_secs(2)) {
             eprintln!("luneterm: the config files were not all written in time");
+        }
+        if !self.update.shutdown(UPDATE_WAIT) {
+            eprintln!("luneterm: the update thread did not stop in time");
         }
     }
 }
@@ -3246,6 +3288,16 @@ impl App {
                     t.press_arrived(at);
                 }
                 self.app_command(AppCommand::NextTab, event_loop);
+            }
+            UserEvent::Update(state) => {
+                self.update_state = state;
+            }
+            UserEvent::UpdateRestart => {
+                // The normal quit: `exiting` saves the workspace and settings and ends the
+                // sessions; the runtime applies the update once this process is gone.
+                if !event_loop.exiting() {
+                    event_loop.exit();
+                }
             }
         }
     }

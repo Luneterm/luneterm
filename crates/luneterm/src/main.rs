@@ -13,5 +13,11 @@ fn main() -> std::process::ExitCode {
         eprintln!("luneterm: cannot restrict the DLL search path: {e}");
         return std::process::ExitCode::from(1);
     }
-    luneterm::app::run()
+    // Then lunepack's start (plan P7): a version that failed its health check is rolled back
+    // here and the previous one runs instead. Local files only, never the network.
+    let launch = luneterm::update::startup();
+    if launch.exit() {
+        return std::process::ExitCode::SUCCESS;
+    }
+    luneterm::app::run(launch)
 }

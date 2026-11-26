@@ -38,6 +38,17 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
+# The update tests (src/update/tests.rs) build a signed feed with lunepack's own writers at test
+# time (fresh Ed25519 keys, never written to the repo); `url` makes its `file:` URL. All already in
+# the lock through lunepack except the testkit and its proptest.
+[dev-dependencies]
+lunepack-testkit.workspace = true
+lunepack-core.workspace = true
+lunepack-crypto.workspace = true
+lunepack-codec-lzma.workspace = true
+lunepack-fs.workspace = true
+url = "2"
+
 # The DLL-search test (tests/dll_search_gpu.rs) loads and inspects modules.
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
