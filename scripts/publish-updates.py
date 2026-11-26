@@ -7,7 +7,7 @@ Run by .github/workflows/publish-updates.yml (auto-update plan step 6). Standard
         [--inputs-dir <dir> | (GitHub release of <tag>)] [--store-dir <dir> | (R2)] [--keep N]
         [--targets <t,...>  (trial runs with --store-dir only)]
     publish-updates.py refresh --lunepack <cli> --work <dir> [--apply] [--if-expiring-within-days N]
-        [--store-dir <dir> | (R2)]
+        [--skip-if-unpublished] [--store-dir <dir> | (R2)]
     publish-updates.py plan --release-dir <dir> [--add <version>] [--keep N]
 
 `publish` takes the release's build inputs (scripts/make-build-input.py; from the GitHub release of
@@ -26,15 +26,21 @@ listing the bucket. With a GitHub release it then attaches the setup files and d
 Nothing is written (bucket, release, local store) without --apply: the default is a dry run that
 does all local work and prints the plan. Every key written or deleted is under `luneterm/`.
 
-Secrets come from the environment and are removed from it at start: LUNEPACK_RELEASE_KEY reaches only
-the lunepack child, R2_UPDATES_TOKEN only wrangler (as CLOUDFLARE_API_TOKEN, with
-CLOUDFLARE_ACCOUNT_ID), GITHUB_TOKEN only the GitHub API calls. No value of one is ever printed.
+Secrets come from the environment and are removed from it at start: LUNEPACK_RELEASE_KEY reaches
+only the lunepack child, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY only this process's own signed R2
+requests (the S3 API of R2, SigV4 on the standard library), GITHUB_TOKEN only the GitHub API calls.
+No value of one is ever printed. This is hygiene, not a boundary: processes of one user can read each
+other's environment (`/proc/<pid>/environ`), and removing a variable from Python's `os.environ` does
+not erase it there. What keeps the release key safe is that this job runs no third-party code: the
+pinned lunepack CLI and the Python standard library only (no npm tool, no wrangler).
 The run refuses to start while the packaging configs or root.rs name the throwaway test root (D9).
 """
 
 import argparse
 import base64
 import hashlib
+import hmac
+import http.client
 import importlib.util
 import json
 import os
@@ -48,6 +54,7 @@ import tempfile
 import time
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -59,7 +66,8 @@ PUBLIC_BUCKET = "izzat-updates"
 PRIVATE_BUCKET = "izzat-updates-publisher"
 PUBLIC_URL = "https://updates.izzat.dev/"
 STATE_KEY = PREFIX + "lunepack-state.json"
-WRANGLER = ["pnpm", "dlx", "wrangler@4.168.0"]
+# Deletes that were decided but not (all) done: kept in the private bucket so a rerun finishes them.
+PENDING_KEY = PREFIX + "pending-deletes.json"
 
 KEEP = 10
 DELTAS = 3
@@ -69,9 +77,12 @@ CHANNELS = ("stable", "beta")
 # The throwaway test root of crates/luneterm/src/update/root.rs (its private half was discarded).
 TEST_ROOT_KEYS = frozenset({"7c4f44f54daf49ca873f3aac937f0f19e668364a01178aa339f64690f998e996"})
 
-SECRET_NAMES = ("LUNEPACK_RELEASE_KEY", "R2_UPDATES_TOKEN", "GITHUB_TOKEN")
-# Removed from the environment every child inherits: a stray Cloudflare token must not shadow ours.
-DROPPED_NAMES = ("CLOUDFLARE_API_TOKEN", "CF_API_TOKEN", "CLOUDFLARE_R2_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID")
+SECRET_NAMES = ("LUNEPACK_RELEASE_KEY", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "GITHUB_TOKEN")
+# Removed from the environment every child inherits: stray cloud credentials a child has no use for.
+DROPPED_NAMES = (
+    "CLOUDFLARE_API_TOKEN", "CF_API_TOKEN", "CLOUDFLARE_R2_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+)
 
 # Per target: the packaging config's OS, the asset names, and what BUILD-INFO.txt must say.
 TARGETS = {
@@ -369,6 +380,101 @@ class Lunepack:
         return out
 
 
+# ------------------------------------------------------------------------------- pending deletes
+
+
+def key_version(key):
+    """The version of a `luneterm/<version>/<file>` key."""
+    return key[len(PREFIX) :].split("/")[0]
+
+
+def parse_pending(data):
+    """The delete keys recorded by an earlier run (`None`: no file). Fail closed: a file that is not
+    exactly `{"format": 1, "delete": [<deletable key>, ...]}` aborts."""
+    if data is None:
+        return []
+    try:
+        doc = json.loads(data)
+    except ValueError as err:
+        raise Abort("%s does not parse: %s" % (PENDING_KEY, err)) from err
+    if not isinstance(doc, dict) or set(doc) != {"format", "delete"} or doc["format"] != 1:
+        raise Abort("%s is not a pending-deletes document" % PENDING_KEY)
+    keys = doc["delete"]
+    if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+        raise Abort("%s: `delete` is not a list of keys" % PENDING_KEY)
+    for key in keys:
+        assert_deletable(key)
+    return sorted(set(keys))
+
+
+def pending_document(keys):
+    return (json.dumps({"format": 1, "delete": sorted(set(keys))}, indent=1) + "\n").encode("ascii")
+
+
+# ----------------------------------------------------------------------------------------- SigV4
+
+EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+
+
+def _hmac(key, text):
+    return hmac.new(key, text.encode("utf-8"), hashlib.sha256).digest()
+
+
+def uri_encode(text, keep_slash=False):
+    """The SigV4 URI encoding: everything but `A-Za-z0-9-_.~` (and `/` in a path) as %XX."""
+    return urllib.parse.quote(text, safe="/" if keep_slash else "")
+
+
+def sigv4_authorization(method, path, query, headers, payload_hash, key_id, secret, region, service, amz_date):
+    """The `Authorization` header value of AWS Signature Version 4 (one signed request, the S3 way:
+    the path is encoded once). `headers` are the headers to sign, any case, and must hold `host` and
+    `x-amz-date` (S3 also `x-amz-content-sha256`); `query` is {name: value}; `amz_date` is
+    `YYYYMMDDTHHMMSSZ`. Standard library only."""
+    lowered = {name.lower(): " ".join(str(value).split()) for name, value in headers.items()}
+    names = sorted(lowered)
+    canonical_headers = "".join("%s:%s\n" % (name, lowered[name]) for name in names)
+    signed = ";".join(names)
+    canonical_query = "&".join(
+        "%s=%s" % pair for pair in sorted((uri_encode(k), uri_encode(v)) for k, v in query.items())
+    )
+    canonical = "\n".join([method, uri_encode(path, True), canonical_query, canonical_headers, signed, payload_hash])
+    date = amz_date[:8]
+    scope = "%s/%s/%s/aws4_request" % (date, region, service)
+    to_sign = "\n".join(["AWS4-HMAC-SHA256", amz_date, scope, hashlib.sha256(canonical.encode("utf-8")).hexdigest()])
+    signing_key = _hmac(_hmac(_hmac(_hmac(("AWS4" + secret).encode("utf-8"), date), region), service), "aws4_request")
+    signature = hmac.new(signing_key, to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    return "AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s" % (key_id, scope, signed, signature)
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+
+
+def https_transport(method, host, path, headers, body_path, limit):
+    """One HTTPS request to `host`; the body is streamed from `body_path`. Returns (status, bytes of
+    the answer, at most `limit` + 1 of them)."""
+    conn = http.client.HTTPSConnection(host, timeout=600)
+    try:
+        if body_path is None:
+            conn.request(method, path, headers=headers)
+            response = conn.getresponse()
+        else:
+            with open(body_path, "rb") as body:
+                conn.request(method, path, body=body, headers=headers)
+                response = conn.getresponse()
+        return response.status, response.read(limit + 1)
+    except (OSError, http.client.HTTPException) as err:
+        raise Abort("%s https://%s%s: %s" % (method, host, path, type(err).__name__)) from err
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------------------- stores
 
 
@@ -381,12 +487,20 @@ class LocalStore:
     def _path(self, bucket, key):
         return os.path.join(self.root, bucket, *key.split("/"))
 
-    def get_doc(self, key):
-        path = self._path(PUBLIC_BUCKET, key)
+    def _read(self, bucket, key):
+        path = self._path(bucket, key)
         if not os.path.isfile(path):
             return None
         with open(path, "rb") as f:
             return f.read()
+
+    def _write(self, bucket, key, src):
+        dest = self._path(bucket, key)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(src, dest)
+
+    def get_doc(self, key):
+        return self._read(PUBLIC_BUCKET, key)
 
     def get_object(self, key, dest):
         path = self._path(PUBLIC_BUCKET, key)
@@ -396,22 +510,20 @@ class LocalStore:
         return True
 
     def get_state(self):
-        path = self._path(PRIVATE_BUCKET, STATE_KEY)
-        if not os.path.isfile(path):
-            return None
-        with open(path, "rb") as f:
-            return f.read()
+        return self._read(PRIVATE_BUCKET, STATE_KEY)
+
+    def get_pending(self):
+        return self._read(PRIVATE_BUCKET, PENDING_KEY)
 
     def put(self, key, src, content_type, cache_control):
         assert key.startswith(PREFIX)
-        dest = self._path(PUBLIC_BUCKET, key)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        shutil.copyfile(src, dest)
+        self._write(PUBLIC_BUCKET, key, src)
 
     def put_state(self, src):
-        dest = self._path(PRIVATE_BUCKET, STATE_KEY)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        shutil.copyfile(src, dest)
+        self._write(PRIVATE_BUCKET, STATE_KEY, src)
+
+    def put_pending(self, src):
+        self._write(PRIVATE_BUCKET, PENDING_KEY, src)
 
     def delete(self, key):
         assert_deletable(key)
@@ -421,42 +533,64 @@ class LocalStore:
 
 
 class R2Store:
-    """The buckets through wrangler (documents, writes, deletes: the bucket itself, no cache) and
-    the public URL (the immutable `<ver>/` objects, checked against their manifests)."""
+    """The buckets through R2's S3 API, every request signed with SigV4 by this process (no other
+    program holds the access key), and the public URL (the immutable `<ver>/` objects, checked
+    against their manifests). The documents are read from the bucket itself, so no cache."""
 
-    def __init__(self, secrets, scratch):
+    REGION = "auto"
+
+    def __init__(self, secrets, scratch, transport=https_transport, clock=time.gmtime):
         self.secrets = secrets
         self.scratch = scratch
-        if not secrets.account:
-            raise Abort("CLOUDFLARE_ACCOUNT_ID is not set")
-        self.token = secrets.get("R2_UPDATES_TOKEN")
+        if not re.fullmatch(r"[0-9a-f]{32}", secrets.account or ""):
+            raise Abort("CLOUDFLARE_ACCOUNT_ID is not set (or is not a 32-hex account id)")
+        self.host = "%s.r2.cloudflarestorage.com" % secrets.account
+        self.key_id = secrets.get("R2_ACCESS_KEY_ID")
+        self.secret = secrets.get("R2_SECRET_ACCESS_KEY")
+        self.transport = transport
+        self.clock = clock
 
-    def _wrangler(self, args):
-        env = child_env({"CLOUDFLARE_API_TOKEN": self.token, "CLOUDFLARE_ACCOUNT_ID": self.secrets.account})
-        run = subprocess.run(WRANGLER + args, env=env, capture_output=True, text=True)
-        return run.returncode, self.secrets.redact(run.stdout + run.stderr)
+    def _request(self, method, bucket, key, body_path=None, extra=None, limit=1 << 16):
+        """One signed request. Returns (status, body bytes, at most `limit` + 1 of them)."""
+        path = "/%s/%s" % (bucket, key)
+        payload_hash = file_sha256(body_path) if body_path else EMPTY_SHA256
+        signed = {
+            "host": self.host,
+            "x-amz-content-sha256": payload_hash,
+            "x-amz-date": time.strftime("%Y%m%dT%H%M%SZ", self.clock()),
+        }
+        signed.update(extra or {})
+        headers = dict(signed)
+        headers["Authorization"] = sigv4_authorization(
+            method, path, {}, signed, payload_hash, self.key_id, self.secret, self.REGION, "s3", signed["x-amz-date"]
+        )
+        if body_path:
+            headers["Content-Length"] = str(os.path.getsize(body_path))
+        return self.transport(method, self.host, path, headers, body_path, limit)
+
+    def _why(self, status, body):
+        """`HTTP <status> <S3 error code>`: no header, no body text beyond the code."""
+        code = re.search(rb"<Code>([A-Za-z0-9]{1,64})</Code>", body[:4096])
+        return "HTTP %d%s" % (status, " " + code.group(1).decode("ascii") if code else "")
 
     def _get(self, bucket, key):
-        fd, path = tempfile.mkstemp(dir=self.scratch)
-        os.close(fd)
-        try:
-            code, out = self._wrangler(["r2", "object", "get", "%s/%s" % (bucket, key), "--file", path, "--remote"])
-            if code != 0:
-                if "The specified key does not exist" in out:
-                    return None
-                raise Abort("wrangler get %s/%s failed: %s" % (bucket, key, out.strip().splitlines()[-1:]))
-            if os.path.getsize(path) > MAX_DOC_BYTES:
-                raise Abort("%s/%s is larger than a document may be" % (bucket, key))
-            with open(path, "rb") as f:
-                return f.read()
-        finally:
-            os.remove(path)
+        status, body = self._request("GET", bucket, key, limit=MAX_DOC_BYTES)
+        if status == 404:
+            return None
+        if status != 200:
+            raise Abort("get %s/%s failed: %s" % (bucket, key, self._why(status, body)))
+        if len(body) > MAX_DOC_BYTES:
+            raise Abort("%s/%s is larger than a document may be" % (bucket, key))
+        return body
 
     def get_doc(self, key):
         return self._get(PUBLIC_BUCKET, key)
 
     def get_state(self):
         return self._get(PRIVATE_BUCKET, STATE_KEY)
+
+    def get_pending(self):
+        return self._get(PRIVATE_BUCKET, PENDING_KEY)
 
     def get_object(self, key, dest):
         request = urllib.request.Request(PUBLIC_URL + key, headers={"User-Agent": "luneterm-publish-updates"})
@@ -479,28 +613,28 @@ class R2Store:
         except OSError as err:
             raise Abort("GET %s: %r" % (PUBLIC_URL + key, err)) from err
 
+    def _put(self, bucket, key, src, content_type, cache_control):
+        status, body = self._request(
+            "PUT", bucket, key, body_path=src, extra={"content-type": content_type, "cache-control": cache_control}
+        )
+        if status != 200:
+            raise Abort("upload of %s failed: %s" % (key, self._why(status, body)))
+
     def put(self, key, src, content_type, cache_control):
         assert key.startswith(PREFIX)
-        code, out = self._wrangler(
-            ["r2", "object", "put", "%s/%s" % (PUBLIC_BUCKET, key), "--file", src, "--content-type", content_type,
-             "--cache-control", cache_control, "--remote"]
-        )
-        if code != 0:
-            raise Abort("upload of %s failed: %s" % (key, out.strip().splitlines()[-1:]))
+        self._put(PUBLIC_BUCKET, key, src, content_type, cache_control)
 
     def put_state(self, src):
-        code, out = self._wrangler(
-            ["r2", "object", "put", "%s/%s" % (PRIVATE_BUCKET, STATE_KEY), "--file", src, "--content-type",
-             "application/json", "--cache-control", "no-store", "--remote"]
-        )
-        if code != 0:
-            raise Abort("upload of the state file failed: %s" % out.strip().splitlines()[-1:])
+        self._put(PRIVATE_BUCKET, STATE_KEY, src, "application/json", "no-store")
+
+    def put_pending(self, src):
+        self._put(PRIVATE_BUCKET, PENDING_KEY, src, "application/json", "no-store")
 
     def delete(self, key):
         assert_deletable(key)
-        code, out = self._wrangler(["r2", "object", "delete", "%s/%s" % (PUBLIC_BUCKET, key), "--remote"])
-        if code != 0:
-            raise Abort("delete of %s failed: %s" % (key, out.strip().splitlines()[-1:]))
+        status, body = self._request("DELETE", PUBLIC_BUCKET, key)
+        if status not in (200, 204):  # S3 answers 204 for a key that is already gone
+            raise Abort("delete of %s failed: %s" % (key, self._why(status, body)))
 
 
 # -------------------------------------------------------------------------------- the commit order
@@ -513,23 +647,54 @@ def content_type_of(path):
     return "application/json" if path.endswith(".json") else "application/octet-stream"
 
 
-def commit(store, release_dir, uploads, feeds, state_path, deletes, apply, log=print):
+def commit(store, release_dir, uploads, feeds, state_path, deletes, apply, log=print, live_versions=(), scratch=None):
     """Write in the only safe order: new `<ver>/` objects; a check that no live feed changed since
-    it was read (P3); the feeds; the state file; the deletes. Any failure raises before the next
-    stage, so a failed upload leaves the live feeds as they were (P9). `feeds`: {channel: bytes of
-    the live feed read at the start, or None}. Without `apply` only prints."""
+    it was read (P3); the record of the deletes still to do; the feeds; the state file; the deletes.
+    Any failure raises before the next stage, so a failed upload leaves the live feeds as they were
+    (P9). `feeds`: {channel: bytes of the live feed read at the start, or None}. Without `apply`
+    only prints.
+
+    The deletes are recorded in the private bucket before any feed is written (a feed that no longer
+    lists a version is what makes its objects orphans), joined to what an earlier run left there, and
+    each run does all of them, so a delete that failed (or a run that died after the feeds) is done
+    by the next run, a publish or a refresh. A recorded key whose version is in `live_versions` (a
+    version listed again) is dropped from the record, never deleted. A delete that fails does not
+    stop the others; the run then fails with the keys left, which stay recorded."""
     for key in deletes:
         assert_deletable(key)
     verb = "" if apply else "[dry run] would "
+    recorded = parse_pending(store.get_pending())
+    live = set(live_versions)
+    todo = sorted(k for k in set(recorded) | set(deletes) if key_version(k) not in live)
+    for key in sorted(set(recorded) - set(todo)):
+        log("not deleting %s: its version is listed again" % key)
+
+    recorded_now = [recorded]  # what the bucket's record holds now
+
+    def record(keys):
+        if not apply or sorted(keys) == recorded_now[0]:
+            return
+        fd, path = tempfile.mkstemp(dir=scratch)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(pending_document(keys))
+            store.put_pending(path)
+        finally:
+            os.remove(path)
+        recorded_now[0] = sorted(keys)
+
     for path in uploads:
         key = bucket_key(path)
         log("%supload %s" % (verb, key))
         if apply:
             store.put(key, os.path.join(release_dir, *path.split("/")), content_type_of(path), IMMUTABLE)
     for channel, original in sorted(feeds.items()):
-        live = store.get_doc(bucket_key("feed-%s.json" % channel))
-        if live != original:
+        live_doc = store.get_doc(bucket_key("feed-%s.json" % channel))
+        if live_doc != original:
             raise Abort("feed-%s.json changed since this run read it (another publish?); writing no feed" % channel)
+    if todo != recorded:
+        log("%srecord %d delete(s) in %s/%s" % (verb, len(todo), PRIVATE_BUCKET, PENDING_KEY))
+        record(todo)
     for channel in sorted(feeds):
         key = bucket_key("feed-%s.json" % channel)
         log("%supload %s" % (verb, key))
@@ -539,10 +704,22 @@ def commit(store, release_dir, uploads, feeds, state_path, deletes, apply, log=p
         log("%supload the state file %s/%s" % (verb, PRIVATE_BUCKET, STATE_KEY))
         if apply:
             store.put_state(state_path)
-    for key in deletes:
+    failed = []
+    for key in todo:
         log("%sdelete %s" % (verb, key))
         if apply:
-            store.delete(key)
+            try:
+                store.delete(key)
+            except Abort as err:
+                log("delete failed: %s" % err)
+                failed.append(key)
+    if apply and todo:
+        record(failed)
+    if failed:
+        raise Abort(
+            "%d delete(s) failed and stay recorded in %s/%s; rerun a publish or a refresh to retry them: %s"
+            % (len(failed), PRIVATE_BUCKET, PENDING_KEY, ", ".join(failed[:5]) + (" ..." if len(failed) > 5 else ""))
+        )
 
 
 # ----------------------------------------------------------------------------------- build inputs
@@ -961,6 +1138,17 @@ def gather_inputs(args, secrets, version, need, work, rev, release):
     return out
 
 
+def setup_argv(lp, release_dir, version, target, out, channel):
+    """`lunepack setup` of one target. Its config is the one the pack used (its OS and the version's
+    channel): lunepack stamps the Windows setup exe with that config's `[windows] icon`, so the Linux
+    config would leave it without one."""
+    argv = ["setup", release_dir, "--version", version, "--target", target, "--out", out,
+            "--config", lp.config(TARGETS[target]["os"], channel)]
+    if target.startswith("macos-"):
+        argv.append("--zip")
+    return argv
+
+
 def cmd_publish(args, secrets):
     m = TAG_RE.fullmatch(args.tag or "")
     if not m:
@@ -1069,14 +1257,13 @@ def cmd_publish(args, secrets):
     for target in targets:
         name = TARGETS[target]["setup"].format(v=version)
         path = os.path.join(out_dir, name)
-        argv = ["setup", rd.path, "--version", version, "--target", target, "--out", path, "--config", any_config]
-        if target.startswith("macos-"):
-            argv.append("--zip")
-        lp.run(argv, sign=False)
+        lp.run(setup_argv(lp, rd.path, version, target, path, channel), sign=False)
         setups.append((name, path))
 
     print("retention (keep %d): drop %s; delete versions %s" % (args.keep, json.dumps(drops, sort_keys=True), delete_versions))
-    commit(store, rd.path, new_paths, changed, rd.state_path, deletes, args.apply)
+    live_versions = {v for ch in after for v in after[ch] if v not in drops.get(ch, [])}
+    commit(store, rd.path, new_paths, changed, rd.state_path, deletes, args.apply, live_versions=live_versions,
+           scratch=work)
 
     verb = "" if args.apply else "[dry run] would "
     if release is None:
@@ -1104,7 +1291,14 @@ def cmd_publish(args, secrets):
 
 
 def cmd_refresh(args, secrets):
-    refuse_test_root()
+    try:
+        refuse_test_root()
+    except Abort as err:
+        if not args.skip_if_unpublished:
+            raise
+        # The weekly schedule must not turn red before the real root and the first feed exist.
+        print("::notice::scheduled refresh skipped: %s" % err)
+        return
     work = os.path.abspath(args.work)
     if os.path.exists(work):
         raise Abort("%s exists; give a new work directory" % work)
@@ -1113,6 +1307,9 @@ def cmd_refresh(args, secrets):
     render_configs(config_dir)
     lp = Lunepack(os.path.abspath(args.lunepack), secrets, config_dir)
     store = LocalStore(os.path.abspath(args.store_dir)) if args.store_dir else R2Store(secrets, work)
+    if args.skip_if_unpublished and store.get_doc(bucket_key("keys.json")) is None:
+        print("::notice::scheduled refresh skipped: the bucket has no %skeys.json yet (nothing published)" % PREFIX)
+        return
     rd = ReleaseDir(store, os.path.join(work, "release"), os.path.join(config_dir, "lunepack-state.json"))
     rd.load()
     now = int(time.time())
@@ -1134,8 +1331,9 @@ def cmd_refresh(args, secrets):
         changed[ch] = raw
     if not changed:
         print("nothing to re-sign")
-        return
-    commit(store, rd.path, [], changed, rd.state_path, [], args.apply)
+    # Also finishes the deletes an earlier run left recorded (nothing is written when there are none).
+    live_versions = {v for releases in rd.listed.values() for v in releases}
+    commit(store, rd.path, [], changed, rd.state_path, [], args.apply, live_versions=live_versions, scratch=work)
 
 
 def cmd_plan(args):
@@ -1187,6 +1385,8 @@ def main(argv=None):
     r.add_argument("--work", required=True)
     r.add_argument("--store-dir")
     r.add_argument("--if-expiring-within-days", type=int)
+    r.add_argument("--skip-if-unpublished", action="store_true",
+                   help="the weekly schedule: exit 0 with a notice while the test root is in or the bucket has no keys.json")
     r.add_argument("--apply", action="store_true")
     q = sub.add_parser("plan")
     q.add_argument("--release-dir", required=True)

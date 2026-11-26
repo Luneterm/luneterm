@@ -42,16 +42,17 @@ reference for every `lunepack` command below:
    the app for lunepack and attaches `luneterm-<version>-macos-arm64-build.tar.gz` (+ `.sha256`) to the
    draft. There is no macOS CI.
 3. Publish the draft: `gh release edit <tag> --draft=false`. That starts `publish-updates.yml`
-   (single-use Linux container; the only job that holds the release key and the R2 token). It packs
+   (single-use Linux container; the only job that holds the release key and the R2 access key, and it
+   runs no third-party code: the pinned lunepack CLI and the Python standard library). It packs
    each target with `lunepack pack --deltas 3` (deltas against the newest 3 earlier versions of the
    channel), adds the version to the feeds (a stable tag to `stable` and `beta`, a release candidate
    to `beta` only; 365-day expiry), makes the setup files, writes to R2, prunes, then attaches the
    setup files to the GitHub release and deletes the `*-build.*` inputs from it.
 4. Write order, so a failure never leaves clients with a feed pointing at missing files: new
-   `<version>/` objects (packs and deltas before manifests), then the feeds (after checking that no
-   live feed changed since it was read), then the state file, then the deletes. A failed upload stops
-   the run before any feed is written. Rerunning a publish of the same tag is idempotent (it reuses
-   what the bucket already holds).
+   `<version>/` objects (packs and deltas before manifests), then (after checking that no live feed
+   changed since it was read) the record of the deletes still to do, then the feeds, then the state
+   file, then the deletes. A failed upload stops the run before any feed is written. Rerunning a
+   publish of the same tag is idempotent (it reuses what the bucket already holds).
 
 The publisher refuses to run while the app or any packaging config carries the throwaway **test root**
 (see D9 below), and without `--apply` it only prints what it would do (`workflow_dispatch` defaults to a
@@ -67,6 +68,14 @@ manifests (pack and deltas), never by listing the bucket, and every key deleted 
 `luneterm/` and has the shape `luneterm/<version>/<file>`: `keys.json`, `root-*.json`, the feeds and
 the state file are never deletable by the script. A version that was the base of a newer version's
 delta may be deleted: a client takes a delta only from the version it runs, otherwise the full pack.
+The keys to delete are recorded in the private bucket (`izzat-updates-publisher`,
+`luneterm/pending-deletes.json`) before any feed is written, and a delete that fails does not stop
+the others; the run then fails and names the keys left. The next run, a publish or a refresh (the
+weekly one too), loads that record, adds its own, deletes them all again (deleting a key that is
+gone is not an error) and empties it, so a failed delete costs a rerun, not an orphaned `<version>/`.
+A recorded key whose version has been listed again in the meantime is dropped from the record, not
+deleted. A record that does not parse stops the run before anything is written; fix or delete that
+one file by hand.
 Preview it for a local release directory: `python3 scripts/publish-updates.py plan --release-dir <dir>
 [--add <version>] [--keep N]`.
 
@@ -90,15 +99,19 @@ A missing key answers 404. Public access and the custom domain are dashboard set
 a token can change. Feeds are uploaded with `Cache-Control: no-cache`, version objects with
 `public, max-age=31536000, immutable`.
 
-### The R2 token
+### The R2 access key
 
 Create an R2 API token for the publisher: Cloudflare dashboard > R2 > Manage R2 API tokens > Create,
-permission Object Read & Write, scoped to the two buckets above only (not account-wide). The publisher
-hands it to `wrangler` (`pnpm dlx wrangler@4.168.0 r2 object put|get|delete ... --remote`) as
-`CLOUDFLARE_API_TOKEN`. Those wrangler commands (put, get, get of a missing key, delete, public GET)
-were exercised with a broader account R2 token while the publisher was written; the scoped token is
-untested until its first use, so if wrangler refuses it, widen the scope to what the error names and
-nothing more.
+permission Object Read & Write, scoped to the two buckets above only (not account-wide). Creating it
+shows an **Access Key ID** and a **Secret Access Key** (the S3 credentials; the "token value" is not
+used). The publisher talks to R2's S3 API (`https://<account id>.r2.cloudflarestorage.com`, path
+style, region `auto`) and signs each request itself with AWS Signature Version 4, written on the Python
+standard library (`sigv4_authorization` in `scripts/publish-updates.py`, tested against the worked
+examples of AWS's documentation). No npm package, `wrangler` or other third-party program runs in the
+publish job. The signer is known to be right for AWS's documented examples; the scoped key against
+R2 is untested until its first use (a dry run reads `keys.json` and the state file, so it is a cheap
+first check), so if R2 answers `AccessDenied` or `SignatureDoesNotMatch`, the error names the S3 code
+(never a header): check the scope and the account id before anything else.
 
 ### The key ceremony (D9: needs the user)
 
@@ -129,18 +142,20 @@ a release key (two moves, the old key stays listed until a feed signed by the ne
 
 1. **Keep offline, with the root key:** `keys/root.key`, `lunepack.toml`, `lunepack-state.json` and
    `release/keys.json` (back them up; `keys set` needs the state file to build on).
-2. **Upload `keys.json`** (the public bucket; set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
-   in your shell first, with a token that can write the bucket):
-   ```bash
-   pnpm dlx wrangler@4.168.0 r2 object put izzat-updates/luneterm/keys.json \
-       --file release/keys.json --content-type application/json --cache-control no-cache --remote
-   ```
+2. **Upload `keys.json`** to `izzat-updates/luneterm/keys.json` (content type `application/json`,
+   cache control `no-cache`): in the Cloudflare dashboard (R2 > `izzat-updates` > Upload, into the
+   `luneterm/` folder, then set the two headers under the object's settings), or with any S3 client
+   pointed at `https://<account id>.r2.cloudflarestorage.com` with your own credentials, for example
+   `aws s3api put-object --endpoint-url ... --bucket izzat-updates --key luneterm/keys.json --body
+   release/keys.json --content-type application/json --cache-control no-cache`. Do this on your own
+   machine, never in the publish job.
 3. **Put the release key in the repo's secret store** from the file, never from the command line:
    `gh secret set LUNEPACK_RELEASE_KEY --repo Luneterm/luneterm < keys/release.key`.
-4. **Other secrets** of the same repo: `R2_UPDATES_TOKEN` (the token above: `gh secret set
-   R2_UPDATES_TOKEN --repo Luneterm/luneterm`, paste at the prompt) and `CLOUDFLARE_ACCOUNT_ID`
-   (`gh secret set CLOUDFLARE_ACCOUNT_ID --repo Luneterm/luneterm`). No other workflow reads them;
-   `release.yml` and `ci.yml` never see the release key.
+4. **Other secrets** of the same repo: `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` (the key pair
+   above: `gh secret set R2_ACCESS_KEY_ID --repo Luneterm/luneterm`, likewise the secret, paste at the
+   prompt) and `CLOUDFLARE_ACCOUNT_ID` (the 32-hex account id; `gh secret set CLOUDFLARE_ACCOUNT_ID
+   --repo Luneterm/luneterm`). The older `R2_UPDATES_TOKEN` is no longer read: delete it. No other
+   workflow reads these; `release.yml` and `ci.yml` never see the release key.
 5. **Compile the root public key in** (one commit): the `keys = [...]` list of the `[root]` table in
    `packaging/lunepack-linux.toml`, `-windows.toml` and `-macos.toml`; `ROOT_KEYS` in
    `crates/luneterm/src/update/root.rs` as 32 bytes (`python3 -c 'import sys; h=sys.argv[1];
@@ -153,9 +168,14 @@ a release key (two moves, the old key stays listed until a feed signed by the ne
    was discarded: it never accepts an update, and the publisher refuses it.
 
 Never put a private key, a token or `LUNEPACK_RELEASE_KEY` into a file of the repo, a log line or an
-issue. The publisher takes secrets out of its environment at start, hands each only to the one
-program that needs it (the release key to `lunepack`, the token to `wrangler`, `GITHUB_TOKEN` to the
-GitHub API) and redacts what it echoes.
+issue. How the publisher treats them: it takes the secrets out of its environment at start, hands the
+release key only to the `lunepack` children, signs the R2 requests itself and sends `GITHUB_TOKEN`
+only to the GitHub API, and redacts what it echoes. That is hygiene, not a boundary: processes of one
+user in a job can read each other's environment (`/proc/<pid>/environ`, which clearing a variable in
+a parent does not erase). What keeps the release key safe is that the job runs **no third-party
+code**: the lunepack CLI built from the pin (its dependency graph checked first) and the Python
+standard library. Do not add an npm tool, a downloaded binary or a third-party action to
+`publish-updates.yml` without giving it its own job (its own runner) and no secret of this one.
 
 ### First release with updates
 
@@ -180,7 +200,12 @@ Only then tag the stable release.
 - **Publish failed before the feeds were written** (upload, GitHub, runner): rerun the same tag from
   Actions > publish-updates (mode `publish`, the tag, `dry_run` off). It reuses what is already in the
   bucket. If the draft's `*-build.*` inputs are gone already, the objects were published: only the
-  installers or the deletes may be missing, and a rerun finishes them.
+  installers or the deletes may be missing. A rerun attaches the installers and does every delete
+  still recorded in `izzat-updates-publisher/luneterm/pending-deletes.json` (the weekly or a manual
+  refresh does the deletes too). If a run ended with "delete(s) failed", its message names the keys
+  left; they stay recorded, so the next run retries them. Nothing else lists the bucket for strays:
+  an object that was never recorded (a run that died before it recorded the deletes) is found only by
+  looking at the bucket by hand.
 - **A feed changed meanwhile** ("writing no feed"): another publish ran. The runs are serialised by
   the workflow's concurrency group; rerun.
 - **A missing state file while a feed is live** ("not starting over"): restore

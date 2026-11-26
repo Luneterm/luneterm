@@ -9,12 +9,18 @@ name: publish-updates
 #   workflow_dispatch  -> mode publish (a tag, e.g. a rerun after a failure: idempotent) or refresh
 #                         (re-sign every feed with a new 365-day expiry); dry_run (default) writes
 #                         nothing and prints what it would do
-#   schedule (weekly)  -> refresh only feeds that expire within 120 days
+#   schedule (weekly)  -> refresh only feeds that expire within 120 days; skipped (a notice, green)
+#                         while the app carries the test root or the bucket has no feed yet
 #
 # Secrets (this job only, never release.yml): LUNEPACK_RELEASE_KEY (the release signing key, PKCS#8
-# PEM), R2_UPDATES_TOKEN (an R2 token scoped to the izzat-updates buckets, Object Read & Write),
-# CLOUDFLARE_ACCOUNT_ID. The script takes them out of its environment and hands each only to the one
-# program that needs it. Runners and their images: see ci.yml.
+# PEM), R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY (an R2 S3 access key pair scoped to the two
+# izzat-updates buckets, Object Read & Write), CLOUDFLARE_ACCOUNT_ID.
+#
+# What keeps the release key safe: this job runs no third-party code beyond the pinned lunepack CLI
+# and the Python standard library (no Node, no npm tool: the script signs its own R2 requests, SigV4).
+# Hiding a secret from a child process is not a boundary here: processes of one user can read each
+# other's environment, so a secret must never share a job with code that is not ours. Runners and
+# their images: see ci.yml.
 on:
   release:
     types: [published]
@@ -46,7 +52,8 @@ concurrency:
 
 jobs:
   publish:
-    # A single-use Linux container, never the Windows VM: the only job that holds the release key.
+    # A single-use Linux container, never the Windows VM: the only job that holds the release key,
+    # and one that runs no third-party code (see the header).
     runs-on: [self-hosted, linux, x64]
     permissions:
       contents: write
@@ -86,13 +93,6 @@ jobs:
           $SUDO apt-get install -y --no-install-recommends build-essential pkg-config
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      # Node and pnpm for wrangler (`pnpm dlx wrangler@<pinned>`, the uploader).
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        with:
-          version: 11.6.0
       # The lunepack CLI at the revision Cargo.toml pins (its dependency graph is checked first).
       - name: Build the lunepack CLI
         shell: bash
@@ -101,7 +101,8 @@ jobs:
         shell: bash
         env:
           LUNEPACK_RELEASE_KEY: ${{ secrets.LUNEPACK_RELEASE_KEY }}
-          R2_UPDATES_TOKEN: ${{ secrets.R2_UPDATES_TOKEN }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -112,6 +113,6 @@ jobs:
           if [ "$MODE" = "publish" ]; then
             python3 -I scripts/publish-updates.py publish --tag "$TAG" "${args[@]}"
           else
-            if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then args+=(--if-expiring-within-days 120); fi
+            if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then args+=(--if-expiring-within-days 120 --skip-if-unpublished); fi
             python3 -I scripts/publish-updates.py refresh "${args[@]}"
           fi
