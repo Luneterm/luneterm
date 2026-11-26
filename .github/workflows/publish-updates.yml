@@ -1,0 +1,117 @@
+name: publish-updates
+
+# Packs a published release's build inputs into the signed update feed on R2 and attaches the
+# installers (auto-update plan step 6). scripts/publish-updates.py holds the order and the rules:
+# new `<ver>/` objects first, then the feeds, then the deletes of what no channel keeps (newest 10
+# per channel); it refuses to run while the app carries the test root.
+#
+#   release published  -> publish that tag (packs, feeds, installers; the build inputs are removed)
+#   workflow_dispatch  -> mode publish (a tag, e.g. a rerun after a failure: idempotent) or refresh
+#                         (re-sign every feed with a new 365-day expiry); dry_run (default) writes
+#                         nothing and prints what it would do
+#   schedule (weekly)  -> refresh only feeds that expire within 120 days
+#
+# Secrets (this job only, never release.yml): LUNEPACK_RELEASE_KEY (the release signing key, PKCS#8
+# PEM), R2_UPDATES_TOKEN (an R2 token scoped to the izzat-updates buckets, Object Read & Write),
+# CLOUDFLARE_ACCOUNT_ID. The script takes them out of its environment and hands each only to the one
+# program that needs it. Runners and their images: see ci.yml.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "publish a tag, or refresh (re-sign) the feeds"
+        type: choice
+        options: [refresh, publish]
+        default: refresh
+      tag:
+        description: "publish: the release tag, v<version> or v<version>-rc.<N>"
+        type: string
+        default: ""
+      dry_run:
+        description: "print the plan, write nothing"
+        type: boolean
+        default: true
+  schedule:
+    - cron: "23 5 * * 1"
+
+permissions:
+  contents: read
+
+# One publisher at a time: two runs would race on the feeds and the publisher state file.
+concurrency:
+  group: publish-updates
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # A single-use Linux container, never the Windows VM: the only job that holds the release key.
+    runs-on: [self-hosted, linux, x64]
+    permissions:
+      contents: write
+    env:
+      MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event_name == 'release' && 'publish' || 'refresh') }}
+      TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+      APPLY: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+    steps:
+      - name: Check the inputs
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          case "$MODE" in
+            publish)
+              if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+                echo "tag '$TAG' is not v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-rc.<N>" >&2
+                exit 1
+              fi ;;
+            refresh) ;;
+            *) echo "unknown mode '$MODE'" >&2; exit 1 ;;
+          esac
+          echo "mode $MODE, tag '${TAG}', apply $APPLY"
+      # publish: the tag's own commit (its packaging configs are what the macOS bundle was signed
+      # with); refresh: the default branch.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.MODE == 'publish' && format('refs/tags/{0}', env.TAG) || '' }}
+      # As release.yml: the image has no compiler or Rust (the lunepack CLI is built from the pin).
+      - name: Install build tools and rustup
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(id -u)" = 0 ]; then SUDO=""; else SUDO="sudo"; fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends build-essential pkg-config
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      # Node and pnpm for wrangler (`pnpm dlx wrangler@<pinned>`, the uploader).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11.6.0
+      # The lunepack CLI at the revision Cargo.toml pins (its dependency graph is checked first).
+      - name: Build the lunepack CLI
+        shell: bash
+        run: scripts/build-lunepack.sh cli-linux-x86_64 "$RUNNER_TEMP/lunepack-cli"
+      - name: Publish or refresh
+        shell: bash
+        env:
+          LUNEPACK_RELEASE_KEY: ${{ secrets.LUNEPACK_RELEASE_KEY }}
+          R2_UPDATES_TOKEN: ${{ secrets.R2_UPDATES_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          args=(--lunepack "$RUNNER_TEMP/lunepack-cli/lunepack" --work "$RUNNER_TEMP/publish-work")
+          if [ "$APPLY" = "true" ]; then args+=(--apply); fi
+          if [ "$MODE" = "publish" ]; then
+            python3 -I scripts/publish-updates.py publish --tag "$TAG" "${args[@]}"
+          else
+            if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then args+=(--if-expiring-within-days 120); fi
+            python3 -I scripts/publish-updates.py refresh "${args[@]}"
+          fi

@@ -2,12 +2,15 @@
 # Builds the lunepack binaries a release needs, from the source at the exact revision Luneterm
 # pins (the `lunepack` dependency in Cargo.toml): the runtime and the update window's UI for the
 # target, and on macOS also the `lunepack` CLI (package-macos.sh assembles and packs with it).
-# lunepack publishes no prebuilt binaries, and its own pinned toolchain and lock build them.
+# `cli-linux-x86_64` builds only the CLI, for the publish-updates workflow (it packs, signs feeds and
+# makes the setup files on Linux). lunepack publishes no prebuilt binaries, and its own pinned
+# toolchain and lock build them.
 #
-#   scripts/build-lunepack.sh <linux-x86_64|macos-aarch64> <outdir>
+#   scripts/build-lunepack.sh <linux-x86_64|macos-aarch64|cli-linux-x86_64> <outdir>
 #
-# <outdir> must not exist or be empty. It gets lunepack-runtime and lunepack-ui, and on macOS
-# lunepack too, and lunepack-rev.txt (the revision built). Windows has scripts/build-lunepack.ps1.
+# <outdir> must not exist or be empty. It gets lunepack-runtime and lunepack-ui (not in the CLI
+# mode), lunepack on macOS and in the CLI mode, and lunepack-rev.txt (the revision built). Windows
+# has scripts/build-lunepack.ps1.
 #
 # The checkout goes to target/lunepack-src-<rev12> (reused when it is clean at the pinned
 # revision, else the script stops: nothing is deleted), the build to target/lunepack-target. Before
@@ -23,10 +26,10 @@ set -euo pipefail
 
 die() { echo "build-lunepack: $*" >&2; exit 1; }
 
-[ "$#" -eq 2 ] || die "usage: scripts/build-lunepack.sh <linux-x86_64|macos-aarch64> <outdir>"
+[ "$#" -eq 2 ] || die "usage: scripts/build-lunepack.sh <linux-x86_64|macos-aarch64|cli-linux-x86_64> <outdir>"
 target="$1"
 case "$target" in
-  linux-x86_64) [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] \
+  linux-x86_64 | cli-linux-x86_64) [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] \
     || die "linux-x86_64 is built on an x86_64 Linux host" ;;
   macos-aarch64) [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] \
     || die "macos-aarch64 is built on an arm64 Mac" ;;
@@ -134,6 +137,14 @@ case "$target" in
     cargo build --locked --release -p lunepack-cli --config profile.release.strip=true
     [ -f "$CARGO_TARGET_DIR/release/lunepack" ] || die "the build left no lunepack CLI"
     cp "$CARGO_TARGET_DIR/release/lunepack" "$outdir/lunepack"
+    ;;
+  cli-linux-x86_64)
+    cargo build --locked --release -p lunepack-cli --target x86_64-unknown-linux-gnu \
+      --config profile.release.strip=true
+    cli="$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/release/lunepack"
+    [ -f "$cli" ] || die "the build left no $cli"
+    readelf -hW "$cli" | grep -q 'Advanced Micro Devices X86-64' || die "$cli is not an x86-64 ELF"
+    cp "$cli" "$outdir/lunepack"
     ;;
 esac
 printf '%s\n' "$rev" > "$outdir/lunepack-rev.txt"
