@@ -27,11 +27,13 @@ docs/             Decisions, porting guide, styling spec, bug ledger.
 ## Dependency direction
 
 `luneterm` → `lune-termview` → `lune-ui` (luneui-rs, git rev); `luneterm` → `lune-ui` (luneui-rs),
-`lune-vt`, `lune-pty`; `luneterm-ffi` → `lune-vt`. The engine depends on nothing, so it can be
+`lune-vt`, `lune-pty`, `lunepack` (the update client, git rev); `luneterm-ffi` → `lune-vt`. The engine depends on nothing, so it can be
 tested, fuzzed and embedded on its own. No `lune-*` crate depends on an app crate (`luneterm*`).
 `scripts/check-deps.sh` reads `cargo metadata --locked` and fails on any package outside the
-workspace, crates.io and that one luneui-rs rev (`[patch]`, source replacement and branch or tag
-pins included); CI runs it and builds with `--locked`.
+workspace, crates.io and the two pinned git `(repo, rev)` pairs, luneui-rs and lunepack (`[patch]`,
+source replacement and branch or tag pins included); CI runs it and builds with `--locked`. The
+lunepack runtime and update window that ship beside the app are built from lunepack's own lock and
+are checked by `scripts/build-lunepack.{sh,ps1}`, not by this script ("Updates" below).
 
 ## lune-ui (toolkit)
 
@@ -897,6 +899,7 @@ global state (M10: a `Tab` owns a session and everything that used to be per-ses
 | `spawn` | Shell candidates, cwd, environment, `WindowsPty` |
 | `shell_integration` | The scripts the user's shell sources (OSC 7, OSC 133), their checked install under the config directory, and what they add to a spawn (see "Shell integration" above) |
 | `tabs` | `Tab` (one session plus its UI-side state), `TabSet` (order, active, next focus after a close: pure list logic), the close rules (`asks_on_close`, `ClosePlan`), tab names |
+| `update` | Self-update over lunepack: `startup`/`confirm_healthy`, the `Updater` worker thread and its state machine, the compiled-in root (`root`), the channel a copy follows (`channel`), the 24 h timer and the toast rule (`auto`); see "Updates" below |
 | `efficiency` | Efficiency mode in the background: the pure policy `wanted`, the `Controller` (UI thread only), and the OS backends (`windows.rs` EcoQoS + idle class, `macos.rs` utility QoS; none elsewhere); see "Efficiency mode" below |
 | `links` | `scan` (OSC 8 runs and bare `http(s)://` text), `open` (the closed URL grammar and the only code that opens anything), hover state |
 | `persist` | `settings.json` and `workspace.json`: bounded JSON reader and writer, atomic 0600 writes, versioned, `.bak` on a file it cannot read, `SaveGuard` (ledger 12) |
@@ -1231,6 +1234,63 @@ bell's, and a message's in an unfocused window).
   is true, so no key or pointer event reaches the terminal; it closes on Escape, a press outside, a
   focus loss, and when a dialog, the page or a menu opens.
 
+**Updates (auto-update plan; publishing and keys: `docs/updates.md`).** The app installs and updates
+through lunepack (`lune-rs/lunepack` at one pinned rev, facade crate `lunepack` with its `blocking`
+API; HTTPS by ureq and rustls inside lunepack, no new HTTP code in the app). `update::startup()` is
+the first thing `main` does after `restrict_dll_search` (lunepack's lifecycle: a version that was
+rolled back exits at once); `update::confirm_healthy()` runs once on the UI thread after the first
+frame is presented and a tab has a session (D8), and only when `startup` said a confirmation is
+pending. A copy lunepack did not install (a `cargo run`, an old portable zip, no
+`lunepack-update.json` beside the executable) is `Unavailable`: no worker thread, no network, the
+About rows are disabled with "Updates need the Luneterm installer". A copy whose update config names
+another root than the compiled-in one (`update/root.rs`: app id, root version, threshold, keys,
+compared for equality; lunepack's builder has no root setter) is `Unavailable` too.
+*Worker.* `Updater` owns one thread, `luneterm-update`, over `lunepack::blocking`. The UI thread
+sends `Check { auto }`, `Download` and `Restart`; the worker posts every `UpdateState` through a sink
+(`EventLoopProxy::send_event`, so it never blocks the UI thread). One operation at a time: a command
+sent while one runs is dropped (an `AtomicBool` taken by compare-exchange on the UI thread, released
+by the worker before it posts a command's last state); the operation's `CancelToken` is stored before
+the command is sent, so a cancel cannot miss it, and is never held across a lunepack call. Quit
+cancels the operation and waits for the worker at most 1 s (`exiting`). States: `Unavailable`, `Idle`,
+`Checking`, `UpToDate`, `Available { version, auto }`, `Downloading(pct)` (posted at most 4 times a
+second), `Ready(version)` (downloaded and staged), `Failed(text)` (lunepack's message with every URL
+cut to scheme, host and path, at most 240 chars). Restart runs `apply_and_restart` with
+`UiChoice::Never` (Luneterm shows its own toast; lunepack's update window is never opened), waiting
+for this process, then the normal quit path saves the workspace and settings. Restarting closes all
+shells, which the toast and About say.
+*Rules around it (`update::auto`, pure, tested without a window).* The setting "Check for updates
+automatically" (`auto_update_check`, on by default, a missing key reads on; Settings > About) runs a
+timer: a check at launch (or when the setting is switched on) and every 24 h; switching it off drops
+the deadline. A check the timer started that finds a version raises the glass toast "Luneterm
+<version> is available" with Update and Dismiss (20 s; each version once per run); Update downloads and
+stages, then a second toast and About offer "Restart to update". A manual "Check for updates" never
+toasts: it shows its result in About. No request is made except by a check or a download.
+*Channel.* A pack bakes a channel (`stable` for a stable tag, `beta` for a release candidate), and an update replaces the tree's update
+config with the new pack's, so a beta user who receives a stable pack would follow stable. The first
+run of an installed copy therefore records the tree's channel as `update_channel` in `settings.json`
+and every `Updater` is built with it (`update::channel`): a copy keeps its install channel. A garbled
+value reads as not recorded and is rewritten from the tree. `settings.json` outlives an uninstall, and a
+setup cannot run over an install (lunepack refuses: "already installed"), so changing channel is an
+uninstall and the other channel's setup; that setup must reset the record. The tree's channel cannot tell
+it from an update (a beta copy's tree names stable after every stable pack), so lunepack's own signal
+decides: a per-user first install, or a reinstall over a removed tree, queues an `Installed` lifecycle
+event that `lunepack::startup()` delivers once (`Launch::fresh_install`); an update queues `Updated`. On
+that start the tree's channel is recorded whatever was persisted, and saved at once. A per-machine
+install queues no events, so it keeps the persisted channel across a reinstall (docs/updates.md).
+*Trust.* The root public key is compiled in (`update/root.rs`, mirrored by the `[root]` table of
+`packaging/lunepack-{linux,windows,macos}.toml`; a test keeps them equal). It is a throwaway TEST root
+(`IS_TEST_ROOT`) until the real key exists; the publisher refuses to publish with it. Feed and manifest
+parsing and signature checks are lunepack's; the app treats a feed as untrusted input and shows only
+lunepack's message text.
+*Release side (`scripts/`).* Build jobs produce one build input per OS (`make-build-input.py`: the
+app tree + lunepack runtime, UI and, on Windows, the launcher stub, built from the pinned source by
+`build-lunepack.{sh,ps1}`, whose dependency graph check is fail-closed); `publish-updates.py` packs
+them, signs the two feeds (`stable`, `beta`; newest 10 versions each, D4), uploads to R2 in the order
+objects, feeds, state, deletes, and attaches the setup files. `packaging-config.py <os> <channel>`
+renders the lunepack config a pack uses. Retention, key handling and recovery are in
+`docs/updates.md`. The release binary grows by about 2.7 MiB (macOS arm64, measured on the probe
+build when lunepack was added).
+
 **Fonts and look (D15, D16; M10 D9a; rznmono-1000).** The six bundled faces live in `crates/luneterm/assets`:
 RznMono 1.003 Regular, Bold, Italic and Bold Italic (the terminal font, real faces for every
 style termview asks for; it carries the Nerd Fonts icons and the 128 `calt` ligatures, and its
@@ -1344,6 +1404,10 @@ PTY threads (`lune-pty`):
   threads), which is what gives the reader its `Ok(0)`.
 - **Drop** never blocks: an unfinished child is killed and everything is closed and reaped on a
   detached thread.
+
+The update worker (`luneterm-update`, "Updates" in "luneterm app") is the one thread outside the
+sessions: UI-side state is an atomic busy flag and a mutex-held cancel token, each held for a
+store or a clone only, and its results reach the UI as user events.
 
 Efficiency mode (see "luneterm app") changes the UI thread's QoS class to utility on macOS while the
 window is in the background, and nothing else about threads there: on macOS the session threads are

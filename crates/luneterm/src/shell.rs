@@ -377,6 +377,72 @@ pub fn notice_toast(
     (spec, extras)
 }
 
+/// An update toast's `Update` button (the one that starts the download).
+pub const TOAST_UPDATE: u64 = 3;
+/// An update toast's `Restart to update` button.
+pub const TOAST_RESTART: u64 = 4;
+/// How long an update toast lives: longer than a program's notification, it asks a decision.
+pub const UPDATE_TOAST_LIFE: Duration = Duration::from_secs(20);
+
+/// Which of the two update toasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateToastKind {
+    /// A new version was found: `Dismiss` and `Update`.
+    Available,
+    /// The new version is downloaded and staged: `Dismiss` and `Restart to update`.
+    Ready,
+}
+
+/// The toolkit toast of the update flow (D7): no tab, so no source tab name; the source is the
+/// app's. `version` is the dotted version text.
+pub fn update_toast(
+    kind: UpdateToastKind,
+    version: &str,
+    strings: &lune_ui::strings::StringTable,
+    accent: Rgba,
+) -> (ToastSpec, ToastExtras) {
+    use lune_ui::strings::DisplayFormat;
+    let (title, body, label, action) = match kind {
+        UpdateToastKind::Available => (
+            "toast.update.title",
+            "toast.update.body",
+            "toast.update.action",
+            TOAST_UPDATE,
+        ),
+        UpdateToastKind::Ready => (
+            "toast.update.readyTitle",
+            "toast.update.readyBody",
+            "toast.update.restart",
+            TOAST_RESTART,
+        ),
+    };
+    let mut spec = ToastSpec::new(
+        ToastKind::Info,
+        strings.tr_fmt(body, &[&version], &DisplayFormat),
+    );
+    spec.actions = vec![
+        ToastAction {
+            label: strings.tr("toast.dismiss").to_owned(),
+            primary: false,
+            id: TOAST_DISMISS,
+        },
+        ToastAction {
+            label: strings.tr(label).to_owned(),
+            primary: true,
+            id: action,
+        },
+    ];
+    let extras = ToastExtras::new()
+        .with_source(strings.tr("toast.update.source"))
+        .with_age(strings.tr("toast.now"))
+        .with_title(strings.tr(title))
+        .with_glyph(icon::ARROW_DOWN)
+        .with_accent(accent)
+        .with_timeout(UPDATE_TOAST_LIFE)
+        .with_drain(true);
+    (spec, extras)
+}
+
 /// The words of a notification toast, from the string table.
 #[derive(Debug, Clone, Copy)]
 pub struct NoticeTexts<'a> {
@@ -1389,6 +1455,47 @@ mod tests {
         dismiss: "Dismiss",
         now: "now",
     };
+
+    /// The two update toasts carry their version, a Dismiss and one primary button with the id the
+    /// app acts on; one drawn through a real frame is listed, in the card's corner.
+    #[test]
+    fn the_update_toasts_name_the_version_and_carry_their_button() {
+        let strings = crate::strings::english();
+        let accent = THEME.attention();
+        for (kind, body, label, id) in [
+            (
+                UpdateToastKind::Available,
+                "Luneterm 0.9.0 is available.",
+                "Update",
+                TOAST_UPDATE,
+            ),
+            (
+                UpdateToastKind::Ready,
+                "Luneterm 0.9.0 is ready. Restarting closes all shells.",
+                "Restart to update",
+                TOAST_RESTART,
+            ),
+        ] {
+            let (spec, extras) = update_toast(kind, "0.9.0", &strings, accent);
+            assert_eq!(spec.message, body);
+            let actions: Vec<(&str, bool, u64)> = spec
+                .actions
+                .iter()
+                .map(|a| (a.label.as_str(), a.primary, a.id))
+                .collect();
+            assert_eq!(
+                actions,
+                [("Dismiss", false, TOAST_DISMISS), (label, true, id)]
+            );
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            let mut toasts = Toasts::default();
+            let toast = toasts.push_with(spec, extras, Duration::from_millis(1_000));
+            toast_frame(&mut store, &mut text, &mut toasts, 1_100);
+            let live = toasts.live();
+            assert_eq!(live.len(), 1, "{kind:?} is drawn");
+            assert_eq!(live[0].0, toast);
+        }
+    }
 
     /// A real `Toasts` through real frames: a notification toast is listed once drawn, sits in
     /// the card's corner 22 px in, leaves the list when its 6 s are up, and the slots follow.

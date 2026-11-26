@@ -33,3 +33,4 @@ pub mod spawn;
 pub mod strings;
 pub mod tabs;
 pub mod title;
+pub mod update;

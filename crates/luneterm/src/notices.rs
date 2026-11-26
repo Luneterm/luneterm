@@ -583,6 +583,22 @@ pub fn required_keys() -> Vec<String> {
         .collect()
 }
 
+/// Every string key the update toasts ask for (`shell::update_toast`).
+pub fn update_required_keys() -> Vec<String> {
+    [
+        "toast.update.source",
+        "toast.update.title",
+        "toast.update.body",
+        "toast.update.action",
+        "toast.update.readyTitle",
+        "toast.update.readyBody",
+        "toast.update.restart",
+    ]
+    .iter()
+    .map(|k| (*k).to_owned())
+    .collect()
+}
+
 // ------------------------------------------------------------------------------------------- age
 
 /// A row's age label.

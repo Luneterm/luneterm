@@ -1,0 +1,38 @@
+# lunepack configuration for Luneterm, linux (auto-update plan step 5). It holds public keys
+# and where to find signers, never a key. One file per OS because `[install] entry` differs (the
+# rest is the same: crates/luneterm/src/update/tests.rs checks they agree and that the root below is
+# the one compiled into the app, crates/luneterm/src/update/root.rs).
+#
+# Used by the release build (scripts/package-macos.sh for macOS, the publish job for the others):
+#   lunepack pack --config packaging/lunepack-linux.toml ...
+app_id = "my.ijat.luneterm"
+
+# The root of trust compiled into every installed copy. THIS IS THE TEST ROOT until the real root
+# public key exists (plan D9, docs/updates.md); a release must not ship with it.
+[root]
+version = 1
+threshold = 1
+keys = [
+    "7c4f44f54daf49ca873f3aac937f0f19e668364a01178aa339f64690f998e996",
+]
+
+# The release key is a GitHub secret (PKCS#8 PEM in the environment of the publish job); the root
+# key stays offline and is not named here.
+[signers.release]
+env = "LUNEPACK_RELEASE_KEY"
+
+# Where an installed copy looks (plan D1). The channel is the one a copy follows and is baked into
+# the pack: a stable release says "stable" here and is listed in both feeds; a release candidate
+# (listed in the beta feed only) says "beta": scripts/packaging-config.py writes that variant.
+[update]
+feed = "https://updates.izzat.dev/luneterm/"
+channel = "stable"
+
+[install]
+entry = "luneterm"
+name = "Luneterm"
+comment = "A standalone glass terminal"
+bin = "luneterm"
+terminal = false
+categories = ["System", "TerminalEmulator"]
+icon = "luneterm-256.png"   # staged beside the executable by the build job

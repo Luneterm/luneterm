@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
-# Build Luneterm.app for a release tag, zip it and attach it to the tag's draft release. There is
+# Build the macOS build input for a release tag and attach it to the tag's draft release. There is
 # no macOS runner, so this runs on a Mac after .github/workflows/release.yml made the draft.
 #
 #   scripts/package-macos.sh <tag> [--no-upload]
 #
-# Output: target/package-macos/. The app has an ad-hoc signature only: no Developer ID and no
-# notarization (arm64 macOS will not run code with no signature at all). Needs gh, logged in,
-# unless --no-upload.
+# The build input is not a user download: it is Luneterm.app assembled for lunepack (its runtime,
+# update config and update window's helper app placed in the bundle) and ad-hoc signed inner code
+# first, in a tar.gz with a BUILD-INFO.txt. The publish job (auto-update plan step 6) packs it into
+# the signed update feed and the macOS setup zip. No Developer ID and no notarization (arm64 macOS
+# will not run code with no signature at all).
+#
+# Output: target/package-macos/ (the input is luneterm-<version>-macos-arm64-build.tar.gz). Builds
+# the lunepack runtime, UI and CLI from the pinned source (scripts/build-lunepack.sh). Needs gh,
+# logged in, unless --no-upload.
 set -euo pipefail
 
 die() { echo "package-macos: $*" >&2; exit 1; }
@@ -50,10 +56,12 @@ minos="$(vtool -show-build "$bin" | awk '$1 == "minos" { print $2; exit }')"
 
 out=target/package-macos
 rm -rf "$out"
-contents="$out/Luneterm.app/Contents"
+app="$out/input/Luneterm.app"
+contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Resources"
 cp "$bin" "$contents/MacOS/luneterm"
 cp -R licenses "$contents/Resources/licenses"
+cp assets/icon/Luneterm.icns "$contents/Resources/Luneterm.icns"
 cat > "$contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -62,6 +70,7 @@ cat > "$contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>Luneterm</string>
   <key>CFBundleDisplayName</key><string>Luneterm</string>
   <key>CFBundleExecutable</key><string>luneterm</string>
+  <key>CFBundleIconFile</key><string>Luneterm</string>
   <key>CFBundleIdentifier</key><string>my.ijat.luneterm</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
@@ -75,11 +84,54 @@ cat > "$contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$contents/Info.plist"
 
-codesign --force --sign - "$out/Luneterm.app"
-codesign --verify --strict "$out/Luneterm.app"
+# lunepack's runtime, update window UI and CLI, built from the pinned source.
+scripts/build-lunepack.sh macos-aarch64 "$out/lunepack"
+lunepack_rev="$(cat "$out/lunepack/lunepack-rev.txt")"
 
-zip_name="luneterm-$asset_version-macos-arm64.zip"
-ditto -c -k --keepParent "$out/Luneterm.app" "$out/$zip_name"
+# The same time stamp for every pack of this tag: a rerun gives the same bytes (lunepack's
+# determinism rule), and the publish job reads it from BUILD-INFO.txt.
+SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)"
+[[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || die "cannot read the commit time of HEAD"
+export SOURCE_DATE_EPOCH
+
+# The channel is baked into the bundle's update config, and a signed bundle must be packed with
+# exactly the config that assembled it: a release candidate (beta feed only) says beta.
+case "$asset_version" in *-rc.*) channel=beta ;; *) channel=stable ;; esac
+python3 -I scripts/packaging-config.py macos "$channel" "$out/lunepack-macos.toml"
+
+# Assemble (lunepack places its runtime, update config and helper app in the bundle), then sign
+# inner code first: a signature seals what is inside it, so the outer bundle goes last. The pack
+# of this signed tree (done by the publish job) needs no codesign tool.
+stage="$out/stage"
+tree="$stage/tree"
+mkdir -p "$stage"
+"$out/lunepack/lunepack" pack --input "$app" --version "$asset_version" --target macos-aarch64 \
+  --runtime "$out/lunepack/lunepack-runtime" --ui "$out/lunepack/lunepack-ui" \
+  --assemble "$tree" --config "$out/lunepack-macos.toml"
+helper="$tree/Contents/Helpers/lunepack-update.app"
+codesign --force --sign - "$tree/Contents/MacOS/lunepack-runtime"
+codesign --force --sign - "$helper/Contents/MacOS/lunepack-ui"
+codesign --force --sign - "$helper"
+codesign --force --sign - "$tree/Contents/MacOS/luneterm"
+codesign --force --sign - "$tree"
+codesign --verify --deep --strict "$tree"
+
+cat > "$stage/BUILD-INFO.txt" <<INFO
+format=1
+version=$asset_version
+target=macos-aarch64
+config=packaging/lunepack-macos.toml
+channel=$channel
+entry=Contents/MacOS/luneterm
+tree=tree
+runtime=tree/Contents/MacOS/lunepack-runtime
+ui=tree/Contents/Helpers/lunepack-update.app/Contents/MacOS/lunepack-ui
+lunepack_rev=$lunepack_rev
+source_date_epoch=$SOURCE_DATE_EPOCH
+INFO
+
+zip_name="luneterm-$asset_version-macos-arm64-build.tar.gz"
+python3 -I scripts/make-build-input.py "$stage" "$out/$zip_name"
 (cd "$out" && shasum -a 256 "$zip_name" > "$zip_name.sha256")
 echo "package-macos: $out/$zip_name"
 

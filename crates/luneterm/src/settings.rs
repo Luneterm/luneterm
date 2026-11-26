@@ -152,6 +152,8 @@ named!(OutlineAnim {
 
 /// Longest saved font or palette name, in bytes.
 pub const MAX_NAME_BYTES: usize = 64;
+/// Longest saved update channel name, in bytes (lunepack's own limit).
+pub const MAX_CHANNEL_BYTES: usize = 32;
 /// Longest saved shell program and its arguments, in bytes.
 pub const MAX_SHELL_BYTES: usize = 1024;
 
@@ -207,6 +209,17 @@ pub struct Settings {
     /// output; shells keep normal priority. Linux has no mechanism, so it has no effect there. A
     /// Luneterm-only setting: Lunegit has none.
     pub efficiency_mode: bool,
+    /// Check for a new Luneterm at launch and every 24 hours, and show a toast when one is found
+    /// (Settings > About). On by default; no effect on a copy the installer did not install (it
+    /// never touches the network). A Luneterm-only setting: Lunegit has none.
+    pub auto_update_check: bool,
+    /// The update channel this copy follows (file key `update_channel`), recorded on the first
+    /// run of a copy the installer installed and not changed by an update, so a beta install
+    /// stays on beta when it later receives a stable pack; the first start after a setup file
+    /// installs the copy again records that setup's channel (see `update::channel`). Empty until
+    /// recorded (and for a copy that is not installed). No row in the page: a Luneterm-only
+    /// bookkeeping field.
+    pub update_channel: String,
 }
 
 impl Default for Settings {
@@ -237,6 +250,8 @@ impl Default for Settings {
             copy_on_select: true,
             osc_notifications: true,
             efficiency_mode: true,
+            auto_update_check: true,
+            update_channel: String::new(),
         }
     }
 }
@@ -270,6 +285,7 @@ impl Settings {
         if self.palette.is_empty() {
             self.palette = defaults.palette;
         }
+        fit(&mut self.update_channel, MAX_CHANNEL_BYTES, "");
         fit(&mut self.shell, MAX_SHELL_BYTES, "");
         fit(&mut self.shell_args, MAX_SHELL_BYTES, "");
         fit(&mut self.default_cwd, crate::cwd::MAX_CWD_BYTES, "");
@@ -363,6 +379,9 @@ impl Settings {
             copy_on_select,
             osc_notifications,
             efficiency_mode,
+            auto_update_check,
+            // Bookkeeping, not a row of the page: it never counts as a change.
+            update_channel: _,
         } = self;
         let flags = [
             (SettingId::Theme, *theme != other.theme),
@@ -426,6 +445,10 @@ impl Settings {
                 SettingId::EfficiencyMode,
                 *efficiency_mode != other.efficiency_mode,
             ),
+            (
+                SettingId::AutoUpdateCheck,
+                *auto_update_check != other.auto_update_check,
+            ),
         ];
         flags
             .into_iter()
@@ -462,11 +485,12 @@ pub enum SettingId {
     CopyOnSelect,
     OscNotifications,
     EfficiencyMode,
+    AutoUpdateCheck,
 }
 
 impl SettingId {
     /// Every setting, in the order of the [`Settings`] fields.
-    pub const ALL: [SettingId; 25] = [
+    pub const ALL: [SettingId; 26] = [
         SettingId::Theme,
         SettingId::Glass,
         SettingId::MenuBlur,
@@ -492,6 +516,7 @@ impl SettingId {
         SettingId::CopyOnSelect,
         SettingId::OscNotifications,
         SettingId::EfficiencyMode,
+        SettingId::AutoUpdateCheck,
     ];
 
     /// What changing this setting does (plan M10 step 6's table).
@@ -513,6 +538,7 @@ impl SettingId {
             SettingId::CopyOnSelect => Effect::CopyOnSelect,
             SettingId::OscNotifications => Effect::OscNotifications,
             SettingId::EfficiencyMode => Effect::Efficiency,
+            SettingId::AutoUpdateCheck => Effect::AutoUpdateCheck,
             SettingId::ConfirmClose => Effect::ConfirmClose,
             SettingId::DefaultCwd
             | SettingId::Shell
@@ -558,6 +584,9 @@ pub enum Effect {
     OscNotifications,
     /// The efficiency controller re-evaluates now (step 3).
     Efficiency,
+    /// The app starts or stops its 24 h update timer (a check runs at once when it is switched
+    /// on).
+    AutoUpdateCheck,
     /// Tabs opened from now on; the page says so (its restart notice).
     NextSpawn,
 }
@@ -807,6 +836,7 @@ mod tests {
             (S::CopyOnSelect, E::CopyOnSelect),
             (S::OscNotifications, E::OscNotifications),
             (S::EfficiencyMode, E::Efficiency),
+            (S::AutoUpdateCheck, E::AutoUpdateCheck),
         ];
         assert_eq!(table.len(), SettingId::ALL.len());
         for (id, want) in table {
@@ -819,7 +849,7 @@ mod tests {
     #[test]
     fn changing_one_field_changes_exactly_its_id() {
         let d = Settings::default();
-        let cases: [(SettingId, Settings); 25] = [
+        let cases: [(SettingId, Settings); 26] = [
             (
                 SettingId::Theme,
                 Settings {
@@ -995,6 +1025,13 @@ mod tests {
                     ..d.clone()
                 },
             ),
+            (
+                SettingId::AutoUpdateCheck,
+                Settings {
+                    auto_update_check: false,
+                    ..d.clone()
+                },
+            ),
         ];
         let mut seen = Vec::new();
         for (id, changed) in cases {
@@ -1004,6 +1041,12 @@ mod tests {
         }
         assert_eq!(seen, SettingId::ALL);
         assert!(effects(&d, &d).is_empty());
+        // The recorded update channel is bookkeeping: no row, never a change.
+        let channel = Settings {
+            update_channel: "beta".into(),
+            ..d.clone()
+        };
+        assert!(d.changed(&channel).is_empty());
         // Two fields with one effect give it once; two effects give both, in field order.
         let both = Settings {
             font_size: 9,

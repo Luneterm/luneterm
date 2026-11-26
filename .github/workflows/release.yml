@@ -1,8 +1,14 @@
 name: release
 
-# A version tag builds the Windows and Linux archives and creates a DRAFT release. A person then
-# adds the macOS app (scripts/package-macos.sh <tag>, there is no macOS runner), checks it and
-# publishes the draft; the runbook is under Commands in CLAUDE.md.
+# A version tag builds the Windows and Linux BUILD INPUTS and creates a DRAFT release. A build input
+# is not a user download: it is the app plus lunepack's runtime for the target, in the layout
+# scripts/make-build-input.py writes (BUILD-INFO.txt names the parts). A person then adds the macOS
+# build input (scripts/package-macos.sh <tag>, there is no macOS runner), checks the draft and
+# publishes it; publishing starts the publish-updates workflow (auto-update plan step 6), which
+# packs the inputs into the signed update feed and the installers. The runbook is under Commands
+# in CLAUDE.md.
+#
+# No secret is used here: the release signing key belongs to the publish-updates workflow only.
 #
 # v<version> is the release, v<version>-rc.<N> a rehearsal of the same path (a prerelease draft).
 # Runners and their images: see ci.yml.
@@ -60,31 +66,59 @@ jobs:
           set -euo pipefail
           if [ "$(id -u)" = 0 ]; then SUDO=""; else SUDO="sudo"; fi
           $SUDO apt-get update
-          $SUDO apt-get install -y --no-install-recommends build-essential pkg-config procps
+          # musl-tools: lunepack's runtime is a static musl binary.
+          $SUDO apt-get install -y --no-install-recommends build-essential pkg-config procps musl-tools
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - run: cargo build --release --locked -p luneterm
-      # What the binary links, and the glibc it needs: the release notes state the floor.
+      # lunepack's runtime and update window UI, built from the source at the pinned revision
+      # (scripts/build-lunepack.sh checks its dependencies come from crates.io).
+      - name: Build the lunepack runtime
+        run: scripts/build-lunepack.sh linux-x86_64 lunepack-out
+      # What the binary links, and the glibc it needs (the app's and the update window's, the
+      # higher of the two): the release notes state the floor.
       - name: Measure and package
         shell: bash
         run: |
           set -euo pipefail
           bin=target/release/luneterm
+          ui=lunepack-out/lunepack-ui
           readelf -d "$bin" | grep NEEDED
-          glibc="$(objdump -T "$bin" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -V | tail -n 1)"
+          glibc="$(for f in "$bin" "$ui"; do objdump -T "$f" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//'; done | sort -V | tail -n 1)"
           if [ -z "$glibc" ]; then
-            echo "no GLIBC_ version found in $bin" >&2
+            echo "no GLIBC_ version found in $bin or $ui" >&2
             exit 1
           fi
           echo "highest required glibc: $glibc"
-          top="luneterm-${TAG#v}-linux-x64"
-          mkdir -p "dist/$top"
-          cp "$bin" "dist/$top/luneterm"
-          cp -R licenses "dist/$top/licenses"
-          tar -czf "dist/$top.tar.gz" -C dist "$top"
-          rm -rf "dist/$top"
+          version="${TAG#v}"
+          stage=build-input
+          mkdir -p "$stage/tree" "$stage/lunepack" dist
+          cp "$bin" "$stage/tree/luneterm"
+          cp -R licenses "$stage/tree/licenses"
+          cp assets/icon/luneterm-256.png "$stage/tree/luneterm-256.png"
+          cp lunepack-out/lunepack-runtime lunepack-out/lunepack-ui "$stage/lunepack/"
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)"
+          export SOURCE_DATE_EPOCH
+          # A release candidate is listed in the beta feed only: its packs say beta (the config
+          # the publish job packs with must say what a signed bundle was assembled with).
+          case "$version" in *-rc.*) channel=beta ;; *) channel=stable ;; esac
+          cat > "$stage/BUILD-INFO.txt" <<INFO
+          format=1
+          version=$version
+          target=linux-x86_64
+          config=packaging/lunepack-linux.toml
+          channel=$channel
+          entry=luneterm
+          tree=tree
+          runtime=lunepack/lunepack-runtime
+          ui=lunepack/lunepack-ui
+          lunepack_rev=$(cat lunepack-out/lunepack-rev.txt)
+          source_date_epoch=$SOURCE_DATE_EPOCH
+          glibc_min=$glibc
+          INFO
+          python3 -I scripts/make-build-input.py "$stage" "dist/luneterm-$version-linux-x64-build.tar.gz"
           printf '%s\n' "$glibc" > dist/glibc-min.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -122,19 +156,53 @@ jobs:
         env:
           RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build --release --locked -p luneterm
-      # luneterm.exe at the zip's root, licenses/ beside it. ZipFile rather than Compress-Archive,
-      # whose 5.1 version writes backslashes into the entry names.
+      # lunepack's runtime, launcher stub and update window UI, built from the source at the pinned
+      # revision (its own toolchain and rustflags: not in the step above, whose RUSTFLAGS would
+      # replace lunepack's).
+      - name: Build the lunepack runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:PATH = "$(Join-Path $HOME '.cargo\bin');$env:PATH"
+          .\scripts\build-lunepack.ps1 -OutDir lunepack-out
+      # tree\ (luneterm.exe, licenses\) is what lunepack packs; lunepack\ holds what it places
+      # beside it. The zip is written entry by entry: Compress-Archive and CreateFromDirectory
+      # of 5.1 write backslashes into the entry names.
       - name: Package
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
           $version = $env:TAG.Substring(1)
-          New-Item -ItemType Directory dist, pkg | Out-Null
-          Copy-Item target/release/luneterm.exe pkg/luneterm.exe
-          Copy-Item -Recurse licenses pkg/licenses
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = Join-Path (Resolve-Path dist) "luneterm-$version-windows-x64.zip"
-          [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path pkg).Path, $zip)
+          New-Item -ItemType Directory dist, stage, stage/tree, stage/lunepack | Out-Null
+          Copy-Item target/release/luneterm.exe stage/tree/luneterm.exe
+          Copy-Item -Recurse licenses stage/tree/licenses
+          foreach ($f in 'lunepack-runtime.exe', 'lunepack-stub.exe', 'lunepack-ui.exe') {
+            Copy-Item "lunepack-out/$f" "stage/lunepack/$f"
+          }
+          $epoch = (git log -1 --format=%ct HEAD).Trim()
+          if ($epoch -notmatch '^[0-9]+$') { throw "cannot read the commit time of HEAD" }
+          $rev = (Get-Content lunepack-out/lunepack-rev.txt -Raw).Trim()
+          $channel = if ($version -like "*-rc.*") { "beta" } else { "stable" }
+          $info = @(
+            "format=1", "version=$version", "target=windows-x86_64",
+            "config=packaging/lunepack-windows.toml", "channel=$channel", "entry=luneterm.exe", "tree=tree",
+            "runtime=lunepack/lunepack-runtime.exe", "stub=lunepack/lunepack-stub.exe",
+            "ui=lunepack/lunepack-ui.exe", "lunepack_rev=$rev", "source_date_epoch=$epoch"
+          ) -join "`n"
+          [IO.File]::WriteAllText((Join-Path (Resolve-Path stage).Path "BUILD-INFO.txt"), "$info`n")
+          Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+          $zipPath = Join-Path (Resolve-Path dist) "luneterm-$version-windows-x64-build.zip"
+          $root = (Resolve-Path stage).Path.TrimEnd('\')
+          $archive = [IO.Compression.ZipFile]::Open($zipPath, 'Create')
+          try {
+            foreach ($file in Get-ChildItem -Recurse -File -LiteralPath $root | Sort-Object FullName) {
+              # Entry names with forward slashes: the .NET Framework of Windows PowerShell 5.1
+              # writes backslashes (CreateFromDirectory) and the publish job reads them as part of
+              # a name.
+              $name = $file.FullName.Substring($root.Length + 1).Replace('\', '/')
+              [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $file.FullName, $name, 'Optimal')
+            }
+          } finally { $archive.Dispose() }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-windows
@@ -163,6 +231,8 @@ jobs:
         with:
           name: release-windows
           path: dist/windows
+      # The draft holds only build inputs (and their checksums); the macOS one is added by
+      # scripts/package-macos.sh. Publishing the draft starts publish-updates.
       - name: Create the draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

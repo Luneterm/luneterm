@@ -2,15 +2,15 @@
 # Supply-chain gate (M9 D18). Every package in the dependency graph must come from one of:
 #   - this repo (a path package under the repo root),
 #   - crates.io,
-#   - the one luneui-rs git rev pinned below.
+#   - one of the git (repo, rev) pairs pinned in ALLOWED_GIT below (luneui-rs, lunepack).
 # The graph is read from `cargo metadata --locked` (cargo's own resolution, all platforms), never
 # from a grep over Cargo.lock. Fails closed: a missing tool, a metadata error or an unrecognised
 # source is a failure, never a skip. Exit 0 clean, 1 violations (one line each), 2 cannot run.
 #   scripts/check-deps.sh          check
 #   scripts/check-deps.sh --list   print the non-workspace packages as `name version source`
-# A luneui-rs pin bump edits ALLOWED_REV here and the rev in the root Cargo.toml in one reviewed
-# change. Violations:
-#   - a package from a source outside the allowlist, or from luneui-rs at another rev;
+# A pin bump edits the pair's rev in ALLOWED_GIT here and the rev in the root Cargo.toml in one
+# reviewed change; a new git dependency is a new pair, reviewed the same way. Violations:
+#   - a package from a source outside the allowlist, or from an allowed repo at another rev;
 #   - a path package outside the repo root;
 #   - a dependency declared from git with a branch, a tag, no rev, a rev that is not 40 hex
 #     digits, another repo, or another rev; a dependency from another registry;
@@ -20,8 +20,12 @@
 # Out of scope (not visible from the repo): $CARGO_HOME/config and `.cargo` dirs above the root.
 set -euo pipefail
 
-ALLOWED_REPO="https://github.com/lune-rs/luneui"
-ALLOWED_REV="8177b9d0175218d4ae5862d34b2184d8d8381bd5"
+# One "<repo url> <40-hex rev>" pair per allowed git dependency. Nothing else is accepted: another
+# repo, a branch or tag, or another rev of either repo fails.
+ALLOWED_GIT=(
+  "https://github.com/lune-rs/luneui 8177b9d0175218d4ae5862d34b2184d8d8381bd5"
+  "https://github.com/lune-rs/lunepack a3d23376a89b3825f9cc92e674af8ce04bfc09e4"
+)
 
 mode="check"
 case "${1:-}" in
@@ -50,14 +54,26 @@ if ! cargo metadata --format-version 1 --locked > "$WORK/meta.json" 2> "$WORK/me
   exit 2
 fi
 
-python3 -I - "$mode" "$ROOT" "$ALLOWED_REPO" "$ALLOWED_REV" "$WORK/meta.json" << 'PY'
+python3 -I - "$mode" "$ROOT" "$WORK/meta.json" "${ALLOWED_GIT[@]}" << 'PY'
 import json
 import os
 import re
 import sys
 
-mode, root, repo, rev, meta_path = sys.argv[1:6]
+mode, root, meta_path = sys.argv[1:4]
 root = os.path.realpath(root)
+
+# The allowlist: repo url -> its one pinned rev. A pair that is malformed fails closed.
+ALLOWED = {}
+for pair in sys.argv[4:]:
+    parts = pair.split(" ")
+    if len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{40}", parts[1]) or parts[0] in ALLOWED:
+        print("check-deps: malformed ALLOWED_GIT entry: %r" % pair, file=sys.stderr)
+        sys.exit(2)
+    ALLOWED[parts[0]] = parts[1]
+if not ALLOWED:
+    print("check-deps: ALLOWED_GIT is empty", file=sys.stderr)
+    sys.exit(2)
 
 try:
     import tomllib
@@ -77,7 +93,14 @@ CRATES_IO = {
     "registry+https://github.com/rust-lang/crates.io-index",
     "sparse+https://index.crates.io/",
 }
-GIT_BASE = "git+" + repo + "?rev=" + rev
+# `git+<repo>?rev=<rev>` -> (repo, rev), the exact base of an allowed source.
+GIT_BASES = {"git+" + r + "?rev=" + v: (r, v) for r, v in ALLOWED.items()}
+
+
+def git_repo(src):
+    """The repo url of a `git+<repo>[?query][#frag]` source, exactly (no prefix matching)."""
+    return src[len("git+"):].split("#", 1)[0].split("?", 1)[0]
+
 
 if mode == "list":
     rows = sorted(
@@ -106,10 +129,11 @@ for p in packages:
         pass
     elif src.startswith("git+"):
         base, _, frag = src.partition("#")
-        if base == GIT_BASE and frag == rev:
+        pin = GIT_BASES.get(base)
+        if pin is not None and frag == pin[1]:
             pass
-        elif base.startswith("git+" + repo):
-            bad.append("%s: luneui-rs resolves to another rev: %s" % (who, src))
+        elif git_repo(src) in ALLOWED:
+            bad.append("%s: %s resolves to another rev, branch or tag: %s" % (who, git_repo(src), src))
         else:
             bad.append("%s: git source not allowed: %s" % (who, src))
     else:
@@ -131,10 +155,11 @@ for p in packages:
             continue
         if src.startswith("git+"):
             # Deps between packages of one git checkout carry the resolved `#<sha>` too.
-            if src == GIT_BASE or src == GIT_BASE + "#" + rev:
+            pin = GIT_BASES.get(src.partition("#")[0])
+            if pin is not None and src.partition("#")[2] in ("", pin[1]):
                 continue
             m = re.search(r"[?&](branch|tag|rev)=([^&#]*)", src)
-            if not src.startswith("git+" + repo):
+            if git_repo(src) not in ALLOWED:
                 bad.append("%s from another git repo: %s" % (where, src))
             elif m is None or m.group(1) != "rev":
                 bad.append("%s without a rev (branch, tag or default branch): %s" % (where, src))

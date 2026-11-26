@@ -6,7 +6,7 @@ default-members = ["crates/luneterm"]
 [workspace.package]
 version = "0.8.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.90"
 publish = false
 license = "Apache-2.0"
 
@@ -15,6 +15,14 @@ lune-vt = { path = "crates/lune-vt" }
 lune-pty = { path = "crates/lune-pty" }
 lune-ui = { git = "https://github.com/lune-rs/luneui", rev = "8177b9d0175218d4ae5862d34b2184d8d8381bd5" }
 lune-termview = { path = "crates/lune-termview" }
+# The update client (auto-update plan step 2; CLAUDE.md decision 2 note in step 7). One pinned rev, held by scripts/check-deps.sh.
+lunepack = { git = "https://github.com/lune-rs/lunepack", rev = "a3d23376a89b3825f9cc92e674af8ce04bfc09e4" }
+# Test-only (crates/luneterm update tests): the writers that build a signed fixture feed at test time, from the same repo and rev.
+lunepack-testkit = { git = "https://github.com/lune-rs/lunepack", rev = "a3d23376a89b3825f9cc92e674af8ce04bfc09e4" }
+lunepack-core = { git = "https://github.com/lune-rs/lunepack", rev = "a3d23376a89b3825f9cc92e674af8ce04bfc09e4" }
+lunepack-crypto = { git = "https://github.com/lune-rs/lunepack", rev = "a3d23376a89b3825f9cc92e674af8ce04bfc09e4" }
+lunepack-codec-lzma = { git = "https://github.com/lune-rs/lunepack", rev = "a3d23376a89b3825f9cc92e674af8ce04bfc09e4" }
+lunepack-fs = { git = "https://github.com/lune-rs/lunepack", rev = "a3d23376a89b3825f9cc92e674af8ce04bfc09e4" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
@@ -26,6 +34,9 @@ all = { level = "warn", priority = -1 }
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
+# MSRV 1.90 (lunepack needs it) turned these two on for old code. Ported lune-vt files mirror upstream xterm.js nesting and arithmetic; rewriting them would churn files that must stay close to the source.
+collapsible_if = "allow"
+manual_is_multiple_of = "allow"
 
 # Shipping build: small and fast. Terminal throughput matters, so opt-level stays 3.
 [profile.release]
