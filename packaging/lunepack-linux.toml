@@ -22,8 +22,8 @@ keys = [
 env = "LUNEPACK_RELEASE_KEY"
 
 # Where an installed copy looks (plan D1). The channel is the one a copy follows and is baked into
-# the pack: a stable release says "stable" here and is listed in both feeds; the publish job packs a
-# release candidate (listed in the beta feed only) with channel "beta" instead.
+# the pack: a stable release says "stable" here and is listed in both feeds; a release candidate
+# (listed in the beta feed only) says "beta": scripts/packaging-config.py writes that variant.
 [update]
 feed = "https://updates.izzat.dev/luneterm/"
 channel = "stable"
