@@ -18,7 +18,7 @@ reference for every `lunepack` command below:
 | Updating | Settings > About: "Check for updates automatically" (on by default: at launch and every 24 h, a found version shows a toast with Update / Dismiss), "Check for updates", and "Restart to update" once an update is downloaded and staged. Restarting closes all shells. |
 | Not installed by lunepack | A `cargo run` build or an old portable zip says "Updates need the Luneterm installer" and never touches the network. |
 | Rollback | An update that does not confirm itself (`confirm_healthy`, after the first frame and the first shell) within lunepack's health timeout is rolled back to the previous version by lunepack's runtime. |
-| Channels | `stable` and `beta`. A copy follows the channel its installer came from: the first run records it as `update_channel` in `settings.json` and keeps it, whatever a later pack says. To switch, edit that key (`stable` or `beta`) or reinstall from the other installer. |
+| Channels | `stable` and `beta`. A copy follows the channel its installer came from: the first run records it as `update_channel` in `settings.json` and keeps it, whatever a later pack says (a beta copy that updates to a stable pack stays on beta). Installing the other channel's setup file over it switches it: that launch finds the tree naming another channel than the one recorded in `update_tree_channel` (written once an updated version has confirmed itself healthy) and follows the new one. Both keys can also be edited by hand (`stable` or `beta`). |
 
 ## Where everything lives
 

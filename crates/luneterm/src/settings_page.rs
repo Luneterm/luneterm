@@ -27,7 +27,7 @@ use crate::settings::{
     OutlineAnim, SettingId, Settings, Theme, WindowOpacity, text_ok,
 };
 use crate::shell::HOST_GLASS;
-use crate::update::UpdateState;
+use crate::update::{Unavailable, UpdateState};
 
 /// The card's corner radius.
 const CARD_RADIUS: f32 = 8.0;
@@ -681,6 +681,9 @@ pub fn required_keys() -> Vec<String> {
         "settings.about.updates.status.downloading",
         "settings.about.updates.status.ready",
         "settings.about.updates.status.failed",
+        "settings.about.updates.status.notInstalled",
+        "settings.about.updates.status.foreignRoot",
+        "settings.about.updates.status.broken",
         "luneui.settings-page.restart-message",
         "luneui.settings-page.restart-action",
         "settings.terminal.appearance.font.group.builtin",
@@ -870,7 +873,15 @@ impl UpdatePanel {
 pub fn update_status(strings: &StringTable, state: &UpdateState) -> String {
     let key = |k: &str| format!("settings.about.updates.status.{k}");
     match state {
-        UpdateState::Unavailable(why) => why.text(),
+        UpdateState::Unavailable(Unavailable::NotInstalled) => {
+            strings.tr(&key("notInstalled")).to_owned()
+        }
+        UpdateState::Unavailable(Unavailable::ForeignRoot) => {
+            strings.tr(&key("foreignRoot")).to_owned()
+        }
+        UpdateState::Unavailable(Unavailable::Broken(why)) => {
+            strings.tr_fmt(&key("broken"), &[why], &DisplayFormat)
+        }
         UpdateState::Idle => strings.tr(&key("idle")).to_owned(),
         UpdateState::Checking => strings.tr(&key("checking")).to_owned(),
         UpdateState::UpToDate => strings.tr(&key("upToDate")).to_owned(),
@@ -1707,7 +1718,6 @@ mod tests {
 
     #[test]
     fn the_panel_enables_what_each_state_allows() {
-        use crate::update::Unavailable;
         let p = |state: &UpdateState| UpdatePanel::of(state);
         let panel = |toggle_enabled, check_enabled, action| UpdatePanel {
             toggle_enabled,
@@ -1745,7 +1755,6 @@ mod tests {
 
     #[test]
     fn the_status_line_says_each_state_in_words() {
-        use crate::update::Unavailable;
         let strings = crate::strings::english();
         let line = |state: UpdateState| update_status(&strings, &state);
         assert_eq!(line(UpdateState::Idle), "Not checked yet.");
@@ -1770,10 +1779,20 @@ mod tests {
             line(UpdateState::Failed("no network".into())),
             "The update failed: no network"
         );
-        // The reason a copy cannot update is the engine's own text.
+        // The reasons a copy cannot update come from the string table too.
         assert_eq!(
             line(UpdateState::Unavailable(Unavailable::NotInstalled)),
             "Updates need the Luneterm installer"
+        );
+        assert_eq!(
+            line(UpdateState::Unavailable(Unavailable::ForeignRoot)),
+            "Updates are off: this copy's update key is not Luneterm's"
+        );
+        assert_eq!(
+            line(UpdateState::Unavailable(Unavailable::Broken(
+                "state".into()
+            ))),
+            "Updates are unavailable: state"
         );
     }
 

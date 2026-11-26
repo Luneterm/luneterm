@@ -71,19 +71,6 @@ pub enum Unavailable {
     Broken(String),
 }
 
-impl Unavailable {
-    /// The text the UI shows.
-    pub fn text(&self) -> String {
-        match self {
-            Unavailable::NotInstalled => "Updates need the Luneterm installer".to_owned(),
-            Unavailable::ForeignRoot => {
-                "Updates are off: this copy's update key is not Luneterm's".to_owned()
-            }
-            Unavailable::Broken(why) => format!("Updates are unavailable: {why}"),
-        }
-    }
-}
-
 /// What the worker tells the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {

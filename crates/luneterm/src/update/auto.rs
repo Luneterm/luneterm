@@ -80,6 +80,13 @@ impl ToastRule {
     }
 }
 
+/// Whether the Restart toast a toast-started download wants (`restart_toast_pending`) survives
+/// `state`: only while that download runs or has staged. Any other state means it ended without
+/// staging (stale feed, cancel, failure) or never started.
+pub fn keeps_restart_toast(state: &UpdateState) -> bool {
+    matches!(state, UpdateState::Downloading(_) | UpdateState::Ready(_))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +95,22 @@ mod tests {
         UpdateState::Available {
             version: version.to_owned(),
             auto,
+        }
+    }
+
+    #[test]
+    fn a_download_that_ends_without_staging_drops_the_restart_toast() {
+        assert!(keeps_restart_toast(&UpdateState::Downloading(0)));
+        assert!(keeps_restart_toast(&UpdateState::Ready("0.9.0".into())));
+        for state in [
+            UpdateState::Idle,
+            UpdateState::Checking,
+            UpdateState::UpToDate,
+            available("0.9.0", false),
+            UpdateState::Failed("x".into()),
+            UpdateState::Unavailable(crate::update::Unavailable::NotInstalled),
+        ] {
+            assert!(!keeps_restart_toast(&state), "{state:?}");
         }
     }
 

@@ -88,7 +88,7 @@ use crate::tabs::{
     plan_close,
 };
 use crate::title::DEFAULT_TITLE;
-use crate::update::auto::{AutoCheck, ToastRule};
+use crate::update::auto::{AutoCheck, ToastRule, keeps_restart_toast};
 use crate::update::{self, Launch, UpdateState, Updater};
 
 /// The window's first size and its minimum, logical px.
@@ -464,12 +464,25 @@ fn run_window(launch: Launch) -> ExitCode {
     app.health_pending = launch.pending();
     let update_proxy = event_loop.create_proxy();
     // The channel this copy follows: recorded in the settings on the first run of an installed
-    // copy, then kept whatever a later pack's own config says (Q17).
-    let settled = update::channel::settle(&launch, &app.settings.update_channel);
-    if settled.rewrite
-        && let Some(channel) = &settled.channel
-    {
+    // copy, then kept whatever a later pack's own config says (Q17), unless a fresh setup of
+    // another channel was installed over it (update::channel).
+    let settled = update::channel::settle(
+        &launch,
+        &app.settings.update_channel,
+        &app.settings.update_tree_channel,
+    );
+    if let Some(channel) = &settled.channel {
         app.settings.update_channel.clone_from(channel);
+    }
+    if let Some(tree) = &settled.tree {
+        if settled.tree_after_confirm {
+            // Written when the first frame and shell confirm this version healthy.
+            app.tree_channel_after_confirm = Some(tree.clone());
+        } else {
+            app.settings.update_tree_channel.clone_from(tree);
+        }
+    }
+    if settled.rewrite {
         app.persist.save_settings(&app.settings);
     }
     app.update = Updater::spawn(&launch, settled.channel, move |event| {
@@ -885,6 +898,9 @@ struct App {
     /// This version waits for its health confirm (plan D8: after the first frame is presented and
     /// the first shell spawned).
     health_pending: bool,
+    /// The tree's update channel to record in the settings once this version confirms itself
+    /// healthy (the first launch after an update; see `update::channel`).
+    tree_channel_after_confirm: Option<String>,
 }
 
 impl App {
@@ -967,6 +983,7 @@ impl App {
             update_slots: ToastSlots::new(),
             restart_toast_pending: false,
             health_pending: false,
+            tree_channel_after_confirm: None,
         }
     }
 
@@ -2249,6 +2266,12 @@ impl App {
         self.update_state = state;
         self.sync_auto_check();
         let state = self.update_state.clone();
+        // The Restart toast belongs to the download its Update toast started: a download that
+        // ends any other way (stale, cancelled, failed) takes the wish with it, so a later
+        // download started from About raises no Ready toast.
+        if !keeps_restart_toast(&state) {
+            self.restart_toast_pending = false;
+        }
         match &state {
             UpdateState::Available { .. } => {
                 if let Some(version) = self.update_toast_rule.wants(&state).map(str::to_owned)
@@ -2267,7 +2290,6 @@ impl App {
             UpdateState::Downloading(_) | UpdateState::Unavailable(_) => {
                 self.drop_update_toast(Some(UpdateToastKind::Available));
             }
-            UpdateState::Failed(_) => self.restart_toast_pending = false,
             _ => {}
         }
         self.request_redraw();
@@ -2776,6 +2798,13 @@ impl App {
         if self.health_pending && self.tabs.iter().any(|(_, t)| t.session.is_some()) {
             self.health_pending = false;
             update::confirm_healthy();
+            if let Some(tree) = self.tree_channel_after_confirm.take() {
+                // `edited` is this frame's copy of the settings: it must carry it too, or the
+                // comparison below would read the page as having changed the field back.
+                edited.update_tree_channel.clone_from(&tree);
+                self.settings.update_tree_channel = tree;
+                self.persist.save_settings(&self.settings);
+            }
         }
 
         // What the frame asked of the page, the menu, the tabs and the dialog, now that the
