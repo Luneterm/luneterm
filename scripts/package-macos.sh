@@ -54,6 +54,7 @@ contents="$out/Luneterm.app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Resources"
 cp "$bin" "$contents/MacOS/luneterm"
 cp -R licenses "$contents/Resources/licenses"
+cp assets/icon/Luneterm.icns "$contents/Resources/Luneterm.icns"
 cat > "$contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -62,6 +63,7 @@ cat > "$contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>Luneterm</string>
   <key>CFBundleDisplayName</key><string>Luneterm</string>
   <key>CFBundleExecutable</key><string>luneterm</string>
+  <key>CFBundleIconFile</key><string>Luneterm</string>
   <key>CFBundleIdentifier</key><string>my.ijat.luneterm</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
