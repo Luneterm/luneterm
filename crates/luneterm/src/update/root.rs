@@ -58,6 +58,137 @@ mod tests {
         assert_eq!(root.version(), ROOT_VERSION);
     }
 
+    /// The release build's `packaging/lunepack-<os>.toml` files, as text.
+    const CONFIGS: [(&str, &str); 3] = [
+        (
+            "linux",
+            include_str!("../../../../packaging/lunepack-linux.toml"),
+        ),
+        (
+            "windows",
+            include_str!("../../../../packaging/lunepack-windows.toml"),
+        ),
+        (
+            "macos",
+            include_str!("../../../../packaging/lunepack-macos.toml"),
+        ),
+    ];
+
+    /// Reads the small TOML subset of those files: `[section]` headers, `key = "text"`,
+    /// `key = number`, `key = true|false` and multi-line `key = [ "text", ]` lists, as
+    /// `("section.key", value)` with a list's items joined by a comma. Comments are cut.
+    fn read_config(text: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let (mut section, mut list): (String, Option<(String, Vec<String>)>) =
+            (String::new(), None);
+        for raw in text.lines() {
+            let line = raw.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some((key, items)) = &mut list {
+                if line == "]" {
+                    out.push((key.clone(), items.join(",")));
+                    list = None;
+                } else {
+                    items.push(line.trim_end_matches(',').trim_matches('"').to_owned());
+                }
+            } else if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                section = name.to_owned();
+            } else if let Some((key, value)) = line.split_once('=') {
+                let (key, value) = (key.trim(), value.trim());
+                let full = if section.is_empty() {
+                    key.to_owned()
+                } else {
+                    format!("{section}.{key}")
+                };
+                if value == "[" {
+                    list = Some((full, Vec::new()));
+                } else {
+                    out.push((full, value.trim_matches('"').to_owned()));
+                }
+            } else {
+                panic!("a line this reader does not know: {line}");
+            }
+        }
+        out
+    }
+
+    fn hex(key: &[u8; 32]) -> String {
+        key.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// The root every `packaging/lunepack-<os>.toml` names is the root compiled in here (app id,
+    /// version, threshold, keys), so a copy installed from the feed accepts what the feed signs and
+    /// the other way round; they also agree on the feed and the signer, and hold no key.
+    #[test]
+    fn the_packaging_configs_name_the_compiled_in_root() {
+        let keys: Vec<String> = ROOT_KEYS.iter().map(hex).collect();
+        for (os, text) in CONFIGS {
+            let c = read_config(text);
+            let get = |k: &str| {
+                let found: Vec<&str> = c
+                    .iter()
+                    .filter(|(key, _)| key == k)
+                    .map(|(_, v)| v.as_str())
+                    .collect();
+                assert_eq!(found.len(), 1, "{os}: {k} must be set exactly once");
+                found[0].to_owned()
+            };
+            assert_eq!(get("app_id"), APP_ID, "{os}");
+            assert_eq!(get("root.version"), ROOT_VERSION.to_string(), "{os}");
+            assert_eq!(get("root.threshold"), ROOT_THRESHOLD.to_string(), "{os}");
+            assert_eq!(get("root.keys"), keys.join(","), "{os}");
+            assert_eq!(get("update.feed"), "https://updates.izzat.dev/luneterm/");
+            assert_eq!(get("update.channel"), "stable", "{os}");
+            assert_eq!(get("signers.release.env"), "LUNEPACK_RELEASE_KEY", "{os}");
+            // No signer holds a key file or runs a command: the release key is in the environment.
+            assert!(
+                c.iter()
+                    .all(|(k, _)| !k.starts_with("signers.") || k == "signers.release.env"),
+                "{os}"
+            );
+            assert!(!text.contains("PRIVATE") && !text.contains("BEGIN"), "{os}");
+        }
+    }
+
+    /// The entry and the icons of each OS (plan Revision 3): the files they name exist.
+    #[test]
+    fn the_packaging_configs_name_each_oss_entry_and_icons() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let want = [
+            ("linux", "luneterm", "install.icon", "luneterm-256.png"),
+            (
+                "windows",
+                "luneterm.exe",
+                "windows.icon",
+                "../assets/icon/luneterm.ico",
+            ),
+            (
+                "macos",
+                "Contents/MacOS/luneterm",
+                "macos.icon",
+                "../assets/icon/Luneterm.icns",
+            ),
+        ];
+        for ((os, text), (os2, entry, icon_key, icon)) in CONFIGS.into_iter().zip(want) {
+            assert_eq!(os, os2);
+            let c = read_config(text);
+            let get = |k: &str| c.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+            assert_eq!(get("install.entry").as_deref(), Some(entry), "{os}");
+            assert_eq!(get("install.name").as_deref(), Some("Luneterm"), "{os}");
+            assert_eq!(get(icon_key).as_deref(), Some(icon), "{os}");
+            // An icon of a config is relative to packaging/; the Linux one is a file of the tree,
+            // staged from assets/icon by the build job.
+            let file = if os == "linux" {
+                repo.join("assets/icon").join(icon)
+            } else {
+                repo.join("packaging").join(icon)
+            };
+            assert!(file.is_file(), "{os}: {}", file.display());
+        }
+    }
+
     #[test]
     fn matches_needs_every_part_equal() {
         let key = ROOT_KEYS[0];

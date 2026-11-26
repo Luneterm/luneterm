@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Create the draft GitHub release for a tag and attach the Windows and Linux archives.
+"""Create the draft GitHub release for a tag and attach the Windows and Linux build inputs.
 
 Run by the publish job of .github/workflows/release.yml:
 
     publish-release.py <tag> <artifacts-dir> <notes-file>
 
-<artifacts-dir> holds linux/ (the tar.gz and glibc-min.txt) and windows/ (the zip). Needs GITHUB_TOKEN (contents: write) and GITHUB_REPOSITORY in the environment. Standard library
-only: the runner image has python3 and no gh.
+<artifacts-dir> holds linux/ (luneterm-<version>-linux-x64-build.tar.gz and glibc-min.txt) and
+windows/ (luneterm-<version>-windows-x64-build.zip). A build input is the app plus lunepack's runtime
+for the target (scripts/make-build-input.py); the publish-updates workflow packs them into the update
+feed and the installers once the draft is published, and scripts/package-macos.sh adds the macOS
+input. Needs GITHUB_TOKEN (contents: write) and GITHUB_REPOSITORY in the environment. Standard
+library only: the runner image has python3 and no gh.
 
 Everything local is checked before the first API call. An existing release for the tag, draft or
 not, is never changed: the script stops, and a failed draft of an earlier run is deleted by hand.
@@ -140,8 +144,8 @@ def prepare(tag, directory, notes_path):
     # and what it uploaded must not be able to stand in for the Linux archive or the glibc value.
     linux_dir = os.path.join(directory, "linux")
     windows_dir = os.path.join(directory, "windows")
-    linux = only_file(linux_dir, "-linux-x64.tar.gz", "luneterm-%s-linux-x64.tar.gz" % version)
-    windows = only_file(windows_dir, "-windows-x64.zip", "luneterm-%s-windows-x64.zip" % version)
+    linux = only_file(linux_dir, "-linux-x64-build.tar.gz", "luneterm-%s-linux-x64-build.tar.gz" % version)
+    windows = only_file(windows_dir, "-windows-x64-build.zip", "luneterm-%s-windows-x64-build.zip" % version)
     glibc = read_bytes(os.path.join(linux_dir, "glibc-min.txt")).decode("ascii").strip()
     if not GLIBC_RE.fullmatch(glibc):
         raise Failure("glibc-min.txt does not hold a version: %r" % glibc)
