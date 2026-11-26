@@ -13,6 +13,7 @@ use lune_ui::scene::LayerId;
 use lune_ui::strings::{DisplayFormat, StringTable};
 use lune_ui::text::{Spec, Style};
 use lune_ui::ui::Ui;
+use lune_ui::widgets::button::ButtonKind;
 use lune_ui::widgets::field::FieldOptions;
 use lune_ui::widgets::nav_item::NavEntry;
 use lune_ui::widgets::settings_page::SettingsPage;
@@ -26,6 +27,7 @@ use crate::settings::{
     OutlineAnim, SettingId, Settings, Theme, WindowOpacity, text_ok,
 };
 use crate::shell::HOST_GLASS;
+use crate::update::UpdateState;
 
 /// The card's corner radius.
 const CARD_RADIUS: f32 = 8.0;
@@ -276,12 +278,23 @@ static TERMINAL: [Group; 3] = [
     },
 ];
 
-/// The groups of a section (the About section has none: it is text).
+/// The About section's one group: the updates toggle (its status line and buttons are drawn under
+/// it by [`about`], from the [`UpdatePanel`]).
+static ABOUT: [Group; 1] = [Group {
+    header: "settings.about.updates.header",
+    rows: &[row(
+        SettingId::AutoUpdateCheck,
+        Control::Toggle,
+        "settings.about.updates.auto",
+    )],
+}];
+
+/// The groups of a section (the rest of the About section is text).
 pub fn groups(section: Section) -> &'static [Group] {
     match section {
         Section::Appearance => &APPEARANCE,
         Section::Terminal => &TERMINAL,
-        Section::About => &[],
+        Section::About => &ABOUT,
     }
 }
 
@@ -535,6 +548,7 @@ pub fn flag(settings: &Settings, id: SettingId) -> Option<bool> {
         SettingId::CopyOnSelect => settings.copy_on_select,
         SettingId::OscNotifications => settings.osc_notifications,
         SettingId::EfficiencyMode => settings.efficiency_mode,
+        SettingId::AutoUpdateCheck => settings.auto_update_check,
         _ => return None,
     })
 }
@@ -554,6 +568,7 @@ pub fn set_flag(settings: &mut Settings, id: SettingId, on: bool) {
         SettingId::CopyOnSelect => settings.copy_on_select = on,
         SettingId::OscNotifications => settings.osc_notifications = on,
         SettingId::EfficiencyMode => settings.efficiency_mode = on,
+        SettingId::AutoUpdateCheck => settings.auto_update_check = on,
         _ => {}
     }
 }
@@ -656,6 +671,16 @@ pub fn required_keys() -> Vec<String> {
         "settings.about.version",
         "settings.about.blurb",
         "settings.about.notices",
+        "settings.about.updates.check",
+        "settings.about.updates.download",
+        "settings.about.updates.restart",
+        "settings.about.updates.status.idle",
+        "settings.about.updates.status.checking",
+        "settings.about.updates.status.upToDate",
+        "settings.about.updates.status.available",
+        "settings.about.updates.status.downloading",
+        "settings.about.updates.status.ready",
+        "settings.about.updates.status.failed",
         "luneui.settings-page.restart-message",
         "luneui.settings-page.restart-action",
         "settings.terminal.appearance.font.group.builtin",
@@ -752,6 +777,8 @@ pub struct PageState {
     pub combo: Option<SettingId>,
     /// The field rows' text while it is edited (default directory, shell, shell arguments).
     texts: [String; 3],
+    /// Where the update machinery is; the app sets it before each frame (About reads it).
+    pub update: UpdateState,
 }
 
 impl PageState {
@@ -765,6 +792,7 @@ impl PageState {
                 settings.shell.clone(),
                 settings.shell_args.clone(),
             ],
+            update: UpdateState::Unavailable(crate::update::Unavailable::NotInstalled),
         }
     }
 }
@@ -790,8 +818,71 @@ pub struct PageOut {
     pub back: bool,
     /// The banner's action was pressed.
     pub restart_action: bool,
+    /// An About button was pressed.
+    pub update: Option<UpdateAsk>,
     /// Where the focused field edits, for the IME.
     pub ime_area: Option<Rect>,
+}
+
+/// What an About button asks of the update worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateAsk {
+    /// Check for updates (a manual check: no toast).
+    Check,
+    /// Download and stage the version the last check found.
+    Download,
+    /// Quit so the runtime applies the staged version.
+    Restart,
+}
+
+/// What the About section shows of the update state: the model of its status line, toggle and
+/// buttons, plain data so it is tested without a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdatePanel {
+    /// The automatic-check toggle can be changed (not on a copy that cannot update itself).
+    pub toggle_enabled: bool,
+    /// The Check for updates button can be pressed.
+    pub check_enabled: bool,
+    /// The second button, when there is one: Update after a find, Restart to update once staged.
+    pub action: Option<UpdateAsk>,
+}
+
+impl UpdatePanel {
+    pub fn of(state: &UpdateState) -> UpdatePanel {
+        let (toggle_enabled, check_enabled, action) = match state {
+            UpdateState::Unavailable(_) => (false, false, None),
+            UpdateState::Idle | UpdateState::UpToDate | UpdateState::Failed(_) => {
+                (true, true, None)
+            }
+            UpdateState::Checking | UpdateState::Downloading(_) => (true, false, None),
+            UpdateState::Available { .. } => (true, true, Some(UpdateAsk::Download)),
+            UpdateState::Ready(_) => (true, false, Some(UpdateAsk::Restart)),
+        };
+        UpdatePanel {
+            toggle_enabled,
+            check_enabled,
+            action,
+        }
+    }
+}
+
+/// The status line under the updates toggle.
+pub fn update_status(strings: &StringTable, state: &UpdateState) -> String {
+    let key = |k: &str| format!("settings.about.updates.status.{k}");
+    match state {
+        UpdateState::Unavailable(why) => why.text(),
+        UpdateState::Idle => strings.tr(&key("idle")).to_owned(),
+        UpdateState::Checking => strings.tr(&key("checking")).to_owned(),
+        UpdateState::UpToDate => strings.tr(&key("upToDate")).to_owned(),
+        UpdateState::Available { version, .. } => {
+            strings.tr_fmt(&key("available"), &[version], &DisplayFormat)
+        }
+        UpdateState::Downloading(pct) => {
+            strings.tr_fmt(&key("downloading"), &[pct], &DisplayFormat)
+        }
+        UpdateState::Ready(version) => strings.tr_fmt(&key("ready"), &[version], &DisplayFormat),
+        UpdateState::Failed(why) => strings.tr_fmt(&key("failed"), &[why], &DisplayFormat),
+    }
 }
 
 fn spec(text: &str, size: f32, color: Rgba) -> Spec {
@@ -920,7 +1011,7 @@ fn content(
     ui.painter().text(&title, vp.x, vp.y);
     let mut y = vp.y + 40.0;
     if section == Section::About {
-        y = about(ui, strings, vp, y);
+        y = about(ui, strings, state, settings, system, vp, y, out);
     } else {
         for group in groups(section) {
             y = draw_group(ui, strings, state, settings, system, vp, y, group, out) + 16.0;
@@ -1003,7 +1094,9 @@ fn control(
     match r.control {
         Control::Toggle => {
             let mut on = flag(settings, id).unwrap_or(false);
-            ui.toggle(("toggle", id), c, &mut on, name);
+            let enabled =
+                id != SettingId::AutoUpdateCheck || UpdatePanel::of(&state.update).toggle_enabled;
+            ui.with_enabled(enabled, |ui| ui.toggle(("toggle", id), c, &mut on, name));
             set_flag(settings, id, on);
         }
         Control::Combo => {
@@ -1098,8 +1191,19 @@ fn control(
     }
 }
 
-/// The About section: the app, its version and the notices. Returns the next y.
-fn about(ui: &mut Ui<'_>, strings: &StringTable, vp: Rect, y: f32) -> f32 {
+/// The About section: the app, its version, the updates group (toggle, status line, buttons) and
+/// the notices. Returns the next y.
+#[allow(clippy::too_many_arguments)]
+fn about(
+    ui: &mut Ui<'_>,
+    strings: &StringTable,
+    state: &mut PageState,
+    settings: &mut Settings,
+    system: &[&'static str],
+    vp: Rect,
+    y: f32,
+    out: &mut PageOut,
+) -> f32 {
     let theme = *ui.theme();
     let w = vp.w.min(560.0);
     let mut y = y;
@@ -1118,6 +1222,10 @@ fn about(ui: &mut Ui<'_>, strings: &StringTable, vp: Rect, y: f32) -> f32 {
         y += ui.painter().text(&s, vp.x, y).1 + 8.0;
     }
     y += 12.0;
+    for group in groups(Section::About) {
+        y = draw_group(ui, strings, state, settings, system, vp, y, group, out) + 12.0;
+    }
+    y = update_controls(ui, strings, &state.update, vp, y, out) + 16.0;
     let header = Spec::plain(
         strings.tr("settings.about.notices"),
         Style::ui(theme.font_m, theme.fg_primary).medium(),
@@ -1137,6 +1245,65 @@ fn about(ui: &mut Ui<'_>, strings: &StringTable, vp: Rect, y: f32) -> f32 {
         );
         y += 24.0;
     }
+    y
+}
+
+/// The status line and the buttons under the updates group; returns the next y.
+fn update_controls(
+    ui: &mut Ui<'_>,
+    strings: &StringTable,
+    update: &UpdateState,
+    vp: Rect,
+    y: f32,
+    out: &mut PageOut,
+) -> f32 {
+    let theme = *ui.theme();
+    let panel = UpdatePanel::of(update);
+    let status = update_status(strings, update);
+    let line = spec(&status, theme.font_base, theme.fg_secondary).wrapped(vp.w.min(560.0));
+    let mut y = y + ui.painter().text(&line, vp.x, y).1 + 12.0;
+    let mut x = vp.x;
+    let mut button = |ui: &mut Ui<'_>, ask: UpdateAsk, key: &str, enabled: bool, kind| {
+        let text = strings.tr(key);
+        let w = ui
+            .painter()
+            .measure(&spec(text, theme.font_base, theme.fg_primary))
+            .0
+            + 32.0;
+        let r = Rect::new(x, y, w, CONTROL_H);
+        x += w + 8.0;
+        let resp = ui.with_enabled(enabled, |ui| {
+            ui.button(("update", ask as u8), r, text, kind)
+        });
+        if resp.clicked {
+            out.update = Some(ask);
+        }
+    };
+    button(
+        ui,
+        UpdateAsk::Check,
+        "settings.about.updates.check",
+        panel.check_enabled,
+        ButtonKind::Secondary,
+    );
+    match panel.action {
+        Some(UpdateAsk::Download) => button(
+            ui,
+            UpdateAsk::Download,
+            "settings.about.updates.download",
+            true,
+            ButtonKind::Primary,
+        ),
+        Some(UpdateAsk::Restart) => button(
+            ui,
+            UpdateAsk::Restart,
+            "settings.about.updates.restart",
+            true,
+            ButtonKind::Primary,
+        ),
+        _ => {}
+    }
+    y += CONTROL_H;
     y
 }
 
@@ -1449,6 +1616,7 @@ mod tests {
             SettingId::CopyOnSelect,
             SettingId::OscNotifications,
             SettingId::EfficiencyMode,
+            SettingId::AutoUpdateCheck,
         ] {
             let mut s = Settings::default();
             let before = flag(&s, id).expect("a toggle");
@@ -1521,6 +1689,92 @@ mod tests {
         // A tiny card has empty rects, not negative ones.
         let t = PageLayout::new(Rect::new(0.0, 0.0, 30.0, 20.0));
         assert!(t.page.w >= 0.0 && t.page.h >= 0.0 && t.divider.h >= 0.0);
+    }
+
+    /// The About section holds the one updates toggle, on by default, and no other row.
+    #[test]
+    fn the_about_section_has_the_updates_toggle_only() {
+        let rows: Vec<SettingId> = groups(Section::About)
+            .iter()
+            .flat_map(|g| g.rows.iter().map(|r| r.id))
+            .collect();
+        assert_eq!(rows, [SettingId::AutoUpdateCheck]);
+        assert_eq!(
+            flag(&Settings::default(), SettingId::AutoUpdateCheck),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn the_panel_enables_what_each_state_allows() {
+        use crate::update::Unavailable;
+        let p = |state: &UpdateState| UpdatePanel::of(state);
+        let panel = |toggle_enabled, check_enabled, action| UpdatePanel {
+            toggle_enabled,
+            check_enabled,
+            action,
+        };
+        // A copy that cannot update itself: nothing to press, nothing to turn on.
+        for why in [
+            Unavailable::NotInstalled,
+            Unavailable::ForeignRoot,
+            Unavailable::Broken("x".into()),
+        ] {
+            assert_eq!(p(&UpdateState::Unavailable(why)), panel(false, false, None));
+        }
+        for state in [
+            UpdateState::Idle,
+            UpdateState::UpToDate,
+            UpdateState::Failed("x".into()),
+        ] {
+            assert_eq!(p(&state), panel(true, true, None), "{state:?}");
+        }
+        // One operation at a time: no second check while one runs or downloads.
+        assert_eq!(p(&UpdateState::Checking), panel(true, false, None));
+        assert_eq!(p(&UpdateState::Downloading(40)), panel(true, false, None));
+        let found = UpdateState::Available {
+            version: "0.9.0".into(),
+            auto: false,
+        };
+        assert_eq!(p(&found), panel(true, true, Some(UpdateAsk::Download)));
+        assert_eq!(
+            p(&UpdateState::Ready("0.9.0".into())),
+            panel(true, false, Some(UpdateAsk::Restart))
+        );
+    }
+
+    #[test]
+    fn the_status_line_says_each_state_in_words() {
+        use crate::update::Unavailable;
+        let strings = crate::strings::english();
+        let line = |state: UpdateState| update_status(&strings, &state);
+        assert_eq!(line(UpdateState::Idle), "Not checked yet.");
+        assert_eq!(line(UpdateState::Checking), "Checking for updates…");
+        assert_eq!(line(UpdateState::UpToDate), "Luneterm is up to date.");
+        assert_eq!(
+            line(UpdateState::Available {
+                version: "0.9.0".into(),
+                auto: true
+            }),
+            "Luneterm 0.9.0 is available."
+        );
+        assert_eq!(
+            line(UpdateState::Downloading(42)),
+            "Downloading the update: 42%"
+        );
+        assert_eq!(
+            line(UpdateState::Ready("0.9.0".into())),
+            "Luneterm 0.9.0 is ready. Restarting closes all shells."
+        );
+        assert_eq!(
+            line(UpdateState::Failed("no network".into())),
+            "The update failed: no network"
+        );
+        // The reason a copy cannot update is the engine's own text.
+        assert_eq!(
+            line(UpdateState::Unavailable(Unavailable::NotInstalled)),
+            "Updates need the Luneterm installer"
+        );
     }
 
     #[test]

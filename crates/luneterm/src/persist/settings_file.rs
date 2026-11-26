@@ -27,7 +27,7 @@ pub struct SettingsDoc {
 }
 
 /// The names this build writes, in the order it writes them.
-const KEYS: [&str; 25] = [
+const KEYS: [&str; 26] = [
     "theme",
     "glass",
     "menu_blur",
@@ -53,6 +53,7 @@ const KEYS: [&str; 25] = [
     "copy_on_select",
     "osc_notifications",
     "efficiency_mode",
+    "auto_update_check",
 ];
 
 fn member<'a>(members: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
@@ -132,6 +133,7 @@ pub fn parse_settings(bytes: &[u8]) -> Result<SettingsDoc, Reject> {
     flag(members, "copy_on_select", &mut s.copy_on_select);
     flag(members, "osc_notifications", &mut s.osc_notifications);
     flag(members, "efficiency_mode", &mut s.efficiency_mode);
+    flag(members, "auto_update_check", &mut s.auto_update_check);
     let unknown = members
         .iter()
         .filter(|(k, _)| k != "version" && !KEYS.contains(&k.as_str()))
@@ -180,6 +182,7 @@ pub fn render_settings(doc: &SettingsDoc) -> Result<String, WriteError> {
         ("copy_on_select".into(), Json::Bool(s.copy_on_select)),
         ("osc_notifications".into(), Json::Bool(s.osc_notifications)),
         ("efficiency_mode".into(), Json::Bool(s.efficiency_mode)),
+        ("auto_update_check".into(), Json::Bool(s.auto_update_check)),
     ];
     members.extend(doc.unknown.iter().cloned());
     Json::Object(members).to_text()
@@ -216,6 +219,7 @@ mod tests {
             copy_on_select: false,
             osc_notifications: false,
             efficiency_mode: false,
+            auto_update_check: false,
         }
     }
 
@@ -446,6 +450,34 @@ mod tests {
         assert!(text.contains("\"osc_notifications\":false"), "{text}");
         assert_eq!(parse_settings(text.as_bytes()), Ok(doc));
         let unknown = parse_settings(br#"{"version":1,"osc_notifications":true}"#)
+            .expect("parses")
+            .unknown;
+        assert!(unknown.is_empty(), "a known key is not unknown");
+    }
+
+    /// A file without `auto_update_check` (every file written before updates existed) loads it
+    /// on; a string keeps it on; `false` reads off and is written back as `false`.
+    #[test]
+    fn auto_update_check_defaults_on_and_reads_off() {
+        let read = |json: &str| parse_settings(json.as_bytes()).expect("parses").settings;
+        assert!(Settings::default().auto_update_check);
+        let missing = read(r#"{"version":1,"palette":"Nord"}"#);
+        assert!(missing.auto_update_check);
+        let wrong = read(r#"{"version":1,"auto_update_check":"off"}"#);
+        assert!(
+            wrong.auto_update_check,
+            "a string is no bool: the default stays on"
+        );
+        let off = read(r#"{"version":1,"auto_update_check":false}"#);
+        assert!(!off.auto_update_check);
+        let doc = SettingsDoc {
+            settings: off,
+            unknown: Vec::new(),
+        };
+        let text = render_settings(&doc).expect("writes");
+        assert!(text.contains("\"auto_update_check\":false"), "{text}");
+        assert_eq!(parse_settings(text.as_bytes()), Ok(doc));
+        let unknown = parse_settings(br#"{"version":1,"auto_update_check":true}"#)
             .expect("parses")
             .unknown;
         assert!(unknown.is_empty(), "a known key is not unknown");

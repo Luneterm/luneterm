@@ -17,6 +17,7 @@
 //! - **Trusted root.** The update config of an installed copy must name exactly the root compiled
 //!   in from [`root`], or the copy reports [`Unavailable::ForeignRoot`] and never checks.
 
+pub mod auto;
 pub mod root;
 #[cfg(test)]
 mod tests;

@@ -207,6 +207,10 @@ pub struct Settings {
     /// output; shells keep normal priority. Linux has no mechanism, so it has no effect there. A
     /// Luneterm-only setting: Lunegit has none.
     pub efficiency_mode: bool,
+    /// Check for a new Luneterm at launch and every 24 hours, and show a toast when one is found
+    /// (Settings > About). On by default; no effect on a copy the installer did not install (it
+    /// never touches the network). A Luneterm-only setting: Lunegit has none.
+    pub auto_update_check: bool,
 }
 
 impl Default for Settings {
@@ -237,6 +241,7 @@ impl Default for Settings {
             copy_on_select: true,
             osc_notifications: true,
             efficiency_mode: true,
+            auto_update_check: true,
         }
     }
 }
@@ -363,6 +368,7 @@ impl Settings {
             copy_on_select,
             osc_notifications,
             efficiency_mode,
+            auto_update_check,
         } = self;
         let flags = [
             (SettingId::Theme, *theme != other.theme),
@@ -426,6 +432,10 @@ impl Settings {
                 SettingId::EfficiencyMode,
                 *efficiency_mode != other.efficiency_mode,
             ),
+            (
+                SettingId::AutoUpdateCheck,
+                *auto_update_check != other.auto_update_check,
+            ),
         ];
         flags
             .into_iter()
@@ -462,11 +472,12 @@ pub enum SettingId {
     CopyOnSelect,
     OscNotifications,
     EfficiencyMode,
+    AutoUpdateCheck,
 }
 
 impl SettingId {
     /// Every setting, in the order of the [`Settings`] fields.
-    pub const ALL: [SettingId; 25] = [
+    pub const ALL: [SettingId; 26] = [
         SettingId::Theme,
         SettingId::Glass,
         SettingId::MenuBlur,
@@ -492,6 +503,7 @@ impl SettingId {
         SettingId::CopyOnSelect,
         SettingId::OscNotifications,
         SettingId::EfficiencyMode,
+        SettingId::AutoUpdateCheck,
     ];
 
     /// What changing this setting does (plan M10 step 6's table).
@@ -513,6 +525,7 @@ impl SettingId {
             SettingId::CopyOnSelect => Effect::CopyOnSelect,
             SettingId::OscNotifications => Effect::OscNotifications,
             SettingId::EfficiencyMode => Effect::Efficiency,
+            SettingId::AutoUpdateCheck => Effect::AutoUpdateCheck,
             SettingId::ConfirmClose => Effect::ConfirmClose,
             SettingId::DefaultCwd
             | SettingId::Shell
@@ -558,6 +571,9 @@ pub enum Effect {
     OscNotifications,
     /// The efficiency controller re-evaluates now (step 3).
     Efficiency,
+    /// The app starts or stops its 24 h update timer (a check runs at once when it is switched
+    /// on).
+    AutoUpdateCheck,
     /// Tabs opened from now on; the page says so (its restart notice).
     NextSpawn,
 }
@@ -807,6 +823,7 @@ mod tests {
             (S::CopyOnSelect, E::CopyOnSelect),
             (S::OscNotifications, E::OscNotifications),
             (S::EfficiencyMode, E::Efficiency),
+            (S::AutoUpdateCheck, E::AutoUpdateCheck),
         ];
         assert_eq!(table.len(), SettingId::ALL.len());
         for (id, want) in table {
@@ -819,7 +836,7 @@ mod tests {
     #[test]
     fn changing_one_field_changes_exactly_its_id() {
         let d = Settings::default();
-        let cases: [(SettingId, Settings); 25] = [
+        let cases: [(SettingId, Settings); 26] = [
             (
                 SettingId::Theme,
                 Settings {
@@ -992,6 +1009,13 @@ mod tests {
                 SettingId::EfficiencyMode,
                 Settings {
                     efficiency_mode: false,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::AutoUpdateCheck,
+                Settings {
+                    auto_update_check: false,
                     ..d.clone()
                 },
             ),

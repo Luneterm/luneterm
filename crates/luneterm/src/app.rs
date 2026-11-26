@@ -76,7 +76,8 @@ use crate::session::{
     UpdateModes, view_range,
 };
 use crate::settings::{Effect, Settings, effects};
-use crate::settings_page::{PageState, PageView, Section};
+use crate::settings_page::{PageState, PageView, Section, UpdateAsk};
+use crate::shell::UpdateToastKind;
 use crate::shell::{
     self, HOST, InboxButton, InboxList, Modal, ModalOut, ScrollView, StripTab, TAB_CLOSABLE,
     ThumbDrag,
@@ -87,6 +88,7 @@ use crate::tabs::{
     plan_close,
 };
 use crate::title::DEFAULT_TITLE;
+use crate::update::auto::{AutoCheck, ToastRule};
 use crate::update::{self, Launch, UpdateState, Updater};
 
 /// The window's first size and its minimum, logical px.
@@ -100,6 +102,9 @@ const MAX_PREEDIT_CHARS: usize = 256;
 const BELL_INTERVAL: Duration = Duration::from_secs(2);
 /// How long closing waits for the session's threads before the process leaves anyway.
 const CLOSE_WAIT: Duration = Duration::from_millis(500);
+/// The stand-in tab of the update toast in its slot table (a toast of no tab; real tab ids count
+/// up from 1).
+const UPDATE_SLOT_TAB: TabId = TabId::MAX;
 /// How long quitting waits for the update worker once its operation is cancelled.
 const UPDATE_WAIT: Duration = Duration::from_secs(1);
 
@@ -465,6 +470,7 @@ fn run_window(launch: Launch) -> ExitCode {
         });
     });
     app.update_state = app.update.initial_state();
+    app.sync_auto_check();
     // The tab-switch trace (this is the only place the variable is read).
     if std::env::var_os("LUNETERM_TRACE_SWITCH").is_some_and(|v| v == "1") {
         app.trace = Some(Box::default());
@@ -855,6 +861,18 @@ struct App {
     update: Updater,
     /// The update worker's last state (Settings > About shows it).
     update_state: UpdateState,
+    /// The 24 h check timer: runs only while Check for updates automatically is on and the copy
+    /// can update itself (`sync_auto_check`).
+    auto_check: AutoCheck,
+    /// Which versions had their update toast in this run.
+    update_toast_rule: ToastRule,
+    /// The update toast that is up, if any.
+    update_toast: Option<(ToastId, UpdateToastKind)>,
+    /// When the update toast was shown and last moved: its buttons take a press only after the
+    /// arm delay, like a notification toast's (a slot table of its own, with a stand-in tab).
+    update_slots: ToastSlots<ToastId, Rect>,
+    /// The user pressed Update on the toast: when the download is staged, a Restart toast follows.
+    restart_toast_pending: bool,
     /// This version waits for its health confirm (plan D8: after the first frame is presented and
     /// the first shell spawned).
     health_pending: bool,
@@ -934,6 +952,11 @@ impl App {
             urgent_scope: false,
             update: Updater::unavailable(update::Unavailable::NotInstalled),
             update_state: UpdateState::Unavailable(update::Unavailable::NotInstalled),
+            auto_check: AutoCheck::default(),
+            update_toast_rule: ToastRule::default(),
+            update_toast: None,
+            update_slots: ToastSlots::new(),
+            restart_toast_pending: false,
             health_pending: false,
         }
     }
@@ -1045,7 +1068,13 @@ impl App {
             .efficiency
             .deadline()
             .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
-        event_loop.set_control_flow(merge_flow(flow, efficiency));
+        // The update timer's deadline holds while the window is hidden too; `tick_update` runs
+        // first in every callback, so the instant is consumed when it comes.
+        let auto = self
+            .auto_check
+            .deadline()
+            .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
+        event_loop.set_control_flow(merge_flow(merge_flow(flow, efficiency), auto));
     }
 
     /// Sets the frame grid's rate from the display the window is on now (D5); the surface is
@@ -1358,6 +1387,7 @@ impl App {
             Effect::Efficiency => self
                 .efficiency
                 .set_enabled(self.settings.efficiency_mode, Instant::now()),
+            Effect::AutoUpdateCheck => self.sync_auto_check(),
             Effect::NextSpawn => self.restart_notice = self.page.is_some(),
         }
     }
@@ -2169,6 +2199,10 @@ impl App {
         now: Duration,
         event_loop: &ActiveEventLoop,
     ) {
+        if self.update_toast.is_some_and(|(t, _)| t == id) {
+            self.on_update_toast_action(id, action, now);
+            return;
+        }
         let target = self
             .toast_slots
             .press_target(id, now)
@@ -2182,6 +2216,119 @@ impl App {
         self.request_redraw();
     }
 
+    // ------------------------------------------------------------------------ updates
+
+    /// Starts or stops the 24 h timer to match the setting and whether this copy can update
+    /// itself (a copy that cannot never checks, so it never touches the network).
+    fn sync_auto_check(&mut self) {
+        let can = !matches!(self.update_state, UpdateState::Unavailable(_));
+        self.auto_check
+            .set_enabled(self.settings.auto_update_check && can, Instant::now());
+    }
+
+    /// Runs the automatic check when the timer says so. The worker ignores it while an operation
+    /// runs.
+    fn tick_update(&mut self, now: Instant) {
+        if self.auto_check.take_due(now) {
+            self.update.check(true);
+        }
+    }
+
+    /// The worker's new state: About shows it; an automatic find of a version not yet toasted
+    /// earns the toast; the Restart toast follows a download the Update toast started.
+    fn on_update_state(&mut self, state: UpdateState) {
+        self.update_state = state;
+        self.sync_auto_check();
+        let state = self.update_state.clone();
+        match &state {
+            UpdateState::Available { .. } => {
+                if let Some(version) = self.update_toast_rule.wants(&state).map(str::to_owned)
+                    && self.show_update_toast(UpdateToastKind::Available, &version)
+                {
+                    self.update_toast_rule.shown(&version);
+                }
+            }
+            UpdateState::Ready(version) => {
+                // The offer to download is answered: only the restart one stays.
+                self.drop_update_toast(Some(UpdateToastKind::Available));
+                if std::mem::take(&mut self.restart_toast_pending) {
+                    self.show_update_toast(UpdateToastKind::Ready, version);
+                }
+            }
+            UpdateState::Downloading(_) | UpdateState::Unavailable(_) => {
+                self.drop_update_toast(Some(UpdateToastKind::Available));
+            }
+            UpdateState::Failed(_) => self.restart_toast_pending = false,
+            _ => {}
+        }
+        self.request_redraw();
+    }
+
+    /// Puts up the update toast of `kind` (the one before it leaves). `false` when there is no
+    /// window to draw it in yet.
+    fn show_update_toast(&mut self, kind: UpdateToastKind, version: &str) -> bool {
+        let Some(stack) = &self.stack else {
+            return false;
+        };
+        let accent = stack.renderer.theme().attention();
+        let (spec, extras) = shell::update_toast(kind, version, stack.renderer.strings(), accent);
+        let now = self.start.elapsed();
+        self.drop_update_toast(None);
+        let id = self.toasts.push_with(spec, extras, now);
+        self.update_slots.shown(id, UPDATE_SLOT_TAB, now);
+        self.update_toast = Some((id, kind));
+        true
+    }
+
+    /// Takes the update toast down, when it is of `kind` (any kind for `None`).
+    fn drop_update_toast(&mut self, kind: Option<UpdateToastKind>) {
+        if let Some((id, k)) = self.update_toast
+            && kind.is_none_or(|want| want == k)
+        {
+            self.toasts.dismiss(id, self.start.elapsed());
+            self.update_slots.gone(id);
+            self.update_toast = None;
+        }
+    }
+
+    /// A button of the update toast, pressed at `now`: Dismiss always works; Update and Restart
+    /// only on a toast that was drawn and stood still for the arm delay at the press.
+    fn on_update_toast_action(&mut self, id: ToastId, action: u64, now: Duration) {
+        let armed = self.update_slots.press_target(id, now).is_some();
+        self.update_slots.gone(id);
+        self.update_toast = None;
+        if armed {
+            match action {
+                shell::TOAST_UPDATE => {
+                    if self.update.download() {
+                        self.restart_toast_pending = true;
+                    }
+                }
+                shell::TOAST_RESTART => {
+                    self.update.restart();
+                }
+                _ => {}
+            }
+        }
+        self.request_redraw();
+    }
+
+    /// An About button: a manual check (no toast), the download of the version found, or the
+    /// restart that applies the staged one. The worker ignores a command while one runs.
+    fn on_update_ask(&mut self, ask: UpdateAsk) {
+        match ask {
+            UpdateAsk::Check => {
+                self.update.check(false);
+            }
+            UpdateAsk::Download => {
+                self.update.download();
+            }
+            UpdateAsk::Restart => {
+                self.update.restart();
+            }
+        }
+    }
+
     /// Learns from the frame just drawn which toasts are up and where (D18): frees the slots of
     /// those that left, restarts the arm of those that appeared or moved, and keeps the places
     /// the pointer is kept off the terminal at.
@@ -2189,6 +2336,12 @@ impl App {
         let toasts = &self.toasts;
         self.toast_slots
             .sync(toasts.live(), now, |id| toasts.is_live(id));
+        let freed = self
+            .update_slots
+            .sync(toasts.live(), now, |id| toasts.is_live(id));
+        if self.update_toast.is_some_and(|(id, _)| freed.contains(&id)) {
+            self.update_toast = None;
+        }
         let rects: Vec<Rect> = toasts.live().iter().map(|(_, r)| *r).collect();
         if rects != self.toast_rects {
             self.toast_rects = rects;
@@ -2513,7 +2666,10 @@ impl App {
             clipboard_write: self.clipboard_write.take(),
             clipboard_read: self.paste.take_read(),
             page: self.page.as_mut().map(|state| PageView {
-                state,
+                state: {
+                    state.update = self.update_state.clone();
+                    state
+                },
                 settings: &mut edited,
                 restart: self.restart_notice,
                 focused: input.focused,
@@ -2619,6 +2775,9 @@ impl App {
             self.apply_settings(edited);
         }
         if let Some(out) = page_out {
+            if let Some(ask) = out.update {
+                self.on_update_ask(ask);
+            }
             if out.back {
                 self.close_page();
             } else if out.restart_action {
@@ -3229,6 +3388,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         // The quiet period of a background window may have passed (its deadline is in the flow).
         self.efficiency.tick(Instant::now());
+        self.tick_update(Instant::now());
         // A paced frame's moment, or a `Repaint::At`, blink, workspace, settings or new-tab
         // deadline came due: one ask serves them all (a due pacer deadline means the slot is
         // free). An app deadline (`pending_flow`) that is due asks at once: held for the slot,
@@ -3289,9 +3449,7 @@ impl App {
                 }
                 self.app_command(AppCommand::NextTab, event_loop);
             }
-            UserEvent::Update(state) => {
-                self.update_state = state;
-            }
+            UserEvent::Update(state) => self.on_update_state(state),
             UserEvent::UpdateRestart => {
                 // The normal quit: `exiting` saves the workspace and settings and ends the
                 // sessions; the runtime applies the update once this process is gone.
