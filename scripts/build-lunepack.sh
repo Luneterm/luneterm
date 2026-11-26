@@ -12,8 +12,9 @@
 # The checkout goes to target/lunepack-src-<rev12> (reused when it is clean at the pinned
 # revision, else the script stops: nothing is deleted), the build to target/lunepack-target. Before
 # anything is built, `cargo metadata --locked` of the checkout must show every package from
-# crates.io or the checkout itself: this code ships inside every user's install, and the
-# supply-chain gate (scripts/check-deps.sh) covers only Luneterm's own graph.
+# crates.io, the checkout itself, or the one git source lunepack's own boundary check allows (the
+# luneui-rs toolkit its UI links, at a full commit): this code ships inside every user's install,
+# and the supply-chain gate (scripts/check-deps.sh) covers only Luneterm's own graph.
 #
 # Linux needs musl-tools (`musl-gcc`) and readelf; the static runtime is checked by lunepack's own
 # build script. macOS needs the Xcode command line tools. rustup, when present, installs the
@@ -87,14 +88,16 @@ if command -v rustup > /dev/null 2>&1; then
   fi
 fi
 
-# Every package of the checkout's graph: crates.io, or a path inside the checkout.
+# Every package of the checkout's graph: crates.io, a path inside the checkout, or luneui-rs.
 (cd "$src" && cargo metadata --locked --format-version 1) | python3 -I -c '
 import json
 import os
+import re
 import sys
 
 src = os.path.realpath(sys.argv[1])
 CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
+LUNEUI = re.compile(r"git\+https://github\.com/lune-rs/luneui-rs\?rev=([0-9a-f]{40})#\1")
 meta = json.load(sys.stdin)
 bad = []
 for p in meta["packages"]:
@@ -103,12 +106,12 @@ for p in meta["packages"]:
         path = os.path.realpath(os.path.dirname(p["manifest_path"]))
         if path != src and not path.startswith(src + os.sep):
             bad.append("%s %s: path outside the checkout" % (p["name"], p["version"]))
-    elif source != CRATES_IO:
+    elif source != CRATES_IO and not LUNEUI.fullmatch(source):
         bad.append("%s %s: source %s" % (p["name"], p["version"], source.split("#")[0].split("?")[0]))
 if bad:
     sys.exit("lunepack graph check failed:\n  " + "\n  ".join(bad))
-print("lunepack graph: %d packages, all crates.io or in the checkout" % len(meta["packages"]))
-' "$src" || die "the lunepack checkout's dependencies are not all from crates.io"
+print("lunepack graph: %d packages, all crates.io, in the checkout or luneui-rs" % len(meta["packages"]))
+' "$src" || die "the lunepack checkout has a dependency from an unexpected source"
 
 mkdir -p "$outdir"
 build_runtime="$src/scripts/build-runtime.sh"

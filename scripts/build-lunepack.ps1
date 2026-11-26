@@ -10,8 +10,9 @@
 # lunepack-ui.exe and lunepack-rev.txt. The checkout goes to target\lunepack-src-<rev12> (reused when
 # clean at the pinned revision, else the script stops: nothing is deleted), the build to
 # target\lunepack-target. Before anything is built, `cargo metadata --locked` of the checkout must
-# show every package from crates.io or the checkout itself: this code ships inside every user's
-# install, and scripts/check-deps.sh covers only Luneterm's own graph. Each binary is checked as
+# show every package from crates.io, the checkout itself, or the one git source lunepack's own
+# boundary check allows (the luneui-rs toolkit its UI links, at a full commit): this code ships
+# inside every user's install, and scripts/check-deps.sh covers only Luneterm's own graph. Each binary is checked as
 # lunepack's release script checks it (a PE of the x86-64 machine, the subsystem it needs).
 param(
     [Parameter(Mandatory = $true)][string]$OutDir
@@ -67,7 +68,7 @@ try {
     if (Get-Command rustup -ErrorAction SilentlyContinue) {
         Run "the toolchain $src pins" { rustup toolchain install }
     }
-    # Every package of the checkout's graph: crates.io, or a path inside the checkout.
+    # Every package of the checkout's graph: crates.io, a path inside the checkout, or luneui-rs.
     $meta = (cargo metadata --locked --format-version 1) | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
     $crates = 'registry+https://github.com/rust-lang/crates.io-index'
@@ -79,12 +80,12 @@ try {
             if ($dir -ne $srcFull -and -not $dir.StartsWith($srcFull + '\', [StringComparison]::OrdinalIgnoreCase)) {
                 $bad += "$($p.name) $($p.version): path outside the checkout"
             }
-        } elseif ($p.source -ne $crates) {
+        } elseif ($p.source -ne $crates -and $p.source -notmatch '^git\+https://github\.com/lune-rs/luneui-rs\?rev=([0-9a-f]{40})#\1$') {
             $bad += "$($p.name) $($p.version): source $(($p.source -split '[#?]')[0])"
         }
     }
-    if ($bad.Count -gt 0) { throw ("the lunepack checkout's dependencies are not all from crates.io:`n  " + ($bad -join "`n  ")) }
-    Write-Output "lunepack graph: $(@($meta.packages).Count) packages, all crates.io or in the checkout"
+    if ($bad.Count -gt 0) { throw ("the lunepack checkout has a dependency from an unexpected source:`n  " + ($bad -join "`n  ")) }
+    Write-Output "lunepack graph: $(@($meta.packages).Count) packages, all crates.io, in the checkout or luneui-rs"
 
     $triple = 'x86_64-pc-windows-msvc'
     Run 'cargo build' {
