@@ -34,6 +34,9 @@ all = { level = "warn", priority = -1 }
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
+# MSRV 1.90 (lunepack needs it) turned these two on for old code. Ported lune-vt files mirror upstream xterm.js nesting and arithmetic; rewriting them would churn files that must stay close to the source.
+collapsible_if = "allow"
+manual_is_multiple_of = "allow"
 
 # Shipping build: small and fast. Terminal throughput matters, so opt-level stays 3.
 [profile.release]
