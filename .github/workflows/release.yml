@@ -166,8 +166,8 @@ jobs:
           $env:PATH = "$(Join-Path $HOME '.cargo\bin');$env:PATH"
           .\scripts\build-lunepack.ps1 -OutDir lunepack-out
       # tree\ (luneterm.exe, licenses\) is what lunepack packs; lunepack\ holds what it places
-      # beside it. ZipFile rather than Compress-Archive, whose 5.1 version writes backslashes into
-      # the entry names.
+      # beside it. The zip is written entry by entry: Compress-Archive and CreateFromDirectory
+      # of 5.1 write backslashes into the entry names.
       - name: Package
         shell: powershell
         run: |
@@ -190,9 +190,19 @@ jobs:
             "ui=lunepack/lunepack-ui.exe", "lunepack_rev=$rev", "source_date_epoch=$epoch"
           ) -join "`n"
           [IO.File]::WriteAllText((Join-Path (Resolve-Path stage).Path "BUILD-INFO.txt"), "$info`n")
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = Join-Path (Resolve-Path dist) "luneterm-$version-windows-x64-build.zip"
-          [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path stage).Path, $zip)
+          Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+          $zipPath = Join-Path (Resolve-Path dist) "luneterm-$version-windows-x64-build.zip"
+          $root = (Resolve-Path stage).Path.TrimEnd('\')
+          $archive = [IO.Compression.ZipFile]::Open($zipPath, 'Create')
+          try {
+            foreach ($file in Get-ChildItem -Recurse -File -LiteralPath $root | Sort-Object FullName) {
+              # Entry names with forward slashes: the .NET Framework of Windows PowerShell 5.1
+              # writes backslashes (CreateFromDirectory) and the publish job reads them as part of
+              # a name.
+              $name = $file.FullName.Substring($root.Length + 1).Replace('\', '/')
+              [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $file.FullName, $name, 'Optimal')
+            }
+          } finally { $archive.Dispose() }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-windows
