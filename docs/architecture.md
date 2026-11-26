@@ -1269,13 +1269,14 @@ toasts: it shows its result in About. No request is made except by a check or a 
 config with the new pack's, so a beta user who receives a stable pack would follow stable. The first
 run of an installed copy therefore records the tree's channel as `update_channel` in `settings.json`
 and every `Updater` is built with it (`update::channel`): a copy keeps its install channel. A garbled
-value reads as not recorded and is rewritten from the tree. A fresh setup of the other channel over an
-install must reset it, and from outside it looks like an update (the tree's channel differs), so the
-settings also hold `update_tree_channel`, the channel the tree named when it was last known good: the
-first launch after an update (`pending`) records it only after `confirm_healthy` (a version that rolls
-back never does), and any later launch that finds the tree naming another channel than recorded was
-reached by a setup, so the copy follows that setup's channel. Settings from before the field existed
-(no record) keep what they follow.
+value reads as not recorded and is rewritten from the tree. `settings.json` outlives an uninstall, and a
+setup cannot run over an install (lunepack refuses: "already installed"), so changing channel is an
+uninstall and the other channel's setup; that setup must reset the record. The tree's channel cannot tell
+it from an update (a beta copy's tree names stable after every stable pack), so lunepack's own signal
+decides: a per-user first install, or a reinstall over a removed tree, queues an `Installed` lifecycle
+event that `lunepack::startup()` delivers once (`Launch::fresh_install`); an update queues `Updated`. On
+that start the tree's channel is recorded whatever was persisted, and saved at once. A per-machine
+install queues no events, so it keeps the persisted channel across a reinstall (docs/updates.md).
 *Trust.* The root public key is compiled in (`update/root.rs`, mirrored by the `[root]` table of
 `packaging/lunepack-{linux,windows,macos}.toml`; a test keeps them equal). It is a throwaway TEST root
 (`IS_TEST_ROOT`) until the real key exists; the publisher refuses to publish with it. Feed and manifest

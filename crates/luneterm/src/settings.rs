@@ -215,15 +215,11 @@ pub struct Settings {
     pub auto_update_check: bool,
     /// The update channel this copy follows (file key `update_channel`), recorded on the first
     /// run of a copy the installer installed and not changed by an update, so a beta install
-    /// stays on beta when it later receives a stable pack; a reinstall from another channel's
-    /// setup resets it (see `update_tree_channel`). Empty until recorded (and for a copy that is
-    /// not installed). No row in the page: a Luneterm-only bookkeeping field.
+    /// stays on beta when it later receives a stable pack; the first start after a setup file
+    /// installs the copy again records that setup's channel (see `update::channel`). Empty until
+    /// recorded (and for a copy that is not installed). No row in the page: a Luneterm-only
+    /// bookkeeping field.
     pub update_channel: String,
-    /// The channel the installed tree's own update config named when it was last confirmed (file
-    /// key `update_tree_channel`; an update's first launch records it once it is healthy). A
-    /// launch that is not just after an update and finds another channel there was started from a
-    /// fresh setup of that channel: the copy then follows it. Empty until recorded. Bookkeeping.
-    pub update_tree_channel: String,
 }
 
 impl Default for Settings {
@@ -256,7 +252,6 @@ impl Default for Settings {
             efficiency_mode: true,
             auto_update_check: true,
             update_channel: String::new(),
-            update_tree_channel: String::new(),
         }
     }
 }
@@ -291,7 +286,6 @@ impl Settings {
             self.palette = defaults.palette;
         }
         fit(&mut self.update_channel, MAX_CHANNEL_BYTES, "");
-        fit(&mut self.update_tree_channel, MAX_CHANNEL_BYTES, "");
         fit(&mut self.shell, MAX_SHELL_BYTES, "");
         fit(&mut self.shell_args, MAX_SHELL_BYTES, "");
         fit(&mut self.default_cwd, crate::cwd::MAX_CWD_BYTES, "");
@@ -388,7 +382,6 @@ impl Settings {
             auto_update_check,
             // Bookkeeping, not a row of the page: it never counts as a change.
             update_channel: _,
-            update_tree_channel: _,
         } = self;
         let flags = [
             (SettingId::Theme, *theme != other.theme),
@@ -1051,7 +1044,6 @@ mod tests {
         // The recorded update channel is bookkeeping: no row, never a change.
         let channel = Settings {
             update_channel: "beta".into(),
-            update_tree_channel: "stable".into(),
             ..d.clone()
         };
         assert!(d.changed(&channel).is_empty());

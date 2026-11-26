@@ -29,8 +29,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use lunepack::{
-    ApplyOptions, CancelToken, DownloadOptions, Error, Installation, Phase, Progress,
-    StartupAction, UiChoice, UpdateInfo, Version, blocking,
+    ApplyOptions, CancelToken, DownloadOptions, Error, Installation, LifecycleEvent, Phase,
+    Progress, StartupAction, UiChoice, UpdateInfo, Version, blocking,
 };
 
 /// Download progress reaches the UI at most this often (the last value always does).
@@ -86,6 +86,7 @@ pub enum Event {
 pub struct Launch {
     exit: bool,
     pending: bool,
+    fresh_install: bool,
     installed: Result<(), Unavailable>,
 }
 
@@ -95,6 +96,7 @@ impl Launch {
         Launch {
             exit: false,
             pending: false,
+            fresh_install: false,
             installed: Err(Unavailable::NotInstalled),
         }
     }
@@ -113,6 +115,21 @@ impl Launch {
     pub fn pending(&self) -> bool {
         self.pending
     }
+
+    /// This is the first start after a setup file installed this copy (lunepack delivered its
+    /// `Installed` event, once): a per-user first install, or a reinstall over a record whose
+    /// tree was removed. Never after an update. A per-machine install queues no events, so it is
+    /// never seen as fresh.
+    pub fn fresh_install(&self) -> bool {
+        self.fresh_install
+    }
+}
+
+/// Whether lunepack's lifecycle events for this start say a setup file just installed it.
+pub(crate) fn installed_fresh(events: &[LifecycleEvent]) -> bool {
+    events
+        .iter()
+        .any(|e| matches!(e, LifecycleEvent::Installed { .. }))
 }
 
 /// lunepack's start of the running app: rolls back a version that failed its health check
@@ -123,6 +140,7 @@ pub fn startup() -> Launch {
         Ok(started) => Launch {
             exit: started.action == StartupAction::Exit,
             pending: started.pending,
+            fresh_install: installed_fresh(&started.events),
             installed: Ok(()),
         },
         Err(Error::NoUpdateConfig) => Launch::not_installed(),
@@ -132,6 +150,7 @@ pub fn startup() -> Launch {
             Launch {
                 exit: false,
                 pending: false,
+                fresh_install: false,
                 installed: Err(Unavailable::Broken(text)),
             }
         }

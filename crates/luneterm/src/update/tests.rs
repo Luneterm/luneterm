@@ -588,61 +588,39 @@ fn error_text_keeps_scheme_host_and_path_only() {
 #[test]
 fn the_first_run_records_the_installed_channel_and_a_later_pack_does_not_change_it() {
     use super::channel::{Settled, resolve};
-    // `followed`, `tree` (what to record), whether it waits for the health confirm, rewrite now.
-    let settled = |followed: &str, tree: Option<&str>, after: bool, rewrite: bool| Settled {
-        channel: Some(followed.to_owned()),
-        tree: tree.map(str::to_owned),
-        tree_after_confirm: after,
+    let settled = |channel: &str, rewrite: bool| Settled {
+        channel: Some(channel.to_owned()),
         rewrite,
     };
-    // First run of a beta install: nothing recorded, the tree says beta -> record both now.
-    assert_eq!(
-        resolve("", "", Some("beta"), false),
-        settled("beta", Some("beta"), false, true)
-    );
-    assert_eq!(
-        resolve("", "", Some("stable"), false),
-        settled("stable", Some("stable"), false, true)
-    );
+    // First run of a beta install: nothing recorded, the tree says beta -> record it.
+    assert_eq!(resolve("", Some("beta"), false), settled("beta", true));
+    assert_eq!(resolve("", Some("stable"), false), settled("stable", true));
     // Nothing changed: nothing written.
     assert_eq!(
-        resolve("stable", "stable", Some("stable"), false),
-        settled("stable", None, false, false)
+        resolve("stable", Some("stable"), false),
+        settled("stable", false)
     );
-    // The first launch after an update to a stable pack: the tree says stable, the beta copy keeps
-    // beta, and the tree's new channel is recorded only once the version confirmed itself.
+    // A beta copy updated to a stable pack: the tree says stable on that launch and every later
+    // one (the update queued `Updated`, not `Installed`): beta stays.
     assert_eq!(
-        resolve("beta", "beta", Some("stable"), true),
-        settled("beta", Some("stable"), true, false)
-    );
-    // Every later launch: the tree still says stable, recorded stable, so beta stays.
-    assert_eq!(
-        resolve("beta", "stable", Some("stable"), false),
-        settled("beta", None, false, false)
+        resolve("beta", Some("stable"), false),
+        settled("beta", false)
     );
     // Garbled values (not a channel name) fall back to the tree's channel and are rewritten.
     for bad in ["Beta", "-beta", "be ta", "be/ta", &"a".repeat(33), "\u{7}"] {
         assert_eq!(
-            resolve(bad, "stable", Some("stable"), false),
-            settled("stable", None, false, true),
-            "{bad:?}"
-        );
-        // A garbled record of the tree is not known: it never resets the followed channel.
-        assert_eq!(
-            resolve("beta", bad, Some("stable"), false),
-            settled("beta", Some("stable"), false, true),
+            resolve(bad, Some("stable"), false),
+            settled("stable", true),
             "{bad:?}"
         );
     }
     // Not installed: nothing followed, nothing written, whatever the settings hold.
     for persisted in ["", "beta", "garbled value"] {
-        for pending in [false, true] {
+        for fresh in [false, true] {
             assert_eq!(
-                resolve(persisted, persisted, None, pending),
+                resolve(persisted, None, fresh),
                 Settled {
                     channel: None,
-                    tree: None,
-                    tree_after_confirm: false,
                     rewrite: false
                 },
                 "{persisted:?}"
@@ -651,50 +629,72 @@ fn the_first_run_records_the_installed_channel_and_a_later_pack_does_not_change_
     }
     // The copy under test is not installed.
     assert_eq!(
-        channel::settle(&Launch::not_installed(), "beta", "beta"),
+        channel::settle(&Launch::not_installed(), "beta"),
         Settled {
             channel: None,
-            tree: None,
-            tree_after_confirm: false,
             rewrite: false
         }
     );
 }
 
-/// F3: a reinstall from another channel's setup resets the followed channel (the recorded one of
-/// the previous install must not outlive it), and an update never does.
+/// F3: the first start after a setup file installed the copy follows that setup's channel,
+/// whatever the settings (which outlive an uninstall) recorded, even when the tree's channel equals
+/// what a previous update left there; an update never resets it.
 #[test]
-fn a_setup_of_another_channel_over_an_install_resets_the_channel_but_an_update_does_not() {
+fn a_fresh_setup_resets_the_channel_and_an_update_never_does() {
     use super::channel::resolve;
-    let followed = |f: &str, t: &str, i: &str, pending: bool| {
-        resolve(f, t, Some(i), pending).channel.expect("installed")
+    let followed = |persisted: &str, tree: &str, fresh: bool| {
+        resolve(persisted, Some(tree), fresh)
+            .channel
+            .expect("installed")
     };
-    // Followed beta from a beta setup; now a stable setup runs (not pending): follow stable, and
-    // record the tree's channel now.
-    let s = resolve("beta", "beta", Some("stable"), false);
+    // Beta copy, last updated to a stable pack (the tree says stable), uninstalled; the stable
+    // setup installs it again: follow stable and rewrite.
+    let s = resolve("beta", Some("stable"), true);
     assert_eq!(s.channel.as_deref(), Some("stable"));
-    assert_eq!(
-        (s.tree.as_deref(), s.tree_after_confirm, s.rewrite),
-        (Some("stable"), false, true)
-    );
-    // And the other way round.
-    assert_eq!(followed("stable", "stable", "beta", false), "beta");
-    // The same channel again (a reinstall of the same setup, or a plain relaunch): unchanged.
-    assert_eq!(followed("beta", "beta", "beta", false), "beta");
-    // The whole story of a beta copy: beta setup, update to a stable pack, confirm, relaunches.
-    let first = resolve("", "", Some("beta"), false);
-    assert_eq!(first.channel.as_deref(), Some("beta"));
-    let updated = resolve("beta", "beta", Some("stable"), true);
-    assert_eq!(updated.channel.as_deref(), Some("beta"));
-    assert_eq!(updated.tree.as_deref(), Some("stable"));
-    assert!(updated.tree_after_confirm && !updated.rewrite);
-    assert_eq!(followed("beta", "stable", "stable", false), "beta");
-    // (A rolled-back update never recorded its tree channel, so the old tree matches the record.)
-    // Old settings that never recorded the tree's channel keep what they follow.
-    assert_eq!(followed("beta", "", "stable", false), "beta");
-    // A beta setup over a stable copy, and over a beta copy whose tree had gone stable.
-    assert_eq!(followed("stable", "stable", "beta", false), "beta");
-    assert_eq!(followed("beta", "stable", "beta", false), "beta");
+    assert!(s.rewrite);
+    // The same tuple without the setup's event (any later launch, or after an update): beta.
+    assert_eq!(followed("beta", "stable", false), "beta");
+    // Stable copy, then the beta setup.
+    assert_eq!(followed("stable", "beta", true), "beta");
+    // A setup of the same channel: unchanged, nothing written.
+    assert!(!resolve("beta", Some("beta"), true).rewrite);
+    // A garbled record before a setup: the setup's channel.
+    assert_eq!(followed("be ta", "beta", true), "beta");
+}
+
+/// The `Installed` event marks a fresh setup, read from the records lunepack's own transitions
+/// write: a per-user first install and a reinstall over a removed tree queue it; an update queues
+/// `Updated` and `FirstRun`; a plain relaunch has no events.
+#[test]
+fn lunepacks_installed_event_marks_a_fresh_setup_and_an_update_does_not() {
+    use lunepack_core::lifecycle::{deliver_events, install_first, reinstall_orphaned};
+    let v = version(V090);
+    let empty = InstallState::new(1, app_id(), Scope::User, INSTALL_ID, TARGET);
+    let first = install_first(&empty, v.clone(), SUITE_T0, INSTALL_ID).expect("first install");
+    let (delivered, events) = deliver_events(&first, &v).expect("deliver");
+    assert!(installed_fresh(&events), "{events:?}");
+    // Delivered once: the next start of the same version sees none.
+    let (_, again) = deliver_events(&delivered, &v).expect("deliver again");
+    assert!(again.is_empty() && !installed_fresh(&again));
+    // A setup over a record whose tree was removed (the record still names a version).
+    let orphan = empty.install(version(V100), SUITE_T0, TARGET, INSTALL_ID);
+    let re = reinstall_orphaned(&orphan, v.clone(), SUITE_T0, INSTALL_ID).expect("reinstall");
+    let (_, events) = deliver_events(&re, &v).expect("deliver");
+    assert!(installed_fresh(&events), "{events:?}");
+    // An update's events (what `lifecycle::apply` queues for the new version).
+    let updated = [
+        LifecycleEvent::Updated {
+            from: version(V090),
+            to: version(V100),
+        },
+        LifecycleEvent::FirstRun {
+            version: version(V100),
+        },
+    ];
+    assert!(!installed_fresh(&updated));
+    assert!(!installed_fresh(&[]));
+    assert!(!Launch::not_installed().fresh_install());
 }
 
 /// An updater over the fake origin, the install's own (baked) channel `baked`, following

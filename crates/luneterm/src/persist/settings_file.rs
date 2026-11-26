@@ -27,7 +27,7 @@ pub struct SettingsDoc {
 }
 
 /// The names this build writes, in the order it writes them.
-const KEYS: [&str; 28] = [
+const KEYS: [&str; 27] = [
     "theme",
     "glass",
     "menu_blur",
@@ -55,7 +55,6 @@ const KEYS: [&str; 28] = [
     "efficiency_mode",
     "auto_update_check",
     "update_channel",
-    "update_tree_channel",
 ];
 
 fn member<'a>(members: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
@@ -137,7 +136,6 @@ pub fn parse_settings(bytes: &[u8]) -> Result<SettingsDoc, Reject> {
     flag(members, "efficiency_mode", &mut s.efficiency_mode);
     flag(members, "auto_update_check", &mut s.auto_update_check);
     text(members, "update_channel", &mut s.update_channel);
-    text(members, "update_tree_channel", &mut s.update_tree_channel);
     let unknown = members
         .iter()
         .filter(|(k, _)| k != "version" && !KEYS.contains(&k.as_str()))
@@ -188,10 +186,6 @@ pub fn render_settings(doc: &SettingsDoc) -> Result<String, WriteError> {
         ("efficiency_mode".into(), Json::Bool(s.efficiency_mode)),
         ("auto_update_check".into(), Json::Bool(s.auto_update_check)),
         ("update_channel".into(), Json::Str(s.update_channel)),
-        (
-            "update_tree_channel".into(),
-            Json::Str(s.update_tree_channel),
-        ),
     ];
     members.extend(doc.unknown.iter().cloned());
     Json::Object(members).to_text()
@@ -230,7 +224,6 @@ mod tests {
             efficiency_mode: false,
             auto_update_check: false,
             update_channel: "beta".into(),
-            update_tree_channel: "stable".into(),
         }
     }
 
@@ -522,25 +515,6 @@ mod tests {
         );
         let long = format!(r#"{{"version":1,"update_channel":"{}"}}"#, "a".repeat(33));
         assert_eq!(read(&long).settings.update_channel, "");
-    }
-
-    /// `update_tree_channel` (what the installed tree said when last known good) reads and writes
-    /// like `update_channel`, and is no unknown member.
-    #[test]
-    fn update_tree_channel_round_trips_and_a_bad_value_reads_as_not_recorded() {
-        let read = |json: &str| parse_settings(json.as_bytes()).expect("parses");
-        assert_eq!(read(r#"{"version":1}"#).settings.update_tree_channel, "");
-        let doc = read(r#"{"version":1,"update_tree_channel":"stable"}"#);
-        assert_eq!(doc.settings.update_tree_channel, "stable");
-        assert!(doc.unknown.is_empty(), "a known key is not unknown");
-        let text = render_settings(&doc).expect("writes");
-        assert!(
-            text.contains("\"update_tree_channel\":\"stable\""),
-            "{text}"
-        );
-        assert_eq!(parse_settings(text.as_bytes()), Ok(doc));
-        let bad = read(r#"{"version":1,"update_tree_channel":"be\u0007ta"}"#);
-        assert_eq!(bad.settings.update_tree_channel, "");
     }
 
     #[test]
