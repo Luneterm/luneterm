@@ -154,7 +154,7 @@ repository's `packaging/lunepack.toml` (`CFG` below); a `lunepack-state.json` la
 
 ```bash
 CFG=/path/to/Luneterm/packaging/lunepack.toml
-mkdir -p ceremony/keys && cd ceremony && umask 077
+mkdir -p ceremony/keys ceremony/release && cd ceremony && umask 077   # keys set needs release/ to exist
 lunepack keys gen keys/root                    # prints public: <hex>; writes keys/root.key
 lunepack keys gen keys/release
 ROOT=$(lunepack keys show --sign file:keys/root.key | sed -n 's/^public: //p')
