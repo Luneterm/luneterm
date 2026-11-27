@@ -351,9 +351,9 @@ const fn page(section: Section) -> Option<PageScene> {
     })
 }
 
-const fn about(update: UpdateScene) -> Option<PageScene> {
+const fn with_update(section: Section, update: UpdateScene) -> Option<PageScene> {
     Some(PageScene {
-        section: Section::About,
+        section,
         combo: None,
         restart: false,
         update,
@@ -368,7 +368,7 @@ const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
-const SCENES: [Scene; 60] = [
+const SCENES: [Scene; 62] = [
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -448,6 +448,19 @@ const SCENES: [Scene; 60] = [
     },
     // Step 6: the settings page.
     Scene {
+        name: "settings-general@2x.png",
+        tabs: FOUR,
+        page: with_update(Section::General, UpdateScene::Idle),
+        ..BASE
+    },
+    Scene {
+        name: "settings-general-not-installed@1x.png",
+        scale: 1,
+        tabs: FOUR,
+        page: page(Section::General),
+        ..BASE
+    },
+    Scene {
         name: "settings-appearance@2x.png",
         tabs: FOUR,
         page: page(Section::Appearance),
@@ -485,56 +498,56 @@ const SCENES: [Scene; 60] = [
     Scene {
         name: "settings-about-idle@2x.png",
         tabs: FOUR,
-        page: about(UpdateScene::Idle),
+        page: with_update(Section::About, UpdateScene::Idle),
         ..BASE
     },
     Scene {
         name: "settings-about-uptodate@2x.png",
         tabs: FOUR,
-        page: about(UpdateScene::UpToDate),
+        page: with_update(Section::About, UpdateScene::UpToDate),
         ..BASE
     },
     Scene {
         name: "settings-about-checking@2x.png",
         tabs: FOUR,
-        page: about(UpdateScene::Checking),
+        page: with_update(Section::About, UpdateScene::Checking),
         ..BASE
     },
     Scene {
         name: "settings-about-available@2x.png",
         tabs: FOUR,
-        page: about(UpdateScene::Available),
+        page: with_update(Section::About, UpdateScene::Available),
         ..BASE
     },
     Scene {
         name: "settings-about-downloading@2x.png",
         tabs: FOUR,
-        page: about(UpdateScene::Downloading(42)),
+        page: with_update(Section::About, UpdateScene::Downloading(42)),
         ..BASE
     },
     Scene {
         name: "settings-about-ready@2x.png",
         tabs: FOUR,
-        page: about(UpdateScene::Ready),
+        page: with_update(Section::About, UpdateScene::Ready),
         ..BASE
     },
     Scene {
         name: "settings-about-failed@2x.png",
         tabs: FOUR,
-        page: about(UpdateScene::Failed),
+        page: with_update(Section::About, UpdateScene::Failed),
         ..BASE
     },
     Scene {
         name: "settings-about-broken@2x.png",
         tabs: FOUR,
-        page: about(UpdateScene::Broken),
+        page: with_update(Section::About, UpdateScene::Broken),
         ..BASE
     },
     Scene {
         name: "settings-about-not-installed@1x.png",
         scale: 1,
         tabs: FOUR,
-        page: about(UpdateScene::NotInstalled),
+        page: with_update(Section::About, UpdateScene::NotInstalled),
         ..BASE
     },
     Scene {
