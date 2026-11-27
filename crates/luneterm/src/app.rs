@@ -911,6 +911,17 @@ fn group_menu<T>(tabs: &TabSet<T>, g: GroupId, at: (f32, f32)) -> Option<OpenMen
     })
 }
 
+/// The submenu of the tab menu `menu`'s `Add Tab to Group` row, which stands at `row`: in the
+/// menu's place, beside that row, about the same tab and the groups as the menu opened with them.
+fn group_submenu(menu: &OpenMenu, row: Rect) -> OpenMenu {
+    OpenMenu {
+        kind: MenuKind::AddToGroup,
+        place: menus::submenu_place(row),
+        tab: menu.tab,
+        groups: menu.groups.clone(),
+    }
+}
+
 /// The editor as it opens for `target`: the group's own name and colour, or for a new group the
 /// first free "Group N" and the colour [`groups::default_color`] gives. `None` when the tab or
 /// group is gone.
@@ -1910,8 +1921,10 @@ impl App {
             MenuAction::SelectAll => self.send(Command::Select(SelectCmd::All)),
             MenuAction::Clear => self.send(Command::ClearBuffer),
             MenuAction::NewTabGroup => self.open_group_editor(GroupTarget::NewTab),
-            // Rows of a tab's or a group's menu only (`menus::tab_op`, `menus::group_op`).
-            MenuAction::AddToNewGroup
+            // Rows of a tab's or a group's menu only (`menus::tab_op`, `menus::group_op`, the
+            // tab menu's submenu).
+            MenuAction::AddToGroupMenu
+            | MenuAction::AddToNewGroup
             | MenuAction::AddToGroup(_)
             | MenuAction::RemoveFromGroup
             | MenuAction::EditGroup
@@ -3496,6 +3509,8 @@ impl App {
                 system_fonts: &stack.system_fonts,
             }),
             menu: menu_model.as_ref().map(|(m, model)| MenuDraw {
+                key: model.overlay_key(),
+                submenu: model.is_submenu(),
                 rows: model.rows(),
                 place: m.place,
                 name: menu_name.as_deref().unwrap_or(""),
@@ -3529,6 +3544,7 @@ impl App {
         let mut out = drawn.output;
         let (tab_events, modal_out) = (drawn.tab_events, drawn.modal);
         let (page_out, menu_out, overflow) = (drawn.page, drawn.menu, drawn.overflow);
+        let menu_row = drawn.menu_row;
         let (inbox_clicked, inbox_out) = (drawn.inbox_clicked, drawn.inbox);
         let tab_context = drawn.tab_context;
         let (pane_toggle, pane_edge) = (drawn.pane_toggle, drawn.pane_edge);
@@ -3620,12 +3636,21 @@ impl App {
             if r.picked.is_some() || r.dismissed {
                 self.menu = None;
             }
-            if let Some(action) = action {
-                match (own.and_then(|g| menus::group_op(action, g)), target) {
+            match action {
+                // The submenu takes the tab menu's place; no tab or group changes.
+                Some(MenuAction::AddToGroupMenu) => {
+                    self.menu = menu_model
+                        .as_ref()
+                        .zip(menu_row)
+                        .map(|((m, _), row)| group_submenu(m, row));
+                    self.request_redraw();
+                }
+                Some(action) => match (own.and_then(|g| menus::group_op(action, g)), target) {
                     (Some(op), _) => self.run_group_op(op),
                     (None, Some(tab)) => self.run_tab_menu_action(action, tab, event_loop),
                     (None, None) => self.run_menu_action(action, event_loop),
-                }
+                },
+                None => {}
             }
         }
         let row_acted = inbox_out.as_ref().is_some_and(|o| o.clicked.is_some());
@@ -6064,6 +6089,34 @@ mod tests {
         };
         s.close(ids[3]);
         assert!(modal_is_moot(&s, &mut modal, Some(&strings)));
+    }
+
+    /// The submenu keeps the tab menu's tab and its groups as that menu opened with them, stands
+    /// beside the picked row, and closes with its tab.
+    #[test]
+    fn the_submenu_is_about_the_tab_menus_tab_and_groups() {
+        let (mut s, ids) = tab_set(".ab");
+        let a = group(&s, "a");
+        let menu = OpenMenu {
+            kind: MenuKind::Tab { closable: true },
+            place: MenuPlace::At((10.0, 20.0)),
+            tab: Some(ids[1]),
+            groups: menu_groups(&s, Some(a)),
+        };
+        let row = Rect::new(16.0, 205.0, 220.0, 28.0);
+        let sub = group_submenu(&menu, row);
+        assert_eq!(sub.kind, MenuKind::AddToGroup);
+        assert_eq!(sub.place, menus::submenu_place(row));
+        assert_eq!(sub.tab, Some(ids[1]));
+        assert_eq!(sub.groups, menu.groups);
+        // A program regroups while the menu is open: the rows and their target do not move.
+        s.set_group(ids[0], "c");
+        s.ungroup(ids[2]);
+        assert_eq!(sub.groups, menu.groups);
+        assert_ne!(menu_groups(&s, Some(a)), sub.groups);
+        assert!(!menu_is_moot(&s, &sub));
+        s.close(ids[1]);
+        assert!(menu_is_moot(&s, &sub));
     }
 
     #[test]

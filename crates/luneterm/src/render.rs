@@ -13,7 +13,7 @@ use lune_ui::color::premul;
 use lune_ui::custom::CustomDraw;
 use lune_ui::frame::FrameRenderer;
 use lune_ui::gpu::Gpu;
-use lune_ui::input::{FrameOutput, keymap};
+use lune_ui::input::{Event, FrameOutput, Key, NamedKey, keymap};
 use lune_ui::lunegit_dark::THEME;
 use lune_ui::motion::{Cadence, MotionTier};
 use lune_ui::near_black;
@@ -24,7 +24,7 @@ use lune_ui::strings::{DisplayFormat, StringTable};
 use lune_ui::text::{Spec, Style, TextCache, TextRendering};
 use lune_ui::theme::{AcrylicLevel, Theme};
 use lune_ui::ui::{FrameConfig, Sense, Ui, UiStore};
-use lune_ui::widgets::menu::{MenuOptions, MenuPlace, MenuResponse, MenuRow};
+use lune_ui::widgets::menu::{MenuOptions, MenuPlace, MenuResponse, MenuRow, menu_layout_at};
 use lune_ui::widgets::tab_strip::BusyCue;
 use lune_ui::widgets::toast::Toasts;
 use lune_ui::widgets::tone::Tone;
@@ -181,6 +181,11 @@ pub struct InboxDraw<'a> {
 /// A menu to draw this frame.
 #[derive(Debug)]
 pub struct MenuDraw<'a> {
+    /// The toolkit's overlay key ([`crate::menus::MenuModel::overlay_key`]).
+    pub key: &'static str,
+    /// A pick in another menu opened this one: the key of that pick, still held, repeats into
+    /// it, and those repeats pick nothing.
+    pub submenu: bool,
     pub rows: Vec<MenuRow<'a>>,
     pub place: MenuPlace,
     pub name: &'a str,
@@ -199,6 +204,39 @@ impl std::fmt::Debug for Content<'_> {
             .field("clipboard_read", &self.clipboard_read)
             .finish_non_exhaustive()
     }
+}
+
+/// Whether the frame's Enter and Space presses are repeats of a held key, one at least and no
+/// fresh one.
+fn only_held_activation(events: &[Event]) -> bool {
+    let mut repeats = events.iter().filter_map(|e| match e {
+        Event::Key {
+            key: Key::Named(NamedKey::Enter | NamedKey::Space),
+            pressed: true,
+            repeat,
+            ..
+        } => Some(*repeat),
+        _ => None,
+    });
+    repeats.next() == Some(true) && repeats.all(|repeat| repeat)
+}
+
+/// Draws `menu`: what it reported and, with a pick, the picked row's rect in the layout the menu
+/// was drawn with.
+pub fn draw_menu(ui: &mut Ui<'_>, menu: &MenuDraw<'_>) -> (MenuResponse, Option<Rect>) {
+    let options = MenuOptions {
+        place: menu.place,
+        anchor_id: None,
+        name: menu.name,
+    };
+    let held = menu.submenu && only_held_activation(&ui.input().events);
+    let layout = menu_layout_at(ui.painter(), &menu.rows, &menu.place);
+    let mut response = ui.menu_with(menu.key, &menu.rows, &options);
+    if held {
+        response.picked = None;
+    }
+    let row = response.picked.and_then(|i| layout.rows.get(i).copied());
+    (response, row)
 }
 
 /// Where the shell puts things in a window of a given size and scale.
@@ -256,6 +294,8 @@ pub struct Drawn {
     pub page: Option<PageOut>,
     /// What the open menu reported; `None` while none is shown.
     pub menu: Option<MenuResponse>,
+    /// With a pick of that menu, where the picked row stands: what a submenu opens beside.
+    pub menu_row: Option<Rect>,
     /// The `⋯` button was pressed: its rect.
     pub overflow: Option<Rect>,
     /// The inbox button was pressed.
@@ -713,14 +753,13 @@ impl Renderer {
                 layout.card,
             ));
         }
-        let menu_resp = content.menu.take().map(|m| {
-            let options = MenuOptions {
-                place: m.place,
-                anchor_id: None,
-                name: m.name,
-            };
-            ui.menu_with("app-menu", &m.rows, &options)
-        });
+        let (menu_resp, menu_row) = match content.menu.take() {
+            Some(menu) => {
+                let (response, row) = draw_menu(&mut ui, &menu);
+                (Some(response), row)
+            }
+            None => (None, None),
+        };
         // The list hangs from the button, on the popup layer over the card and the menu's place.
         let inbox_out = (page_out.is_none())
             .then(|| {
@@ -874,6 +913,7 @@ impl Renderer {
             modal,
             page: page_out,
             menu: menu_resp,
+            menu_row,
             overflow: shell_out.overflow,
             inbox_clicked: shell_out.inbox_clicked,
             inbox: inbox_out,
@@ -885,6 +925,218 @@ impl Renderer {
             cols: placement.cols,
             rows: placement.rows,
         })
+    }
+}
+
+/// The tab menu and its submenu through [`draw_menu`], frame by frame.
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+    use crate::groups::GroupId;
+    use crate::menus::{self, MenuAction, MenuGroups, MenuKind, MenuModel};
+    use lune_ui::access::{Node, Role};
+    use lune_ui::input::{Modifiers, PointerButton, RawInput};
+
+    const WINDOW: (f32, f32) = (1040.0, 660.0);
+
+    struct Menus {
+        store: UiStore,
+        text: TextCache,
+        time: Duration,
+    }
+
+    impl Menus {
+        fn new() -> Menus {
+            Menus {
+                store: UiStore::default(),
+                text: crate::fonts::bundled_text_cache(),
+                time: Duration::ZERO,
+            }
+        }
+
+        /// A frame with `menu` open at `place`: what it reported, the picked row and the
+        /// frame's semantic nodes.
+        fn frame(
+            &mut self,
+            menu: &MenuModel,
+            place: MenuPlace,
+            events: Vec<Event>,
+        ) -> (MenuResponse, Option<Rect>, Vec<Node>) {
+            let input = RawInput {
+                size: WINDOW,
+                scale: 1.0,
+                time: self.time,
+                focused: true,
+                events,
+            };
+            self.time += Duration::from_millis(400);
+            let (strings, shortcuts) = (crate::strings::english(), Shortcuts::default());
+            let config = FrameConfig {
+                theme: THEME,
+                tier: MotionTier::Off,
+                busy_cadence: Cadence::BUSY,
+                strings: &strings,
+                arg_format: &DisplayFormat,
+                keymap: keymap(),
+                shortcuts: &shortcuts,
+            };
+            let mut ui = Ui::begin(&mut self.store, &input, config, &mut self.text);
+            let draw = MenuDraw {
+                key: menu.overlay_key(),
+                submenu: menu.is_submenu(),
+                rows: menu.rows(),
+                place,
+                name: strings.tr(menu.name_key()),
+            };
+            let (response, row) = draw_menu(&mut ui, &draw);
+            let (_, frame) = ui.finish();
+            (response, row, frame.tree.nodes)
+        }
+
+        /// A click at `at`: the reports of the press frame and of the release frame.
+        fn click(
+            &mut self,
+            menu: &MenuModel,
+            place: MenuPlace,
+            at: (f32, f32),
+        ) -> [(MenuResponse, Option<Rect>); 2] {
+            self.frame(menu, place, vec![Event::PointerMoved { pos: at }]);
+            self.frame(menu, place, vec![]);
+            [true, false].map(|pressed| {
+                let event = Event::PointerButton {
+                    pos: at,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::default(),
+                };
+                let (response, row, _) = self.frame(menu, place, vec![event]);
+                (response, row)
+            })
+        }
+    }
+
+    fn key(named: NamedKey, pressed: bool, repeat: bool) -> Event {
+        Event::Key {
+            key: Key::Named(named),
+            pressed,
+            repeat,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    /// The tab menu of an ungrouped tab and its submenu, with two open groups.
+    fn models() -> (MenuModel, MenuModel) {
+        let groups = MenuGroups {
+            own: None,
+            open: vec![
+                (GroupId(1), "api".to_owned()),
+                (GroupId(2), "web".to_owned()),
+            ],
+        };
+        let model = |kind| MenuModel::with_groups(kind, &groups, &crate::strings::english(), true);
+        (
+            model(MenuKind::Tab { closable: true }),
+            model(MenuKind::AddToGroup),
+        )
+    }
+
+    fn bounds(nodes: &[Node], role: Role, name: &str) -> Rect {
+        nodes
+            .iter()
+            .find(|n| n.role == role && n.name == name)
+            .unwrap_or_else(|| panic!("no {role:?} {name}"))
+            .bounds
+    }
+
+    /// A click on the group row, after a hover that opens nothing, reports that row's rect; the
+    /// submenu then stands right of it with the top edges level, and at the window's right edge
+    /// left of it, inside the window.
+    #[test]
+    fn the_submenu_opens_beside_the_picked_row_and_flips_at_the_right_edge() {
+        let (tab, sub) = models();
+        for (x, flipped) in [(100.0, false), (1000.0, true)] {
+            let place = MenuPlace::At((x, 100.0));
+            let mut m = Menus::new();
+            m.frame(&tab, place, vec![]);
+            let (_, _, nodes) = m.frame(&tab, place, vec![]);
+            let row = bounds(&nodes, Role::MenuItem, "Add Tab to Group");
+            let at = (row.x + row.w / 2.0, row.y + row.h / 2.0);
+            // Resting on the row for a long while picks nothing.
+            m.frame(&tab, place, vec![Event::PointerMoved { pos: at }]);
+            for _ in 0..5 {
+                let (response, picked_row, _) = m.frame(&tab, place, vec![]);
+                assert_eq!((response, picked_row), (MenuResponse::default(), None));
+            }
+            let [down, up] = m.click(&tab, place, at);
+            assert_eq!(down.0.picked, None);
+            let picked = up.0.picked.and_then(|i| tab.action_at(i));
+            assert_eq!(picked, Some(MenuAction::AddToGroupMenu));
+            assert_eq!(up.1, Some(row), "the picked row's own rect");
+
+            // The next frame draws the submenu in its place.
+            let beside = menus::submenu_place(row);
+            let (response, _, nodes) = m.frame(&sub, beside, vec![]);
+            assert_eq!(response, MenuResponse::default());
+            let panel = bounds(&nodes, Role::Menu, "Add Tab to Group");
+            assert_eq!(panel.y, row.y, "{x}");
+            if flipped {
+                assert_eq!(panel.right(), row.x - 4.0, "{x}: {panel:?} {row:?}");
+            } else {
+                assert_eq!(panel.x, row.right() + 4.0, "{x}: {panel:?} {row:?}");
+            }
+            assert!(panel.x >= 0.0 && panel.right() <= WINDOW.0, "{panel:?}");
+            // A pick of it is a group of it.
+            let api = bounds(&nodes, Role::MenuItem, "api");
+            let [_, up] = m.click(&sub, beside, (api.x + 20.0, api.y + api.h / 2.0));
+            let picked = up.0.picked.and_then(|i| sub.action_at(i));
+            assert_eq!(picked, Some(MenuAction::AddToGroup(GroupId(1))));
+        }
+    }
+
+    /// Enter and Space pick the group row, and what is left of that key press (its repeats and
+    /// release) picks nothing in the submenu; Escape and a press outside only close it.
+    #[test]
+    fn a_key_picks_the_group_row_once_and_the_submenu_closes_on_escape_or_outside() {
+        let (tab, sub) = models();
+        let place = MenuPlace::At((100.0, 100.0));
+        for named in [NamedKey::Enter, NamedKey::Space] {
+            let mut m = Menus::new();
+            m.frame(&tab, place, vec![]);
+            m.frame(&tab, place, vec![]);
+            m.frame(&tab, place, vec![key(NamedKey::End, true, false)]);
+            m.frame(&tab, place, vec![key(NamedKey::End, false, false)]);
+            let (response, row, _) = m.frame(&tab, place, vec![key(named, true, false)]);
+            let picked = response.picked.and_then(|i| tab.action_at(i));
+            assert_eq!(picked, Some(MenuAction::AddToGroupMenu), "{named:?}");
+            let beside = menus::submenu_place(row.expect("the row"));
+            for events in [
+                vec![],
+                vec![key(named, true, true)],
+                vec![key(named, true, true)],
+                vec![key(named, false, false)],
+            ] {
+                let (response, ..) = m.frame(&sub, beside, events);
+                assert_eq!(response, MenuResponse::default(), "{named:?}");
+            }
+            // A fresh press is the menu's again: it picks the lit first row.
+            let (response, ..) = m.frame(&sub, beside, vec![key(named, true, false)]);
+            let picked = response.picked.and_then(|i| sub.action_at(i));
+            assert_eq!(
+                picked,
+                Some(MenuAction::AddToGroup(GroupId(1))),
+                "{named:?}"
+            );
+            // Escape closes it and picks nothing.
+            let (response, ..) = m.frame(&sub, beside, vec![key(NamedKey::Escape, true, false)]);
+            assert_eq!((response.picked, response.dismissed), (None, true));
+        }
+        // A press outside.
+        let mut m = Menus::new();
+        let beside = menus::submenu_place(Rect::new(106.0, 285.0, 220.0, 28.0));
+        m.frame(&sub, beside, vec![]);
+        let [down, up] = m.click(&sub, beside, (900.0, 600.0));
+        assert!(down.0.dismissed || up.0.dismissed);
+        assert_eq!((down.0.picked, up.0.picked), (None, None));
     }
 }
 

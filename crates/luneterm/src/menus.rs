@@ -2,11 +2,15 @@
 //! context menu, as plain data (what rows, which action each picks, which shortcut hint it shows)
 //! that the renderer turns into the toolkit's menu. The tab strip owns no menu since luneui-rs
 //! 0.3.0: it reports the right-click and the app opens [`MenuKind::Tab`], whose picks act on the
-//! tab it was opened on ([`tab_op`]).
+//! tab it was opened on ([`tab_op`]). The toolkit has no submenu: the tab menu's `Add Tab to
+//! Group` row is picked like any other, and the app puts [`MenuKind::AddToGroup`] in the menu's
+//! place, beside the row ([`submenu_place`]).
 
 use lune_ui::icon;
-use lune_ui::strings::{DisplayFormat, StringTable};
-use lune_ui::widgets::menu::{MenuItem, MenuRow};
+use lune_ui::paint::Rect;
+use lune_ui::strings::StringTable;
+use lune_ui::widgets::menu::{MenuItem, MenuPlace, MenuRow};
+use lune_ui::widgets::popover::{PlaceAlign, Side};
 
 use crate::groups::GroupId;
 use crate::input::{AppCommand, AppShortcuts};
@@ -25,6 +29,8 @@ pub enum MenuAction {
     Rename,
     Duplicate,
     CopyCwd,
+    /// The tab menu's row that opens the submenu of groups the tab can join.
+    AddToGroupMenu,
     /// Put the menu's tab into a new group (through the group editor).
     AddToNewGroup,
     /// Put the menu's tab into this open group.
@@ -66,12 +72,14 @@ impl MenuAction {
         }
     }
 
-    fn key(self) -> &'static str {
-        match self {
+    /// The string of the row's text; `None` for a row that shows a group's name.
+    fn key(self) -> Option<&'static str> {
+        Some(match self {
             MenuAction::NewTab => "menu.newTab",
             MenuAction::NewTabGroup => "menu.newTabGroup",
-            MenuAction::AddToNewGroup => "menu.addToNewGroup",
-            MenuAction::AddToGroup(_) => "menu.addToGroup",
+            MenuAction::AddToGroupMenu => "menu.addToGroupMenu",
+            MenuAction::AddToNewGroup => "menu.newGroup",
+            MenuAction::AddToGroup(_) => return None,
             MenuAction::RemoveFromGroup => "menu.removeFromGroup",
             MenuAction::EditGroup => "menu.editGroup",
             MenuAction::CloseGroup => "menu.closeGroup",
@@ -93,7 +101,7 @@ impl MenuAction {
             MenuAction::Paste => "menu.paste",
             MenuAction::SelectAll => "menu.selectAll",
             MenuAction::Clear => "menu.clear",
-        }
+        })
     }
 
     /// The row's icon. Within one menu no two rows show the same icon (a test checks it); the
@@ -102,7 +110,9 @@ impl MenuAction {
     fn glyph(self) -> Option<&'static str> {
         match self {
             MenuAction::NewTab | MenuAction::NewTabInGroup => Some(icon::ADD),
-            MenuAction::NewTabGroup | MenuAction::AddToNewGroup => Some(ICON_GROUP),
+            MenuAction::NewTabGroup | MenuAction::AddToGroupMenu | MenuAction::AddToNewGroup => {
+                Some(ICON_GROUP)
+            }
             MenuAction::AddToGroup(_) => None,
             MenuAction::RemoveFromGroup | MenuAction::Ungroup => Some(ICON_UNGROUP),
             MenuAction::EditGroup => Some(ICON_SYMBOL_COLOR),
@@ -121,6 +131,20 @@ impl MenuAction {
             MenuAction::Paste => Some(ICON_CLIPPY),
             MenuAction::SelectAll => Some(ICON_LIST_SELECTION),
         }
+    }
+}
+
+/// Between the row a submenu opens beside and the submenu.
+const SUBMENU_GAP: f32 = 4.0;
+
+/// Where the submenu of the row at `row` (logical px) opens: on its right with the top edges
+/// level; the toolkit puts it on the left where the window has no room on the right.
+pub fn submenu_place(row: Rect) -> MenuPlace {
+    MenuPlace::Anchor {
+        rect: row,
+        side: Side::Right,
+        align: PlaceAlign::Start,
+        gap: SUBMENU_GAP,
     }
 }
 
@@ -188,6 +212,9 @@ pub enum MenuKind {
     /// A tab's context menu; `closable` is whether the tab can be closed (Close is only for a
     /// closable tab). It has no shortcut hints.
     Tab { closable: bool },
+    /// The submenu of a tab menu's `Add Tab to Group` row, in the tab menu's place: the groups
+    /// its tab can join, and a new one. It has no shortcut hints.
+    AddToGroup,
     /// A group's own menu (the side pane's card header); `collapsed` picks Collapse or Expand.
     Group { collapsed: bool },
 }
@@ -221,6 +248,8 @@ pub struct Entry {
     pub text: String,
     pub shortcut: String,
     pub disabled: bool,
+    /// The row leads to a submenu.
+    pub chevron: bool,
 }
 
 impl std::fmt::Debug for Entry {
@@ -283,16 +312,9 @@ fn actions(kind: MenuKind, groups: &MenuGroups) -> Vec<Option<MenuAction>> {
                     Some(Duplicate),
                     Some(CopyCwd),
                     SEPARATOR,
-                    Some(AddToNewGroup),
+                    Some(AddToGroupMenu),
                 ])
                 .collect();
-            rows.extend(
-                groups
-                    .open
-                    .iter()
-                    .filter(|(g, _)| Some(*g) != groups.own)
-                    .map(|(g, _)| Some(AddToGroup(*g))),
-            );
             // The group's own entries are here too, so the top bar needs no side pane.
             if groups.own.is_some() {
                 rows.extend([
@@ -302,6 +324,19 @@ fn actions(kind: MenuKind, groups: &MenuGroups) -> Vec<Option<MenuAction>> {
                     Some(CloseGroup),
                 ]);
             }
+            rows
+        }
+        MenuKind::AddToGroup => {
+            let mut rows: Vec<Option<MenuAction>> = groups
+                .open
+                .iter()
+                .filter(|(g, _)| Some(*g) != groups.own)
+                .map(|(g, _)| Some(AddToGroup(*g)))
+                .collect();
+            if !rows.is_empty() {
+                rows.push(SEPARATOR);
+            }
+            rows.push(Some(AddToNewGroup));
             rows
         }
         MenuKind::Group { collapsed } => vec![
@@ -326,14 +361,15 @@ impl MenuModel {
         MenuModel::with_groups(kind, &MenuGroups::default(), strings, macos)
     }
 
-    /// [`MenuModel::new`] about `groups`: a tab menu offers every open group but its tab's own.
+    /// [`MenuModel::new`] about `groups`: the groups submenu offers every open group but its
+    /// tab's own.
     pub fn with_groups(
         kind: MenuKind,
         groups: &MenuGroups,
         strings: &StringTable,
         macos: bool,
     ) -> MenuModel {
-        let hinted = !matches!(kind, MenuKind::Tab { .. } | MenuKind::Group { .. });
+        let hinted = matches!(kind, MenuKind::App { .. } | MenuKind::Terminal { .. });
         let entries = actions(kind, groups)
             .into_iter()
             .map(|action| match action {
@@ -343,20 +379,20 @@ impl MenuModel {
                     text: String::new(),
                     shortcut: String::new(),
                     disabled: false,
+                    chevron: false,
                 },
                 Some(a) => Entry {
                     action,
                     glyph: a.glyph(),
                     text: match a {
-                        MenuAction::AddToGroup(g) => {
-                            let name = groups
-                                .open
-                                .iter()
-                                .find(|(id, _)| *id == g)
-                                .map_or_else(String::new, |(_, n)| menu_name(n));
-                            strings.tr_fmt(a.key(), &[&name], &DisplayFormat)
-                        }
-                        _ => strings.tr(a.key()).to_owned(),
+                        MenuAction::AddToGroup(g) => groups
+                            .open
+                            .iter()
+                            .find(|(id, _)| *id == g)
+                            .map_or_else(String::new, |(_, n)| menu_name(n)),
+                        _ => a
+                            .key()
+                            .map_or_else(String::new, |k| strings.tr(k).to_owned()),
                     },
                     shortcut: if hinted {
                         hint(a, macos).to_owned()
@@ -365,6 +401,7 @@ impl MenuModel {
                     },
                     disabled: a == MenuAction::Copy
                         && kind == (MenuKind::Terminal { selection: false }),
+                    chevron: a == MenuAction::AddToGroupMenu,
                 },
             })
             .collect();
@@ -382,6 +419,7 @@ impl MenuModel {
                     text: &e.text,
                     shortcut: &e.shortcut,
                     disabled: e.disabled,
+                    chevron: e.chevron,
                     ..MenuItem::default()
                 }),
             })
@@ -402,7 +440,24 @@ impl MenuModel {
             MenuKind::App { .. } => "menu.app.name",
             MenuKind::Terminal { .. } => "menu.terminal.name",
             MenuKind::Tab { .. } => "menu.tab.name",
+            // The row it opens from names it.
+            MenuKind::AddToGroup => "menu.addToGroupMenu",
             MenuKind::Group { .. } => "menu.group.name",
+        }
+    }
+
+    /// Whether a pick in another menu opens this one ([`submenu_place`]).
+    pub fn is_submenu(&self) -> bool {
+        self.kind == MenuKind::AddToGroup
+    }
+
+    /// The toolkit's key of the menu's overlay: a submenu has its own, so the menu it replaces
+    /// closes as one overlay while it opens as another.
+    pub fn overlay_key(&self) -> &'static str {
+        if self.is_submenu() {
+            "app-submenu"
+        } else {
+            "app-menu"
         }
     }
 }
@@ -451,8 +506,9 @@ pub fn group_op(action: MenuAction, own: GroupId) -> Option<GroupOp> {
     }
 }
 
-/// The effect of `action` picked from the tab menu opened on `target`; `None` for an action the
-/// tab menu has no row for, and for the rows about the tab's group ([`group_op`]).
+/// The effect of `action` picked from the tab menu opened on `target`, or from its submenu;
+/// `None` for an action neither has a row for, for the rows about the tab's group ([`group_op`])
+/// and for the row that opens the submenu (the app does that, [`submenu_place`]).
 pub fn tab_op(action: MenuAction, target: TabId) -> Option<TabOp> {
     match action {
         MenuAction::Close => Some(TabOp::Close(target)),
@@ -489,11 +545,12 @@ pub fn required_keys() -> Vec<String> {
         MenuKind::App { pane: true },
         MenuKind::Terminal { selection: true },
         MenuKind::Tab { closable: true },
+        MenuKind::AddToGroup,
         MenuKind::Group { collapsed: true },
         MenuKind::Group { collapsed: false },
     ] {
         for a in actions(kind, &groups).into_iter().flatten() {
-            keys.push(a.key().to_owned());
+            keys.extend(a.key().map(str::to_owned));
         }
     }
     keys
@@ -582,6 +639,7 @@ mod tests {
         let all = [
             NewTab,
             NewTabGroup,
+            AddToGroupMenu,
             AddToNewGroup,
             AddToGroup(GroupId(1)),
             RemoveFromGroup,
@@ -664,7 +722,7 @@ mod tests {
                 "Duplicate Tab",
                 "Copy Working Directory",
                 "",
-                "Add Tab to New Group\u{2026}",
+                "Add Tab to Group",
             ]
         );
         let fixed = model(MenuKind::Tab { closable: false }, true);
@@ -677,7 +735,7 @@ mod tests {
                 "Duplicate Tab",
                 "Copy Working Directory",
                 "",
-                "Add Tab to New Group\u{2026}",
+                "Add Tab to Group",
             ]
         );
         for m in [&closable, &fixed] {
@@ -696,63 +754,125 @@ mod tests {
         assert_eq!(fixed.action_at(0), Some(MenuAction::CloseOthers));
         assert_eq!(closable.action_at(5), Some(MenuAction::CopyCwd));
         assert_eq!(closable.action_at(6), None);
-        assert_eq!(closable.action_at(7), Some(MenuAction::AddToNewGroup));
+        assert_eq!(closable.action_at(7), Some(MenuAction::AddToGroupMenu));
         assert_eq!(closable.action_at(8), None);
     }
 
+    fn submenu(groups: &MenuGroups) -> MenuModel {
+        MenuModel::with_groups(
+            MenuKind::AddToGroup,
+            groups,
+            &crate::strings::english(),
+            true,
+        )
+    }
+
+    fn actions_of(m: &MenuModel) -> Vec<Option<MenuAction>> {
+        m.entries.iter().map(|e| e.action).collect()
+    }
+
+    /// One row leads to the groups, with a chevron, wherever the tab is and however many groups
+    /// are open; no other row has one.
     #[test]
-    fn an_ungrouped_tab_is_offered_every_group_in_tab_order() {
-        let m = tab_menu(true, &groups(None));
-        assert_eq!(
-            &texts(&m)[7..],
-            [
-                "Add Tab to New Group\u{2026}",
-                "Add Tab to Group \u{201c}api\u{201d}",
-                "Add Tab to Group \u{201c}orch: shop\u{201d}",
-            ]
-        );
-        assert_eq!(m.action_at(8), Some(MenuAction::AddToGroup(GroupId(1))));
-        assert_eq!(m.action_at(9), Some(MenuAction::AddToGroup(GroupId(2))));
-        // The rows that join a group have no icon: there is one per group.
-        assert!(m.entries[8..].iter().all(|e| e.glyph.is_none()));
+    fn the_tab_menu_has_one_row_for_the_groups() {
+        let none = MenuGroups::default();
+        for g in [none, groups(None), groups(Some(1))] {
+            for closable in [true, false] {
+                let m = tab_menu(closable, &g);
+                let at = if closable { 7 } else { 6 };
+                assert_eq!(m.action_at(at), Some(MenuAction::AddToGroupMenu), "{g:?}");
+                assert_eq!(m.entries[at].text, "Add Tab to Group");
+                let chevrons: Vec<usize> = (0..m.entries.len())
+                    .filter(|i| m.entries[*i].chevron)
+                    .collect();
+                assert_eq!(chevrons, [at]);
+                // The toolkit's row has it too.
+                assert!(matches!(m.rows()[at], MenuRow::Entry(item) if item.chevron));
+                assert!(!m.entries.iter().any(|e| matches!(
+                    e.action,
+                    Some(MenuAction::AddToGroup(_) | MenuAction::AddToNewGroup)
+                )));
+            }
+        }
     }
 
     #[test]
-    fn a_grouped_tab_is_offered_the_other_groups_and_its_own_groups_entries() {
+    fn a_grouped_tabs_menu_has_its_own_groups_entries_under_the_group_row() {
         let m = tab_menu(true, &groups(Some(1)));
         assert_eq!(
             &texts(&m)[6..],
             [
                 "",
-                "Add Tab to New Group\u{2026}",
-                "Add Tab to Group \u{201c}orch: shop\u{201d}",
+                "Add Tab to Group",
                 "Remove from Group",
                 "",
                 "Edit Group\u{2026}",
                 "Close Group\u{2026}",
             ]
         );
-        let at: Vec<_> = (6..13).filter_map(|i| m.action_at(i)).collect();
+        let at: Vec<_> = (6..12).filter_map(|i| m.action_at(i)).collect();
         assert_eq!(
             at,
             [
-                MenuAction::AddToNewGroup,
-                MenuAction::AddToGroup(GroupId(2)),
+                MenuAction::AddToGroupMenu,
                 MenuAction::RemoveFromGroup,
                 MenuAction::EditGroup,
                 MenuAction::CloseGroup,
             ]
         );
-        // A tab in the only group is offered no group to join.
+    }
+
+    #[test]
+    fn the_submenu_offers_every_group_but_the_tabs_own_then_a_new_one() {
+        let m = submenu(&groups(None));
+        assert_eq!(texts(&m), ["api", "orch: shop", "", "New Group\u{2026}"]);
+        assert_eq!(
+            actions_of(&m),
+            [
+                Some(MenuAction::AddToGroup(GroupId(1))),
+                Some(MenuAction::AddToGroup(GroupId(2))),
+                None,
+                Some(MenuAction::AddToNewGroup),
+            ]
+        );
+        // Group rows have no icon (there is one per group); the new one has the group's.
+        let icons: Vec<_> = m.entries.iter().map(|e| e.glyph).collect();
+        assert_eq!(icons, [None, None, None, Some(ICON_GROUP)]);
+        assert!(m.entries.iter().all(|e| e.shortcut.is_empty()), "no hints");
+        assert!(m.entries.iter().all(|e| !e.chevron && !e.disabled));
+        assert_eq!(m.rows().len(), m.entries.len());
+        assert_eq!(m.name_key(), "menu.addToGroupMenu");
+        assert_eq!(m.overlay_key(), "app-submenu");
+        assert!(m.is_submenu() && !tab_menu(true, &groups(None)).is_submenu());
+        assert_ne!(m.overlay_key(), tab_menu(true, &groups(None)).overlay_key());
+        // The tab's own group is left out.
+        assert_eq!(
+            texts(&submenu(&groups(Some(1)))),
+            ["orch: shop", "", "New Group\u{2026}"]
+        );
+        // With no group to join: the new one alone, with no separator above it.
         let only = MenuGroups {
             own: Some(GroupId(1)),
             open: vec![(GroupId(1), "api".to_owned())],
         };
-        assert!(
-            !tab_menu(true, &only)
-                .entries
-                .iter()
-                .any(|e| matches!(e.action, Some(MenuAction::AddToGroup(_))))
+        for g in [only, MenuGroups::default()] {
+            let m = submenu(&g);
+            assert_eq!(texts(&m), ["New Group\u{2026}"], "{g:?}");
+            assert_eq!(m.action_at(0), Some(MenuAction::AddToNewGroup));
+        }
+    }
+
+    #[test]
+    fn a_submenu_opens_on_the_right_of_its_row_with_the_top_edges_level() {
+        let row = Rect::new(100.0, 200.0, 220.0, 28.0);
+        assert_eq!(
+            submenu_place(row),
+            MenuPlace::Anchor {
+                rect: row,
+                side: Side::Right,
+                align: PlaceAlign::Start,
+                gap: SUBMENU_GAP,
+            }
         );
     }
 
@@ -804,26 +924,17 @@ mod tests {
             own: None,
             open: vec![(GroupId(1), long), (GroupId(2), exact.clone())],
         };
-        let m = tab_menu(true, &g);
+        let m = submenu(&g);
         let cut = format!("{}\u{2026}", "x".repeat(MENU_NAME_CHARS - 1));
         assert_eq!(cut.chars().count(), MENU_NAME_CHARS);
-        assert_eq!(
-            texts(&m)[8..],
-            [
-                format!("Add Tab to Group \u{201c}{cut}\u{201d}"),
-                format!("Add Tab to Group \u{201c}{exact}\u{201d}"),
-            ]
-        );
-        assert_eq!(m.action_at(8), Some(MenuAction::AddToGroup(GroupId(1))));
+        assert_eq!(texts(&m)[..2], [cut, exact]);
+        assert_eq!(m.action_at(0), Some(MenuAction::AddToGroup(GroupId(1))));
         // A name with a brace is text, not a placeholder.
         let braces = MenuGroups {
             own: None,
             open: vec![(GroupId(1), "{0} {1}".to_owned())],
         };
-        assert_eq!(
-            texts(&tab_menu(true, &braces))[8],
-            "Add Tab to Group \u{201c}{0} {1}\u{201d}"
-        );
+        assert_eq!(texts(&submenu(&braces))[0], "{0} {1}");
     }
 
     #[test]
@@ -832,7 +943,11 @@ mod tests {
             own: None,
             open: vec![(GroupId(1), "hunter2".to_owned())],
         };
-        for shown in [format!("{g:?}"), format!("{:?}", tab_menu(true, &g))] {
+        for shown in [
+            format!("{g:?}"),
+            format!("{:?}", tab_menu(true, &g)),
+            format!("{:?}", submenu(&g)),
+        ] {
             assert!(!shown.contains("hunter2"), "{shown}");
         }
     }
@@ -870,6 +985,8 @@ mod tests {
         let with_groups = [
             (MenuKind::Tab { closable: true }, groups(None)),
             (MenuKind::Tab { closable: true }, groups(Some(1))),
+            (MenuKind::AddToGroup, groups(None)),
+            (MenuKind::AddToGroup, groups(Some(1))),
             (MenuKind::Group { collapsed: true }, groups(Some(1))),
             (MenuKind::Group { collapsed: false }, groups(Some(1))),
         ];
@@ -915,6 +1032,7 @@ mod tests {
         for other in [
             NewTab,
             NewTabGroup,
+            AddToGroupMenu,
             EditGroup,
             CloseGroup,
             ShowSidePane,
@@ -932,13 +1050,18 @@ mod tests {
                 "{other:?} is no row of the tab menu"
             );
         }
-        // every row of the menu maps: to the tab, or to the tab's group
+        // every row of the menu and its submenu maps: to the tab, or to the tab's group; the
+        // row that opens the submenu is the app's
         for kind in [
             MenuKind::Tab { closable: true },
             MenuKind::Tab { closable: false },
+            MenuKind::AddToGroup,
         ] {
             for g in [groups(None), groups(Some(2))] {
                 for a in actions(kind, &g).into_iter().flatten() {
+                    if a == AddToGroupMenu {
+                        continue;
+                    }
                     let own = g.own.unwrap_or(GroupId::NONE);
                     assert!(
                         tab_op(a, 7).is_some() != group_op(a, own).is_some(),

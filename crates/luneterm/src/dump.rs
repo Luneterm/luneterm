@@ -34,7 +34,7 @@ use crate::demo::{demo_cursor, demo_grid};
 use crate::fonts;
 use crate::groups::{GroupColor, GroupId};
 use crate::links;
-use crate::menus::{MenuGroups, MenuKind, MenuModel};
+use crate::menus::{self, MenuAction, MenuGroups, MenuKind, MenuModel};
 use crate::notices::{Admit, Inbox, TOAST_LIFE, ToastSlots};
 use crate::pane::{self, PaneEvent, PaneList};
 use crate::render::{Content, InboxDraw, LinkTip, MenuDraw, Renderer};
@@ -201,6 +201,8 @@ enum Input {
     /// The pointer comes to the point and the primary button goes down, and stays down.
     Press(f32, f32),
     SecondaryClick(f32, f32),
+    /// The pointer comes to the point and the primary button goes down and up.
+    Click(f32, f32),
     /// A wheel of `y` lines with the pointer at the point.
     Wheel(f32, f32, f32),
 }
@@ -227,6 +229,14 @@ impl Input {
                     pressed: *k == "press",
                     modifiers: mods,
                 })
+                .collect(),
+            Input::Click(x, y) => std::iter::once(Event::PointerMoved { pos: (x, y) })
+                .chain([true, false].map(|pressed| Event::PointerButton {
+                    pos: (x, y),
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: mods,
+                }))
                 .collect(),
             Input::Wheel(x, y, lines) => vec![Event::Scroll {
                 pos: (x, y),
@@ -551,6 +561,22 @@ const DUMP_SYSTEM_FONTS: [&str; 3] = ["Cascadia Code", "JetBrains Mono", "Menlo"
 const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
+/// The tab menu opened at [`OVER_TAB`], its `Add Tab to Group` row clicked once it is there.
+const OPEN_SUBMENU: &[(usize, Input)] = &[
+    (1, Input::Move(OVER_TAB.0, OVER_TAB.1)),
+    (1, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
+    (2, Input::Move(OVER_TAB.0 + 100.0, 249.0)),
+    (3, Input::Click(OVER_TAB.0 + 100.0, 249.0)),
+];
+/// The same on the last tab of a window of the least width, where the submenu has no room on the
+/// right of its row.
+const NARROW: u32 = 560;
+const OPEN_SUBMENU_FLIPPED: &[(usize, Input)] = &[
+    (1, Input::Move(400.0, OVER_TAB.1)),
+    (1, Input::SecondaryClick(400.0, OVER_TAB.1)),
+    (2, Input::Move(450.0, 249.0)),
+    (3, Input::Click(450.0, 249.0)),
+];
 
 const SCENES: &[Scene] = &[
     Scene {
@@ -959,6 +985,39 @@ const SCENES: &[Scene] = &[
             (1, Input::Move(OVER_TAB.0, OVER_TAB.1)),
             (1, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
         ],
+        ..BASE
+    },
+    // The tab menu's submenu of groups, beside its row and, with no room there, on its left.
+    Scene {
+        name: "menu-tab-submenu@2x.png",
+        tabs: FOUR,
+        menu_groups: (MENU_GROUPS, Some(0)),
+        script: OPEN_SUBMENU,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-menu-tab-submenu@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        menu_groups: (MENU_GROUPS, Some(0)),
+        script: OPEN_SUBMENU,
+        ..BASE
+    },
+    Scene {
+        name: "menu-tab-submenu-flipped@2x.png",
+        tabs: FOUR,
+        menu_groups: (MENU_GROUPS, Some(0)),
+        script: OPEN_SUBMENU_FLIPPED,
+        width: NARROW,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-menu-tab-submenu-flipped@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        menu_groups: (MENU_GROUPS, Some(0)),
+        script: OPEN_SUBMENU_FLIPPED,
+        width: NARROW,
         ..BASE
     },
     Scene {
@@ -1479,6 +1538,9 @@ pub fn dump_frames_gated_text(
 /// the last, after the focus animations, is the picture. A scene's clock starts at zero on a fresh UI
 /// state, so a scene cannot show what an earlier one left behind.
 const FRAME_TIMES_MS: [u64; 4] = [0, 800, 1600, 2400];
+/// The frames of a scene that clicks a menu's row: two more, one in which what the pick opens
+/// starts (and the picked menu starts to leave), one with it settled.
+const CLICK_FRAME_TIMES_MS: [u64; 6] = [0, 800, 1600, 2400, 3200, 4000];
 
 /// The groups a menu about group `own` shows, from a scene's set.
 fn set_groups(set: &TabSet<()>, own: Option<GroupId>) -> MenuGroups {
@@ -1690,7 +1752,18 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         _ => MenuPlace::At(TERMINAL_MENU_AT),
     };
 
-    for (k, ms) in FRAME_TIMES_MS.iter().enumerate() {
+    let clicks = scene
+        .script
+        .iter()
+        .any(|(_, input)| matches!(input, Input::Click(..)));
+    let frames: &[u64] = if clicks {
+        &CLICK_FRAME_TIMES_MS
+    } else {
+        &FRAME_TIMES_MS
+    };
+    // The groups of the menu that is open, for the submenu opened from it.
+    let mut open_groups = MenuGroups::default();
+    for (k, ms) in frames.iter().enumerate() {
         let mut events: Vec<Event> = scene
             .script
             .iter()
@@ -1802,6 +1875,8 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
                 system_fonts: &DUMP_SYSTEM_FONTS,
             }),
             menu: model.as_ref().map(|m| MenuDraw {
+                key: m.overlay_key(),
+                submenu: m.is_submenu(),
                 rows: m.rows(),
                 place,
                 name: strings.tr(m.name_key()),
@@ -1831,6 +1906,22 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             fading: Vec::new(),
         };
         let drawn = r.draw(&input, content, &view, size)?;
+        // As the app: a pick of the tab menu's group row puts the submenu in the menu's place.
+        let picked = drawn
+            .menu
+            .and_then(|m| m.picked)
+            .and_then(|i| model.as_ref()?.action_at(i));
+        if picked == Some(MenuAction::AddToGroupMenu)
+            && let Some(row) = drawn.menu_row
+        {
+            model = Some(MenuModel::with_groups(
+                MenuKind::AddToGroup,
+                &open_groups,
+                &strings,
+                cfg!(target_os = "macos"),
+            ));
+            place = menus::submenu_place(row);
+        }
         // The app opens the tab menu from the request the strip or a pane row reports, and a
         // card's menu from its header (the next frame shows it).
         let mut asked = None;
@@ -1861,6 +1952,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
                 &strings,
                 cfg!(target_os = "macos"),
             ));
+            open_groups = groups;
             place = MenuPlace::At(at);
         }
         if let Some(out) = drawn.inbox {
@@ -1868,6 +1960,10 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         }
         slots.sync(toasts.live(), input.time, |id| toasts.is_live(id));
         r.gpu.end_frame(&mut r.text);
+    }
+    // A click that missed its row would leave a picture of something else.
+    if clicks && !model.as_ref().is_some_and(MenuModel::is_submenu) {
+        return Err("the scene's click opened no submenu".to_owned());
     }
     let rgba = read_rgba(&r.gpu.device, &r.gpu.queue, &texture)?;
     let min_alpha = rgba.chunks_exact(4).map(|px| px[3]).min().unwrap_or(0);
@@ -2082,12 +2178,19 @@ mod tests {
         // three states from each other, and the close-group question from the close-session one.
         for pre in ["", "lunegit-"] {
             let of = |n: &str| named(&format!("{pre}{n}@2x.png"));
-            assert_ne!(of("menu-tab-ungrouped"), named("menu-tab@2x.png"), "{pre}");
             assert_ne!(of("menu-tab-ungrouped"), of("menu-tab-grouped"), "{pre}");
+            assert_ne!(of("menu-tab-submenu"), of("menu-tab-grouped"), "{pre}");
+            assert_ne!(
+                of("menu-tab-submenu"),
+                of("menu-tab-submenu-flipped"),
+                "{pre}"
+            );
             assert_ne!(of("group-new"), of("group-edit"), "{pre}");
             assert_ne!(of("group-new"), of("group-invalid"), "{pre}");
             assert_ne!(of("group-close"), named("confirm-one@2x.png"), "{pre}");
         }
+        // Open groups add no row to the tab menu: they are in its submenu.
+        assert_eq!(named("menu-tab-ungrouped@2x.png"), named("menu-tab@2x.png"));
         // The pane view differs from the bar view, and its states from each other.
         assert_ne!(named("pane@2x.png"), tabs);
         assert_ne!(named("pane@2x.png"), named("pane-inbox@2x.png"));
