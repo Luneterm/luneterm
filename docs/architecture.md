@@ -1078,15 +1078,20 @@ by hand follows the rule `ctl` has (`label_ok`, at most 64 characters), must be 
 trimmed or cut; a name that fails it disables the editor's confirm.
 - *By hand.* Tab menu (strip tab or pane row): Add Tab to Group and, on a grouped tab, Remove from
   Group, Edit Group and Close Group, so the top bar needs no pane. Add Tab to Group has a chevron
-  and opens a submenu, which the app builds (the toolkit has none): picking the row puts the submenu
-  in the tab menu's place, beside the row (on its left where the window has no room on the right),
-  for the same tab and the groups as the menu opened with them. It lists the other open groups in
-  tab order, then New Group (the group editor). Hovering the row opens nothing, Escape or a press
-  outside closes the submenu, and a key still held from the pick repeats into it without picking.
-  App menu: New Tab Group (a new shell tab in a new group) and Show or Hide Side Pane. A card
-  header's menu: Edit Group, Collapse or Expand, New Tab in Group, Ungroup (keeps the tabs), Close
-  Group. A colour picked in the editor of an open group applies and is saved at once (Cancel keeps
-  it).
+  and opens a submenu, which the app builds (the toolkit has none): picking the row (a click, Enter
+  or Space; hovering opens nothing) opens it beside the tab menu, which stays open: flush against
+  the menu's right edge (its left where the window has no room on the right), the first row level
+  with the picked one, shifted up where it would cross the window's bottom. It lists the other open
+  groups in tab order, then New Group (the group editor), for the same tab and the groups as the
+  menu opened with them, and it lives in the tab menu's state, so whatever closes or replaces that
+  menu drops it. Escape and presses act one level at a time: Escape closes the submenu and then the
+  tab menu; a press on the tab menu closes the submenu alone and picks nothing; a press outside
+  both closes both. A pick in the submenu closes both, and a key still held from the pick that
+  opened it repeats into it without picking. The toolkit keeps no row of the lower menu lit and has
+  no Left or Right keys between the two. App menu: New Tab Group (a new shell tab in a new group)
+  and Show or Hide Side Pane. A card header's menu: Edit Group, Collapse or Expand, New Tab in
+  Group, Ungroup (keeps the tabs), Close Group. A colour picked in the editor of an open group
+  applies and is saved at once (Cancel keeps it).
 - *Close Group* asks every time, whatever its tabs run and whatever the close-confirmation setting
   says, with one answer for all of them. It closes the tabs it asked about that are still members; a
   tab a program adds while the question is open stays, with its group.

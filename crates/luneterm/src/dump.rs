@@ -36,10 +36,10 @@ use crate::demo::{demo_cursor, demo_grid};
 use crate::fonts;
 use crate::groups::{GroupColor, GroupId};
 use crate::links;
-use crate::menus::{self, MenuAction, MenuGroups, MenuKind, MenuModel};
+use crate::menus::{self, MenuGroups, MenuKind, MenuModel, MenuStep};
 use crate::notices::{Admit, Inbox, TOAST_LIFE, ToastSlots};
 use crate::pane::{self, PaneEvent, PaneList};
-use crate::render::{Content, InboxDraw, LinkTip, MenuDraw, Renderer};
+use crate::render::{Content, InboxDraw, LinkTip, MenuDraw, MenusDraw, Renderer};
 use crate::settings::{DEFAULT_PANE_WIDTH, MAX_PANE_WIDTH, MIN_PANE_WIDTH};
 use crate::settings::{Settings, Theme};
 use crate::settings_page::{PageState, PageView, Section};
@@ -469,6 +469,25 @@ const SIXTY_GROUPS: &[DumpGroup] = &[
 ];
 /// A progress report in a loose tab and in two members, one tone each.
 const SHINES: &[(usize, Tone)] = &[(0, Tone::Neutral), (4, Tone::Warn), (5, Tone::Err)];
+/// Three cards over a run of loose tabs that reaches the bottom of the list.
+const LOW_TABS: &[&str] = &[
+    "zsh", "server", "logs", "claude", "web", "worker", "deploy", "notes", "build", "db", "docs",
+    "ssh", "htop", "vim", "tail",
+];
+const LOW_GROUPS: &[DumpGroup] = &[
+    dump_group("api", GroupColor::Blue, false, 1, 3),
+    dump_group("orch: shop", GroupColor::Pink, true, 4, 2),
+    dump_group("infra", GroupColor::Yellow, true, 6, 1),
+];
+/// The tab menu of the last loose tab (`tail`), which flips above the pointer, then its `Add Tab
+/// to Group` row: the submenu would cross the window's bottom, so it is shifted up beside it.
+const OPEN_PANE_SUBMENU: &[(usize, Input)] = &[
+    (1, Input::Move(110.0, 579.0)),
+    (1, Input::SecondaryClick(110.0, 579.0)),
+    (2, Input::Move(210.0, 559.0)),
+    (3, Input::Click(210.0, 559.0)),
+];
+
 /// Points of mock F's list: over the `logs` row, and over the `api` card's header.
 const OVER_LOGS_ROW: (f32, f32) = (110.0, 155.0);
 const OVER_API_HEADER: (f32, f32) = (110.0, 90.0);
@@ -992,7 +1011,7 @@ const SCENES: &[Scene] = &[
         ],
         ..BASE
     },
-    // The tab menu's submenu of groups, beside its row and, with no room there, on its left.
+    // The tab menu with its submenu of groups beside it and, with no room there, on its left.
     Scene {
         name: "menu-tab-submenu@2x.png",
         tabs: FOUR,
@@ -1405,6 +1424,26 @@ const SCENES: &[Scene] = &[
         ],
         ..MOCK
     },
+    // A pane row's tab menu low in the window, its submenu open beside it.
+    Scene {
+        name: "pane-menu-tab-submenu@2x.png",
+        tabs: LOW_TABS,
+        pane: PANE,
+        list: Some(LOW_GROUPS),
+        script: OPEN_PANE_SUBMENU,
+        active: 1,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-pane-menu-tab-submenu@2x.png",
+        tabs: LOW_TABS,
+        pane: PANE,
+        list: Some(LOW_GROUPS),
+        script: OPEN_PANE_SUBMENU,
+        active: 1,
+        look: Theme::Lunegit,
+        ..BASE
+    },
     // Drags held in mid-air (D24), at 2x and 1x.
     Scene {
         name: "pane-drag-d1@2x.png",
@@ -1790,8 +1829,9 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     } else {
         &FRAME_TIMES_MS
     };
-    // The groups of the menu that is open, for the submenu opened from it.
+    // The groups of the menu that is open, for the submenu opened from it, and that submenu.
     let mut open_groups = MenuGroups::default();
+    let mut submenu: Option<(MenuModel, MenuPlace)> = None;
     for (k, ms) in frames.iter().enumerate() {
         let mut events: Vec<Event> = scene
             .script
@@ -1903,12 +1943,11 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
                 focused: scene.focused,
                 system_fonts: &DUMP_SYSTEM_FONTS,
             }),
-            menu: model.as_ref().map(|m| MenuDraw {
-                key: m.overlay_key(),
-                submenu: m.is_submenu(),
-                rows: m.rows(),
-                place,
-                name: strings.tr(m.name_key()),
+            menu: model.as_ref().map(|m| MenusDraw {
+                menu: MenuDraw::of(m, place, strings.tr(m.name_key())),
+                submenu: submenu
+                    .as_ref()
+                    .map(|(m, beside)| MenuDraw::of(m, *beside, strings.tr(m.name_key()))),
             }),
             inbox: scene.inbox.map(|_| InboxDraw {
                 button: InboxButton {
@@ -1935,21 +1974,19 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             fading: Vec::new(),
         };
         let drawn = r.draw(&input, content, &view, size)?;
-        // As the app: a pick of the tab menu's group row puts the submenu in the menu's place.
-        let picked = drawn
-            .menu
-            .and_then(|m| m.picked)
-            .and_then(|i| model.as_ref()?.action_at(i));
-        if picked == Some(MenuAction::AddToGroupMenu)
-            && let Some(row) = drawn.menu_row
+        // As the app: a pick of the tab menu's group row opens the submenu beside it.
+        if let Some((out, m)) = drawn.menus.zip(model.as_ref())
+            && menus::menu_step((m, &out.menu), None, false) == MenuStep::OpenSubmenu
+            && let Some(row) = out.at.row
         {
-            model = Some(MenuModel::with_groups(
+            let beside = menus::submenu_place(out.at.panel, row, out.at.pad);
+            let groups = MenuModel::with_groups(
                 MenuKind::AddToGroup,
                 &open_groups,
                 &strings,
                 cfg!(target_os = "macos"),
-            ));
-            place = menus::submenu_place(row);
+            );
+            submenu = Some((groups, beside));
         }
         // The app opens the tab menu from the request the strip or a pane row reports, and a
         // card's menu from its header (the next frame shows it).
@@ -1991,7 +2028,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         r.gpu.end_frame(&mut r.text);
     }
     // A click that missed its row would leave a picture of something else.
-    if clicks && !model.as_ref().is_some_and(MenuModel::is_submenu) {
+    if clicks && submenu.is_none() {
         return Err("the scene's click opened no submenu".to_owned());
     }
     let rgba = read_rgba(&r.gpu.device, &r.gpu.queue, &texture)?;
@@ -2220,6 +2257,11 @@ mod tests {
         }
         // Open groups add no row to the tab menu: they are in its submenu.
         assert_eq!(named("menu-tab-ungrouped@2x.png"), named("menu-tab@2x.png"));
+        // The pane's tab menu with its submenu is its own picture in each look.
+        assert_ne!(
+            named("pane-menu-tab-submenu@2x.png"),
+            named("lunegit-pane-menu-tab-submenu@2x.png")
+        );
         // A running cue shows on the pane view's card, each treatment its own.
         for pre in ["", "lunegit-"] {
             let of = |n: &str| named(&format!("{pre}{n}@2x.png"));

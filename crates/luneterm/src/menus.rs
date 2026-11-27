@@ -3,13 +3,14 @@
 //! that the renderer turns into the toolkit's menu. The tab strip owns no menu since luneui-rs
 //! 0.3.0: it reports the right-click and the app opens [`MenuKind::Tab`], whose picks act on the
 //! tab it was opened on ([`tab_op`]). The toolkit has no submenu: the tab menu's `Add Tab to
-//! Group` row is picked like any other, and the app puts [`MenuKind::AddToGroup`] in the menu's
-//! place, beside the row ([`submenu_place`]).
+//! Group` row is picked like any other, and the app draws [`MenuKind::AddToGroup`] over the tab
+//! menu, which stays open, beside it ([`submenu_place`]). What a frame's reports of the two come
+//! to is [`menu_step`].
 
 use lune_ui::icon;
 use lune_ui::paint::Rect;
 use lune_ui::strings::StringTable;
-use lune_ui::widgets::menu::{MenuItem, MenuPlace, MenuRow};
+use lune_ui::widgets::menu::{MenuItem, MenuPlace, MenuResponse, MenuRow};
 use lune_ui::widgets::popover::{PlaceAlign, Side};
 
 use crate::groups::GroupId;
@@ -134,17 +135,59 @@ impl MenuAction {
     }
 }
 
-/// Between the row a submenu opens beside and the submenu.
-const SUBMENU_GAP: f32 = 4.0;
-
-/// Where the submenu of the row at `row` (logical px) opens: on its right with the top edges
-/// level; the toolkit puts it on the left where the window has no room on the right.
-pub fn submenu_place(row: Rect) -> MenuPlace {
+/// Where the submenu of the row at `row` in a menu's `panel` (logical px) opens: flush against
+/// the panel's right edge, its top `pad` (the menu's top padding) over the row's, so its first
+/// row is level with that row. The toolkit puts it against the panel's left edge where the window
+/// has no room on the right, and shifts it up where it would cross the window's bottom.
+pub fn submenu_place(panel: Rect, row: Rect, pad: f32) -> MenuPlace {
     MenuPlace::Anchor {
-        rect: row,
+        rect: Rect::new(panel.x, row.y - pad, panel.w, 0.0),
         side: Side::Right,
         align: PlaceAlign::Start,
-        gap: SUBMENU_GAP,
+        gap: 0.0,
+    }
+}
+
+/// What the open menus come to after a frame ([`menu_step`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuStep {
+    /// Nothing changes.
+    Stay,
+    /// The tab menu stays and its submenu opens: its `Add Tab to Group` row was picked.
+    OpenSubmenu,
+    /// The submenu closes and the tab menu stays.
+    CloseSubmenu,
+    /// Every menu closes, and the picked action, if any, runs.
+    Close(Option<MenuAction>),
+}
+
+/// What a frame's reports of the open menu, and of its submenu while that is open, come to. A
+/// dismissal of the submenu (Escape, or a press on the menu under it) leaves the menu open;
+/// `outside` says the press that dismissed it was on neither panel, which closes both.
+pub fn menu_step(
+    menu: (&MenuModel, &MenuResponse),
+    submenu: Option<(&MenuModel, &MenuResponse)>,
+    outside: bool,
+) -> MenuStep {
+    if let Some((model, report)) = submenu
+        && let Some(i) = report.picked
+    {
+        return MenuStep::Close(model.action_at(i));
+    }
+    let (model, report) = menu;
+    if let Some(i) = report.picked {
+        return match model.action_at(i) {
+            Some(MenuAction::AddToGroupMenu) => MenuStep::OpenSubmenu,
+            action => MenuStep::Close(action),
+        };
+    }
+    if report.dismissed {
+        return MenuStep::Close(None);
+    }
+    match submenu {
+        Some((_, report)) if report.dismissed && outside => MenuStep::Close(None),
+        Some((_, report)) if report.dismissed => MenuStep::CloseSubmenu,
+        _ => MenuStep::Stay,
     }
 }
 
@@ -211,7 +254,7 @@ pub enum MenuKind {
     /// A tab's context menu; `closable` is whether the tab can be closed (Close is only for a
     /// closable tab). It has no shortcut hints.
     Tab { closable: bool },
-    /// The submenu of a tab menu's `Add Tab to Group` row, in the tab menu's place: the groups
+    /// The submenu of a tab menu's `Add Tab to Group` row, open beside the tab menu: the groups
     /// its tab can join, and a new one. It has no shortcut hints.
     AddToGroup,
     /// A group's own menu (the side pane's card header); `collapsed` picks Collapse or Expand.
@@ -450,8 +493,8 @@ impl MenuModel {
         self.kind == MenuKind::AddToGroup
     }
 
-    /// The toolkit's key of the menu's overlay: a submenu has its own, so the menu it replaces
-    /// closes as one overlay while it opens as another.
+    /// The toolkit's key of the menu's overlay: a submenu has its own, so it is a second overlay
+    /// over the menu it came from.
     pub fn overlay_key(&self) -> &'static str {
         if self.is_submenu() {
             "app-submenu"
@@ -507,7 +550,7 @@ pub fn group_op(action: MenuAction, own: GroupId) -> Option<GroupOp> {
 
 /// The effect of `action` picked from the tab menu opened on `target`, or from its submenu;
 /// `None` for an action neither has a row for, for the rows about the tab's group ([`group_op`])
-/// and for the row that opens the submenu (the app does that, [`submenu_place`]).
+/// and for the row that opens the submenu ([`menu_step`]).
 pub fn tab_op(action: MenuAction, target: TabId) -> Option<TabOp> {
     match action {
         MenuAction::Close => Some(TabOp::Close(target)),
@@ -862,16 +905,71 @@ mod tests {
     }
 
     #[test]
-    fn a_submenu_opens_on_the_right_of_its_row_with_the_top_edges_level() {
-        let row = Rect::new(100.0, 200.0, 220.0, 28.0);
+    fn a_submenu_hangs_flush_off_the_menus_panel_a_padding_over_the_row() {
+        let panel = Rect::new(100.0, 100.0, 220.0, 219.0);
+        let row = Rect::new(106.0, 285.0, 208.0, 28.0);
         assert_eq!(
-            submenu_place(row),
+            submenu_place(panel, row, 6.0),
             MenuPlace::Anchor {
-                rect: row,
+                rect: Rect::new(100.0, 279.0, 220.0, 0.0),
                 side: Side::Right,
                 align: PlaceAlign::Start,
-                gap: SUBMENU_GAP,
+                gap: 0.0,
             }
+        );
+    }
+
+    #[test]
+    fn the_open_menus_answer_picks_and_dismissals_one_level_at_a_time() {
+        let g = groups(None);
+        let (tab, sub) = (tab_menu(true, &g), submenu(&g));
+        let at = |m: &MenuModel, a| {
+            (0..m.entries.len())
+                .find(|i| m.action_at(*i) == Some(a))
+                .expect("a row")
+        };
+        let none = MenuResponse::default();
+        let picked = |i| MenuResponse {
+            picked: Some(i),
+            dismissed: false,
+        };
+        let dismissed = MenuResponse {
+            picked: None,
+            dismissed: true,
+        };
+        let group_row = at(&tab, MenuAction::AddToGroupMenu);
+        let step = |menu: &MenuResponse, under: Option<&MenuResponse>, outside| {
+            menu_step((&tab, menu), under.map(|r| (&sub, r)), outside)
+        };
+        // The tab menu alone.
+        assert_eq!(step(&none, None, false), MenuStep::Stay);
+        assert_eq!(step(&picked(group_row), None, false), MenuStep::OpenSubmenu);
+        let rename = at(&tab, MenuAction::Rename);
+        assert_eq!(
+            step(&picked(rename), None, false),
+            MenuStep::Close(Some(MenuAction::Rename))
+        );
+        assert_eq!(step(&dismissed, None, false), MenuStep::Close(None));
+        // With the submenu open: a held key's pick of the same row changes nothing, a dismissal
+        // of the submenu closes it alone, one by a press outside both closes both.
+        assert_eq!(
+            step(&picked(group_row), Some(&none), false),
+            MenuStep::OpenSubmenu
+        );
+        assert_eq!(step(&none, Some(&none), false), MenuStep::Stay);
+        assert_eq!(step(&none, Some(&dismissed), false), MenuStep::CloseSubmenu);
+        assert_eq!(step(&none, Some(&dismissed), true), MenuStep::Close(None));
+        assert_eq!(step(&dismissed, Some(&none), false), MenuStep::Close(None));
+        // A pick of the submenu is that action, and closes both.
+        let api = at(&sub, MenuAction::AddToGroup(GroupId(1)));
+        assert_eq!(
+            step(&none, Some(&picked(api)), false),
+            MenuStep::Close(Some(MenuAction::AddToGroup(GroupId(1))))
+        );
+        let new = at(&sub, MenuAction::AddToNewGroup);
+        assert_eq!(
+            step(&none, Some(&picked(new)), false),
+            MenuStep::Close(Some(MenuAction::AddToNewGroup))
         );
     }
 

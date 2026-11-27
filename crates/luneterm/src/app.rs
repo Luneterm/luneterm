@@ -70,7 +70,7 @@ use crate::input::{
     selection_position, selection_scroll, terminal_mods, wheel, wheel_delta, wheel_report,
 };
 use crate::links::{self, open::OpenError};
-use crate::menus::{self, GroupOp, MenuAction, MenuGroups, MenuKind, MenuModel, TabOp};
+use crate::menus::{self, GroupOp, MenuAction, MenuGroups, MenuKind, MenuModel, MenuStep, TabOp};
 use crate::notices::{self, Admit, DrawnRows, Inbox, PressClock, TOAST_LIFE, ToastSlots, route};
 use crate::pacing::{self, EventKind, Pacer, PresentAsk};
 use crate::palettes;
@@ -79,7 +79,9 @@ use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, restore_layout,
     snapshot,
 };
-use crate::render::{Content, FadingGrid, InboxDraw, LinkTip, MenuDraw, Placed, Renderer};
+use crate::render::{
+    Content, FadingGrid, InboxDraw, LinkTip, MenuDraw, MenusDraw, Placed, Renderer,
+};
 use crate::session::{
     Command, CopyResult, HostPalette, MAX_COPY_BYTES, Scroll, SelectCmd, Session, SessionConfig,
     UpdateModes, view_range,
@@ -908,18 +910,8 @@ fn group_menu<T>(tabs: &TabSet<T>, g: GroupId, at: (f32, f32)) -> Option<OpenMen
         place: MenuPlace::At(at),
         tab: None,
         groups: menu_groups(tabs, Some(g)),
+        sub: None,
     })
-}
-
-/// The submenu of the tab menu `menu`'s `Add Tab to Group` row, which stands at `row`: in the
-/// menu's place, beside that row, about the same tab and the groups as the menu opened with them.
-fn group_submenu(menu: &OpenMenu, row: Rect) -> OpenMenu {
-    OpenMenu {
-        kind: MenuKind::AddToGroup,
-        place: menus::submenu_place(row),
-        tab: menu.tab,
-        groups: menu.groups.clone(),
-    }
 }
 
 /// The editor as it opens for `target`: the group's own name and colour, or for a new group the
@@ -977,6 +969,18 @@ struct OpenMenu {
     tab: Option<TabId>,
     /// The groups as the menu opened: its rows and the group its group entries act on.
     groups: MenuGroups,
+    /// Where a tab menu's submenu of groups stands while it is open beside it. It is about this
+    /// menu's tab and `groups`, and there is none without this menu.
+    sub: Option<MenuPlace>,
+}
+
+impl OpenMenu {
+    /// The open submenu: its rows and where it stands.
+    fn submenu(&self, strings: &StringTable, macos: bool) -> Option<(MenuModel, MenuPlace)> {
+        let place = self.sub?;
+        let model = MenuModel::with_groups(MenuKind::AddToGroup, &self.groups, strings, macos);
+        Some((model, place))
+    }
 }
 
 /// The settings file is written this long after the last change (typing in a field changes it
@@ -3414,6 +3418,12 @@ impl App {
         let menu_name = menu_model
             .as_ref()
             .map(|(_, m)| stack.renderer.strings().tr(m.name_key()).to_owned());
+        let sub_model = menu_model
+            .as_ref()
+            .and_then(|(m, _)| m.submenu(stack.renderer.strings(), macos));
+        let sub_name = sub_model
+            .as_ref()
+            .map(|(m, _)| stack.renderer.strings().tr(m.name_key()).to_owned());
         let (busy, outline_cue, busy_tone) = {
             let cue = self.settings.busy_cue();
             let active = self.tabs.active_item();
@@ -3508,12 +3518,11 @@ impl App {
                 focused: input.focused,
                 system_fonts: &stack.system_fonts,
             }),
-            menu: menu_model.as_ref().map(|(m, model)| MenuDraw {
-                key: model.overlay_key(),
-                submenu: model.is_submenu(),
-                rows: model.rows(),
-                place: m.place,
-                name: menu_name.as_deref().unwrap_or(""),
+            menu: menu_model.as_ref().map(|(m, model)| MenusDraw {
+                menu: MenuDraw::of(model, m.place, menu_name.as_deref().unwrap_or("")),
+                submenu: sub_model.as_ref().map(|(model, place)| {
+                    MenuDraw::of(model, *place, sub_name.as_deref().unwrap_or(""))
+                }),
             }),
             inbox: (!self.inbox.is_empty()).then(|| InboxDraw {
                 button: InboxButton {
@@ -3543,8 +3552,7 @@ impl App {
         };
         let mut out = drawn.output;
         let (tab_events, modal_out) = (drawn.tab_events, drawn.modal);
-        let (page_out, menu_out, overflow) = (drawn.page, drawn.menu, drawn.overflow);
-        let menu_row = drawn.menu_row;
+        let (page_out, menus_out, overflow) = (drawn.page, drawn.menus, drawn.overflow);
         let (inbox_clicked, inbox_out) = (drawn.inbox_clicked, drawn.inbox);
         let tab_context = drawn.tab_context;
         let (pane_toggle, pane_edge) = (drawn.pane_toggle, drawn.pane_edge);
@@ -3629,28 +3637,37 @@ impl App {
         if pane_toggle {
             self.set_pane_shown(!self.settings.pane_wanted());
         }
-        if let Some(r) = menu_out {
-            let action = r.picked.and_then(|i| menu_model.as_ref()?.1.action_at(i));
-            let target = menu_model.as_ref().and_then(|(m, _)| m.tab);
-            let own = menu_model.as_ref().and_then(|(m, _)| m.groups.own);
-            if r.picked.is_some() || r.dismissed {
-                self.menu = None;
-            }
-            match action {
-                // The submenu takes the tab menu's place; no tab or group changes.
-                Some(MenuAction::AddToGroupMenu) => {
-                    self.menu = menu_model
-                        .as_ref()
-                        .zip(menu_row)
-                        .map(|((m, _), row)| group_submenu(m, row));
+        if let Some((out, (open, model))) = menus_out.zip(menu_model.as_ref()) {
+            let submenu = sub_model
+                .as_ref()
+                .zip(out.submenu.as_ref())
+                .map(|((model, _), report)| (model, report));
+            match menus::menu_step((model, &out.menu), submenu, out.outside) {
+                MenuStep::Stay => {}
+                // The submenu opens beside the tab menu; no tab or group changes.
+                MenuStep::OpenSubmenu => {
+                    if let Some((menu, row)) = self.menu.as_mut().zip(out.at.row) {
+                        menu.sub = Some(menus::submenu_place(out.at.panel, row, out.at.pad));
+                    }
                     self.request_redraw();
                 }
-                Some(action) => match (own.and_then(|g| menus::group_op(action, g)), target) {
-                    (Some(op), _) => self.run_group_op(op),
-                    (None, Some(tab)) => self.run_tab_menu_action(action, tab, event_loop),
-                    (None, None) => self.run_menu_action(action, event_loop),
-                },
-                None => {}
+                MenuStep::CloseSubmenu => {
+                    if let Some(menu) = &mut self.menu {
+                        menu.sub = None;
+                    }
+                    self.request_redraw();
+                }
+                MenuStep::Close(action) => {
+                    self.menu = None;
+                    if let Some(action) = action {
+                        let own = open.groups.own;
+                        match (own.and_then(|g| menus::group_op(action, g)), open.tab) {
+                            (Some(op), _) => self.run_group_op(op),
+                            (None, Some(tab)) => self.run_tab_menu_action(action, tab, event_loop),
+                            (None, None) => self.run_menu_action(action, event_loop),
+                        }
+                    }
+                }
             }
         }
         let row_acted = inbox_out.as_ref().is_some_and(|o| o.clicked.is_some());
@@ -3675,6 +3692,7 @@ impl App {
                 place: MenuPlace::At(ctx.at),
                 tab: Some(ctx.id),
                 groups: menu_groups(&self.tabs, self.tabs.group_of(ctx.id)),
+                sub: None,
             });
             self.request_redraw();
         }
@@ -3697,6 +3715,7 @@ impl App {
                 },
                 tab: None,
                 groups: MenuGroups::default(),
+                sub: None,
             });
             self.request_redraw();
         }
@@ -4026,6 +4045,7 @@ impl App {
                 place: MenuPlace::At(pos),
                 tab: None,
                 groups: MenuGroups::default(),
+                sub: None,
             });
             self.request_redraw();
             return;
@@ -6091,32 +6111,40 @@ mod tests {
         assert!(modal_is_moot(&s, &mut modal, Some(&strings)));
     }
 
-    /// The submenu keeps the tab menu's tab and its groups as that menu opened with them, stands
-    /// beside the picked row, and closes with its tab.
+    /// The submenu is part of its tab menu: about that menu's tab and the groups as it opened
+    /// with them, standing where it was put, and gone with the menu and its tab.
     #[test]
     fn the_submenu_is_about_the_tab_menus_tab_and_groups() {
+        let strings = crate::strings::english();
         let (mut s, ids) = tab_set(".ab");
-        let a = group(&s, "a");
-        let menu = OpenMenu {
+        let (a, b) = (group(&s, "a"), group(&s, "b"));
+        let mut menu = OpenMenu {
             kind: MenuKind::Tab { closable: true },
             place: MenuPlace::At((10.0, 20.0)),
             tab: Some(ids[1]),
             groups: menu_groups(&s, Some(a)),
+            sub: None,
         };
-        let row = Rect::new(16.0, 205.0, 220.0, 28.0);
-        let sub = group_submenu(&menu, row);
-        assert_eq!(sub.kind, MenuKind::AddToGroup);
-        assert_eq!(sub.place, menus::submenu_place(row));
-        assert_eq!(sub.tab, Some(ids[1]));
-        assert_eq!(sub.groups, menu.groups);
-        // A program regroups while the menu is open: the rows and their target do not move.
+        assert!(menu.submenu(&strings, true).is_none());
+        let panel = Rect::new(10.0, 20.0, 220.0, 219.0);
+        let beside = menus::submenu_place(panel, Rect::new(16.0, 205.0, 208.0, 28.0), 6.0);
+        menu.sub = Some(beside);
+        let (model, place) = menu.submenu(&strings, true).expect("open");
+        assert_eq!((model.kind, place), (MenuKind::AddToGroup, beside));
+        // The other group, then a new one: the tab's own is left out.
+        assert_eq!(model.action_at(0), Some(MenuAction::AddToGroup(b)));
+        assert_eq!(model.action_at(2), Some(MenuAction::AddToNewGroup));
+        // A program regroups while it is open (`b` is dropped): the rows and their target do not
+        // move.
         s.set_group(ids[0], "c");
         s.ungroup(ids[2]);
-        assert_eq!(sub.groups, menu.groups);
-        assert_ne!(menu_groups(&s, Some(a)), sub.groups);
-        assert!(!menu_is_moot(&s, &sub));
+        assert!(s.group(b).is_none());
+        assert_eq!(menu.submenu(&strings, true), Some((model, beside)));
+        assert_ne!(menu_groups(&s, Some(a)), menu.groups);
+        assert_eq!(menu.tab, Some(ids[1]));
+        assert!(!menu_is_moot(&s, &menu));
         s.close(ids[1]);
-        assert!(menu_is_moot(&s, &sub));
+        assert!(menu_is_moot(&s, &menu));
     }
 
     #[test]
@@ -6134,6 +6162,7 @@ mod tests {
             place: MenuPlace::At((0.0, 0.0)),
             tab,
             groups: menu_groups(&s, own),
+            sub: None,
         };
         let tab_menu = menu(MenuKind::Tab { closable: true }, Some(ids[0]), None);
         let a_menu = menu(MenuKind::Group { collapsed: false }, None, Some(a));
