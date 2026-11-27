@@ -39,9 +39,9 @@ the reference for every `lunepack` command below:
 | Build inputs | `.github/workflows/release.yml` (Linux, Windows) and `scripts/package-macos.sh` (macOS) build the app and lunepack's runtime for each OS (`scripts/build-lunepack.sh`, `scripts/build-lunepack.ps1`; format: `scripts/make-build-input.py`). |
 
 `[publish]` in `packaging/lunepack.toml` holds the names (`docs/CLI.md` "`[publish]`" has the keys):
-prefix `luneterm`, store `r2`, the account id from `CLOUDFLARE_ACCOUNT_ID`, the public bucket's token
+prefix `luneterm`, store `r2`, the account id from `R2_ACCOUNT_ID`, the public bucket's token
 pair from `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`, the private bucket's pair from
-`R2_STATE_ACCESS_KEY_ID` / `R2_STATE_SECRET_ACCESS_KEY`, buckets `izzat-updates` and
+`R2_PRIVATE_ACCESS_KEY_ID` / `R2_PRIVATE_SECRET_ACCESS_KEY` (the same names as Whipspot's), buckets `izzat-updates` and
 `izzat-updates-publisher`, `keep = 10` releases per channel, `deltas = 3`, `feed_days = 90`, channels
 `stable` and `beta` with a version that has a pre-release part going to `beta` only, and
 `require_targets` the three targets above.
@@ -115,8 +115,10 @@ Publishing stays off until the last step (the repository variable `PUBLISH_READY
 | Environment | Secrets |
 |---|---|
 | `release-pack` | `LUNEPACK_RELEASE_KEY` |
-| `release-push` | `LUNEPACK_RELEASE_KEY`, `CLOUDFLARE_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (the **push** token; the workflow gives it to both pairs) |
-| `release-refresh` | `LUNEPACK_RELEASE_KEY`, `CLOUDFLARE_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (the **refresh-public** token), `R2_STATE_ACCESS_KEY_ID`, `R2_STATE_SECRET_ACCESS_KEY` (the **refresh-private** token) |
+| `release-push` | `LUNEPACK_RELEASE_KEY`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (the **push** token; the workflow gives it to both pairs) |
+| `release-refresh` | `LUNEPACK_RELEASE_KEY`, `R2_ACCOUNT_ID`, `R2_REFRESH_PUBLIC_ACCESS_KEY_ID`, `R2_REFRESH_PUBLIC_SECRET_ACCESS_KEY` (the **refresh-public** token), `R2_REFRESH_PRIVATE_ACCESS_KEY_ID`, `R2_REFRESH_PRIVATE_SECRET_ACCESS_KEY` (the **refresh-private** token); the workflow maps them onto `[publish]`'s variables |
+
+The secret and variable names are the same as Whipspot's (one standard for lunepack apps).
 
 Set them from files or prompts, never a value on the command line:
 `gh secret set LUNEPACK_RELEASE_KEY --env release-push --repo Luneterm/luneterm < keys/release.key`.
@@ -130,7 +132,7 @@ only). Never give the refresh job one token that can write both buckets. R2 answ
 
 **Delete the old repository secrets** (the earlier publisher read them from the repository, which no
 job does now): `LUNEPACK_RELEASE_KEY`, `R2_UPDATES_TOKEN`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
-`CLOUDFLARE_ACCOUNT_ID` at repository level (`gh secret list --repo Luneterm/luneterm`, then `gh secret
+`CLOUDFLARE_ACCOUNT_ID` (now `R2_ACCOUNT_ID`, an environment secret) at repository level (`gh secret list --repo Luneterm/luneterm`, then `gh secret
 delete <name>`), once the environments hold the new ones.
 
 ### Bucket and domain (done 2026-11-26)
@@ -182,8 +184,8 @@ REL=$(lunepack keys show --sign file:keys/release.key | sed -n 's/^public: //p')
    `[publish]`'s; never in CI), dry run first (PUBLISHING.md step 5):
 
    ```bash
-   export CLOUDFLARE_ACCOUNT_ID=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=...   # the push token
-   export R2_STATE_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" R2_STATE_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+   export R2_ACCOUNT_ID=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=...   # the push token
+   export R2_PRIVATE_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" R2_PRIVATE_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
    lunepack --config "$CFG" publish init --release-dir release --dry-run
    lunepack --config "$CFG" publish init --release-dir release
    ```
