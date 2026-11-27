@@ -73,7 +73,8 @@ use crate::notices::{self, Admit, DrawnRows, Inbox, PressClock, TOAST_LIFE, Toas
 use crate::pacing::{self, EventKind, Pacer, PresentAsk};
 use crate::palettes;
 use crate::persist::{
-    Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, snapshot,
+    Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, restore_layout,
+    snapshot,
 };
 use crate::render::{Content, FadingGrid, InboxDraw, LinkTip, MenuDraw, Placed, Renderer};
 use crate::session::{
@@ -577,6 +578,24 @@ fn admit_input(hold_until: Option<Instant>, tab: Option<&mut Tab>, now: Instant)
         tab.note_input(now);
     }
     true
+}
+
+/// What a save keeps of each tab, in order ([`snapshot`] decides which are written).
+fn tab_infos(tabs: &TabSet<Tab>) -> Vec<TabInfo> {
+    tabs.iter()
+        .map(|(id, t)| TabInfo {
+            started: t.session.is_some(),
+            launch_dir: t.launch_dir.clone(),
+            live_dir: t
+                .cwd
+                .as_deref()
+                .filter(|c| cwd::syntax(c).is_some())
+                .map(str::to_owned),
+            title: t.manual_name().map(str::to_owned),
+            program: t.program,
+            group: tabs.group_of(id).and_then(|g| tabs.group(g)).cloned(),
+        })
+        .collect()
 }
 
 /// What `luneterm ctl` reads of a tab (`ctl::handler`): never its session or what it shows.
@@ -1667,10 +1686,11 @@ impl App {
     /// end, a new one where the user's new tab goes (after the active tab's group, D22). On
     /// failure the tab's grid tells why (D12) and it can be closed.
     /// `restored` is the saved tab this one comes back as: its launch directory and its name.
-    fn open_tab(&mut self, dir: Option<PathBuf>, restored: Option<&TabState>) {
+    /// The tab's id, or `None` when none was made (no window yet).
+    fn open_tab(&mut self, dir: Option<PathBuf>, restored: Option<&TabState>) -> Option<TabId> {
         // A shell is never refused (only a program is).
         let Some(Ok(tab)) = self.new_tab(dir, restored, None) else {
-            return;
+            return None;
         };
         let failed = tab.failure.is_some();
         let before = self.tabs.active();
@@ -1684,6 +1704,7 @@ impl App {
             self.guard.spawn_failed(id);
         }
         self.active_changed(before);
+        Some(id)
     }
 
     /// A tab with its child started at the window's grid size, not yet in the list: the user's
@@ -1813,7 +1834,8 @@ impl App {
 
     /// The tabs of the last run come back: each starts in its live directory, else the one it was
     /// started in, else the default (the directories are checked on a thread of their own, since a
-    /// check stats the disk), with the name the user gave it. With nothing to restore, one tab.
+    /// check stats the disk), with the name the user gave it and in its group. With nothing to
+    /// restore, one tab.
     fn start_tabs(&mut self) {
         let Some(workspace) = self.startup_workspace.take() else {
             self.open_tab(None, None);
@@ -1833,18 +1855,22 @@ impl App {
             .unwrap_or_else(|| vec![None; saved.len()]);
         // Restoring a workspace is a batch of programmatic switches: none of them fades.
         self.restoring = true;
-        for (state, dir) in saved.iter().zip(dirs) {
-            self.open_tab(dir, Some(state));
-        }
+        let ids: Vec<Option<TabId>> = saved
+            .iter()
+            .zip(dirs)
+            .map(|(state, dir)| self.open_tab(dir, Some(state)))
+            .collect();
         let before = self.tabs.active();
-        self.tabs.activate_index(workspace.active);
+        restore_layout(&mut self.tabs, &ids, &workspace);
         self.active_changed(before);
         self.restoring = false;
         // What was restored is what the file says: nothing to write yet.
         self.ws_dirty = false;
     }
 
-    /// The tabs changed. `user`: the user did it (not a shell dying, not a directory report).
+    /// Something the workspace saves changed: the tabs, their order, the active one, a name, or a
+    /// group (its tabs, colour or collapsed state). `user`: the user did it (not a shell dying, a
+    /// directory report or a `ctl` request).
     fn workspace_changed(&mut self, user: bool) {
         if self.ws_frozen {
             return;
@@ -1868,20 +1894,7 @@ impl App {
         }
         self.ws_dirty = false;
         self.ws_last_write = now;
-        let infos: Vec<TabInfo> = self
-            .tabs
-            .iter()
-            .map(|(_, t)| TabInfo {
-                started: t.session.is_some(),
-                launch_dir: t.launch_dir.clone(),
-                live_dir: t
-                    .cwd
-                    .as_deref()
-                    .filter(|c| cwd::syntax(c).is_some())
-                    .map(str::to_owned),
-                title: t.manual_name().map(str::to_owned),
-            })
-            .collect();
+        let infos = tab_infos(&self.tabs);
         let active = self
             .tabs
             .active()
@@ -2100,8 +2113,9 @@ impl App {
                         win.window.focus_window();
                     }
                 }
-                // The handler expanded its group; the side pane scrolls to the active row.
-                ControlEffect::Reveal(_) => {}
+                // The handler made it active and expanded its group (both saved); the side pane
+                // scrolls to the active row.
+                ControlEffect::Reveal(_) => self.workspace_changed(false),
                 ControlEffect::Hold => self.input_hold_until = Some(now + INPUT_HOLD),
                 ControlEffect::Regrouped(id) => {
                     if self.tabs.get(id).is_some_and(|t| !t.program) {
@@ -2364,7 +2378,8 @@ impl App {
         if !exited.is_empty() {
             // The child is gone: its tab closes, the others stay (the last one takes the app).
             for id in &exited {
-                if let Some(tab) = self.tabs.get(*id) {
+                // A program tab is not saved, so how soon it ends says nothing about the list.
+                if let Some(tab) = self.tabs.get(*id).filter(|t| !t.program) {
                     // A child that dies at its start is a failed start, not a decision.
                     self.guard.child_exited(*id, tab.started.elapsed());
                 }
@@ -4349,6 +4364,7 @@ fn end_left_tab_holds(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::groups::{Group, GroupColor};
     use lune_vt::TerminalMouseEventType;
 
     /// One frame of the app's loop as the trace sees it: begun, its input taken, drawn with
@@ -5013,6 +5029,40 @@ mod tests {
         assert!(b.due(t0 + ms(2000), false));
         assert!(!b.due(t0 + ms(3999), false));
         assert!(b.due(t0 + ms(4000), false));
+    }
+
+    #[test]
+    fn a_save_is_told_each_tabs_group_and_whether_it_runs_a_program() {
+        let mut tabs: TabSet<Tab> = TabSet::new();
+        let tab = |origin, program| {
+            let mut t = Tab::empty(palettes::theme_of(&Settings::default().palette));
+            t.origin = origin;
+            t.program = program;
+            t
+        };
+        let user = tabs.push(tab(Origin::User, false));
+        let shell = tabs.push(tab(Origin::Control, false));
+        tabs.push(tab(Origin::Control, true));
+        let g = tabs.set_group(user, "work");
+        tabs.set_group(shell, "work");
+        tabs.recolor_group(g, GroupColor::Pink);
+        tabs.set_collapsed(g, true);
+
+        let infos = tab_infos(&tabs);
+        assert_eq!(
+            infos.iter().map(|i| i.program).collect::<Vec<_>>(),
+            [false, false, true],
+            "a control tab running a shell is a tab like any other"
+        );
+        let work = Group {
+            name: "work".into(),
+            color: GroupColor::Pink,
+            collapsed: true,
+        };
+        assert_eq!(
+            infos.into_iter().map(|i| i.group).collect::<Vec<_>>(),
+            [Some(work.clone()), Some(work), None]
+        );
     }
 
     #[test]

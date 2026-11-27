@@ -37,7 +37,7 @@ pub use json_write::{Json, WriteError};
 pub use settings_file::{SETTINGS_VERSION, SettingsDoc, parse_settings, render_settings};
 pub use workspace::{
     MAX_TABS, SaveGuard, TabInfo, TabState, WORKSPACE_VERSION, Workspace, parse_workspace,
-    render_workspace, restore_dirs, snapshot,
+    render_workspace, restore_dirs, restore_layout, snapshot,
 };
 
 pub const SETTINGS_FILE: &str = "settings.json";

@@ -6,7 +6,9 @@ use std::path::PathBuf;
 
 use super::workspace::{SaveGuard, TabInfo, snapshot};
 use super::*;
+use crate::groups::{Group, GroupColor};
 use crate::settings::Settings;
+use crate::tabs::{TabId, TabSet};
 
 /// A fresh scratch directory path (not created).
 fn scratch(tag: &str) -> PathBuf {
@@ -340,6 +342,8 @@ fn info(started: bool, dir: &str) -> TabInfo {
         launch_dir: Some(dir.into()),
         live_dir: None,
         title: None,
+        program: false,
+        group: None,
     }
 }
 
@@ -364,6 +368,8 @@ fn restore(
                 launch_dir: t.working_directory.clone(),
                 live_dir: t.current_directory.clone(),
                 title: t.manual_title.clone(),
+                program: false,
+                group: None,
             }
         })
         .collect()
@@ -382,7 +388,7 @@ fn tabs_that_fail_to_start_never_shrink_the_saved_workspace() {
             })
             .collect(),
         active: 2,
-        unknown: Vec::new(),
+        ..Workspace::default()
     };
     let text = render_workspace(&saved).expect("writes");
     store.save(WORKSPACE_FILE, text.as_bytes()).expect("saves");
@@ -438,6 +444,328 @@ fn a_quick_exit_blocks_the_write_until_the_user_acts() {
     assert!(snapshot(&tabs, 0, &guard, &[]).is_none());
     guard.user_acted();
     assert!(snapshot(&tabs, 0, &guard, &[]).is_some());
+}
+
+// ------------------------------------------------------------------------------- groups
+
+/// What the app tells [`snapshot`] of a set whose items are the tabs' own facts.
+fn infos(tabs: &TabSet<TabInfo>) -> Vec<TabInfo> {
+    tabs.iter()
+        .map(|(id, t)| TabInfo {
+            group: tabs.group_of(id).and_then(|g| tabs.group(g)).cloned(),
+            ..t.clone()
+        })
+        .collect()
+}
+
+/// The text the app writes for `tabs`.
+fn saved_text(tabs: &TabSet<TabInfo>) -> String {
+    let active = tabs.active().and_then(|a| tabs.index_of(a)).unwrap_or(0);
+    let ws = snapshot(&infos(tabs), active, &SaveGuard::new(), &[]).expect("writes");
+    render_workspace(&ws).expect("writes")
+}
+
+/// The app's start: a tab per saved one, each added at the end, then the layout.
+fn restored(saved: &Workspace) -> (TabSet<TabInfo>, Vec<Option<TabId>>) {
+    let mut tabs = TabSet::new();
+    let ids: Vec<Option<TabId>> = saved
+        .tabs
+        .iter()
+        .map(|t| {
+            Some(tabs.push(TabInfo {
+                started: true,
+                launch_dir: t.working_directory.clone(),
+                live_dir: t.current_directory.clone(),
+                title: t.manual_title.clone(),
+                program: false,
+                group: None,
+            }))
+        })
+        .collect();
+    restore_layout(&mut tabs, &ids, saved);
+    tabs.assert_invariants();
+    (tabs, ids)
+}
+
+/// A started tab with a title and no directory (what makes a directory absolute differs by OS,
+/// and these tests read back what they write).
+fn titled(title: &str) -> TabInfo {
+    TabInfo {
+        launch_dir: None,
+        title: Some(title.into()),
+        ..info(true, "")
+    }
+}
+
+#[test]
+fn a_program_tab_is_never_saved_and_neither_is_a_group_of_program_tabs_only() {
+    let mut tabs = TabSet::new();
+    let a = tabs.push(titled("user"));
+    let p = tabs.push(TabInfo {
+        program: true,
+        ..titled("program-in-work")
+    });
+    // A shell tab a program opened is a tab like any other: the app says it runs no program.
+    let b = tabs.push(titled("control-shell"));
+    let q = tabs.push(TabInfo {
+        program: true,
+        ..titled("program-alone")
+    });
+    for id in [a, p, b] {
+        tabs.set_group(id, "work");
+    }
+    tabs.set_group(q, "agents");
+    tabs.activate(b);
+    let ws = snapshot(&infos(&tabs), 2, &SaveGuard::new(), &[]).expect("writes");
+    let titles: Vec<_> = ws.tabs.iter().map(|t| t.manual_title.as_deref()).collect();
+    assert_eq!(titles, [Some("user"), Some("control-shell")]);
+    assert_eq!(ws.active, 1, "the active tab's place among the saved");
+    assert_eq!(ws.groups.len(), 1);
+    assert_eq!(ws.groups[0].name, "work");
+    let text = render_workspace(&ws).expect("writes");
+    assert!(
+        !text.contains("program") && !text.contains("agents"),
+        "{text}"
+    );
+
+    // An active program tab is not there to come back to: the first saved tab is.
+    let ws = snapshot(&infos(&tabs), 1, &SaveGuard::new(), &[]).expect("writes");
+    assert_eq!(ws.active, 0);
+
+    // Only program tabs: an empty list, with no `groups`.
+    tabs.close(a);
+    tabs.close(b);
+    let text = saved_text(&tabs);
+    assert_eq!(text, "{\"version\":1,\"active\":0,\"tabs\":[]}\n");
+}
+
+#[test]
+fn a_restored_active_tab_in_a_collapsed_group_stays_active_and_the_group_collapsed() {
+    let saved = parse_workspace(
+        br#"{"version":1,"active":1,"tabs":[{"title":"a","group":"g"},{"title":"b","group":"g"},
+            {"title":"c"},{"title":"d","group":"h"}],
+            "groups":[{"name":"g","color":"orange","collapsed":true},
+            {"name":"h","color":"orange","collapsed":false}]}"#,
+    )
+    .expect("read");
+    let (tabs, ids) = restored(&saved);
+    assert_eq!(tabs.active(), ids[1]);
+    assert_eq!(
+        tabs.ids(),
+        ids.iter().copied().flatten().collect::<Vec<_>>()
+    );
+    let groups: Vec<Group> = tabs.groups().map(|(_, g)| g.clone()).collect();
+    // The saved colours, not the ones new groups would get (both may be the same one).
+    assert_eq!(
+        groups,
+        [
+            Group {
+                name: "g".into(),
+                color: GroupColor::Orange,
+                collapsed: true
+            },
+            Group {
+                name: "h".into(),
+                color: GroupColor::Orange,
+                collapsed: false
+            },
+        ]
+    );
+
+    // A saved tab no tab was made for leaves the others as they are.
+    let mut tabs: TabSet<()> = TabSet::new();
+    let first = tabs.push(());
+    let last = tabs.push(());
+    restore_layout(&mut tabs, &[Some(first), None, Some(last), None], &saved);
+    tabs.assert_invariants();
+    assert_eq!(tabs.group_of(last), None);
+    assert_eq!(
+        tabs.group_of(first).and_then(|g| tabs.group(g)),
+        Some(&saved.groups[0])
+    );
+    assert_eq!(tabs.active(), Some(last), "nothing to activate: unchanged");
+}
+
+#[test]
+fn random_groups_saved_restored_and_saved_again_are_the_same_file() {
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move |n: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % n as u64) as usize
+    };
+    let names = ["a", "b \"q\"", "é 組", "Group 1"];
+    let (mut grouped, mut collapsed_active, mut programs) = (0, 0, 0);
+    for seed in 0..500 {
+        let mut tabs = TabSet::new();
+        let ids: Vec<TabId> = (0..next(40))
+            .map(|i| {
+                tabs.push(TabInfo {
+                    program: next(5) == 0,
+                    started: next(12) != 0,
+                    ..titled(&format!("t{i}"))
+                })
+            })
+            .collect();
+        for &id in &ids {
+            if next(3) != 0 {
+                let g = tabs.set_group(id, names[next(names.len())]);
+                if next(3) == 0 {
+                    tabs.recolor_group(g, GroupColor::ALL[next(9)]);
+                }
+                if next(3) == 0 {
+                    tabs.set_collapsed(g, next(2) == 0);
+                }
+            }
+        }
+        if !ids.is_empty() {
+            tabs.activate(ids[next(ids.len())]);
+        }
+        let text = saved_text(&tabs);
+        let read = parse_workspace(text.as_bytes()).expect("reads");
+        assert_eq!(
+            render_workspace(&read).expect("writes"),
+            text,
+            "seed {seed}"
+        );
+        let (again, _) = restored(&read);
+        // An empty list restores as no tabs at all.
+        assert_eq!(saved_text(&again), text, "seed {seed}");
+
+        let expected: Vec<String> = infos(&tabs)
+            .into_iter()
+            .filter(|t| t.started && !t.program)
+            .filter_map(|t| t.title)
+            .take(MAX_TABS)
+            .collect();
+        let got: Vec<String> = read
+            .tabs
+            .iter()
+            .filter_map(|t| t.manual_title.clone())
+            .collect();
+        assert_eq!(got, expected, "seed {seed}");
+        grouped += usize::from(!read.groups.is_empty());
+        programs += usize::from(infos(&tabs).iter().any(|t| t.program));
+        collapsed_active += usize::from(
+            again
+                .active()
+                .and_then(|a| again.group_of(a))
+                .and_then(|g| again.group(g))
+                .is_some_and(|g| g.collapsed),
+        );
+    }
+    assert!(
+        grouped > 100 && programs > 100 && collapsed_active > 10,
+        "{grouped} {programs} {collapsed_active}"
+    );
+}
+
+/// v0.8.0's reader, copied from the tag (`git show
+/// v0.8.0:crates/luneterm/src/persist/workspace.rs`): it takes the tab members it knows and keeps
+/// the top-level ones it does not. Its writer is this build's with no group to write.
+mod v0_8_0 {
+    use lune_ui::json::{self, Value};
+
+    use super::super::{Json, Reject, TabState, WORKSPACE_VERSION, Workspace, read_version};
+    use crate::cwd;
+    use crate::title::{self, DEFAULT_TITLE};
+
+    fn string_member<'a>(members: &'a [(String, Value)], key: &str) -> Option<&'a str> {
+        match members.iter().find(|(k, _)| k == key) {
+            Some((_, Value::String(s))) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn dir_text(members: &[(String, Value)], key: &str) -> Option<String> {
+        let raw = string_member(members, key)?;
+        cwd::syntax(raw).map(|_| raw.to_owned())
+    }
+
+    fn title_text(members: &[(String, Value)]) -> Option<String> {
+        let raw = string_member(members, "title")?;
+        let capped: String = raw.chars().take(256).collect();
+        let clean = title::sanitize(&capped);
+        (clean != DEFAULT_TITLE).then_some(clean)
+    }
+
+    pub(super) fn parse_workspace(bytes: &[u8]) -> Result<Workspace, Reject> {
+        let value = json::parse(bytes).map_err(|_| Reject::Unreadable)?;
+        let Value::Object(members) = &value else {
+            return Err(Reject::NotAnObject);
+        };
+        read_version(members, WORKSPACE_VERSION)?;
+        let tabs: Vec<TabState> = match members.iter().find(|(k, _)| k == "tabs") {
+            Some((_, Value::Array(items))) => items
+                .iter()
+                .filter_map(|item| match item {
+                    Value::Object(tab) => Some(TabState {
+                        working_directory: dir_text(tab, "cwd"),
+                        current_directory: dir_text(tab, "live_cwd"),
+                        manual_title: title_text(tab),
+                        group: None,
+                    }),
+                    _ => None,
+                })
+                .take(32)
+                .collect(),
+            _ => Vec::new(),
+        };
+        let active = members
+            .iter()
+            .find(|(k, _)| k == "active")
+            .and_then(|(_, v)| v.as_int().ok())
+            .and_then(|n| usize::try_from(n).ok())
+            .unwrap_or(0)
+            .min(tabs.len().saturating_sub(1));
+        let unknown = members
+            .iter()
+            .filter(|(k, _)| !matches!(k.as_str(), "version" | "active" | "tabs"))
+            .map(|(k, v)| (k.clone(), Json::from_value(v)))
+            .collect();
+        Ok(Workspace {
+            tabs,
+            active,
+            groups: Vec::new(),
+            unknown,
+        })
+    }
+}
+
+#[test]
+fn v0_8_0_takes_a_file_with_groups_keeping_the_list_and_dropping_who_is_in_them() {
+    let mut tabs = TabSet::new();
+    let a = tabs.push(titled("a"));
+    let b = tabs.push(titled("b"));
+    tabs.push(titled("c"));
+    tabs.set_group(a, "work");
+    let g = tabs.set_group(b, "work");
+    tabs.set_collapsed(g, true);
+    tabs.activate(b);
+    let text = saved_text(&tabs);
+    assert!(text.contains(r#""group":"work""#), "{text}");
+
+    let s = Scratch::new("v080");
+    let store = s.store();
+    store.save(WORKSPACE_FILE, text.as_bytes()).expect("saves");
+    let Loaded::Ok(old) = store.load(WORKSPACE_FILE, v0_8_0::parse_workspace) else {
+        panic!("v0.8.0 refused the file");
+    };
+    assert_eq!(names(&s.0), [WORKSPACE_FILE], "no backup was made");
+    assert_eq!((old.tabs.len(), old.active), (3, 1));
+
+    // What it writes back: the top-level list is kept, who is in a group is not.
+    let rewritten = render_workspace(&old).expect("writes");
+    assert!(
+        rewritten.contains(r#""groups":[{"name":"work""#),
+        "{rewritten}"
+    );
+    assert!(!rewritten.contains(r#""group":"#), "{rewritten}");
+    // This build reads that as ungrouped tabs.
+    let back = parse_workspace(rewritten.as_bytes()).expect("reads");
+    assert!(back.groups.is_empty() && back.tabs.iter().all(|t| t.group.is_none()));
+    assert_eq!((back.tabs.len(), back.active), (3, 1));
 }
 
 // ------------------------------------------------------------------------------ Persist
