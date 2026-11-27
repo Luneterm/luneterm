@@ -7,6 +7,7 @@
 #![deny(unsafe_code)]
 
 pub mod app;
+pub mod ctl;
 pub mod cwd;
 pub mod demo;
 pub mod double_click;

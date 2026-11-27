@@ -11,7 +11,7 @@ pub const MAX_SCAN_CHARS: usize = 4096;
 
 /// A Unicode bidi control that can reorder the text around it: ALM, LRM, RLM, the embeddings and
 /// overrides (U+202A to U+202E) and the isolates (U+2066 to U+2069).
-fn is_bidi_control(c: char) -> bool {
+pub(crate) fn is_bidi_control(c: char) -> bool {
     matches!(
         c,
         '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
