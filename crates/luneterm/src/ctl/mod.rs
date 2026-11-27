@@ -1,14 +1,19 @@
 //! `luneterm ctl`, tab control from programs: Protocol 1 (the orch contract) with its revision 3
-//! amendment, `tab close <id> [--any-origin]`. This module is the core both ends share: the
-//! grammar and limits of the words ([`parse`]), the framing on the wire ([`wire`]) and the JSON
-//! lines of the replies ([`reply`]). It opens nothing: [`wire`] reads from the reader it is
-//! given.
+//! amendment, `tab close <id> [--any-origin]`. The core both ends share: the grammar and limits
+//! of the words ([`parse`]), the framing on the wire ([`wire`]) and the JSON lines of the replies
+//! ([`reply`]); these open nothing, [`wire`] reads from the reader it is given. Around it:
+//! [`endpoint`] (where an instance listens), [`server`] (the app's end), [`client`]
+//! (`luneterm ctl`) and [`token`] (what names an instance).
 //!
 //! A request comes from any process of the same user, so it is untrusted: nothing here panics,
 //! every length is checked before it is allocated, and input over a limit is refused, never cut.
 
 mod args;
+pub mod client;
+pub mod endpoint;
 pub mod reply;
+pub mod server;
+pub mod token;
 pub mod wire;
 
 use std::path::PathBuf;

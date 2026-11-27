@@ -1,9 +1,9 @@
 //! Luneterm app library: the session core and the app shell, so the app's logic is testable and
 //! M10 builds on it (plan M9 D19).
 
-// `unsafe` only in platform modules (links/open.rs, Windows; os_event.rs, macOS; efficiency/windows.rs
-// and efficiency/macos.rs), each block with
-// a SAFETY comment.
+// `unsafe` only in platform modules (links/open.rs, Windows; os_event.rs and efficiency/macos.rs,
+// macOS; efficiency/windows.rs; shell_integration/mod.rs and ctl/endpoint/unix.rs, Unix), each block
+// with a SAFETY comment.
 #![deny(unsafe_code)]
 
 pub mod app;
