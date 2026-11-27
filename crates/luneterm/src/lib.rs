@@ -24,6 +24,7 @@ mod os_event;
 pub mod outline;
 pub mod pacing;
 pub mod palettes;
+pub mod pane;
 pub mod persist;
 pub mod render;
 pub mod session;

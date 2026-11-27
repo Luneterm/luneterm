@@ -74,6 +74,7 @@ use crate::menus::{self, GroupOp, MenuAction, MenuGroups, MenuKind, MenuModel, T
 use crate::notices::{self, Admit, DrawnRows, Inbox, PressClock, TOAST_LIFE, ToastSlots, route};
 use crate::pacing::{self, EventKind, Pacer, PresentAsk};
 use crate::palettes;
+use crate::pane::{self, PaneEdge, WidthDrag};
 use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, restore_layout,
     snapshot,
@@ -455,6 +456,7 @@ fn run_window(launch: Launch) -> ExitCode {
                 settings: Settings::default(),
                 workspace: None,
                 notices: Vec::new(),
+                save_view: false,
             },
         ),
     };
@@ -467,6 +469,11 @@ fn run_window(launch: Launch) -> ExitCode {
         config_dir,
     );
     app.present = present;
+    // The view this start decided (D23) is saved now, so that a later start, which finds the
+    // files this one writes, does not decide again.
+    if start.save_view {
+        app.persist.save_settings(&app.settings);
+    }
     // The update worker (none for a copy lunepack did not install); it touches the network only
     // when a check or download is asked for.
     app.health_pending = launch.pending();
@@ -1124,6 +1131,8 @@ struct App {
     inbox_drawn: DrawnRows,
     wheel: WheelState,
     thumb_drag: Option<ThumbDrag>,
+    /// A drag of the side pane's right edge under way (its width is saved when it ends).
+    pane_drag: Option<WidthDrag>,
     bell: BellLimiter,
     /// Bells and program notifications, the one store behind the tab dots, the bell and the list.
     /// In memory only (D15).
@@ -1240,6 +1249,7 @@ impl App {
             inbox_drawn: DrawnRows::default(),
             wheel: WheelState::default(),
             thumb_drag: None,
+            pane_drag: None,
             bell: BellLimiter::default(),
             inbox: Inbox::new(),
             inbox_ring: None,
@@ -1767,8 +1777,59 @@ impl App {
         }
     }
 
+    // ----------------------------------------------------------------------------- the side pane
+
+    /// Shows the side pane or the top bar (the saved choice, D20): live, and saved at once.
+    fn set_pane_shown(&mut self, shown: bool) {
+        if self.settings.side_pane == Some(shown) {
+            return;
+        }
+        self.settings.side_pane = Some(shown);
+        self.sync_pane();
+        self.settings_dirty = Some(Instant::now());
+        self.flush_settings(true);
+    }
+
+    /// A frame of the pane's edge (D26): a drag widens or narrows the pane at once and saves the
+    /// width once, when it ends. `window_w` is the frame's window width, logical px.
+    fn pane_edge(&mut self, edge: Option<PaneEdge>, window_w: f32) {
+        let width = self.settings.side_pane_width;
+        let step = pane::drag_step(&mut self.pane_drag, edge, width, window_w);
+        if let Some(width) = step.width {
+            self.settings.side_pane_width = width;
+            self.sync_pane();
+        }
+        if step.save {
+            self.settings_dirty = Some(Instant::now());
+            self.flush_settings(true);
+        }
+    }
+
+    /// The renderer lays the next frame out by the saved view and width; the new body reaches the
+    /// sessions as a window resize's does (`redraw`).
+    fn sync_pane(&mut self) {
+        if let Some(stack) = &mut self.stack {
+            stack
+                .renderer
+                .set_pane(self.settings.pane_wanted(), self.settings.side_pane_width);
+        }
+        self.request_redraw();
+    }
+
     /// A menu row was picked.
     fn run_menu_action(&mut self, action: MenuAction, event_loop: &ActiveEventLoop) {
+        // A row picked from the pane's footer while the settings page covers the card (only the
+        // pane view opens a menu over it) leaves the page first, as a press on a tab row does
+        // (D31).
+        if !matches!(
+            action,
+            MenuAction::Settings
+                | MenuAction::About
+                | MenuAction::ShowSidePane
+                | MenuAction::HideSidePane
+        ) {
+            self.close_page();
+        }
         match action {
             MenuAction::NewTab => self.new_tab_request(),
             MenuAction::Close => {
@@ -1798,6 +1859,8 @@ impl App {
             MenuAction::CopyCwd => self.copy_cwd(),
             MenuAction::Settings => self.open_page(Section::Appearance),
             MenuAction::About => self.open_page(Section::About),
+            MenuAction::ShowSidePane => self.set_pane_shown(true),
+            MenuAction::HideSidePane => self.set_pane_shown(false),
             MenuAction::Copy => {
                 if self.has_selection() {
                     self.send(Command::CopySelection);
@@ -2574,6 +2637,7 @@ impl App {
                     self.open_page(Section::Appearance);
                 }
             }
+            AppCommand::TogglePane => self.set_pane_shown(!self.settings.pane_wanted()),
         }
         if self.tabs.active() != before {
             self.workspace_changed(true);
@@ -3365,6 +3429,7 @@ impl App {
         let (page_out, menu_out, overflow) = (drawn.page, drawn.menu, drawn.overflow);
         let (inbox_clicked, inbox_out) = (drawn.inbox_clicked, drawn.inbox);
         let tab_context = drawn.tab_context;
+        let (pane_toggle, pane_edge) = (drawn.pane_toggle, drawn.pane_edge);
         // Closing the window is closing every tab: it asks like they do.
         let close_asked = out
             .commands
@@ -3439,6 +3504,11 @@ impl App {
                 self.new_tab_request();
             }
         }
+        // After the page's edits, which were made from the settings as the frame began.
+        self.pane_edge(pane_edge, input.size.0);
+        if pane_toggle {
+            self.set_pane_shown(!self.settings.pane_wanted());
+        }
         if let Some(r) = menu_out {
             let action = r.picked.and_then(|i| menu_model.as_ref()?.1.action_at(i));
             let target = menu_model.as_ref().and_then(|(m, _)| m.tab);
@@ -3480,12 +3550,20 @@ impl App {
             self.request_redraw();
         }
         if let Some(rect) = overflow {
+            // From the strip's `⋯` it hangs below; from the pane's footer it opens upward (D28).
+            let (side, align) = if self.placed.is_some_and(|p| p.layout.pane.is_some()) {
+                (Side::Top, PlaceAlign::Start)
+            } else {
+                (Side::Bottom, PlaceAlign::End)
+            };
             self.menu = Some(OpenMenu {
-                kind: MenuKind::App,
+                kind: MenuKind::App {
+                    pane: self.settings.pane_wanted(),
+                },
                 place: MenuPlace::Anchor {
                     rect,
-                    side: Side::Bottom,
-                    align: PlaceAlign::End,
+                    side,
+                    align,
                     gap: 4.0,
                 },
                 tab: None,
@@ -3555,7 +3633,9 @@ impl App {
             }
         }
         if open && !was_open {
-            // The list covers the terminal: what belonged to its pointer is dropped, a menu closes.
+            // The list covers the terminal: what belonged to its pointer is dropped, a menu
+            // closes, and so does the settings page (the pane's bell works while it is open).
+            self.close_page();
             self.menu = None;
             self.pointer_left_terminal();
         }
@@ -5814,7 +5894,7 @@ mod tests {
         let tab_menu = menu(MenuKind::Tab { closable: true }, Some(ids[0]), None);
         let a_menu = menu(MenuKind::Group { collapsed: false }, None, Some(a));
         let b_menu = menu(MenuKind::Group { collapsed: false }, None, Some(b));
-        let app_menu = menu(MenuKind::App, None, None);
+        let app_menu = menu(MenuKind::App { pane: false }, None, None);
         assert_eq!(a_menu.groups.open.len(), 2);
         // The only member of `a` is ungrouped, and the first tab closes.
         s.ungroup(ids[1]);

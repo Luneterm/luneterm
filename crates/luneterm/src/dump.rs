@@ -34,12 +34,14 @@ use crate::groups::{GroupColor, GroupId};
 use crate::links;
 use crate::menus::{MenuGroups, MenuKind, MenuModel};
 use crate::notices::{Admit, Inbox, TOAST_LIFE, ToastSlots};
+use crate::pane;
 use crate::render::{Content, InboxDraw, LinkTip, MenuDraw, Renderer};
+use crate::settings::{DEFAULT_PANE_WIDTH, MAX_PANE_WIDTH, MIN_PANE_WIDTH};
 use crate::settings::{Settings, Theme};
 use crate::settings_page::{PageState, PageView, Section};
 use crate::shell::{
-    CLOSE_SESSION_TITLE, HOST, InboxButton, InboxList, Layout, Modal, NoticeTexts, ScrollView,
-    StripTab, TAB_CLOSABLE, close_group_message, notice_toast,
+    CLOSE_SESSION_TITLE, Chrome, HOST, InboxButton, InboxList, Layout, Modal, NoticeTexts,
+    ScrollView, StripTab, TAB_CLOSABLE, WINDOWS_CHROME, close_group_message, notice_toast,
 };
 use crate::spawn::SpawnFailure;
 use crate::tabs::confirm_message;
@@ -261,7 +263,32 @@ struct Scene {
     progress: Option<usize>,
     /// A full inbox (the header button, and the list when open); the clock is [`INBOX_NOW`].
     inbox: Option<InboxScene>,
+    /// The saved choice is the side pane, this wide; `None` is the top bar.
+    pane: Option<u32>,
+    /// The chrome the frame is drawn with.
+    chrome: Chrome,
+    /// The window's width, logical px (its height is [`SIZE`]'s).
+    width: u32,
 }
+
+/// The pane at its default width.
+const PANE: Option<u32> = Some(DEFAULT_PANE_WIDTH);
+
+/// The inbox with what the scene's notices put in it: the footer bell, the list closed.
+const NOTICE_BELL: Option<InboxScene> = Some(InboxScene {
+    fill: |_| {},
+    open: false,
+    scroll: 0.0,
+    ring_ago_ms: None,
+});
+
+/// The mockup's four rows, the list open.
+const FOUR_OPEN: Option<InboxScene> = Some(InboxScene {
+    fill: fill_four,
+    open: true,
+    scroll: 0.0,
+    ring_ago_ms: None,
+});
 
 /// 200 lines of history above a 35-line screen, scrolled to the middle: the thumb shows.
 const SCROLLED: ScrollView = ScrollView {
@@ -321,6 +348,9 @@ const BASE: Scene = Scene {
     toasts: false,
     progress: None,
     inbox: None,
+    pane: None,
+    chrome: HOST,
+    width: SIZE.0 as u32,
 };
 
 const fn page(section: Section) -> Option<PageScene> {
@@ -867,6 +897,131 @@ const SCENES: &[Scene] = &[
         },
         ..BASE
     },
+    // The side pane view (the frame: header, footer, the empty list): both looks, the footer with
+    // and without the bell, the menus opening upward from it, Windows chrome, opaque, the settings
+    // page in the card, and the width's two limits.
+    Scene {
+        name: "pane@2x.png",
+        tabs: FOUR,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-pane@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "pane-inbox@2x.png",
+        tabs: FOUR,
+        notices: ATTENTION,
+        inbox: NOTICE_BELL,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-pane-inbox@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        notices: ATTENTION,
+        inbox: NOTICE_BELL,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "pane-menu-app@2x.png",
+        tabs: FOUR,
+        menu: MenuScene::App,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "pane-inbox-open@2x.png",
+        tabs: FOUR,
+        inbox: FOUR_OPEN,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "pane-windows@2x.png",
+        tabs: FOUR,
+        pane: PANE,
+        chrome: WINDOWS_CHROME,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-pane-windows@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        pane: PANE,
+        chrome: WINDOWS_CHROME,
+        ..BASE
+    },
+    Scene {
+        name: "pane-opaque@2x.png",
+        tabs: FOUR,
+        glass: false,
+        notices: ATTENTION,
+        inbox: NOTICE_BELL,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "pane-settings@2x.png",
+        tabs: FOUR,
+        notices: ATTENTION,
+        inbox: NOTICE_BELL,
+        page: page(Section::Appearance),
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-pane-200@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        notices: ATTENTION,
+        inbox: NOTICE_BELL,
+        pane: Some(MIN_PANE_WIDTH),
+        ..BASE
+    },
+    Scene {
+        name: "pane-420@2x.png",
+        tabs: FOUR,
+        notices: ATTENTION,
+        inbox: NOTICE_BELL,
+        pane: Some(MAX_PANE_WIDTH),
+        ..BASE
+    },
+    // The top bar with the drawn caption buttons, its show button at the band's left, and the
+    // window one pixel too narrow for the pane that is the saved choice (no show button).
+    Scene {
+        name: "bar-windows@2x.png",
+        tabs: FOUR,
+        notices: ATTENTION,
+        progress: Some(2),
+        chrome: WINDOWS_CHROME,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-bar-windows@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        notices: ATTENTION,
+        progress: Some(2),
+        chrome: WINDOWS_CHROME,
+        ..BASE
+    },
+    Scene {
+        name: "bar-narrow@2x.png",
+        tabs: FOUR,
+        notices: ATTENTION,
+        progress: Some(2),
+        pane: PANE,
+        width: 737,
+        ..BASE
+    },
 ];
 
 /// How long before the last frame the ring scene's ring started: the first peak of the swing.
@@ -949,8 +1104,14 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     r.set_glass(scene.glass, scene.look);
     r.set_term_theme(crate::palettes::theme_of(scene.palette));
     let scale = scene.scale as f32;
-    let size = (SIZE.0 as u32 * scene.scale, SIZE.1 as u32 * scene.scale);
-    let (cols, rows) = r.grid_size(SIZE, scale);
+    let window = (scene.width as f32, SIZE.1);
+    let size = (scene.width * scene.scale, SIZE.1 as u32 * scene.scale);
+    let pane_width = scene.pane.unwrap_or(DEFAULT_PANE_WIDTH);
+    r.set_pane(scene.pane.is_some(), pane_width);
+    let placement = r.place_for(window, scale, scene.chrome).placement;
+    let (cols, rows) = (placement.cols, placement.rows);
+    let view_kind = pane::resolve(scene.pane.is_some(), pane_width, window.0, scene.chrome);
+    let layout = Layout::for_view(Rect::new(0.0, 0.0, window.0, window.1), false, view_kind);
     let failure = SpawnFailure {
         kind: std::io::ErrorKind::NotFound,
         program: "pwsh.exe".to_owned(),
@@ -975,11 +1136,10 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         let uris = links::UriTable::new();
         let span = links::link_at(&grid, LINK_ROW, LINK_COL + 8, &uris)
             .ok_or("the demo URL is not a link")?;
-        let rect = r.place(SIZE, scale).grid_layout().cell_rect(
-            span.row,
-            span.start,
-            span.end + 1 - span.start,
-        );
+        let rect = r
+            .place_for(window, scale, scene.chrome)
+            .grid_layout()
+            .cell_rect(span.row, span.start, span.end + 1 - span.start);
         let url = links::tip_url(&span.uri).ok_or("the demo URL does not pass the check")?;
         let (hover, id) = links::Hover::show(span, &mut grid);
         link_hover = Some((hover, id));
@@ -1084,7 +1244,9 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     let mut model = match scene.menu {
         MenuScene::None => None,
         MenuScene::App => Some(MenuModel::new(
-            MenuKind::App,
+            MenuKind::App {
+                pane: scene.pane.is_some(),
+            },
             &strings,
             cfg!(target_os = "macos"),
         )),
@@ -1095,12 +1257,20 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         )),
     };
     let mut place = match scene.menu {
-        MenuScene::App => MenuPlace::Anchor {
-            rect: Layout::new(Rect::new(0.0, 0.0, SIZE.0, SIZE.1)).overflow,
-            side: Side::Bottom,
-            align: PlaceAlign::End,
-            gap: 4.0,
-        },
+        MenuScene::App => {
+            // As the app: below the strip's button, above the pane's.
+            let (side, align) = if layout.pane.is_some() {
+                (Side::Top, PlaceAlign::Start)
+            } else {
+                (Side::Bottom, PlaceAlign::End)
+            };
+            MenuPlace::Anchor {
+                rect: layout.overflow,
+                side,
+                align,
+                gap: 4.0,
+            }
+        }
         _ => MenuPlace::At(TERMINAL_MENU_AT),
     };
 
@@ -1131,7 +1301,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             );
         }
         let input = RawInput {
-            size: SIZE,
+            size: window,
             scale,
             time: Duration::from_millis(*ms),
             focused: scene.focused,
@@ -1197,7 +1367,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             cursor,
             blink_on: true,
             scroll: scene.scroll,
-            chrome: HOST,
+            chrome: scene.chrome,
             ime: false,
             preedit: None,
             clipboard_write: None,
@@ -1406,7 +1576,7 @@ mod tests {
                 .iter()
                 .filter(|(p, _)| p.to_string_lossy().contains("opaque"))
                 .count(),
-            8
+            9
         );
         let first: Vec<PathBuf> = gated.into_iter().map(|(p, _)| p).collect();
         let second = dump_frames(&b).expect("second dump");
@@ -1476,6 +1646,14 @@ mod tests {
             assert_ne!(of("group-new"), of("group-invalid"), "{pre}");
             assert_ne!(of("group-close"), named("confirm-one@2x.png"), "{pre}");
         }
+        // The pane view differs from the bar view, and its states from each other.
+        assert_ne!(named("pane@2x.png"), tabs);
+        assert_ne!(named("pane@2x.png"), named("pane-inbox@2x.png"));
+        assert_ne!(named("pane@2x.png"), named("pane-windows@2x.png"));
+        assert_ne!(named("pane@2x.png"), named("pane-menu-app@2x.png"));
+        assert_ne!(named("pane-inbox@2x.png"), named("pane-inbox-open@2x.png"));
+        assert_ne!(named("pane-inbox@2x.png"), named("pane-settings@2x.png"));
+        assert_ne!(named("tabs-attention@2x.png"), named("bar-windows@2x.png"));
         // The tooltip is not there at the first dwell and is there after the delay.
         assert_ne!(named("link-hover@2x.png"), named("link-tip@2x.png"));
         assert_ne!(named("link-hover@2x.png"), tabs);

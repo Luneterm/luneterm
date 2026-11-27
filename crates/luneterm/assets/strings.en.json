@@ -155,6 +155,8 @@
     "menu.rename": "Rename…",
     "menu.duplicate": "Duplicate Tab",
     "menu.copyCwd": "Copy Working Directory",
+    "menu.showSidePane": "Show Side Pane",
+    "menu.hideSidePane": "Hide Side Pane",
     "menu.settings": "Settings…",
     "menu.about": "About Luneterm",
     "menu.copy": "Copy",

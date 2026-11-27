@@ -781,11 +781,105 @@ fn names(dir: &Path) -> Vec<String> {
 
 use std::path::Path;
 
+/// The defaults with the view a start decided (D23).
+fn view_decided(pane: bool) -> Settings {
+    Settings {
+        side_pane: Some(pane),
+        ..Settings::default()
+    }
+}
+
+/// What the app does with a start's `save_view`, then the next start of the same directory.
+fn save_and_restart(s: &Scratch, persist: &Persist, start: &Startup) -> Startup {
+    assert!(start.save_view);
+    persist.save_settings(&start.settings);
+    assert!(persist.flush(Duration::from_secs(5)));
+    Persist::load(s.store()).1
+}
+
+/// D23: a directory with neither file is a new install: the side pane, saved once, and still the
+/// side pane once the workspace file the app writes is there too.
+#[test]
+fn a_new_install_starts_with_the_side_pane_and_keeps_it() {
+    let s = Scratch::new("view-new");
+    let (persist, start) = Persist::load(s.store());
+    assert_eq!(start.settings.side_pane, Some(true));
+    fs::write(
+        s.0.join(WORKSPACE_FILE),
+        br#"{"version":1,"tabs":[{"cwd":"/a"}]}"#,
+    )
+    .expect("write");
+    let again = save_and_restart(&s, &persist, &start);
+    assert_eq!(again.settings.side_pane, Some(true));
+    assert!(!again.save_view, "decided once");
+    let text = fs::read_to_string(s.0.join(SETTINGS_FILE)).expect("file");
+    assert!(text.contains(r#""side_pane":true"#), "{text}");
+}
+
+/// D23: what an earlier version left (a settings file without the key, or only a workspace file)
+/// keeps the top bar, and the choice is saved so later starts keep it.
+#[test]
+fn an_upgraded_install_keeps_the_top_bar_whichever_file_it_left() {
+    // v0.8.0 and v0.9.0 settings files have no `side_pane` key.
+    let settings = br#"{"version":1,"theme":"luneterm","tab_control":true}"#.as_slice();
+    let workspace = br#"{"version":1,"active":0,"tabs":[{"cwd":"/a"}]}"#.as_slice();
+    for (name, files) in [
+        ("settings", vec![(SETTINGS_FILE, settings)]),
+        ("workspace", vec![(WORKSPACE_FILE, workspace)]),
+        (
+            "both",
+            vec![(SETTINGS_FILE, settings), (WORKSPACE_FILE, workspace)],
+        ),
+        (
+            "workspace-empty",
+            vec![(WORKSPACE_FILE, br#"{"version":1,"tabs":[]}"#.as_slice())],
+        ),
+        (
+            "workspace-rejected",
+            vec![(WORKSPACE_FILE, b"{oops".as_slice())],
+        ),
+    ] {
+        let s = Scratch::new(&format!("view-upgrade-{name}"));
+        for (file, bytes) in files {
+            fs::write(s.0.join(file), bytes).expect("write");
+        }
+        let (persist, start) = Persist::load(s.store());
+        assert_eq!(start.settings.side_pane, Some(false), "{name}");
+        let again = save_and_restart(&s, &persist, &start);
+        assert_eq!(again.settings.side_pane, Some(false), "{name}");
+        assert!(!again.save_view, "{name}");
+        let text = fs::read_to_string(s.0.join(SETTINGS_FILE)).expect("file");
+        assert!(text.contains(r#""side_pane":false"#), "{name}: {text}");
+    }
+}
+
+/// A saved choice is the choice, whatever else is in the directory; nothing is written for it.
+#[test]
+fn a_saved_view_choice_is_kept() {
+    for shown in [true, false] {
+        let s = Scratch::new(&format!("view-saved-{shown}"));
+        fs::write(
+            s.0.join(SETTINGS_FILE),
+            format!(r#"{{"version":1,"side_pane":{shown},"side_pane_width":300}}"#),
+        )
+        .expect("write");
+        fs::write(
+            s.0.join(WORKSPACE_FILE),
+            br#"{"version":1,"tabs":[{"cwd":"/a"}]}"#,
+        )
+        .expect("write");
+        let (_, start) = Persist::load(s.store());
+        assert_eq!(start.settings.side_pane, Some(shown));
+        assert_eq!(start.settings.side_pane_width, 300);
+        assert!(!start.save_view);
+    }
+}
+
 #[test]
 fn a_start_with_no_files_writes_nothing_and_changes_nothing() {
     let s = Scratch::new("startup-none");
     let (persist, start) = Persist::load(s.store());
-    assert_eq!(start.settings, Settings::default());
+    assert_eq!(start.settings, view_decided(true));
     assert!(start.workspace.is_none() && start.notices.is_empty());
     assert!(persist.flush(Duration::from_secs(5)));
     assert!(names(&s.0).is_empty(), "{:?}", names(&s.0));
@@ -797,7 +891,8 @@ fn a_start_with_corrupt_files_keeps_copies_uses_defaults_and_rewrites_nothing() 
     fs::write(s.0.join(SETTINGS_FILE), b"{oops").expect("write");
     fs::write(s.0.join(WORKSPACE_FILE), br#"{"version":9}"#).expect("write");
     let (persist, start) = Persist::load(s.store());
-    assert_eq!(start.settings, Settings::default());
+    assert_eq!(start.settings, view_decided(false));
+    assert!(!start.save_view, "a rejected file is left as it is");
     assert!(start.workspace.is_none());
     assert_eq!(start.notices.len(), 2);
     assert!(

@@ -16,6 +16,10 @@ use crate::session::MAX_SCROLLBACK;
 pub const MIN_FONT_SIZE: u32 = 8;
 pub const MAX_FONT_SIZE: u32 = 32;
 pub const DEFAULT_FONT_SIZE: u32 = 14;
+/// The side pane's width, logical px, and the range a drag or the file may give (plan D26).
+pub const DEFAULT_PANE_WIDTH: u32 = 248;
+pub const MIN_PANE_WIDTH: u32 = 200;
+pub const MAX_PANE_WIDTH: u32 = 420;
 
 /// The look: which layers and header tint the window is drawn with (Lunegit's `lunegit_dark` ones
 /// or the near-black ones), under every [`GlassStyle`]. The persisted names are `luneterm` (the
@@ -224,6 +228,15 @@ pub struct Settings {
     /// recorded (and for a copy that is not installed). No row in the page: a Luneterm-only
     /// bookkeeping field.
     pub update_channel: String,
+    /// The saved choice between the two views (file key `side_pane`): the side pane, or the top
+    /// bar. `None` is not decided yet: a file that has no key (and no file at all) reads so, and
+    /// [`crate::persist::Persist::load`] decides it once (D23: the pane on a new install, the top
+    /// bar on an upgraded one) and the app saves it. No row in the page: the toggle, the shortcut
+    /// and the app menu are its controls.
+    pub side_pane: Option<bool>,
+    /// The side pane's width, logical px (file key `side_pane_width`), within
+    /// [`MIN_PANE_WIDTH`]`..=`[`MAX_PANE_WIDTH`]; dragged at its right edge. No row in the page.
+    pub side_pane_width: u32,
 }
 
 impl Default for Settings {
@@ -257,6 +270,8 @@ impl Default for Settings {
             efficiency_mode: true,
             auto_update_check: true,
             update_channel: String::new(),
+            side_pane: None,
+            side_pane_width: DEFAULT_PANE_WIDTH,
         }
     }
 }
@@ -294,7 +309,13 @@ impl Settings {
         fit(&mut self.shell, MAX_SHELL_BYTES, "");
         fit(&mut self.shell_args, MAX_SHELL_BYTES, "");
         fit(&mut self.default_cwd, crate::cwd::MAX_CWD_BYTES, "");
+        self.side_pane_width = self.side_pane_width.clamp(MIN_PANE_WIDTH, MAX_PANE_WIDTH);
         self
+    }
+
+    /// Whether the saved choice is the side pane (D23). A choice nobody made yet is the top bar.
+    pub fn pane_wanted(&self) -> bool {
+        self.side_pane.unwrap_or(false)
     }
 
     /// The OS material the glass style asks for; the default style takes the theme's: the
@@ -386,8 +407,10 @@ impl Settings {
             tab_control,
             efficiency_mode,
             auto_update_check,
-            // Bookkeeping, not a row of the page: it never counts as a change.
+            // Bookkeeping, not rows of the page: they never count as a change.
             update_channel: _,
+            side_pane: _,
+            side_pane_width: _,
         } = self;
         let flags = [
             (SettingId::Theme, *theme != other.theme),

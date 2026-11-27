@@ -29,6 +29,8 @@ pub enum AppCommand {
     SelectTab(usize),
     /// Open the settings page (D13: Cmd+, on macOS, Ctrl+, elsewhere); leaves it when it is open.
     Settings,
+    /// Show or hide the side pane (D30: Cmd+B on macOS, Ctrl+Shift+B elsewhere).
+    TogglePane,
 }
 
 impl AppCommand {
@@ -42,6 +44,7 @@ impl AppCommand {
                 | AppCommand::NewTab
                 | AppCommand::CloseTab
                 | AppCommand::Settings
+                | AppCommand::TogglePane
         )
     }
 }
@@ -87,6 +90,10 @@ impl AppShortcuts {
             },
             AppCommand::Settings,
         ));
+        // Plain Ctrl+B is tmux's prefix, so elsewhere it takes Shift (D30).
+        let b = ch("b");
+        let pane = if macos { b.logo() } else { b.ctrl().shift() };
+        entries.push((pane, AppCommand::TogglePane));
         if macos {
             entries.push((ch("t").logo(), AppCommand::NewTab));
             entries.push((ch("w").logo(), AppCommand::CloseTab));
@@ -283,6 +290,36 @@ mod tests {
         // Cmd (Win) chords are not ours on these platforms.
         let logo = Modifiers { logo: true, ..NONE };
         assert_eq!(at("t", logo), None);
+    }
+
+    #[test]
+    fn the_side_pane_is_cmd_b_on_macos_and_ctrl_shift_b_elsewhere() {
+        let logo = Modifiers { logo: true, ..NONE };
+        let ctrl = Modifiers {
+            control: true,
+            ..NONE
+        };
+        let ctrl_shift = Modifiers {
+            control: true,
+            shift: true,
+            ..NONE
+        };
+        assert_eq!(
+            tab_command(true, ch("b"), logo),
+            Some(AppCommand::TogglePane)
+        );
+        assert_eq!(tab_command(true, ch("b"), ctrl), None);
+        assert_eq!(tab_command(true, ch("b"), NONE), None);
+        assert_eq!(
+            tab_command(false, ch("B"), ctrl_shift),
+            Some(AppCommand::TogglePane)
+        );
+        // Plain Ctrl+B is tmux's prefix, never ours.
+        assert_eq!(tab_command(false, ch("b"), ctrl), None);
+        assert_eq!(tab_command(false, ch("b"), logo), None);
+        assert!(AppCommand::TogglePane.once_per_press());
+        let (mac, pc) = (AppShortcuts::standard(true), AppShortcuts::standard(false));
+        assert!(mac.binds(AppCommand::TogglePane) && pc.binds(AppCommand::TogglePane));
     }
 
     #[test]

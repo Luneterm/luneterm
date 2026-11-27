@@ -10,6 +10,7 @@ use lune_ui::widgets::menu::{MenuItem, MenuRow};
 
 use crate::groups::GroupId;
 use crate::input::{AppCommand, AppShortcuts};
+use crate::pane;
 use crate::tabs::TabId;
 
 /// What a picked row asks of the app.
@@ -38,6 +39,10 @@ pub enum MenuAction {
     ExpandGroup,
     /// Drop the group and keep its tabs.
     Ungroup,
+    /// Show the side pane (the saved choice).
+    ShowSidePane,
+    /// Hide the side pane: the top bar.
+    HideSidePane,
     Settings,
     About,
     Copy,
@@ -54,6 +59,7 @@ impl MenuAction {
             MenuAction::NewTab => Some(AppCommand::NewTab),
             MenuAction::Close => Some(AppCommand::CloseTab),
             MenuAction::Settings => Some(AppCommand::Settings),
+            MenuAction::ShowSidePane | MenuAction::HideSidePane => Some(AppCommand::TogglePane),
             MenuAction::Copy => Some(AppCommand::Copy),
             MenuAction::Paste => Some(AppCommand::Paste),
             _ => None,
@@ -79,6 +85,8 @@ impl MenuAction {
             MenuAction::Rename => "menu.rename",
             MenuAction::Duplicate => "menu.duplicate",
             MenuAction::CopyCwd => "menu.copyCwd",
+            MenuAction::ShowSidePane => "menu.showSidePane",
+            MenuAction::HideSidePane => "menu.hideSidePane",
             MenuAction::Settings => "menu.settings",
             MenuAction::About => "menu.about",
             MenuAction::Copy => "menu.copy",
@@ -107,6 +115,7 @@ impl MenuAction {
             MenuAction::Rename => Some(icon::EDIT),
             MenuAction::Duplicate => Some(ICON_TERMINAL),
             MenuAction::CopyCwd | MenuAction::Copy => Some(icon::COPY),
+            MenuAction::ShowSidePane | MenuAction::HideSidePane => Some(pane::TOGGLE_GLYPH),
             MenuAction::Settings => Some(icon::GEAR),
             MenuAction::About => Some(icon::INFO),
             MenuAction::Paste => Some(ICON_CLIPPY),
@@ -149,16 +158,18 @@ fn menu_name(name: &str) -> String {
 /// The shortcut hint of `action` on this OS, empty when it has no shortcut. The text is the chord
 /// as the table binds it (D13).
 pub fn hint(action: MenuAction, macos: bool) -> &'static str {
-    use MenuAction::{Close, Copy, NewTab, Paste, Settings};
+    use MenuAction::{Close, Copy, HideSidePane, NewTab, Paste, Settings, ShowSidePane};
     match (action, macos) {
         (NewTab, true) => "\u{2318}T",
         (Close, true) => "\u{2318}W",
         (Settings, true) => "\u{2318},",
+        (ShowSidePane | HideSidePane, true) => "\u{2318}B",
         (Copy, true) => "\u{2318}C",
         (Paste, true) => "\u{2318}V",
         (NewTab, false) => "Ctrl+Shift+T",
         (Close, false) => "Ctrl+Shift+W",
         (Settings, false) => "Ctrl+,",
+        (ShowSidePane | HideSidePane, false) => "Ctrl+Shift+B",
         (Copy, false) => "Ctrl+Shift+C",
         (Paste, false) => "Ctrl+Shift+V",
         _ => "",
@@ -168,8 +179,9 @@ pub fn hint(action: MenuAction, macos: bool) -> &'static str {
 /// Which menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuKind {
-    /// The `⋯` menu at the strip's right end.
-    App,
+    /// The `⋯` menu at the strip's right end, or the pane's footer; `pane` is whether the saved
+    /// view is the side pane (the row hides it, else shows it).
+    App { pane: bool },
     /// The terminal's context menu; `selection` is whether text is selected (Copy needs it).
     Terminal { selection: bool },
     /// A tab's context menu; `closable` is whether the tab can be closed (Close is only for a
@@ -233,7 +245,7 @@ const SEPARATOR: Option<MenuAction> = None;
 fn actions(kind: MenuKind, groups: &MenuGroups) -> Vec<Option<MenuAction>> {
     use MenuAction::*;
     match kind {
-        MenuKind::App => vec![
+        MenuKind::App { pane } => vec![
             Some(NewTab),
             Some(NewTabGroup),
             SEPARATOR,
@@ -244,6 +256,8 @@ fn actions(kind: MenuKind, groups: &MenuGroups) -> Vec<Option<MenuAction>> {
             Some(Rename),
             Some(Duplicate),
             Some(CopyCwd),
+            SEPARATOR,
+            Some(if pane { HideSidePane } else { ShowSidePane }),
             SEPARATOR,
             Some(Settings),
             Some(About),
@@ -384,7 +398,7 @@ impl MenuModel {
     /// The accessible name of the menu.
     pub fn name_key(&self) -> &'static str {
         match self.kind {
-            MenuKind::App => "menu.app.name",
+            MenuKind::App { .. } => "menu.app.name",
             MenuKind::Terminal { .. } => "menu.terminal.name",
             MenuKind::Tab { .. } => "menu.tab.name",
             MenuKind::Group { .. } => "menu.group.name",
@@ -470,7 +484,8 @@ pub fn required_keys() -> Vec<String> {
         open: vec![(GroupId(1), String::new()), (GroupId(2), String::new())],
     };
     for kind in [
-        MenuKind::App,
+        MenuKind::App { pane: false },
+        MenuKind::App { pane: true },
         MenuKind::Terminal { selection: true },
         MenuKind::Tab { closable: true },
         MenuKind::Group { collapsed: true },
@@ -498,7 +513,7 @@ mod tests {
 
     #[test]
     fn the_app_menu_has_the_rows_and_separators_of_the_spec_in_order() {
-        let m = model(MenuKind::App, true);
+        let m = model(MenuKind::App { pane: true }, true);
         let texts: Vec<&str> = m.entries.iter().map(|e| e.text.as_str()).collect();
         assert_eq!(
             texts,
@@ -514,19 +529,29 @@ mod tests {
                 "Duplicate Tab",
                 "Copy Working Directory",
                 "",
+                "Hide Side Pane",
+                "",
                 "Settings\u{2026}",
                 "About Luneterm"
             ]
         );
-        assert_eq!(m.rows().len(), 13);
+        assert_eq!(m.rows().len(), 15);
         // A pick maps to its action; a separator picks nothing.
         assert_eq!(m.action_at(0), Some(MenuAction::NewTab));
         assert_eq!(m.action_at(1), Some(MenuAction::NewTabGroup));
         assert_eq!(m.action_at(2), None);
-        assert_eq!(m.action_at(11), Some(MenuAction::Settings));
-        assert_eq!(m.action_at(12), Some(MenuAction::About));
+        assert_eq!(m.action_at(11), Some(MenuAction::HideSidePane));
+        assert_eq!(m.action_at(13), Some(MenuAction::Settings));
+        assert_eq!(m.action_at(14), Some(MenuAction::About));
         assert_eq!(m.entries[1].shortcut, "", "New Tab Group has no shortcut");
+        assert_eq!(m.entries[11].shortcut, "\u{2318}B");
         assert_eq!(m.action_at(99), None);
+        // With the top bar the row shows the pane.
+        let bar = model(MenuKind::App { pane: false }, false);
+        assert_eq!(bar.entries[11].text, "Show Side Pane");
+        assert_eq!(bar.entries[11].shortcut, "Ctrl+Shift+B");
+        assert_eq!(bar.action_at(11), Some(MenuAction::ShowSidePane));
+        assert_eq!(bar.entries.len(), 15);
     }
 
     #[test]
@@ -571,6 +596,8 @@ mod tests {
             Rename,
             Duplicate,
             CopyCwd,
+            ShowSidePane,
+            HideSidePane,
             Settings,
             About,
             Copy,
@@ -593,7 +620,7 @@ mod tests {
         assert_eq!(hint(Copy, false), "Ctrl+Shift+C");
         assert_eq!(hint(Paste, false), "Ctrl+Shift+V");
         assert_eq!(hint(Clear, true), "");
-        let m = model(MenuKind::App, true);
+        let m = model(MenuKind::App { pane: true }, true);
         assert_eq!(m.entries[0].shortcut, "\u{2318}T");
         assert_eq!(m.entries[4].text, "Close Others");
         assert_eq!(m.entries[4].shortcut, "", "Close Others has no shortcut");
@@ -832,7 +859,8 @@ mod tests {
     #[test]
     fn no_menu_shows_the_same_icon_twice() {
         let kinds = [
-            MenuKind::App,
+            MenuKind::App { pane: false },
+            MenuKind::App { pane: true },
             MenuKind::Terminal { selection: true },
             MenuKind::Terminal { selection: false },
             MenuKind::Tab { closable: true },
@@ -888,6 +916,8 @@ mod tests {
             NewTabGroup,
             EditGroup,
             CloseGroup,
+            ShowSidePane,
+            HideSidePane,
             Settings,
             About,
             Copy,

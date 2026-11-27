@@ -31,12 +31,13 @@ use lune_ui::widgets::tone::Tone;
 
 use crate::fonts;
 use crate::links;
+use crate::pane::{self, PaneEdge};
 use crate::session::Geometry;
 use crate::settings::{Settings, Theme as LookTheme, WindowOpacity};
 use crate::settings_page::{self, PageOut, PageView};
 use crate::shell::{
     self, Chrome, GridPlacement, InboxButton, InboxList, InboxOut, Layout, Modal, ModalOut,
-    ScrollView, ShellView, StripTab, TabContext,
+    ScrollView, ShellView, StripTab, TabContext, View,
 };
 use crate::tabs::TabId;
 
@@ -263,6 +264,10 @@ pub struct Drawn {
     pub tab_context: Option<TabContext>,
     /// The toast button pressed this frame (the toast leaves with it).
     pub toast: lune_ui::widgets::toast::ToastResponse,
+    /// The side pane's show or hide button was pressed.
+    pub pane_toggle: bool,
+    /// What the pane's edge zone saw; `None` in the top bar view.
+    pub pane_edge: Option<PaneEdge>,
     /// The grid size the frame was laid out for.
     pub cols: usize,
     pub rows: usize,
@@ -342,6 +347,10 @@ pub struct Renderer {
     text_rendering: TextRendering,
     /// The latest draw's phases, while the trace is on; `None` costs one check per phase.
     phases: Option<DrawPhases>,
+    /// The saved view choice and pane width: the frame's view follows them and the window's width
+    /// ([`pane::resolve`]).
+    pane_wanted: bool,
+    pane_width: u32,
 }
 
 /// Puts the item that holds each of `ids` at its own index in `pool` (items are swapped, so each
@@ -429,7 +438,15 @@ impl Renderer {
             font_size,
             text_rendering: settings.text_rendering(),
             phases: None,
+            pane_wanted: settings.pane_wanted(),
+            pane_width: settings.side_pane_width,
         }
+    }
+
+    /// The saved view choice and pane width from here on: the next frame is laid out by them.
+    pub fn set_pane(&mut self, wanted: bool, width: u32) {
+        self.pane_wanted = wanted;
+        self.pane_width = width;
     }
 
     /// Records where each draw's time goes ([`DrawPhases`]); off by default.
@@ -586,10 +603,21 @@ impl Renderer {
         &self.term_theme
     }
 
-    /// Where everything goes in a window of `size` logical px at `scale`.
+    /// Where everything goes in a window of `size` logical px at `scale` with this OS's chrome.
     pub fn place(&mut self, size: (f32, f32), scale: f32) -> Placed {
+        self.place_for(size, scale, shell::HOST)
+    }
+
+    /// The view of a window `width` logical px wide with `chrome`.
+    fn view(&self, width: f32, chrome: Chrome) -> View {
+        pane::resolve(self.pane_wanted, self.pane_width, width, chrome)
+    }
+
+    /// [`Renderer::place`] with the chrome of the frame.
+    pub(crate) fn place_for(&mut self, size: (f32, f32), scale: f32, chrome: Chrome) -> Placed {
         let metrics = self.term.metrics(&mut self.text.fonts, scale);
-        let layout = Layout::new(Rect::new(0.0, 0.0, size.0, size.1));
+        let view = self.view(size.0, chrome);
+        let layout = Layout::for_view(Rect::new(0.0, 0.0, size.0, size.1), false, view);
         let placement = shell::place_grid(layout.body, metrics);
         Placed {
             layout,
@@ -623,7 +651,8 @@ impl Renderer {
             (0, 0)
         };
         let scale = input.scale;
-        let placed = self.place(input.size, scale);
+        let placed = self.place_for(input.size, scale, content.chrome);
+        let shown_view = self.view(input.size.0, content.chrome);
         let Placed {
             layout,
             placement,
@@ -642,7 +671,15 @@ impl Renderer {
         };
         let mut ui = Ui::begin(&mut self.store, input, config, &mut self.text);
         let modal_open = content.modal.is_some();
+        let pane_button = if matches!(shown_view, View::Pane { .. }) {
+            "menu.hideSidePane"
+        } else {
+            "menu.showSidePane"
+        };
         let view = ShellView {
+            view: shown_view,
+            show_pane_button: pane::offers_show_button(shown_view, input.size.0, self.pane_width),
+            pane_button_name: self.strings.tr(pane_button),
             title: content.title,
             maximized: content.maximized,
             focused: input.focused,
@@ -837,6 +874,8 @@ impl Renderer {
             inbox: inbox_out,
             tab_context: shell_out.tab_context,
             toast: shell_out.toast,
+            pane_toggle: shell_out.pane_toggle,
+            pane_edge: shell_out.pane_edge,
             cols: placement.cols,
             rows: placement.rows,
         })

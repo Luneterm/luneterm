@@ -13,7 +13,10 @@ use lune_ui::json::{self, Value};
 
 use super::json_write::{Json, WriteError};
 use super::{Reject, read_version};
-use crate::settings::{BlurLevel, GlassStyle, Motion, OutlineAnim, Settings, Theme, WindowOpacity};
+use crate::settings::{
+    BlurLevel, GlassStyle, MAX_PANE_WIDTH, MIN_PANE_WIDTH, Motion, OutlineAnim, Settings, Theme,
+    WindowOpacity,
+};
 
 /// The version this build writes and reads.
 pub const SETTINGS_VERSION: i64 = 1;
@@ -27,7 +30,7 @@ pub struct SettingsDoc {
 }
 
 /// The names this build writes, in the order it writes them.
-const KEYS: [&str; 28] = [
+const KEYS: [&str; 30] = [
     "theme",
     "glass",
     "menu_blur",
@@ -56,6 +59,8 @@ const KEYS: [&str; 28] = [
     "efficiency_mode",
     "auto_update_check",
     "update_channel",
+    "side_pane",
+    "side_pane_width",
 ];
 
 fn member<'a>(members: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
@@ -94,6 +99,18 @@ fn named<T: Copy>(
         && let Some(v) = from(s)
     {
         *field = v;
+    }
+}
+
+/// A pane width is any number, rounded and held within its range; anything else keeps the field.
+fn pane_width(members: &[(String, Value)], key: &str, field: &mut u32) {
+    if let Some(v) = member(members, key)
+        && let Ok(n) = v.as_f64()
+    {
+        // Inside the range, so the cast is exact.
+        *field = n
+            .round()
+            .clamp(f64::from(MIN_PANE_WIDTH), f64::from(MAX_PANE_WIDTH)) as u32;
     }
 }
 
@@ -138,6 +155,10 @@ pub fn parse_settings(bytes: &[u8]) -> Result<SettingsDoc, Reject> {
     flag(members, "efficiency_mode", &mut s.efficiency_mode);
     flag(members, "auto_update_check", &mut s.auto_update_check);
     text(members, "update_channel", &mut s.update_channel);
+    if let Some(Value::Bool(b)) = member(members, "side_pane") {
+        s.side_pane = Some(*b);
+    }
+    pane_width(members, "side_pane_width", &mut s.side_pane_width);
     let unknown = members
         .iter()
         .filter(|(k, _)| k != "version" && !KEYS.contains(&k.as_str()))
@@ -190,6 +211,10 @@ pub fn render_settings(doc: &SettingsDoc) -> Result<String, WriteError> {
         ("auto_update_check".into(), Json::Bool(s.auto_update_check)),
         ("update_channel".into(), Json::Str(s.update_channel)),
     ];
+    if let Some(shown) = s.side_pane {
+        members.push(("side_pane".into(), Json::Bool(shown)));
+    }
+    members.push(("side_pane_width".into(), int(s.side_pane_width)));
     members.extend(doc.unknown.iter().cloned());
     Json::Object(members).to_text()
 }
@@ -228,6 +253,8 @@ mod tests {
             efficiency_mode: false,
             auto_update_check: false,
             update_channel: "beta".into(),
+            side_pane: Some(false),
+            side_pane_width: 300,
         }
     }
 
@@ -276,6 +303,73 @@ mod tests {
             assert_eq!(doc.settings.window_opacity, WindowOpacity::P0, "{file}");
             assert!(doc.unknown.is_empty(), "{file}: the key is known");
         }
+    }
+
+    #[test]
+    fn the_side_pane_choice_round_trips_and_a_file_without_it_has_not_chosen() {
+        for shown in [Some(true), Some(false), None] {
+            let doc = SettingsDoc {
+                settings: Settings {
+                    side_pane: shown,
+                    ..Settings::default()
+                },
+                unknown: Vec::new(),
+            };
+            let text = render_settings(&doc).expect("writes");
+            match shown {
+                Some(b) => assert!(text.contains(&format!("\"side_pane\":{b}")), "{text}"),
+                None => assert!(!text.contains("\"side_pane\":"), "{text}"),
+            }
+            assert_eq!(parse_settings(text.as_bytes()), Ok(doc));
+        }
+        for file in [
+            r#"{"version":1}"#,
+            r#"{"version":1,"side_pane":"true"}"#,
+            r#"{"version":1,"side_pane":1}"#,
+            r#"{"version":1,"side_pane":null}"#,
+        ] {
+            let doc = parse_settings(file.as_bytes()).expect("a lenient read");
+            assert_eq!(doc.settings.side_pane, None, "{file}");
+            assert!(doc.unknown.is_empty(), "{file}: the key is known");
+        }
+    }
+
+    #[test]
+    fn the_side_pane_width_is_clamped_and_a_non_number_reads_as_248() {
+        let read = |v: &str| {
+            let file = format!(r#"{{"version":1,"side_pane_width":{v}}}"#);
+            let doc = parse_settings(file.as_bytes()).expect("a lenient read");
+            assert!(doc.unknown.is_empty(), "{file}: the key is known");
+            doc.settings.side_pane_width
+        };
+        assert_eq!(read("199"), 200);
+        assert_eq!(read("200"), 200);
+        assert_eq!(read("333"), 333);
+        assert_eq!(read("420"), 420);
+        assert_eq!(read("421"), 420);
+        assert_eq!(read("-5"), 200);
+        assert_eq!(read("1e12"), 420);
+        assert_eq!(read("250.6"), 251);
+        for not_a_number in [r#""300""#, "true", "null", "[300]", "{}"] {
+            assert_eq!(read(not_a_number), 248, "{not_a_number}");
+        }
+        assert_eq!(
+            parse_settings(br#"{"version":1}"#)
+                .expect("read")
+                .settings
+                .side_pane_width,
+            248
+        );
+        let doc = SettingsDoc {
+            settings: Settings {
+                side_pane_width: 420,
+                ..Settings::default()
+            },
+            unknown: Vec::new(),
+        };
+        let text = render_settings(&doc).expect("writes");
+        assert!(text.contains("\"side_pane_width\":420"), "{text}");
+        assert_eq!(parse_settings(text.as_bytes()), Ok(doc));
     }
 
     #[test]
