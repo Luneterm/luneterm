@@ -14,12 +14,12 @@
 //!   worker at most the time it is given; the worker never blocks on the UI.
 //! - **Errors are text.** A failure is [`UpdateState::Failed`] with lunepack's message, any URL in
 //!   it cut to scheme, host and path (no query, fragment or user info); nothing here panics.
-//! - **Trusted root.** The update config of an installed copy must name exactly the root compiled
-//!   in from [`root`], or the copy reports [`Unavailable::ForeignRoot`] and never checks.
+//! - **Trusted root.** The root of trust is the one in the installed copy's update config
+//!   (`packaging/lunepack.toml` `[root]`, written there by `lunepack pack`); lunepack's updater
+//!   verifies the feed against it. No root key is compiled into this crate.
 
 pub mod auto;
 pub mod channel;
-pub mod root;
 #[cfg(test)]
 mod tests;
 
@@ -65,8 +65,6 @@ pub enum UpdateState {
 pub enum Unavailable {
     /// Not installed by lunepack's installer (no update config beside the executable).
     NotInstalled,
-    /// The update config names another root of trust than the one compiled in.
-    ForeignRoot,
     /// The install could not be read; the text is safe to show.
     Broken(String),
 }
@@ -165,7 +163,7 @@ pub fn confirm_healthy() {
     }
 }
 
-/// Opens the running copy's updater: its install, the root check and lunepack's updater, following
+/// Opens the running copy's updater: its install and lunepack's updater, following
 /// `channel` (the persisted one, see [`channel`]) when given. Local files only; runs on the
 /// worker.
 fn open_installed(channel: Option<String>) -> Result<blocking::Updater, Unavailable> {
@@ -173,16 +171,6 @@ fn open_installed(channel: Option<String>) -> Result<blocking::Updater, Unavaila
         Error::NoUpdateConfig => Unavailable::NotInstalled,
         e => Unavailable::Broken(error_text(&e)),
     })?;
-    let config = inst.config();
-    let keys: Vec<[u8; 32]> = config.root.keys.iter().map(|k| *k.as_bytes()).collect();
-    if !root::matches(
-        inst.app_id().as_str(),
-        config.root.version,
-        config.root.threshold,
-        &keys,
-    ) {
-        return Err(Unavailable::ForeignRoot);
-    }
     inst.updater_builder()
         .map(|b| channel::follow(b, channel.as_deref()))
         .and_then(|b| b.build())
