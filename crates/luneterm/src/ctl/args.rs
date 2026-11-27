@@ -179,6 +179,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::title;
 
     /// An absolute path on the OS the test runs on.
     fn absolute() -> &'static str {
@@ -583,6 +584,37 @@ mod tests {
             "\"quoted\" \\ $(x)",
         ] {
             assert!(label_ok(s, 64), "{s:?}");
+        }
+    }
+
+    /// A name `label_ok` accepts, up to the title's own cap, is what a rename shows:
+    /// `title::sanitize` leaves it as it is. (`title::sanitize_text` is another rule: it collapses
+    /// runs of whitespace, which a name may hold.)
+    #[test]
+    fn an_accepted_label_up_to_the_title_cap_is_unchanged_by_the_title_sanitizer() {
+        const CAP: usize = title::MAX_TITLE_CHARS;
+        let mut accepted = 0usize;
+        let mut check = |s: &str| {
+            if label_ok(s, CAP) {
+                assert!(title::sanitize(s) == s, "{s:?}");
+                accepted += 1;
+            }
+        };
+        // Every scalar value: alone, at either end, and as a run inside a name.
+        for c in (0..=u32::from(char::MAX)).filter_map(char::from_u32) {
+            check(&c.to_string());
+            check(&format!("{c}b"));
+            check(&format!("a{c}"));
+            check(&format!("a{c}{c}b"));
+        }
+        assert!(accepted > 4_000_000, "{accepted}");
+        // Names of exactly the cap.
+        for c in [
+            'a', ' ', '\u{a0}', '\u{2003}', '\u{3000}', '\u{200d}', '日', '🎉',
+        ] {
+            let s = format!("a{}b", c.to_string().repeat(CAP - 2));
+            assert!(label_ok(&s, CAP), "{c:?}");
+            assert!(title::sanitize(&s) == s, "{c:?}");
         }
     }
 
