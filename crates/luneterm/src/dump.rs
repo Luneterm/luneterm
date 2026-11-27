@@ -41,6 +41,7 @@ use crate::shell::{
 };
 use crate::spawn::SpawnFailure;
 use crate::tabs::confirm_message;
+use crate::update::{Unavailable, UpdateState};
 
 /// The offscreen colour format (the surface's preferred one).
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
@@ -153,6 +154,51 @@ struct PageScene {
     combo: Option<crate::settings::SettingId>,
     /// The notice banner is up.
     restart: bool,
+    /// Where the update machinery is, as the About section shows it.
+    update: UpdateScene,
+}
+
+/// The update state an About scene shows (the app's [`UpdateState`], fixed so a dump is the same
+/// on every machine).
+#[derive(Debug, Clone, Copy)]
+enum UpdateScene {
+    /// A copy lunepack did not install (the page's default).
+    NotInstalled,
+    Idle,
+    Checking,
+    UpToDate,
+    Available,
+    Downloading(u8),
+    Ready,
+    /// A failure whose text is long enough to wrap.
+    Failed,
+    /// An install lunepack could not read.
+    Broken,
+}
+
+impl UpdateScene {
+    fn state(self) -> UpdateState {
+        match self {
+            UpdateScene::NotInstalled => UpdateState::Unavailable(Unavailable::NotInstalled),
+            UpdateScene::Idle => UpdateState::Idle,
+            UpdateScene::Checking => UpdateState::Checking,
+            UpdateScene::UpToDate => UpdateState::UpToDate,
+            UpdateScene::Available => UpdateState::Available {
+                version: "0.9.1".to_owned(),
+                auto: false,
+            },
+            UpdateScene::Downloading(pct) => UpdateState::Downloading(pct),
+            UpdateScene::Ready => UpdateState::Ready("0.9.1".to_owned()),
+            UpdateScene::Failed => UpdateState::Failed(
+                "the update feed could not be reached: connection timed out after 30 s while \
+                 fetching keys.json from updates.izzat.dev"
+                    .to_owned(),
+            ),
+            UpdateScene::Broken => UpdateState::Unavailable(Unavailable::Broken(
+                "the update config beside the program is unreadable".to_owned(),
+            )),
+        }
+    }
 }
 
 /// An open menu, forced by the dump. The tab's own menu is not forced: the scripted right-click
@@ -301,6 +347,16 @@ const fn page(section: Section) -> Option<PageScene> {
         section,
         combo: None,
         restart: false,
+        update: UpdateScene::NotInstalled,
+    })
+}
+
+const fn about(update: UpdateScene) -> Option<PageScene> {
+    Some(PageScene {
+        section: Section::About,
+        combo: None,
+        restart: false,
+        update,
     })
 }
 
@@ -312,7 +368,7 @@ const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
-const SCENES: [Scene; 51] = [
+const SCENES: [Scene; 60] = [
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -427,12 +483,68 @@ const SCENES: [Scene; 51] = [
         ..BASE
     },
     Scene {
+        name: "settings-about-idle@2x.png",
+        tabs: FOUR,
+        page: about(UpdateScene::Idle),
+        ..BASE
+    },
+    Scene {
+        name: "settings-about-uptodate@2x.png",
+        tabs: FOUR,
+        page: about(UpdateScene::UpToDate),
+        ..BASE
+    },
+    Scene {
+        name: "settings-about-checking@2x.png",
+        tabs: FOUR,
+        page: about(UpdateScene::Checking),
+        ..BASE
+    },
+    Scene {
+        name: "settings-about-available@2x.png",
+        tabs: FOUR,
+        page: about(UpdateScene::Available),
+        ..BASE
+    },
+    Scene {
+        name: "settings-about-downloading@2x.png",
+        tabs: FOUR,
+        page: about(UpdateScene::Downloading(42)),
+        ..BASE
+    },
+    Scene {
+        name: "settings-about-ready@2x.png",
+        tabs: FOUR,
+        page: about(UpdateScene::Ready),
+        ..BASE
+    },
+    Scene {
+        name: "settings-about-failed@2x.png",
+        tabs: FOUR,
+        page: about(UpdateScene::Failed),
+        ..BASE
+    },
+    Scene {
+        name: "settings-about-broken@2x.png",
+        tabs: FOUR,
+        page: about(UpdateScene::Broken),
+        ..BASE
+    },
+    Scene {
+        name: "settings-about-not-installed@1x.png",
+        scale: 1,
+        tabs: FOUR,
+        page: about(UpdateScene::NotInstalled),
+        ..BASE
+    },
+    Scene {
         name: "settings-combo@2x.png",
         tabs: FOUR,
         page: Some(PageScene {
             section: Section::Appearance,
             combo: Some(crate::settings::SettingId::Glass),
             restart: false,
+            update: UpdateScene::NotInstalled,
         }),
         ..BASE
     },
@@ -443,6 +555,7 @@ const SCENES: [Scene; 51] = [
             section: Section::Terminal,
             combo: Some(crate::settings::SettingId::Font),
             restart: false,
+            update: UpdateScene::NotInstalled,
         }),
         ..BASE
     },
@@ -453,6 +566,7 @@ const SCENES: [Scene; 51] = [
             section: Section::Terminal,
             combo: None,
             restart: true,
+            update: UpdateScene::NotInstalled,
         }),
         ..BASE
     },
@@ -890,6 +1004,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     let mut page_state = scene.page.map(|p| {
         let mut state = PageState::new(p.section, &page_settings);
         state.combo = p.combo;
+        state.update = p.update.state();
         state
     });
     let selection = [SelectionRange {
