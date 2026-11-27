@@ -139,7 +139,7 @@ class PackagingConfig(unittest.TestCase):
 
     def test_the_config_holds_no_key_and_one_environment_signer(self):
         text = (REPO / "packaging" / "lunepack.toml").read_text()
-        self.assertNotIn("PRIVATE", text)
+        self.assertNotIn("PRIVATE KEY", text)  # a PEM header; the R2_PRIVATE_* names are variable names
         self.assertNotIn("BEGIN", text)
         c = read_config()
         self.assertEqual(c["signers"], {"release": {"env": "LUNEPACK_RELEASE_KEY"}})
