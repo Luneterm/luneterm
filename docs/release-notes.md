@@ -3,8 +3,8 @@ Luneterm {version}, a glass terminal for Windows, macOS and Linux.
 ## Installing
 
 Download the setup file for your system from the assets below. Luneterm installs for your user
-(no administrator rights) and then updates itself: Settings > About checks for updates at launch
-and once a day (switch it off there) and has a "Check for updates" button. An update is downloaded
+(no administrator rights) and then updates itself: Settings > General checks for updates at launch
+and once a day (switch it off there); Settings > About has a "Check for updates" button. An update is downloaded
 when you choose Update, and "Restart to update" closes all shells.
 
 ## These builds are unsigned

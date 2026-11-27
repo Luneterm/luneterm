@@ -894,7 +894,7 @@ pub fn update_status(strings: &StringTable, state: &UpdateState) -> String {
             strings.tr(&key("notInstalled")).to_owned()
         }
         UpdateState::Unavailable(Unavailable::Broken(why)) => {
-            strings.tr_fmt(&key("broken"), &[why], &DisplayFormat)
+            strings.tr_fmt(&key("broken"), &[&capitalise(why)], &DisplayFormat)
         }
         UpdateState::Idle => strings.tr(&key("idle")).to_owned(),
         UpdateState::Checking => strings.tr(&key("checking")).to_owned(),
@@ -906,7 +906,18 @@ pub fn update_status(strings: &StringTable, state: &UpdateState) -> String {
             strings.tr_fmt(&key("downloading"), &[pct], &DisplayFormat)
         }
         UpdateState::Ready(version) => strings.tr_fmt(&key("ready"), &[version], &DisplayFormat),
-        UpdateState::Failed(why) => strings.tr_fmt(&key("failed"), &[why], &DisplayFormat),
+        UpdateState::Failed(why) => {
+            strings.tr_fmt(&key("failed"), &[&capitalise(why)], &DisplayFormat)
+        }
+    }
+}
+
+/// A reason (lunepack's message, lower case) starts a sentence after the colon: first letter up.
+fn capitalise(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 
@@ -1931,7 +1942,7 @@ mod tests {
         );
         assert_eq!(
             line(UpdateState::Failed("no network".into())),
-            "The update failed: no network"
+            "The update failed: No network"
         );
         // The reasons a copy cannot update come from the string table too.
         assert_eq!(
@@ -1942,7 +1953,7 @@ mod tests {
             line(UpdateState::Unavailable(Unavailable::Broken(
                 "state".into()
             ))),
-            "Updates are unavailable: state"
+            "Updates are unavailable: State"
         );
     }
 
