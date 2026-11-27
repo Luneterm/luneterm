@@ -4,11 +4,13 @@ name: release
 # is not a user download: it is the app plus lunepack's runtime for the target, in the layout
 # scripts/make-build-input.py writes (BUILD-INFO.txt names the parts). A person then adds the macOS
 # build input (scripts/package-macos.sh <tag>, there is no macOS runner), checks the draft and
-# publishes it; publishing starts the publish-updates workflow (auto-update plan step 6), which
-# packs the inputs into the signed update feed and the installers. The runbook is under Commands
-# in CLAUDE.md.
+# publishes it; publishing starts the publish-updates workflow, which packs the inputs (the
+# release-pack job), waits for the owner's approval of the push, publishes them to the signed update
+# feed with `lunepack publish` and attaches the installers. The runbook is under Commands in
+# CLAUDE.md.
 #
-# No secret is used here: the release signing key belongs to the publish-updates workflow only.
+# No secret is used here: the release signing key and the R2 tokens belong to the environments of
+# the publish-updates workflow only.
 #
 # v<version> is the release, v<version>-rc.<N> a rehearsal of the same path (a prerelease draft).
 # Runners and their images: see ci.yml.
@@ -108,7 +110,7 @@ jobs:
           format=1
           version=$version
           target=linux-x86_64
-          config=packaging/lunepack-linux.toml
+          config=packaging/lunepack.toml
           channel=$channel
           entry=luneterm
           tree=tree
@@ -185,7 +187,7 @@ jobs:
           $channel = if ($version -like "*-rc.*") { "beta" } else { "stable" }
           $info = @(
             "format=1", "version=$version", "target=windows-x86_64",
-            "config=packaging/lunepack-windows.toml", "channel=$channel", "entry=luneterm.exe", "tree=tree",
+            "config=packaging/lunepack.toml", "channel=$channel", "entry=luneterm.exe", "tree=tree",
             "runtime=lunepack/lunepack-runtime.exe", "stub=lunepack/lunepack-stub.exe",
             "ui=lunepack/lunepack-ui.exe", "lunepack_rev=$rev", "source_date_epoch=$epoch"
           ) -join "`n"
@@ -232,7 +234,8 @@ jobs:
           name: release-windows
           path: dist/windows
       # The draft holds only build inputs (and their checksums); the macOS one is added by
-      # scripts/package-macos.sh. Publishing the draft starts publish-updates.
+      # scripts/package-macos.sh. Publishing the draft starts publish-updates
+      # (release-pack.py checks each input against its BUILD-INFO there).
       - name: Create the draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -682,7 +682,6 @@ pub fn required_keys() -> Vec<String> {
         "settings.about.updates.status.ready",
         "settings.about.updates.status.failed",
         "settings.about.updates.status.notInstalled",
-        "settings.about.updates.status.foreignRoot",
         "settings.about.updates.status.broken",
         "luneui.settings-page.restart-message",
         "luneui.settings-page.restart-action",
@@ -875,9 +874,6 @@ pub fn update_status(strings: &StringTable, state: &UpdateState) -> String {
     match state {
         UpdateState::Unavailable(Unavailable::NotInstalled) => {
             strings.tr(&key("notInstalled")).to_owned()
-        }
-        UpdateState::Unavailable(Unavailable::ForeignRoot) => {
-            strings.tr(&key("foreignRoot")).to_owned()
         }
         UpdateState::Unavailable(Unavailable::Broken(why)) => {
             strings.tr_fmt(&key("broken"), &[why], &DisplayFormat)
@@ -1725,11 +1721,7 @@ mod tests {
             action,
         };
         // A copy that cannot update itself: nothing to press, nothing to turn on.
-        for why in [
-            Unavailable::NotInstalled,
-            Unavailable::ForeignRoot,
-            Unavailable::Broken("x".into()),
-        ] {
+        for why in [Unavailable::NotInstalled, Unavailable::Broken("x".into())] {
             assert_eq!(p(&UpdateState::Unavailable(why)), panel(false, false, None));
         }
         for state in [
@@ -1783,10 +1775,6 @@ mod tests {
         assert_eq!(
             line(UpdateState::Unavailable(Unavailable::NotInstalled)),
             "Updates need the Luneterm installer"
-        );
-        assert_eq!(
-            line(UpdateState::Unavailable(Unavailable::ForeignRoot)),
-            "Updates are off: this copy's update key is not Luneterm's"
         );
         assert_eq!(
             line(UpdateState::Unavailable(Unavailable::Broken(

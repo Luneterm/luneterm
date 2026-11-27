@@ -3,7 +3,7 @@
 
     make-build-input.py <staging-dir> <out.tar.gz>
 
-The publish job (scripts/publish-updates.py, plan step 6) takes one build input per target from
+The pack job (scripts/release-pack.py) takes one build input per target from
 the draft release and packs it with lunepack. The staging directory holds BUILD-INFO.txt and the
 directories it names (`tree/`, and for Linux and Windows `lunepack/`). The archive has the same
 entries in sorted order, owner 0:0, every time stamp SOURCE_DATE_EPOCH (set in the environment) and

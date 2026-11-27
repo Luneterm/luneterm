@@ -1,42 +1,57 @@
 name: publish-updates
 
-# Packs a published release's build inputs into the signed update feed on R2 and attaches the
-# installers (auto-update plan step 6). scripts/publish-updates.py holds the order and the rules:
-# new `<ver>/` objects first, then the feeds, then the deletes of what no channel keeps (newest 10
-# per channel); it refuses to run while the app carries the test root.
+# Packs a published release's build inputs, publishes them to the signed update feed on R2 with
+# `lunepack publish`, and attaches the installers. The flow is lunepack's own (its docs/PUBLISHING.md,
+# the same one Whipspot uses); docs/updates.md here is the runbook (environments, tokens, key ceremony).
 #
-#   release published  -> publish that tag (packs, feeds, installers; the build inputs are removed)
-#   workflow_dispatch  -> mode publish (a tag, e.g. a rerun after a failure: idempotent) or refresh
-#                         (re-sign every feed with a new 365-day expiry); dry_run (default) writes
-#                         nothing and prints what it would do
-#   schedule (weekly)  -> refresh only feeds that expire within 120 days; skipped (a notice, green)
-#                         while the app carries the test root or the bucket has no feed yet
+#   tools-linux  builds the lunepack CLI from the pin of Cargo.toml and reports its SHA-256; no secret
+#   pack         (environment release-pack)  release-pack.py pack: build inputs from the release, then
+#                `publish fetch`, `pack` and `setup` for the three targets; holds the release key only
+#   push         (environment release-push)  the OWNER APPROVES here: `publish push --dry-run`, then
+#                `publish push`; holds the release key and the push token
+#   attach       (no environment; GITHUB_TOKEN with contents: write only) the setup files to the release
+#   refresh      (environment release-refresh, default branch only) re-signs feeds that expire soon;
+#                holds the release key and the two refresh tokens (public: read and write; private: read)
+#   drop         (environment release-push) takes one release out of the feeds and deletes its objects
 #
-# Secrets (this job only, never release.yml): LUNEPACK_RELEASE_KEY (the release signing key, PKCS#8
-# PEM), R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY (an R2 S3 access key pair scoped to the two
-# izzat-updates buckets, Object Read & Write), CLOUDFLARE_ACCOUNT_ID.
+# Every job that holds a secret checks the CLI against the SHA-256 that tools-linux reported before its
+# first lunepack call, and none of them builds anything: a key job only runs that checked CLI and this
+# repository's Python (standard library only, no third-party code). No repository secret is read: the
+# release key, the account id and the three R2 tokens are secrets of the three environments, so a run on
+# a branch gets none of them. The environments (their ref rules and reviewers) are made before any secret
+# is added (docs/updates.md).
 #
-# What keeps the release key safe: this job runs no third-party code beyond the pinned lunepack CLI
-# and the Python standard library (no Node, no npm tool: the script signs its own R2 requests, SigV4).
-# Hiding a secret from a child process is not a boundary here: processes of one user can read each
-# other's environment, so a secret must never share a job with code that is not ours. Runners and
-# their images: see ci.yml.
+#   release published  -> pack, push (owner approves) and attach for that tag; this is an apply run
+#   workflow_dispatch  -> mode refresh (all feeds), publish (run from a v* tag ref: pack, push, attach)
+#                         or drop (run from a v* tag ref; drop_version); dry_run (default) runs only the
+#                         `--dry-run` commands and attaches nothing
+#   schedule (weekly)  -> refresh the feeds that expire within 30 days; nothing while nothing is published
+#
+# Not live until the owner says so: every job runs only when the repository variable PUBLISH_READY is
+# 'true'; until then a run ends green with a notice.
+#
+# Recovery: once `publish push` has written a feed, `publish fetch` refuses that version, so a new run
+# cannot rebuild the setup files. The pack job's artifacts are kept 90 days; a failed push or attach is
+# finished by "re-run failed jobs" of the same run within that window (docs/updates.md).
+#
+# Runners and their images: see ci.yml. The jobs run on the self-hosted Linux runner (never the
+# Windows VM). Whether a job's container is fresh is not checked here (docs/updates.md, "Runner").
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       mode:
-        description: "publish a tag, or refresh (re-sign) the feeds"
+        description: "refresh the feeds, publish a release (run from its v* tag) or drop one (run from a v* tag)"
         type: choice
-        options: [refresh, publish]
+        options: [refresh, publish, drop]
         default: refresh
-      tag:
-        description: "publish: the release tag, v<version> or v<version>-rc.<N>"
+      drop_version:
+        description: "drop: the version to take out of the feeds, <major>.<minor>.<patch>[-rc.<N>]"
         type: string
         default: ""
       dry_run:
-        description: "print the plan, write nothing"
+        description: "run only the --dry-run commands and attach nothing"
         type: boolean
         default: true
   schedule:
@@ -50,40 +65,32 @@ concurrency:
   group: publish-updates
   cancel-in-progress: false
 
+env:
+  # The release's tag (a dispatch from a tag ref names it in the ref). Never put into a script's text.
+  TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+  # A release event is an apply run; a dispatch is a dry run unless asked otherwise.
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+
 jobs:
-  publish:
-    # A single-use Linux container, never the Windows VM: the only job that holds the release key,
-    # and one that runs no third-party code (see the header).
+  not-ready:
+    if: vars.PUBLISH_READY != 'true'
     runs-on: [self-hosted, linux, x64]
-    permissions:
-      contents: write
-    env:
-      MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event_name == 'release' && 'publish' || 'refresh') }}
-      TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
-      APPLY: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
     steps:
-      - name: Check the inputs
-        shell: bash
+      - name: Say so
         run: |
-          set +x
-          set -euo pipefail
-          case "$MODE" in
-            publish)
-              if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
-                echo "tag '$TAG' is not v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-rc.<N>" >&2
-                exit 1
-              fi ;;
-            refresh) ;;
-            *) echo "unknown mode '$MODE'" >&2; exit 1 ;;
-          esac
-          echo "mode $MODE, tag '${TAG}', apply $APPLY"
-      # publish: the tag's own commit (its packaging configs are what the macOS bundle was signed
-      # with); refresh: the default branch.
+          echo "::notice::Publishing is not live (the repository variable PUBLISH_READY is not 'true', see docs/updates.md). Nothing was published."
+
+  tools-linux:
+    if: vars.PUBLISH_READY == 'true'
+    runs-on: [self-hosted, linux, x64]
+    outputs:
+      cli_sha256: ${{ steps.hash.outputs.cli_sha256 }}
+    steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-          ref: ${{ env.MODE == 'publish' && format('refs/tags/{0}', env.TAG) || '' }}
-      # As release.yml: the image has no compiler or Rust (the lunepack CLI is built from the pin).
+      # As release.yml: the image has no compiler or Rust. No secret and no environment here: this is
+      # the only job that compiles, and it holds nothing to steal.
       - name: Install build tools and rustup
         shell: bash
         run: |
@@ -97,22 +104,267 @@ jobs:
       - name: Build the lunepack CLI
         shell: bash
         run: scripts/build-lunepack.sh cli-linux-x86_64 "$RUNNER_TEMP/lunepack-cli"
-      - name: Publish or refresh
+      - name: Its SHA-256
+        id: hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "cli_sha256=$(sha256sum "$RUNNER_TEMP/lunepack-cli/lunepack" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lunepack-cli
+          path: ${{ runner.temp }}/lunepack-cli/lunepack
+          retention-days: 90
+
+  pack:
+    if: vars.PUBLISH_READY == 'true' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish'))
+    needs: [tools-linux]
+    runs-on: [self-hosted, linux, x64]
+    environment: release-pack      # v* tags only; the release key lives here
+    permissions:
+      contents: read               # the build inputs are downloaded with this token
+    outputs:
+      setup_sha256_linux_x86_64: ${{ steps.pack.outputs.setup_sha256_linux_x86_64 }}
+      setup_sha256_windows_x86_64: ${{ steps.pack.outputs.setup_sha256_windows_x86_64 }}
+      setup_sha256_macos_aarch64: ${{ steps.pack.outputs.setup_sha256_macos_aarch64 }}
+    steps:
+      - name: Check the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "'$TAG' is not v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-rc.<N>" >&2
+            exit 1
+          fi
+      # The tag's own commit: its packaging config and its pin are what the build inputs were made with.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: refs/tags/${{ env.TAG }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lunepack-cli
+          path: ${{ runner.temp }}/tools
+      - name: Check the CLI against tools-linux
+        shell: bash
+        env:
+          WANT: ${{ needs.tools-linux.outputs.cli_sha256 }}
+        run: |
+          set -euo pipefail
+          GOT="$(sha256sum "$RUNNER_TEMP/tools/lunepack" | cut -d' ' -f1)"
+          if [ -z "$WANT" ] || [ "$GOT" != "$WANT" ]; then echo "the CLI is not the one tools-linux built" >&2; exit 1; fi
+          chmod +x "$RUNNER_TEMP/tools/lunepack"
+      - name: Pack the build inputs and set up
+        id: pack
         shell: bash
         env:
           LUNEPACK_RELEASE_KEY: ${{ secrets.LUNEPACK_RELEASE_KEY }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set +x
           set -euo pipefail
-          args=(--lunepack "$RUNNER_TEMP/lunepack-cli/lunepack" --work "$RUNNER_TEMP/publish-work")
-          if [ "$APPLY" = "true" ]; then args+=(--apply); fi
-          if [ "$MODE" = "publish" ]; then
-            python3 -I scripts/publish-updates.py publish --tag "$TAG" "${args[@]}"
-          else
-            if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then args+=(--if-expiring-within-days 120 --skip-if-unpublished); fi
-            python3 -I scripts/publish-updates.py refresh "${args[@]}"
+          python3 -I scripts/release-pack.py pack --tag "$TAG" --lunepack "$RUNNER_TEMP/tools/lunepack" \
+            --config packaging/lunepack.toml --work "$RUNNER_TEMP/pack" --output-file "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release
+          path: ${{ runner.temp }}/pack/release
+          retention-days: 90
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: setup
+          path: ${{ runner.temp }}/pack/setup
+          retention-days: 90
+
+  push:
+    if: vars.PUBLISH_READY == 'true' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish'))
+    needs: [tools-linux, pack]
+    runs-on: [self-hosted, linux, x64]
+    environment: release-push      # v* tags only; the owner approves here; the release key and the push token live here
+    steps:
+      - name: Check the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "'$TAG' is not v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-rc.<N>" >&2
+            exit 1
           fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: refs/tags/${{ env.TAG }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lunepack-cli
+          path: ${{ runner.temp }}/tools
+      - name: Check the CLI against tools-linux
+        shell: bash
+        env:
+          WANT: ${{ needs.tools-linux.outputs.cli_sha256 }}
+        run: |
+          set -euo pipefail
+          GOT="$(sha256sum "$RUNNER_TEMP/tools/lunepack" | cut -d' ' -f1)"
+          if [ -z "$WANT" ] || [ "$GOT" != "$WANT" ]; then echo "the CLI is not the one tools-linux built" >&2; exit 1; fi
+          chmod +x "$RUNNER_TEMP/tools/lunepack"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+      - name: Push (a dry run first)
+        shell: bash
+        env:
+          LUNEPACK_RELEASE_KEY: ${{ secrets.LUNEPACK_RELEASE_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # One push token (public: read, write, delete; private: read, write) for both pairs.
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_STATE_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_STATE_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          set +x
+          set -euo pipefail
+          CLI="$RUNNER_TEMP/tools/lunepack"
+          VERSION="${TAG#v}"
+          "$CLI" publish push --release-dir "$RUNNER_TEMP/release" --version "$VERSION" \
+            --sign release --config packaging/lunepack.toml --dry-run
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry run: nothing pushed"
+            exit 0
+          fi
+          "$CLI" publish push --release-dir "$RUNNER_TEMP/release" --version "$VERSION" \
+            --sign release --config packaging/lunepack.toml
+
+  attach:
+    if: vars.PUBLISH_READY == 'true' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && !inputs.dry_run))
+    needs: [pack, push]
+    runs-on: [self-hosted, linux, x64]
+    permissions:
+      contents: write              # the release's assets; no environment and no other secret
+    steps:
+      - name: Check the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "'$TAG' is not v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-rc.<N>" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: refs/tags/${{ env.TAG }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: setup
+          path: ${{ runner.temp }}/setup
+      - name: Attach the setup files and remove the build inputs
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SHA_LINUX: ${{ needs.pack.outputs.setup_sha256_linux_x86_64 }}
+          SHA_WINDOWS: ${{ needs.pack.outputs.setup_sha256_windows_x86_64 }}
+          SHA_MACOS: ${{ needs.pack.outputs.setup_sha256_macos_aarch64 }}
+        run: |
+          set +x
+          set -euo pipefail
+          python3 -I scripts/release-pack.py attach --tag "$TAG" --dir "$RUNNER_TEMP/setup" \
+            --expect "linux-x86_64=$SHA_LINUX" "windows-x86_64=$SHA_WINDOWS" "macos-aarch64=$SHA_MACOS"
+
+  refresh:
+    if: vars.PUBLISH_READY == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'refresh'))
+    needs: [tools-linux]
+    runs-on: [self-hosted, linux, x64]
+    environment: release-refresh   # the default branch only; the release key and the two refresh tokens live here
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lunepack-cli
+          path: ${{ runner.temp }}/tools
+      - name: Check the CLI against tools-linux
+        shell: bash
+        env:
+          WANT: ${{ needs.tools-linux.outputs.cli_sha256 }}
+        run: |
+          set -euo pipefail
+          GOT="$(sha256sum "$RUNNER_TEMP/tools/lunepack" | cut -d' ' -f1)"
+          if [ -z "$WANT" ] || [ "$GOT" != "$WANT" ]; then echo "the CLI is not the one tools-linux built" >&2; exit 1; fi
+          chmod +x "$RUNNER_TEMP/tools/lunepack"
+      - name: Refresh the feeds
+        shell: bash
+        env:
+          LUNEPACK_RELEASE_KEY: ${{ secrets.LUNEPACK_RELEASE_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # The public bucket: read and write. The private bucket: read only (a refresh that could
+          # write the state file could lower its record and defeat the rollback guard).
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_STATE_ACCESS_KEY_ID: ${{ secrets.R2_STATE_ACCESS_KEY_ID }}
+          R2_STATE_SECRET_ACCESS_KEY: ${{ secrets.R2_STATE_SECRET_ACCESS_KEY }}
+        run: |
+          set +x
+          set -euo pipefail
+          args=(publish refresh --sign release --config packaging/lunepack.toml)
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            args+=(--if-expiring-within-days 30 --skip-if-unpublished)
+          elif [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          "$RUNNER_TEMP/tools/lunepack" "${args[@]}"
+
+  drop:
+    if: vars.PUBLISH_READY == 'true' && github.event_name == 'workflow_dispatch' && inputs.mode == 'drop'
+    needs: [tools-linux]
+    runs-on: [self-hosted, linux, x64]
+    environment: release-push      # run from a v* tag; the owner approves, as for push
+    steps:
+      - name: Check the version to drop
+        shell: bash
+        env:
+          DROP_VERSION: ${{ inputs.drop_version }}   # through the environment, never into the script text
+        run: |
+          set -euo pipefail
+          if [[ ! "$DROP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "'$DROP_VERSION' is not <major>.<minor>.<patch> or <major>.<minor>.<patch>-rc.<N>" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lunepack-cli
+          path: ${{ runner.temp }}/tools
+      - name: Check the CLI against tools-linux
+        shell: bash
+        env:
+          WANT: ${{ needs.tools-linux.outputs.cli_sha256 }}
+        run: |
+          set -euo pipefail
+          GOT="$(sha256sum "$RUNNER_TEMP/tools/lunepack" | cut -d' ' -f1)"
+          if [ -z "$WANT" ] || [ "$GOT" != "$WANT" ]; then echo "the CLI is not the one tools-linux built" >&2; exit 1; fi
+          chmod +x "$RUNNER_TEMP/tools/lunepack"
+      - name: Drop (a dry run first)
+        shell: bash
+        env:
+          DROP_VERSION: ${{ inputs.drop_version }}
+          LUNEPACK_RELEASE_KEY: ${{ secrets.LUNEPACK_RELEASE_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # The push token, for both buckets.
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_STATE_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_STATE_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          set +x
+          set -euo pipefail
+          CLI="$RUNNER_TEMP/tools/lunepack"
+          "$CLI" publish drop --version "$DROP_VERSION" --sign release --config packaging/lunepack.toml --dry-run
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry run: nothing dropped"
+            exit 0
+          fi
+          "$CLI" publish drop --version "$DROP_VERSION" --sign release --config packaging/lunepack.toml

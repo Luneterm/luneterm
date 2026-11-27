@@ -96,7 +96,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
  "x11rb",
 ]
 
@@ -568,7 +568,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -666,7 +666,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1510,7 +1510,7 @@ dependencies = [
 [[package]]
 name = "lunepack"
 version = "0.1.0"
-source = "git+https://github.com/lune-rs/lunepack?rev=a3d23376a89b3825f9cc92e674af8ce04bfc09e4#a3d23376a89b3825f9cc92e674af8ce04bfc09e4"
+source = "git+https://github.com/lune-rs/lunepack?rev=be29be066341c52a1af95f9f6d7d30cabe2cba35#be29be066341c52a1af95f9f6d7d30cabe2cba35"
 dependencies = [
  "lunepack-codec-lzma",
  "lunepack-core",
@@ -1530,7 +1530,7 @@ dependencies = [
 [[package]]
 name = "lunepack-codec-lzma"
 version = "0.1.0"
-source = "git+https://github.com/lune-rs/lunepack?rev=a3d23376a89b3825f9cc92e674af8ce04bfc09e4#a3d23376a89b3825f9cc92e674af8ce04bfc09e4"
+source = "git+https://github.com/lune-rs/lunepack?rev=be29be066341c52a1af95f9f6d7d30cabe2cba35#be29be066341c52a1af95f9f6d7d30cabe2cba35"
 dependencies = [
  "lunepack-core",
  "lzma-rust2",
@@ -1539,7 +1539,7 @@ dependencies = [
 [[package]]
 name = "lunepack-core"
 version = "0.1.0"
-source = "git+https://github.com/lune-rs/lunepack?rev=a3d23376a89b3825f9cc92e674af8ce04bfc09e4#a3d23376a89b3825f9cc92e674af8ce04bfc09e4"
+source = "git+https://github.com/lune-rs/lunepack?rev=be29be066341c52a1af95f9f6d7d30cabe2cba35#be29be066341c52a1af95f9f6d7d30cabe2cba35"
 dependencies = [
  "base64 0.22.1",
  "semver",
@@ -1552,7 +1552,7 @@ dependencies = [
 [[package]]
 name = "lunepack-crypto"
 version = "0.1.0"
-source = "git+https://github.com/lune-rs/lunepack?rev=a3d23376a89b3825f9cc92e674af8ce04bfc09e4#a3d23376a89b3825f9cc92e674af8ce04bfc09e4"
+source = "git+https://github.com/lune-rs/lunepack?rev=be29be066341c52a1af95f9f6d7d30cabe2cba35#be29be066341c52a1af95f9f6d7d30cabe2cba35"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.4.3",
@@ -1564,7 +1564,7 @@ dependencies = [
 [[package]]
 name = "lunepack-fs"
 version = "0.1.0"
-source = "git+https://github.com/lune-rs/lunepack?rev=a3d23376a89b3825f9cc92e674af8ce04bfc09e4#a3d23376a89b3825f9cc92e674af8ce04bfc09e4"
+source = "git+https://github.com/lune-rs/lunepack?rev=be29be066341c52a1af95f9f6d7d30cabe2cba35#be29be066341c52a1af95f9f6d7d30cabe2cba35"
 dependencies = [
  "fs4",
  "libc",
@@ -1574,20 +1574,23 @@ dependencies = [
 [[package]]
 name = "lunepack-http"
 version = "0.1.0"
-source = "git+https://github.com/lune-rs/lunepack?rev=a3d23376a89b3825f9cc92e674af8ce04bfc09e4#a3d23376a89b3825f9cc92e674af8ce04bfc09e4"
+source = "git+https://github.com/lune-rs/lunepack?rev=be29be066341c52a1af95f9f6d7d30cabe2cba35#be29be066341c52a1af95f9f6d7d30cabe2cba35"
 dependencies = [
  "http",
  "hyper-util",
  "lunepack-core",
  "rustls",
+ "sha2",
+ "thiserror 2.0.21",
  "ureq",
  "url",
+ "zeroize",
 ]
 
 [[package]]
 name = "lunepack-os-linux"
 version = "0.1.0"
-source = "git+https://github.com/lune-rs/lunepack?rev=a3d23376a89b3825f9cc92e674af8ce04bfc09e4#a3d23376a89b3825f9cc92e674af8ce04bfc09e4"
+source = "git+https://github.com/lune-rs/lunepack?rev=be29be066341c52a1af95f9f6d7d30cabe2cba35#be29be066341c52a1af95f9f6d7d30cabe2cba35"
 dependencies = [
  "libc",
  "lunepack-core",
@@ -1596,7 +1599,7 @@ dependencies = [
 [[package]]
 name = "lunepack-os-macos"
 version = "0.1.0"
-source = "git+https://github.com/lune-rs/lunepack?rev=a3d23376a89b3825f9cc92e674af8ce04bfc09e4#a3d23376a89b3825f9cc92e674af8ce04bfc09e4"
+source = "git+https://github.com/lune-rs/lunepack?rev=be29be066341c52a1af95f9f6d7d30cabe2cba35#be29be066341c52a1af95f9f6d7d30cabe2cba35"
 dependencies = [
  "core-foundation 0.10.1",
  "libc",
@@ -1607,7 +1610,7 @@ dependencies = [
 [[package]]
 name = "lunepack-os-windows"
 version = "0.1.0"
-source = "git+https://github.com/lune-rs/lunepack?rev=a3d23376a89b3825f9cc92e674af8ce04bfc09e4#a3d23376a89b3825f9cc92e674af8ce04bfc09e4"
+source = "git+https://github.com/lune-rs/lunepack?rev=be29be066341c52a1af95f9f6d7d30cabe2cba35#be29be066341c52a1af95f9f6d7d30cabe2cba35"
 dependencies = [
  "lunepack-core",
  "tracing",
@@ -1618,11 +1621,12 @@ dependencies = [
 [[package]]
 name = "lunepack-testkit"
 version = "0.1.0"
-source = "git+https://github.com/lune-rs/lunepack?rev=a3d23376a89b3825f9cc92e674af8ce04bfc09e4#a3d23376a89b3825f9cc92e674af8ce04bfc09e4"
+source = "git+https://github.com/lune-rs/lunepack?rev=be29be066341c52a1af95f9f6d7d30cabe2cba35#be29be066341c52a1af95f9f6d7d30cabe2cba35"
 dependencies = [
  "lunepack-core",
  "proptest",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -2621,7 +2625,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2678,7 +2682,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3858,7 +3862,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4181,7 +4185,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
