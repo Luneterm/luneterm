@@ -204,7 +204,7 @@ impl Worker {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
     use std::sync::atomic::AtomicUsize;
@@ -212,9 +212,32 @@ mod tests {
 
     use super::*;
     use crate::ctl::endpoint::scratch::Scratch;
+    use crate::ctl::token;
     use crate::ctl::wire::{decode_reply, encode_request};
 
-    const TOKEN: &str = "abcdefgh12345678abcdef";
+    /// A config directory and a token of the test's own (pipe names on Windows are
+    /// machine-wide).
+    struct Place {
+        scratch: Scratch,
+        token: String,
+    }
+
+    impl Place {
+        fn new() -> Place {
+            Place {
+                scratch: Scratch::new(),
+                token: token::new().expect("a token"),
+            }
+        }
+
+        fn path(&self) -> &Path {
+            self.scratch.path()
+        }
+
+        fn listed(&self) -> bool {
+            Native::instances(self.path()).contains(&self.token)
+        }
+    }
 
     /// Answers `status` at once with how often it was asked, after `slow_first` the first time.
     struct Counts {
@@ -233,38 +256,39 @@ mod tests {
         }
     }
 
-    fn serving(scratch: &Scratch, slow_first: Duration, code: Code) -> (Server, Arc<AtomicUsize>) {
+    fn serving(scratch: &Place, slow_first: Duration, code: Code) -> (Server, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let handler = Counts {
             calls: Arc::clone(&calls),
             slow_first,
             code,
         };
-        let server = Server::start(scratch.path(), TOKEN, handler).expect("starts");
+        let server = Server::start(scratch.path(), &scratch.token, handler).expect("starts");
         (server, calls)
     }
 
-    fn connect(scratch: &Scratch) -> impl Connection {
+    fn connect(scratch: &Place) -> impl Connection {
         let deadline = Instant::now() + Duration::from_secs(10);
-        let mut connection = Native::connect(scratch.path(), TOKEN, deadline).expect("connects");
+        let mut connection =
+            Native::connect(scratch.path(), &scratch.token, deadline).expect("connects");
         connection.set_deadline(deadline);
         connection
     }
 
-    fn send(scratch: &Scratch, bytes: &[u8]) -> (Code, String) {
+    fn send(scratch: &Place, bytes: &[u8]) -> (Code, String) {
         let mut connection = connect(scratch);
         connection.write_all(bytes).expect("sends");
         decode_reply(&mut connection).expect("a reply")
     }
 
-    fn ask(scratch: &Scratch, words: &[&str]) -> (Code, String) {
+    fn ask(scratch: &Place, words: &[&str]) -> (Code, String) {
         let words: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
         send(scratch, &encode_request(&words).expect("encodes"))
     }
 
     #[test]
     fn a_request_is_handed_over_and_its_reply_sent_back() {
-        let scratch = Scratch::new();
+        let scratch = Place::new();
         let (_server, calls) = serving(&scratch, Duration::ZERO, Code::NoSuchTab);
         for n in 1..=50 {
             assert_eq!(
@@ -277,7 +301,7 @@ mod tests {
 
     #[test]
     fn what_is_no_request_is_answered_2_and_never_reaches_the_handler() {
-        let scratch = Scratch::new();
+        let scratch = Place::new();
         let (_server, calls) = serving(&scratch, Duration::ZERO, Code::Done);
         for frame in [
             &b"GET / HTTP/1.1\r\n\r\n"[..],
@@ -306,7 +330,7 @@ mod tests {
 
     #[test]
     fn a_silent_client_is_dropped_after_a_second_and_the_next_is_served() {
-        let scratch = Scratch::new();
+        let scratch = Place::new();
         let (_server, calls) = serving(&scratch, Duration::ZERO, Code::Done);
         let start = Instant::now();
         let mut silent = connect(&scratch);
@@ -327,7 +351,7 @@ mod tests {
 
     #[test]
     fn a_client_that_drips_its_request_gets_one_second_in_all() {
-        let scratch = Scratch::new();
+        let scratch = Place::new();
         let (_server, calls) = serving(&scratch, Duration::ZERO, Code::Done);
         let frame = encode_request(&["a".repeat(200)]).expect("encodes");
         let start = Instant::now();
@@ -351,7 +375,7 @@ mod tests {
 
     #[test]
     fn a_late_handler_is_answered_for_and_nothing_queues_behind_it() {
-        let scratch = Scratch::new();
+        let scratch = Place::new();
         let slow = ANSWER_DEADLINE + Duration::from_secs(1);
         let (_server, calls) = serving(&scratch, slow, Code::Done);
         let start = Instant::now();
@@ -392,14 +416,13 @@ mod tests {
     }
 
     #[test]
-    fn dropping_the_server_takes_the_socket_away_without_waiting_for_the_handler() {
-        let scratch = Scratch::new();
+    fn dropping_the_server_takes_the_endpoint_away_without_waiting_for_the_handler() {
+        let scratch = Place::new();
         let (asked, was_asked) = mpsc::sync_channel(1);
         let (let_go, release) = mpsc::channel();
-        let server =
-            Server::start(scratch.path(), TOKEN, Stuck { asked, release }).expect("starts");
-        let socket = scratch.path().join("run").join(format!("{TOKEN}.sock"));
-        assert!(socket.exists());
+        let server = Server::start(scratch.path(), &scratch.token, Stuck { asked, release })
+            .expect("starts");
+        assert!(scratch.listed());
         let mut connection = connect(&scratch);
         let status = encode_request(&["status".to_owned()]).expect("encodes");
         connection.write_all(&status).expect("sends");
@@ -410,24 +433,24 @@ mod tests {
         drop(server);
         let took = start.elapsed();
         assert!(took < Duration::from_millis(500), "{took:?}");
-        assert!(!socket.exists());
+        assert!(!scratch.listed());
         drop(let_go);
     }
 
     #[test]
     fn dropping_an_idle_server_is_immediate() {
-        let scratch = Scratch::new();
+        let scratch = Place::new();
         let (server, _) = serving(&scratch, Duration::ZERO, Code::Done);
         assert_eq!(ask(&scratch, &["status"]).0, Code::Done);
         let start = Instant::now();
         drop(server);
         assert!(start.elapsed() < Duration::from_millis(500));
-        assert!(Native::instances(scratch.path()).is_empty());
+        assert!(!scratch.listed());
     }
 
     #[test]
     fn a_reply_that_cannot_be_sent_becomes_a_failure() {
-        let scratch = Scratch::new();
+        let scratch = Place::new();
         let (_server, _) = serving(&scratch, Duration::ZERO, Code::Unreachable);
         assert_eq!(
             ask(&scratch, &["status"]),

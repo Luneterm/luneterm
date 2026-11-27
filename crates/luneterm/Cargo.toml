@@ -33,10 +33,12 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDate", "NSGeometry", "NSProcessInfo", "NSString", "NSUserDefaults"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSGraphicsContext", "NSResponder", "NSView", "NSWindow"] }
 
-# `ShellExecuteW` to open a link (links/open.rs, D4), and the own process's EcoQoS and priority
-# class for efficiency mode (efficiency/windows.rs): the Windows APIs the app calls itself.
+# `ShellExecuteW` to open a link (links/open.rs, D4), the own process's EcoQoS and priority
+# class for efficiency mode (efficiency/windows.rs), and the `ctl` named pipe, its security
+# descriptor and the instance token's random bytes (ctl/endpoint/windows.rs, ctl/token.rs): the
+# Windows APIs the app calls itself.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 # Embeds the app icon in luneterm.exe (build.rs). No default features: the toml reader is not needed
 # (the icon is set in code), so the only new package is winresource itself. Cargo matches this

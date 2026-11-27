@@ -1,16 +1,16 @@
 //! `luneterm ctl` end to end: the real binary as the client, against the app's server with a
 //! canned handler in this process. No window, and every run gets a config directory of the test's
 //! own (`LUNETERM_CONFIG_DIR`).
-
-// The endpoint there is so far.
-#![cfg(unix)]
+//!
+//! On Windows the pipe names are machine-wide, so a client that looks for "the" instance sees
+//! every other test's: there the tests run one at a time ([`one_at_a_time`]).
 
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Barrier, Mutex, Once};
+use std::sync::{Arc, Barrier, Mutex, MutexGuard, Once};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -53,10 +53,21 @@ impl Drop for Scratch {
 }
 
 fn private_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
     builder.create(dir)
+}
+
+/// On Windows, the lock every test holds for its whole run; elsewhere nothing.
+fn one_at_a_time() -> Option<MutexGuard<'static, ()>> {
+    static ONE: Mutex<()> = Mutex::new(());
+    // A test that failed holding it says nothing about the next.
+    cfg!(windows).then(|| {
+        ONE.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    })
 }
 
 /// Answers every request with the reply it holds, after `delay`, and keeps what it was asked.
@@ -197,6 +208,7 @@ const TOO_LATE: &str = "no answer within 2 s";
 
 #[test]
 fn each_status_a_reply_carries_is_the_exit_code_and_the_output() {
+    let _one = one_at_a_time();
     let scratch = Scratch::new();
     let line = r#"{"protocol":1,"version":"0","instance":"x","control":"on"}"#;
     let instance = Instance::start(scratch.path(), Canned::new(line));
@@ -219,6 +231,7 @@ fn each_status_a_reply_carries_is_the_exit_code_and_the_output() {
 
 #[test]
 fn a_reason_is_printed_as_one_line_without_control_characters() {
+    let _one = one_at_a_time();
     let scratch = Scratch::new();
     let instance = Instance::start(scratch.path(), Canned::new(""));
     instance
@@ -229,6 +242,7 @@ fn a_reason_is_printed_as_one_line_without_control_characters() {
 
 #[test]
 fn the_words_reach_the_handler_as_they_were_given() {
+    let _one = one_at_a_time();
     let scratch = Scratch::new();
     let instance = Instance::start(scratch.path(), Canned::new(r#"{"id":7}"#));
     let cwd = scratch.path().to_str().expect("UTF-8");
@@ -272,6 +286,7 @@ fn the_words_reach_the_handler_as_they_were_given() {
 
 #[test]
 fn with_no_server_it_is_exit_4_and_nothing_is_made() {
+    let _one = one_at_a_time();
     let scratch = Scratch::new();
     let config = scratch.path().join("c");
     failed(&ctl(&config, None, &["status"]), 4, NONE_RUNNING);
@@ -284,6 +299,7 @@ fn with_no_server_it_is_exit_4_and_nothing_is_made() {
 
 #[test]
 fn two_servers_and_no_instance_is_exit_4() {
+    let _one = one_at_a_time();
     let scratch = Scratch::new();
     let a = Instance::start(scratch.path(), Canned::new("\"a\""));
     let b = Instance::start(scratch.path(), Canned::new("\"b\""));
@@ -297,6 +313,7 @@ fn two_servers_and_no_instance_is_exit_4() {
 
 #[test]
 fn an_instance_that_is_set_and_absent_is_exit_4() {
+    let _one = one_at_a_time();
     let scratch = Scratch::new();
     let running = Instance::start(scratch.path(), Canned::new("{}"));
     let absent = token::new().expect("a token");
@@ -308,6 +325,7 @@ fn an_instance_that_is_set_and_absent_is_exit_4() {
 
 #[test]
 fn an_instance_that_is_no_token_is_exit_4() {
+    let _one = one_at_a_time();
     let scratch = Scratch::new();
     let running = Instance::start(scratch.path(), Canned::new("{}"));
     let long = "a".repeat(65);
@@ -329,6 +347,7 @@ fn an_instance_that_is_no_token_is_exit_4() {
 
 #[test]
 fn a_handler_that_takes_3_s_is_exit_1_within_2_5_s() {
+    let _one = one_at_a_time();
     let scratch = Scratch::new();
     let mut slow = Canned::new("{}");
     slow.delay = Duration::from_secs(3);
@@ -344,8 +363,9 @@ fn a_handler_that_takes_3_s_is_exit_1_within_2_5_s() {
 
 #[test]
 fn usage_errors_are_exit_2_before_anything_is_connected_to() {
+    let _one = one_at_a_time();
     let scratch = Scratch::new();
-    let raw = unix::Raw::new(scratch.path());
+    let raw = raw::Raw::new(scratch.path());
     let cwd = scratch.path().to_str().expect("UTF-8");
     let file = scratch.path().join("file");
     fs::write(&file, b"").expect("write");
@@ -397,9 +417,10 @@ fn usage_errors_are_exit_2_before_anything_is_connected_to() {
 
 #[test]
 fn a_server_that_never_answers_is_exit_1_at_2_s() {
+    let _one = one_at_a_time();
     let scratch = Scratch::new();
     // It listens and never accepts: the request goes into the socket and nothing comes back.
-    let raw = unix::Raw::new(scratch.path());
+    let raw = raw::Raw::new(scratch.path());
     warm();
     for named in [None, Some(raw.token.as_str())] {
         let start = Instant::now();
@@ -415,8 +436,9 @@ fn a_server_that_never_answers_is_exit_1_at_2_s() {
 
 #[test]
 fn a_server_that_hangs_up_is_exit_1() {
+    let _one = one_at_a_time();
     let scratch = Scratch::new();
-    let raw = unix::Raw::new(scratch.path());
+    let raw = raw::Raw::new(scratch.path());
     let server = thread::spawn(move || raw.hang_up_on_one());
     failed(
         &ctl(scratch.path(), None, &["status"]),
@@ -428,6 +450,7 @@ fn a_server_that_hangs_up_is_exit_1() {
 
 #[test]
 fn two_servers_started_at_once_both_stay_reachable() {
+    let _one = one_at_a_time();
     let scratch = Scratch::new();
     for round in 0..20 {
         let barrier = Barrier::new(2);
@@ -448,6 +471,99 @@ fn two_servers_started_at_once_both_stay_reachable() {
             &ctl(scratch.path(), Some(&b.token), &["status"]),
             &format!("\"b{round}\""),
         );
+    }
+}
+
+#[cfg(unix)]
+use unix as raw;
+
+#[cfg(windows)]
+use windows as raw;
+
+#[cfg(windows)]
+mod windows {
+    //! An endpoint held by the test itself, which never answers.
+
+    use std::io::Read;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::thread::JoinHandle;
+
+    use luneterm::ctl::endpoint::{Connection, Endpoint, Interrupt, Listener, Native};
+
+    use super::*;
+
+    /// A pipe where an instance's would be. A thread takes its connections one by one, counts
+    /// them, and reads each until the client closes (or, once asked to, hangs up on it after the
+    /// first byte of the request), never answering.
+    pub(super) struct Raw {
+        pub(super) token: String,
+        connections: Arc<AtomicUsize>,
+        hang_up: Arc<AtomicBool>,
+        stop: Option<Box<dyn Interrupt>>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl Raw {
+        pub(super) fn new(config: &Path) -> Raw {
+            let token = token::new().expect("a token");
+            let mut listener = Native::bind(config, &token).expect("binds");
+            let stop: Box<dyn Interrupt> = Box::new(listener.interrupter().expect("interrupter"));
+            let connections = Arc::new(AtomicUsize::new(0));
+            let hang_up = Arc::new(AtomicBool::new(false));
+            let thread = thread::spawn({
+                let connections = Arc::clone(&connections);
+                let hang_up = Arc::clone(&hang_up);
+                move || {
+                    while let Ok(Some(mut connection)) =
+                        listener.accept(Instant::now() + Duration::from_secs(600))
+                    {
+                        connections.fetch_add(1, Ordering::SeqCst);
+                        connection.set_deadline(Instant::now() + Duration::from_secs(30));
+                        if hang_up.load(Ordering::SeqCst) {
+                            // The first bytes of the request: the client has checked who the
+                            // server is by then, so what it sees is the hang-up, not a server
+                            // it cannot name.
+                            let _ = connection.read(&mut [0; 1]);
+                        } else {
+                            let _ = std::io::copy(&mut connection, &mut std::io::sink());
+                        }
+                    }
+                }
+            });
+            Raw {
+                token,
+                connections,
+                hang_up,
+                stop: Some(stop),
+                thread: Some(thread),
+            }
+        }
+
+        /// Whether a connection came since the last look.
+        pub(super) fn was_connected_to(&self) -> bool {
+            self.connections.swap(0, Ordering::SeqCst) > 0
+        }
+
+        /// Hangs up on the next connection, and waits for it.
+        pub(super) fn hang_up_on_one(&self) {
+            self.hang_up.store(true, Ordering::SeqCst);
+            let start = Instant::now();
+            while self.connections.load(Ordering::SeqCst) == 0 {
+                assert!(start.elapsed() < Duration::from_secs(20), "no connection");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    impl Drop for Raw {
+        fn drop(&mut self) {
+            if let Some(stop) = self.stop.take() {
+                stop.interrupt();
+            }
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
     }
 }
 

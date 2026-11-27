@@ -2,8 +2,8 @@
 //! M10 builds on it (plan M9 D19).
 
 // `unsafe` only in platform modules (links/open.rs, Windows; os_event.rs and efficiency/macos.rs,
-// macOS; efficiency/windows.rs; shell_integration/mod.rs and ctl/endpoint/unix.rs, Unix), each block
-// with a SAFETY comment.
+// macOS; efficiency/windows.rs, ctl/endpoint/windows.rs and ctl/token.rs's `random`, Windows;
+// shell_integration/mod.rs and ctl/endpoint/unix.rs, Unix), each block with a SAFETY comment.
 #![deny(unsafe_code)]
 
 pub mod app;

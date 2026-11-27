@@ -25,9 +25,27 @@ fn random(out: &mut [u8]) -> io::Result<()> {
     std::fs::File::open("/dev/urandom")?.read_exact(out)
 }
 
-#[cfg(not(unix))]
-fn random(_out: &mut [u8]) -> io::Result<()> {
-    Err(io::ErrorKind::Unsupported.into())
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn random(out: &mut [u8]) -> io::Result<()> {
+    use windows_sys::Win32::Security::Cryptography::{
+        BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
+    };
+
+    let len = u32::try_from(out.len()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // SAFETY: `out` is writable for `len` bytes; no algorithm handle, as the flag asks.
+    let status = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            out.as_mut_ptr(),
+            len,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::other("the system's random source failed"));
+    }
+    Ok(())
 }
 
 /// `bytes` in base64url without padding.
@@ -72,7 +90,6 @@ mod tests {
         assert_eq!(encode(&counted), "AAECAwQFBgcICQoLDA0ODw");
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_new_token_is_22_url_safe_characters_and_never_the_same() {
         let mut seen = std::collections::HashSet::new();

@@ -12,11 +12,13 @@ use std::time::Instant;
 
 #[cfg(unix)]
 mod unix;
+#[cfg(windows)]
+mod windows;
 
 #[cfg(unix)]
 pub use unix::UnixEndpoint as Native;
-#[cfg(not(unix))]
-pub use unsupported::NoEndpoint as Native;
+#[cfg(windows)]
+pub use windows::PipeEndpoint as Native;
 
 /// Why an endpoint could not be opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,10 +83,11 @@ pub trait Endpoint {
 }
 
 /// A directory of a test's own, for the tests of the endpoint and of the server.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) mod scratch {
     use std::fs::DirBuilder;
     use std::io::ErrorKind;
+    #[cfg(unix)]
     use std::os::unix::fs::DirBuilderExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -99,7 +102,11 @@ pub(crate) mod scratch {
             loop {
                 let n = NEXT.fetch_add(1, Ordering::Relaxed);
                 let dir = std::env::temp_dir().join(format!("ltu{}-{n}", std::process::id()));
-                match DirBuilder::new().mode(0o700).create(&dir) {
+                #[cfg_attr(not(unix), allow(unused_mut))]
+                let mut builder = DirBuilder::new();
+                #[cfg(unix)]
+                builder.mode(0o700);
+                match builder.create(&dir) {
                     Ok(()) => return Scratch(dir),
                     // Not ours: left alone.
                     Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
@@ -117,84 +124,6 @@ pub(crate) mod scratch {
         fn drop(&mut self) {
             // `new` created it.
             let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-}
-
-#[cfg(not(unix))]
-mod unsupported {
-    //! No endpoint on this system: nothing binds and nothing is found.
-
-    use std::io::{self, Read, Write};
-    use std::path::Path;
-    use std::time::Instant;
-
-    use super::{BindError, Connection, Endpoint, Interrupt, Listener};
-
-    #[derive(Debug)]
-    pub struct NoEndpoint;
-
-    /// There is no value of it: no listener and no connection ever exists.
-    #[derive(Debug)]
-    pub enum Never {}
-
-    impl Read for Never {
-        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-            match *self {}
-        }
-    }
-
-    impl Write for Never {
-        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-            match *self {}
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            match *self {}
-        }
-    }
-
-    impl Connection for Never {
-        fn set_deadline(&mut self, _: Instant) {
-            match *self {}
-        }
-    }
-
-    impl Interrupt for Never {
-        fn interrupt(&self) {
-            match *self {}
-        }
-    }
-
-    impl Listener for Never {
-        type Connection = Never;
-        type Interrupt = Never;
-
-        fn interrupter(&self) -> io::Result<Never> {
-            match *self {}
-        }
-
-        fn accept(&mut self, _: Instant) -> io::Result<Option<Never>> {
-            match *self {}
-        }
-    }
-
-    impl Endpoint for NoEndpoint {
-        type Listener = Never;
-        type Connection = Never;
-
-        fn bind(_: &Path, _: &str) -> Result<Never, BindError> {
-            Err(BindError::Refused(
-                "tab control is not available on this system",
-            ))
-        }
-
-        fn connect(_: &Path, _: &str, _: Instant) -> io::Result<Never> {
-            Err(io::ErrorKind::Unsupported.into())
-        }
-
-        fn instances(_: &Path) -> Vec<String> {
-            Vec::new()
         }
     }
 }
