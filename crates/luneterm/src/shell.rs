@@ -10,10 +10,11 @@
 use std::time::Duration;
 
 use lune_termview::{CellMetrics, GridLayout};
+use lune_ui::access::{Action, Node, Role, State};
 use lune_ui::chrome::CARD_RADIUS;
 use lune_ui::color::{Rgba, premul, with_alpha};
 use lune_ui::icon;
-use lune_ui::input::{CursorIcon, Event, PointerButton, WindowCommand};
+use lune_ui::input::{CursorIcon, Event, NamedKey, PointerButton, WindowCommand};
 use lune_ui::layout::Axis;
 use lune_ui::motion::MotionTier;
 use lune_ui::paint::Rect;
@@ -36,7 +37,9 @@ use lune_ui::widgets::toast::{
 use lune_ui::widgets::tone::Tone;
 use lune_ui::window::{ResizeEdge, edge_at};
 
+use crate::groups::{self, GroupColor, NameProblem};
 use crate::notices::{self, Age, Inbox, NoticeKind};
+use crate::settings::Theme as LookTheme;
 
 /// The title band's height.
 pub const TITLE_BAND: f32 = 34.0;
@@ -315,18 +318,122 @@ pub struct StripTab<'a> {
     pub attention: bool,
 }
 
-/// The dialog the frame shows over everything, if any. The text is the app's state: the dialog
-/// edits it in place.
-#[derive(Debug)]
+/// The title of the question before a running session is closed (Lunegit's copy).
+pub const CLOSE_SESSION_TITLE: &str = "Close Terminal Session";
+
+/// The dialog the frame shows over everything, if any. The text and the colour are the app's
+/// state: the dialog edits them in place.
 pub enum Modal<'a> {
-    /// Close-confirm: the message, and the "Don't ask again" box.
+    /// A close question: its title and message, and the "Don't ask again" box when the answer may
+    /// be remembered.
     Confirm {
+        title: &'a str,
         message: &'a str,
-        dont_ask: &'a mut bool,
+        dont_ask: Option<&'a mut bool>,
     },
     /// Rename Tab: the field's text. `focus` asks to put the caret in the field (once, a frame
     /// after the dialog opened: the open focus goes to the confirm button).
     Rename { text: &'a mut String, focus: bool },
+    /// New Group (`editing` false) or Edit Group: the name's field and the nine colours.
+    GroupEditor {
+        editing: bool,
+        text: &'a mut String,
+        color: &'a mut GroupColor,
+        /// The names of the other open groups: the field's name may be none of them.
+        taken: &'a [String],
+        /// The look the colours are drawn for.
+        look: LookTheme,
+        focus: bool,
+    },
+}
+
+impl std::fmt::Debug for Modal<'_> {
+    /// The variant only: its texts hold tab and group names, which a program can choose.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Modal::Confirm { .. } => "Confirm",
+            Modal::Rename { .. } => "Rename",
+            Modal::GroupEditor { .. } => "GroupEditor",
+        })
+    }
+}
+
+/// A colour swatch of the group editor: its diameter, the gap between two, and how far the ring
+/// of the chosen one reaches outside it (a 2 px gap, then the 2 px ring).
+pub const SWATCH: f32 = 24.0;
+pub const SWATCH_GAP: f32 = 14.0;
+pub const SWATCH_RING: f32 = 4.0;
+/// The width of the chosen swatch's ring.
+const SWATCH_RING_WIDTH: f32 = 2.0;
+/// The editor's parts, below the body's top: the hint line under the field (its room is always
+/// kept), the colour label, and the top of the swatches.
+const EDITOR_HINT_Y: f32 = 74.0;
+const EDITOR_COLOR_LABEL_Y: f32 = 100.0;
+const EDITOR_SWATCH_Y: f32 = 122.0;
+/// The editor's body height: its footer gap under the swatches' rings is the rename dialog's
+/// under its field.
+const EDITOR_EXTRA_H: f32 = 142.0;
+
+/// The circle of the `i`-th swatch in a row whose left end and top are `x` and `y`.
+pub fn swatch_rect(i: usize, x: f32, y: f32) -> Rect {
+    Rect::new(x + i as f32 * (SWATCH + SWATCH_GAP), y, SWATCH, SWATCH)
+}
+
+/// The words under the editor's field for `problem`; `None` when there is nothing to say.
+fn name_hint(problem: Option<NameProblem>) -> Option<&'static str> {
+    match problem? {
+        NameProblem::Empty => None,
+        NameProblem::Taken => Some("group.editor.taken"),
+        NameProblem::TooLong => Some("group.editor.tooLong"),
+        NameProblem::EdgeSpace => Some("group.editor.edgeSpace"),
+        NameProblem::Control => Some("group.editor.control"),
+    }
+}
+
+/// The string key of a colour's accessible name.
+fn color_name_key(color: GroupColor) -> String {
+    format!("group.color.{}", color.as_str())
+}
+
+/// Every string key the group dialogs ask for.
+pub fn group_required_keys() -> Vec<String> {
+    [
+        "group.defaultName",
+        "group.editor.newTitle",
+        "group.editor.editTitle",
+        "group.editor.message",
+        "group.editor.nameLabel",
+        "group.editor.name",
+        "group.editor.colorLabel",
+        "group.editor.create",
+        "group.editor.save",
+        "group.editor.taken",
+        "group.editor.tooLong",
+        "group.editor.edgeSpace",
+        "group.editor.control",
+        "group.close.title",
+        "group.close.confirm",
+        "group.close.message",
+        "group.close.messageOne",
+    ]
+    .iter()
+    .map(|k| (*k).to_owned())
+    .chain(GroupColor::ALL.into_iter().map(color_name_key))
+    .collect()
+}
+
+/// The question before the group `name` and its `tabs` tabs are closed.
+pub fn close_group_message(
+    strings: &lune_ui::strings::StringTable,
+    name: &str,
+    tabs: usize,
+) -> String {
+    use lune_ui::strings::DisplayFormat;
+    if tabs == 1 {
+        strings.tr_fmt("group.close.messageOne", &[&name], &DisplayFormat)
+    } else {
+        strings.tr_fmt("group.close.message", &[&name, &tabs], &DisplayFormat)
+    }
 }
 
 /// A notification toast's `Go to tab` button: the number its action reports.
@@ -1042,7 +1149,8 @@ pub fn inbox_required_keys() -> Vec<String> {
     .collect()
 }
 
-/// The close-confirm or rename dialog (Lunegit's copy, `en.json`; layout as the spike's).
+/// The close-confirm or rename dialog (Lunegit's copy, `en.json`; layout as the spike's), or the
+/// group editor.
 fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
     // The card is the menus' glass (the theme's `menu_glass`, raised by Window opacity), frosted
     // over an unblurred scrim: the card blurs what is under it (luneui D411, since v0.7.3, under
@@ -1054,17 +1162,23 @@ fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
         ..DialogOptions::default()
     };
     match modal {
-        Modal::Confirm { message, dont_ask } => {
+        Modal::Confirm {
+            title,
+            message,
+            dont_ask,
+        } => {
             let dialog = Dialog {
-                title: "Close Terminal Session",
+                title,
                 message,
-                extra_h: 34.0,
+                extra_h: if dont_ask.is_some() { 34.0 } else { 0.0 },
                 confirm: "Close",
                 cancel: Cancel::Default,
             };
             let r = ui.dialog_with("confirm-close", &dialog, &options, &glass, |ui, x, y, w| {
-                let rect = Rect::new(x, y + 12.0, w, 22.0);
-                ui.checkbox("dont-ask", rect, dont_ask, "Don't ask again");
+                if let Some(dont_ask) = dont_ask {
+                    let rect = Rect::new(x, y + 12.0, w, 22.0);
+                    ui.checkbox("dont-ask", rect, dont_ask, "Don't ask again");
+                }
             });
             (
                 ModalOut {
@@ -1114,7 +1228,154 @@ fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
                 ime,
             )
         }
+        Modal::GroupEditor {
+            editing,
+            text,
+            color,
+            taken,
+            look,
+            focus,
+        } => {
+            let (title, confirm, message) = {
+                let (title, confirm) = if editing {
+                    ("group.editor.editTitle", "group.editor.save")
+                } else {
+                    ("group.editor.newTitle", "group.editor.create")
+                };
+                (
+                    ui.tr(title).to_owned(),
+                    ui.tr(confirm).to_owned(),
+                    ui.tr("group.editor.message").to_owned(),
+                )
+            };
+            let dialog = Dialog {
+                title: &title,
+                message: &message,
+                extra_h: EDITOR_EXTRA_H,
+                confirm: &confirm,
+                cancel: Cancel::Default,
+            };
+            // The button is drawn from the text as the frame began.
+            let was_ok = groups::name_problem(text, taken).is_none();
+            let options = DialogOptions {
+                confirm_enabled: was_ok,
+                ..options
+            };
+            let mut submitted = false;
+            let mut ime = None;
+            let r = ui.dialog_with("group-editor", &dialog, &options, &glass, |ui, x, y, w| {
+                let theme = *ui.theme();
+                editor_label(ui, "group.editor.nameLabel", (x, y + 18.0));
+                let field = Rect::new(x, y + 36.0, w, 32.0);
+                let id = ui.id("group-field");
+                if focus {
+                    ui.request_focus(id);
+                }
+                let name = ui.tr("group.editor.name").to_owned();
+                let opts = FieldOptions {
+                    placeholder: &name,
+                    label: Some(&name),
+                    // No `max_chars`: it would cut a long paste without a word.
+                    ..FieldOptions::default()
+                };
+                let out = ui.text_field_with("group-field", field, text, &opts);
+                submitted = out.submitted;
+                ime = out.ime_area;
+                if let Some(key) = name_hint(groups::name_problem(text, taken)) {
+                    let spec = Spec::plain(
+                        ui.tr(key).to_owned(),
+                        Style::ui(theme.font_s, theme.status_error),
+                    );
+                    ui.painter().text(&spec, x, y + EDITOR_HINT_Y);
+                }
+                editor_label(ui, "group.editor.colorLabel", (x, y + EDITOR_COLOR_LABEL_Y));
+                swatches(ui, x, y + EDITOR_SWATCH_Y, color, look);
+            });
+            let ok = groups::name_problem(text, taken).is_none();
+            if ok != was_ok {
+                let now = ui.time();
+                ui.request_repaint_at(now + Duration::from_millis(1));
+            }
+            (
+                ModalOut {
+                    // Judged on the text as it is after this frame's typing.
+                    confirmed: ok && (r.confirmed || submitted),
+                    cancelled: r.cancelled && !submitted,
+                },
+                ime,
+            )
+        }
     }
+}
+
+/// A small label of the group editor, as the rename dialog's.
+fn editor_label(ui: &mut Ui<'_>, key: &str, (x, y): (f32, f32)) {
+    let theme = *ui.theme();
+    let style = Style::ui(theme.font_s, theme.fg_tertiary).medium();
+    let spec = Spec::plain(ui.tr(key).to_owned(), style);
+    ui.painter().text(&spec, x, y);
+}
+
+/// The nine colours in a row from `(x, y)`: filled circles, the chosen one ringed. A press, Space
+/// or Enter on one chooses it.
+fn swatches(ui: &mut Ui<'_>, x: f32, y: f32, chosen: &mut GroupColor, look: LookTheme) {
+    let theme = *ui.theme();
+    let group = ui.id("group-colors");
+    let row = Rect::new(
+        x,
+        y,
+        swatch_rect(GroupColor::ALL.len() - 1, x, y).right() - x,
+        SWATCH,
+    );
+    let name = ui.tr("group.editor.colorLabel").to_owned();
+    let node = Node::new(group, Role::RadioGroup, &name, row);
+    ui.node_container(node, |ui| {
+        // The input first, so every swatch is drawn knowing the choice of this frame.
+        let before = *chosen;
+        let at: Vec<_> = GroupColor::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(i, color)| {
+                let rect = swatch_rect(i, x, y);
+                let id = ui.id(("group-color", i));
+                let r = ui.interact(id, rect, Sense::CLICK_FOCUS);
+                // Both keys are taken whichever came: Enter must not also confirm the dialog.
+                let space = ui.consume_key(id, NamedKey::Space);
+                let enter = ui.consume_key(id, NamedKey::Enter);
+                if r.clicked || space || enter {
+                    *chosen = color;
+                }
+                (color, rect, id, r)
+            })
+            .collect();
+        if *chosen != before {
+            ui.request_repaint_at(ui.time() + Duration::from_millis(1));
+        }
+        for (color, rect, id, r) in at {
+            let outer = rect.inset(-SWATCH_RING, -SWATCH_RING);
+            let [red, green, blue] = color.tone(look).fill;
+            let fill = [red, green, blue, 0xFF];
+            let p = ui.painter();
+            p.fill(rect, SWATCH / 2.0, fill);
+            if *chosen == color {
+                p.ring(outer, outer.w / 2.0, SWATCH_RING_WIDTH, fill, true);
+            } else if r.hovered {
+                p.ring(outer, outer.w / 2.0, 1.0, theme.fg_tertiary, true);
+            }
+            if r.focus_visible {
+                let focus = outer.inset(-2.0, -2.0);
+                p.ring(focus, focus.w / 2.0, 1.5, theme.accent, true);
+            }
+            let name = ui.tr(&color_name_key(color)).to_owned();
+            let mut node = Node::new(id, Role::Radio, &name, rect);
+            if *chosen == color {
+                node.states.insert(State::Checked);
+            }
+            node.states.insert(State::Focusable);
+            node.actions.insert(Action::Default);
+            ui.node(node);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -2302,5 +2563,277 @@ mod tests {
                 "{button:?} {tier:?} {at}"
             );
         }
+    }
+
+    // --------------------------------------------------------------------- the group dialogs
+
+    /// One frame of the shell with `modal` over it, with the app's strings: its answer and tree.
+    fn modal_frame(
+        store: &mut UiStore,
+        text: &mut TextCache,
+        events: Vec<Event>,
+        modal: Modal<'_>,
+    ) -> (ModalOut, lune_ui::access::SemanticTree) {
+        let input = RawInput {
+            size: (1040.0, 660.0),
+            scale: 1.0,
+            time: Duration::ZERO,
+            focused: true,
+            events,
+        };
+        let (strings, shortcuts) = (crate::strings::english(), Shortcuts::default());
+        let config = FrameConfig {
+            theme: THEME,
+            tier: MotionTier::Off,
+            busy_cadence: Cadence::BUSY,
+            strings: &strings,
+            arg_format: &DisplayFormat,
+            keymap: keymap(),
+            shortcuts: &shortcuts,
+        };
+        let tabs = [TAB_A];
+        let view = ShellView {
+            title: None,
+            maximized: false,
+            focused: true,
+            scroll: None,
+            cell_h: 17.0,
+            chrome: HOST,
+            tabs: &tabs,
+            active_tab: Some(1),
+            modal: Some(modal),
+            toasts: None,
+            page_open: false,
+            busy: None,
+            busy_tone: Tone::Neutral,
+            overflow_name: "More",
+            inbox_button: None,
+            header_tint: HEADER_TINT,
+            fading_slots: 0,
+        };
+        let mut ui = Ui::begin(store, &input, config, text);
+        let out = draw(&mut ui, view);
+        let (_, frame) = ui.finish();
+        (out.modal.expect("a dialog is drawn"), frame.tree)
+    }
+
+    /// The group editor held open over frames, as the app holds it.
+    struct Editor {
+        store: UiStore,
+        text: TextCache,
+        name: String,
+        color: GroupColor,
+        taken: Vec<String>,
+        editing: bool,
+    }
+
+    impl Editor {
+        fn new(editing: bool, name: &str, taken: &[&str]) -> Editor {
+            let mut e = Editor {
+                store: UiStore::default(),
+                text: fonts::bundled_text_cache(),
+                name: name.to_owned(),
+                color: GroupColor::Grey,
+                taken: taken.iter().map(|t| (*t).to_owned()).collect(),
+                editing,
+            };
+            // As the app: the open focus, then the caret into the field.
+            e.go(vec![], false);
+            e.go(vec![], true);
+            e.go(vec![], false);
+            e
+        }
+
+        fn go(
+            &mut self,
+            events: Vec<Event>,
+            focus: bool,
+        ) -> (ModalOut, lune_ui::access::SemanticTree) {
+            let modal = Modal::GroupEditor {
+                editing: self.editing,
+                text: &mut self.name,
+                color: &mut self.color,
+                taken: &self.taken,
+                look: LookTheme::Luneterm,
+                focus,
+            };
+            modal_frame(&mut self.store, &mut self.text, events, modal)
+        }
+
+        /// A click at the middle of the node called `name`, and the answer of the release.
+        fn click(&mut self, name: &str) -> ModalOut {
+            let (_, tree) = self.go(vec![], false);
+            let b = tree
+                .nodes
+                .iter()
+                .find(|n| n.name == name)
+                .unwrap_or_else(|| panic!("no node {name}"))
+                .bounds;
+            let at = (b.x + b.w / 2.0, b.y + b.h / 2.0);
+            self.go(vec![Event::PointerMoved { pos: at }], false);
+            self.go(vec![button(at, true)], false);
+            let out = self.go(vec![button(at, false)], false).0;
+            self.go(vec![], false);
+            out
+        }
+
+        fn key(&mut self, key: NamedKey) -> ModalOut {
+            let events = [true, false]
+                .map(|pressed| Event::Key {
+                    key: lune_ui::input::Key::Named(key),
+                    pressed,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                })
+                .to_vec();
+            self.go(events, false).0
+        }
+    }
+
+    const NOTHING: ModalOut = ModalOut {
+        confirmed: false,
+        cancelled: false,
+    };
+
+    #[test]
+    fn the_editor_confirms_a_free_name_by_button_and_by_enter() {
+        for (editing, label) in [(false, "Create"), (true, "Save")] {
+            let mut e = Editor::new(editing, "api", &["infra"]);
+            assert!(e.click(label).confirmed, "{label}");
+            let mut e = Editor::new(editing, "api", &["infra"]);
+            assert!(e.key(NamedKey::Enter).confirmed, "Enter, {label}");
+            assert!(e.click("Cancel").cancelled);
+        }
+    }
+
+    #[test]
+    fn the_editor_takes_no_name_it_cannot_use() {
+        let long = "x".repeat(crate::ctl::MAX_GROUP_CHARS + 1);
+        for bad in ["", "infra", " api", "api ", "a\u{202e}b", &long] {
+            let mut e = Editor::new(false, bad, &["infra"]);
+            assert_eq!(e.click("Create"), NOTHING, "{bad:?}");
+            assert_eq!(e.key(NamedKey::Enter), NOTHING, "Enter, {bad:?}");
+            assert_eq!(e.name, bad, "never trimmed or cut");
+            assert!(e.click("Cancel").cancelled, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn typing_makes_the_name_usable_and_the_confirm_button_follows() {
+        let mut e = Editor::new(false, "infr", &["infra"]);
+        let (out, _) = e.go(vec![Event::Text("a".to_owned())], false);
+        assert_eq!((e.name.as_str(), out), ("infra", NOTHING));
+        let (_, tree) = e.go(vec![], false);
+        let create = tree
+            .nodes
+            .iter()
+            .find(|n| n.name == "Create")
+            .expect("button");
+        assert!(create.states.contains(State::Disabled), "taken");
+        e.go(vec![Event::Text("2".to_owned())], false);
+        assert!(e.click("Create").confirmed);
+        assert_eq!(e.name, "infra2");
+    }
+
+    #[test]
+    fn the_hint_says_why_the_name_cannot_be_used_and_nothing_for_an_empty_one() {
+        for (problem, key) in [
+            (Some(NameProblem::Taken), Some("group.editor.taken")),
+            (Some(NameProblem::TooLong), Some("group.editor.tooLong")),
+            (Some(NameProblem::EdgeSpace), Some("group.editor.edgeSpace")),
+            (Some(NameProblem::Control), Some("group.editor.control")),
+            (Some(NameProblem::Empty), None),
+            (None, None),
+        ] {
+            assert_eq!(name_hint(problem), key, "{problem:?}");
+        }
+        let table = english();
+        assert!(
+            table
+                .tr("group.editor.tooLong")
+                .contains(&crate::ctl::MAX_GROUP_CHARS.to_string())
+        );
+        for key in group_required_keys() {
+            assert_ne!(table.tr(&key), key, "{key} has no text");
+        }
+    }
+
+    #[test]
+    fn the_swatches_are_nine_radios_and_a_press_or_a_key_picks_one() {
+        let mut e = Editor::new(false, "api", &[]);
+        let (_, tree) = e.go(vec![], false);
+        let names: Vec<(&str, bool)> = tree
+            .nodes
+            .iter()
+            .filter(|n| n.role == Role::Radio)
+            .map(|n| (n.name.as_str(), n.states.contains(State::Checked)))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("Grey", true),
+                ("Blue", false),
+                ("Red", false),
+                ("Yellow", false),
+                ("Green", false),
+                ("Pink", false),
+                ("Purple", false),
+                ("Cyan", false),
+                ("Orange", false),
+            ]
+        );
+        assert_eq!(e.click("Purple"), NOTHING, "a colour is no answer");
+        assert_eq!(e.color, GroupColor::Purple);
+        // Space and Enter on the focused swatch choose it and do not answer the dialog.
+        assert_eq!(e.click("Red"), NOTHING);
+        for key in [NamedKey::Space, NamedKey::Enter] {
+            e.color = GroupColor::Grey;
+            assert_eq!(e.key(key), NOTHING, "{key:?}");
+            assert_eq!(e.color, GroupColor::Red, "{key:?}");
+        }
+        assert_eq!(e.name, "api", "the keys went to the swatch, not the field");
+    }
+
+    #[test]
+    fn the_swatch_row_is_as_wide_as_nine_circles_and_eight_gaps() {
+        let first = swatch_rect(0, 100.0, 10.0);
+        let last = swatch_rect(8, 100.0, 10.0);
+        assert_eq!(first, Rect::new(100.0, 10.0, SWATCH, SWATCH));
+        assert_eq!(last.right() - first.x, 9.0 * SWATCH + 8.0 * SWATCH_GAP);
+        // The rings of neighbours do not touch.
+        const { assert!(2.0 * SWATCH_RING < SWATCH_GAP) };
+    }
+
+    #[test]
+    fn the_close_question_has_the_checkbox_only_when_the_answer_may_be_remembered() {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let mut remember = false;
+        let mut count = |dont_ask: Option<&mut bool>| {
+            let modal = Modal::Confirm {
+                title: "Close Group",
+                message: "m",
+                dont_ask,
+            };
+            let (_, tree) = modal_frame(&mut store, &mut text, vec![], modal);
+            tree.nodes
+                .iter()
+                .filter(|n| n.role == Role::Checkbox)
+                .count()
+        };
+        assert_eq!(count(Some(&mut remember)), 1);
+        assert_eq!(count(None), 0);
+    }
+
+    #[test]
+    fn the_close_group_message_counts_the_tabs_and_names_the_group() {
+        let t = english();
+        assert_eq!(
+            close_group_message(&t, "api", 3),
+            "Close the group \u{201c}api\u{201d} and its 3 tabs?"
+        );
+        assert_eq!(
+            close_group_message(&t, "{1}", 1),
+            "Close the group \u{201c}{1}\u{201d} and its tab?"
+        );
     }
 }

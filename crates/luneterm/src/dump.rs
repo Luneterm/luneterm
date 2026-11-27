@@ -5,8 +5,9 @@
 //!
 //! The scenes are the shell with one default tab, and the tab strip, the close-confirm and rename
 //! dialogs and a failed start (M10 step 2), then the settings page in its sections, the menus, a
-//! palette switch and the opaque look Linux gets (step 6); a dialog or menu is drawn after its
-//! entry animation, and a menu or scroll the toolkit owns is driven with scripted input.
+//! palette switch and the opaque look Linux gets (step 6), and the tab menus with groups, the group
+//! editor and the close-group question in both looks; a dialog or menu is drawn after its entry
+//! animation, and a menu or scroll the toolkit owns is driven with scripted input.
 //!
 //! The fonts are the window's, system fonts included (the demo has an emoji), so the PNGs are
 //! reproducible on one machine and may differ between machines.
@@ -29,15 +30,16 @@ use lune_ui::widgets::tone::Tone;
 use crate::app::failure_grid;
 use crate::demo::{demo_cursor, demo_grid};
 use crate::fonts;
+use crate::groups::{GroupColor, GroupId};
 use crate::links;
-use crate::menus::{MenuKind, MenuModel};
+use crate::menus::{MenuGroups, MenuKind, MenuModel};
 use crate::notices::{Admit, Inbox, TOAST_LIFE, ToastSlots};
 use crate::render::{Content, InboxDraw, LinkTip, MenuDraw, Renderer};
 use crate::settings::{Settings, Theme};
 use crate::settings_page::{PageState, PageView, Section};
 use crate::shell::{
-    HOST, InboxButton, InboxList, Layout, Modal, NoticeTexts, ScrollView, StripTab, TAB_CLOSABLE,
-    notice_toast,
+    CLOSE_SESSION_TITLE, HOST, InboxButton, InboxList, Layout, Modal, NoticeTexts, ScrollView,
+    StripTab, TAB_CLOSABLE, close_group_message, notice_toast,
 };
 use crate::spawn::SpawnFailure;
 use crate::tabs::confirm_message;
@@ -55,6 +57,19 @@ enum Overlay {
     Confirm(usize),
     /// The rename dialog with this text in its field.
     Rename(&'static str),
+    /// The group editor, new or editing, with this name and colour among the other groups
+    /// `taken`.
+    GroupEditor {
+        editing: bool,
+        name: &'static str,
+        color: GroupColor,
+        taken: &'static [&'static str],
+    },
+    /// The question before the group `name` and its `tabs` tabs are closed.
+    CloseGroup {
+        name: &'static str,
+        tabs: usize,
+    },
 }
 
 /// One notice a scene's inbox receives, for the tab at this index (the real `Inbox` calls, so the
@@ -226,6 +241,8 @@ struct Scene {
     look: Theme,
     page: Option<PageScene>,
     menu: MenuScene,
+    /// The open groups a tab menu shows, and the index of the group of the menu's tab.
+    menu_groups: (&'static [&'static str], Option<usize>),
     /// The terminal palette, by name.
     palette: &'static str,
     /// Input at the start of frame `.0`.
@@ -261,6 +278,15 @@ const MANY: &[&str] = &[
 const LONG: &[&str] =
     &["A tab title far longer than the widest tab the strip will ever draw for it, 80 chars!!"];
 
+/// Open groups of a menu scene, one with a name past what a menu row shows.
+const MENU_GROUPS: &[&str] = &[
+    "api",
+    "orch: a very long group name that runs well past sixty chars!!!",
+    "infra",
+];
+/// A group's name at its longest, with no space to break at.
+const LONGEST_NAME: &str = "orchestration-worktree-tab-groups-and-control-implementer-batch1";
+
 const ATTENTION: &[SceneNotice] = &[
     SceneNotice::Bell(1),
     SceneNotice::Message(2, "Claude Code", "Claude needs your permission to use Bash"),
@@ -286,6 +312,7 @@ const BASE: Scene = Scene {
     look: Theme::Luneterm,
     page: None,
     menu: MenuScene::None,
+    menu_groups: (&[], None),
     palette: "One Dark",
     script: &[],
     selected: false,
@@ -312,7 +339,7 @@ const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
 
-const SCENES: [Scene; 51] = [
+const SCENES: &[Scene] = &[
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -701,6 +728,145 @@ const SCENES: [Scene; 51] = [
         }),
         ..BASE
     },
+    Scene {
+        name: "menu-tab-ungrouped@2x.png",
+        tabs: FOUR,
+        menu_groups: (MENU_GROUPS, None),
+        script: &[
+            (1, Input::Move(OVER_TAB.0, OVER_TAB.1)),
+            (1, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
+        ],
+        ..BASE
+    },
+    Scene {
+        name: "menu-tab-grouped@2x.png",
+        tabs: FOUR,
+        menu_groups: (MENU_GROUPS, Some(0)),
+        script: &[
+            (1, Input::Move(OVER_TAB.0, OVER_TAB.1)),
+            (1, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
+        ],
+        ..BASE
+    },
+    Scene {
+        name: "group-new@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::GroupEditor {
+            editing: false,
+            name: "Group 1",
+            color: GroupColor::Grey,
+            taken: &[],
+        },
+        ..BASE
+    },
+    Scene {
+        name: "group-edit@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::GroupEditor {
+            editing: true,
+            name: "api",
+            color: GroupColor::Purple,
+            taken: &["orch: shop"],
+        },
+        ..BASE
+    },
+    Scene {
+        name: "group-invalid@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::GroupEditor {
+            editing: false,
+            name: "api",
+            color: GroupColor::Blue,
+            taken: &["api"],
+        },
+        ..BASE
+    },
+    Scene {
+        name: "group-close@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::CloseGroup {
+            name: "api",
+            tabs: 3,
+        },
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-menu-tab-ungrouped@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        menu_groups: (MENU_GROUPS, None),
+        script: &[
+            (1, Input::Move(OVER_TAB.0, OVER_TAB.1)),
+            (1, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
+        ],
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-menu-tab-grouped@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        menu_groups: (MENU_GROUPS, Some(0)),
+        script: &[
+            (1, Input::Move(OVER_TAB.0, OVER_TAB.1)),
+            (1, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
+        ],
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-group-new@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        overlay: Overlay::GroupEditor {
+            editing: false,
+            name: "Group 1",
+            color: GroupColor::Grey,
+            taken: &[],
+        },
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-group-edit@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        overlay: Overlay::GroupEditor {
+            editing: true,
+            name: "api",
+            color: GroupColor::Purple,
+            taken: &["orch: shop"],
+        },
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-group-invalid@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        overlay: Overlay::GroupEditor {
+            editing: false,
+            name: "api",
+            color: GroupColor::Blue,
+            taken: &["api"],
+        },
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-group-close@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        overlay: Overlay::CloseGroup {
+            name: "api",
+            tabs: 3,
+        },
+        ..BASE
+    },
+    Scene {
+        name: "group-close-long@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::CloseGroup {
+            name: LONGEST_NAME,
+            tabs: 1,
+        },
+        ..BASE
+    },
 ];
 
 /// How long before the last frame the ring scene's ring started: the first peak of the swing.
@@ -763,7 +929,7 @@ pub fn dump_frames_gated_text(
     let mut written = Vec::new();
     for scene in SCENES {
         let path = dir.join(scene.name);
-        let alpha = dump_scene(&mut renderer, &scene, &path)
+        let alpha = dump_scene(&mut renderer, scene, &path)
             .map_err(|e| DumpError::Failed(format!("{}: {e}", scene.name)))?;
         eprintln!("dumped {}", scene.name);
         written.push((path, alpha));
@@ -881,10 +1047,28 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     let label = labelled.then(|| titles[active]);
     let message = match scene.overlay {
         Overlay::Confirm(n) => confirm_message(n),
+        Overlay::CloseGroup { name, tabs } => close_group_message(&strings, name, tabs),
         _ => String::new(),
     };
+    let close_group_title = strings.tr("group.close.title").to_owned();
     let mut dont_ask = false;
     let mut name = String::new();
+    // Set in each frame that draws the editor.
+    let mut color;
+    let taken: Vec<String> = match scene.overlay {
+        Overlay::GroupEditor { taken, .. } => taken.iter().map(|t| (*t).to_owned()).collect(),
+        _ => Vec::new(),
+    };
+    let menu_groups = MenuGroups {
+        own: scene.menu_groups.1.map(|i| GroupId(i as u64 + 1)),
+        open: scene
+            .menu_groups
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (GroupId(i as u64 + 1), (*n).to_owned()))
+            .collect(),
+    };
     let page_settings = Settings::default().clamped();
     let mut edited = page_settings.clone();
     let mut page_state = scene.page.map(|p| {
@@ -956,9 +1140,32 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         let modal = match scene.overlay {
             Overlay::None => None,
             Overlay::Confirm(_) => Some(Modal::Confirm {
+                title: CLOSE_SESSION_TITLE,
                 message: &message,
-                dont_ask: &mut dont_ask,
+                dont_ask: Some(&mut dont_ask),
             }),
+            Overlay::CloseGroup { .. } => Some(Modal::Confirm {
+                title: &close_group_title,
+                message: &message,
+                dont_ask: None,
+            }),
+            Overlay::GroupEditor {
+                editing,
+                name: text,
+                color: picked,
+                ..
+            } => {
+                text.clone_into(&mut name);
+                color = picked;
+                Some(Modal::GroupEditor {
+                    editing,
+                    text: &mut name,
+                    color: &mut color,
+                    taken: &taken,
+                    look: scene.look,
+                    focus: k == 1,
+                })
+            }
             Overlay::Rename(text) => {
                 text.clone_into(&mut name);
                 Some(Modal::Rename {
@@ -1034,10 +1241,11 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         let drawn = r.draw(&input, content, &view, size)?;
         // The app opens the tab menu from the request the strip reports (the next frame shows it).
         if let Some(ctx) = drawn.tab_context {
-            model = Some(MenuModel::new(
+            model = Some(MenuModel::with_groups(
                 MenuKind::Tab {
                     closable: TAB_CLOSABLE,
                 },
+                &menu_groups,
                 &strings,
                 cfg!(target_os = "macos"),
             ));
@@ -1258,6 +1466,16 @@ mod tests {
             named("settings-terminal@2x.png"),
             named("settings-font-combo@2x.png")
         );
+        // The group scenes: a menu with groups differs from the plain tab menu, the editor's
+        // three states from each other, and the close-group question from the close-session one.
+        for pre in ["", "lunegit-"] {
+            let of = |n: &str| named(&format!("{pre}{n}@2x.png"));
+            assert_ne!(of("menu-tab-ungrouped"), named("menu-tab@2x.png"), "{pre}");
+            assert_ne!(of("menu-tab-ungrouped"), of("menu-tab-grouped"), "{pre}");
+            assert_ne!(of("group-new"), of("group-edit"), "{pre}");
+            assert_ne!(of("group-new"), of("group-invalid"), "{pre}");
+            assert_ne!(of("group-close"), named("confirm-one@2x.png"), "{pre}");
+        }
         // The tooltip is not there at the first dwell and is there after the delay.
         assert_ne!(named("link-hover@2x.png"), named("link-tip@2x.png"));
         assert_ne!(named("link-hover@2x.png"), tabs);

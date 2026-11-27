@@ -2,6 +2,9 @@
 //! I/O. Which tabs are in a group, and every move that has to keep a group's tabs together, is
 //! [`crate::tabs::TabSet`]'s.
 
+use crate::ctl::{MAX_GROUP_CHARS, label_ok};
+use crate::settings::Theme;
+
 /// A group's identity: stable across renames and moves, never reused, even for a new group with
 /// an old name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -81,6 +84,85 @@ impl GroupColor {
     pub fn from_name(name: &str) -> Option<GroupColor> {
         GroupColor::ALL.into_iter().find(|c| c.as_str() == name)
     }
+
+    /// The values the colour has under `look`.
+    pub fn tone(self, look: Theme) -> GroupTone {
+        // The mock editor's nine, under both looks. The text is the fill, except where that is
+        // under 4.5:1 on its tinted card: then the same hue, only as much lighter as needed
+        // (a test computes every pair).
+        let fill = match self {
+            GroupColor::Grey => [0xBD, 0xC1, 0xC6],
+            GroupColor::Blue => [0x8A, 0xB4, 0xF8],
+            GroupColor::Red => [0xF2, 0x8B, 0x82],
+            GroupColor::Yellow => [0xFD, 0xD6, 0x63],
+            GroupColor::Green => [0x81, 0xC9, 0x95],
+            GroupColor::Pink => [0xFF, 0x8B, 0xCB],
+            GroupColor::Purple => [0xC5, 0x8A, 0xF9],
+            GroupColor::Cyan => [0x78, 0xD9, 0xEC],
+            GroupColor::Orange => [0xFC, 0xAD, 0x70],
+        };
+        let text = match (look, self) {
+            // Lunegit's panel is greyer than Luneterm's: fill 4.13:1 and 3.94:1 there.
+            (Theme::Lunegit, GroupColor::Red) => [0xF3, 0x97, 0x8F],
+            (Theme::Lunegit, GroupColor::Purple) => [0xCD, 0x9A, 0xFA],
+            _ => fill,
+        };
+        GroupTone { fill, text }
+    }
+}
+
+/// The colour values of one [`GroupColor`] under one look, RGB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupTone {
+    /// The colour itself: a swatch, and the tint and ring of a group's card.
+    pub fill: [u8; 3],
+    /// Text on a card tinted with `fill`: the group's name in the side pane.
+    pub text: [u8; 3],
+}
+
+/// The share of `fill` in a group card's tint (mock F).
+pub const CARD_TINT: f32 = 0.08;
+
+/// Whether `name` may be typed for a group: the rule `ctl` has ([`label_ok`], at most
+/// [`MAX_GROUP_CHARS`]) and no other open group is called so (`taken`). Never trimmed.
+pub fn name_problem(name: &str, taken: &[String]) -> Option<NameProblem> {
+    if name.is_empty() {
+        Some(NameProblem::Empty)
+    } else if label_ok(name, MAX_GROUP_CHARS) {
+        taken
+            .iter()
+            .any(|t| t == name)
+            .then_some(NameProblem::Taken)
+    } else if name.chars().nth(MAX_GROUP_CHARS).is_some() {
+        Some(NameProblem::TooLong)
+    } else if name.trim() != name {
+        Some(NameProblem::EdgeSpace)
+    } else {
+        Some(NameProblem::Control)
+    }
+}
+
+/// Why a name typed for a group cannot be one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameProblem {
+    Empty,
+    TooLong,
+    /// Whitespace at either end.
+    EdgeSpace,
+    /// A control or bidi control character, or a line or paragraph separator.
+    Control,
+    /// Another open group has the name.
+    Taken,
+}
+
+/// The first of `name(1)`, `name(2)`, … that is not `taken`: the prefill of a new group.
+pub fn first_free_name(name: impl Fn(usize) -> String, taken: &[String]) -> String {
+    // One more candidate than there are taken names, so one of them is free unless `name`
+    // ignores its number.
+    (1..=taken.len() + 1)
+        .map(&name)
+        .find(|n| !taken.iter().any(|t| t == n))
+        .unwrap_or_else(|| name(1))
 }
 
 /// The colour a new group gets while the open groups use `in_use` (one entry per group): the
@@ -189,6 +271,135 @@ mod tests {
         for shown in [format!("{:?}", s.group(g)), format!("{s:?}")] {
             assert!(!shown.contains("hunter2"), "{shown}");
         }
+    }
+
+    /// WCAG 2 relative luminance of an sRGB colour in 0..=1.
+    fn luminance(rgb: [f32; 3]) -> f32 {
+        let lin = rgb.map(|c| {
+            if c <= 0.040_45 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+    }
+
+    fn contrast(a: [f32; 3], b: [f32; 3]) -> f32 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    fn unit(rgb: [u8; 3]) -> [f32; 3] {
+        rgb.map(|v| f32::from(v) / 255.0)
+    }
+
+    /// The darkest and the lightest colour behind the glass that the looks are judged over
+    /// (docs/glass-styling.md, the header tint: `#10`, `#30`, `#60`): what the OS material shows,
+    /// not the raw desktop under it.
+    const BACKDROPS: [u8; 2] = [0x10, 0x60];
+
+    /// What lies under a card: the window panel of `look` over each of [`BACKDROPS`] (glass),
+    /// and the opaque panel without glass.
+    fn card_backdrops(look: Theme) -> Vec<[f32; 3]> {
+        let panel = |glass| {
+            crate::render::theme(glass, look, crate::settings::WindowOpacity::P0)
+                .glass
+                .panel
+                .premultiplied()
+        };
+        let over = |p: [f32; 4], back: f32| [0, 1, 2].map(|i| p[i] + (1.0 - p[3]) * back);
+        BACKDROPS
+            .iter()
+            .map(|&b| over(panel(true), f32::from(b) / 255.0))
+            .chain([over(panel(false), 0.0)])
+            .collect()
+    }
+
+    /// The contrast of a group's text on its tinted card, the worst over the backdrops.
+    fn worst_ratio(color: GroupColor, look: Theme) -> f32 {
+        let tone = color.tone(look);
+        let fill = unit(tone.fill);
+        card_backdrops(look)
+            .into_iter()
+            .map(|back| {
+                let card = [0, 1, 2].map(|i| fill[i] * CARD_TINT + back[i] * (1.0 - CARD_TINT));
+                contrast(unit(tone.text), card)
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    #[test]
+    fn the_contrast_instrument_gives_the_known_ratios() {
+        let (black, white) = ([0.0; 3], [1.0; 3]);
+        assert!((contrast(black, white) - 21.0).abs() < 0.01);
+        assert!((contrast(white, white) - 1.0).abs() < 0.001);
+        // #767676 on white is the textbook 4.54:1.
+        assert!((contrast(unit([0x76; 3]), white) - 4.54).abs() < 0.01);
+        // The panel is not opaque, so the two backdrops differ, and the opaque panel covers its own.
+        for look in Theme::ALL.iter().copied() {
+            let b = card_backdrops(look);
+            assert_eq!(b.len(), 3);
+            assert!(b[0][0] < b[1][0], "{look:?} {b:?}");
+        }
+    }
+
+    #[test]
+    fn every_colours_text_is_readable_on_its_card_under_both_looks() {
+        for look in Theme::ALL.iter().copied() {
+            for color in GroupColor::ALL {
+                let ratio = worst_ratio(color, look);
+                println!("{look:?} {}: {ratio:.2}", color.as_str());
+                assert!(ratio >= 4.5, "{look:?} {}: {ratio:.2}", color.as_str());
+            }
+        }
+    }
+
+    #[test]
+    fn a_typed_group_name_follows_the_label_rule_and_must_be_free() {
+        let taken = vec!["api".to_owned(), "orch: shop".to_owned()];
+        let at = |n: &str| name_problem(n, &taken);
+        assert_eq!(at("infra"), None);
+        assert_eq!(at("API"), None, "names are compared exactly");
+        assert_eq!(at("a b"), None);
+        assert_eq!(at(&"é".repeat(MAX_GROUP_CHARS)), None);
+        assert_eq!(at(""), Some(NameProblem::Empty));
+        assert_eq!(at("api"), Some(NameProblem::Taken));
+        assert_eq!(
+            at(&"é".repeat(MAX_GROUP_CHARS + 1)),
+            Some(NameProblem::TooLong)
+        );
+        for edge in [" api2", "api2 ", " ", "\u{3000}x"] {
+            assert_eq!(at(edge), Some(NameProblem::EdgeSpace), "{edge:?}");
+        }
+        for bad in ["a\nb", "a\tb", "a\u{202e}b", "a\u{2028}b", "a\u{7}b"] {
+            assert_eq!(at(bad), Some(NameProblem::Control), "{bad:?}");
+        }
+        // Everything the rule accepts is accepted by `ctl`'s rule and vice versa.
+        for n in ["x", "orch: shop2", " x", "a\nb", ""] {
+            assert_eq!(
+                name_problem(n, &[]).is_none(),
+                label_ok(n, MAX_GROUP_CHARS),
+                "{n:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_groups_prefill_is_the_first_free_number() {
+        let name = |n: usize| format!("Group {n}");
+        let taken = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert_eq!(first_free_name(name, &[]), "Group 1");
+        assert_eq!(first_free_name(name, &taken(&["api"])), "Group 1");
+        assert_eq!(first_free_name(name, &taken(&["Group 1"])), "Group 2");
+        assert_eq!(
+            first_free_name(name, &taken(&["Group 2", "Group 1", "Group 3"])),
+            "Group 4"
+        );
+        assert_eq!(
+            first_free_name(name, &taken(&["Group 1", "Group 3"])),
+            "Group 2"
+        );
     }
 
     // ------------------------------------------------------------------------- membership

@@ -40,6 +40,7 @@ use lune_ui::input::{ClipboardRequest, OutputState, Repaint, Translator, WindowC
 use lune_ui::material::{self, Material};
 use lune_ui::motion::Cadence;
 use lune_ui::paint::Rect;
+use lune_ui::strings::{DisplayFormat, StringTable};
 use lune_ui::surface::{Acquired, SurfaceOptions, WindowSurface};
 use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
@@ -62,13 +63,14 @@ use crate::dump;
 use crate::efficiency::{Controller, HostOs};
 use crate::fade::{self, Fade};
 use crate::fonts;
+use crate::groups::{self, GroupColor, GroupId};
 use crate::input::{
     AppCommand, AppShortcuts, ClickCounter, KeyRoute, MouseCtx, MouseState, PointerEvent, RouteCtx,
     WheelAction, WheelCtx, WheelState, key_input, mouse_to_terminal, pointer_event, route_key,
     selection_position, selection_scroll, terminal_mods, wheel, wheel_delta, wheel_report,
 };
 use crate::links::{self, open::OpenError};
-use crate::menus::{self, MenuAction, MenuKind, MenuModel, TabOp};
+use crate::menus::{self, GroupOp, MenuAction, MenuGroups, MenuKind, MenuModel, TabOp};
 use crate::notices::{self, Admit, DrawnRows, Inbox, PressClock, TOAST_LIFE, ToastSlots, route};
 use crate::pacing::{self, EventKind, Pacer, PresentAsk};
 use crate::palettes;
@@ -729,16 +731,207 @@ enum ModalState {
         text: String,
         frames: u32,
     },
+    /// The group editor, for a new group or an open one. `frames` as for the rename dialog.
+    GroupEditor {
+        target: GroupTarget,
+        text: String,
+        color: GroupColor,
+        frames: u32,
+    },
+    /// The question before a group is closed: `ids` are the tabs it had when asked that are
+    /// still in it, the ones the answer closes.
+    CloseGroup {
+        group: GroupId,
+        ids: Vec<TabId>,
+        message: String,
+    },
+}
+
+/// What the group editor edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupTarget {
+    /// A new group with a new tab in it.
+    NewTab,
+    /// A new group for this tab, which leaves its own.
+    Tab(TabId),
+    /// This open group: its name on Save, its colour as soon as it is picked.
+    Edit(GroupId),
+}
+
+/// Where a tab the user asked for goes (D22).
+#[derive(Clone, PartialEq, Eq)]
+enum NewTabPlace {
+    /// Asked for from this tab (the active one, or the one a menu is about): after the last tab
+    /// of its group, else at the end.
+    From(Option<TabId>),
+    /// After the last tab of this group.
+    InGroup(GroupId),
+    /// Into a new group of this name and colour.
+    NewGroup { name: String, color: GroupColor },
+}
+
+/// Adds `item` where `place` says, active, and returns its id. A tab or group that is gone by now
+/// puts it at the end, in no group; a new group's name that was taken meanwhile joins that group
+/// and leaves its colour.
+fn place_new_tab<T>(tabs: &mut TabSet<T>, item: T, place: &NewTabPlace) -> TabId {
+    match place {
+        NewTabPlace::From(reference) => tabs.insert_by_hand(item, *reference),
+        NewTabPlace::InGroup(g) => {
+            let last = tabs.members(*g).last().copied();
+            tabs.insert_by_hand(item, last)
+        }
+        NewTabPlace::NewGroup { name, color } => {
+            let id = tabs.push(item);
+            let existed = tabs.group_named(name).is_some();
+            let g = tabs.set_group(id, name);
+            if !existed {
+                tabs.recolor_group(g, *color);
+            }
+            id
+        }
+    }
+}
+
+/// The open group the editor of `target` edits.
+fn edited_group(target: GroupTarget) -> Option<GroupId> {
+    match target {
+        GroupTarget::Edit(g) => Some(g),
+        GroupTarget::NewTab | GroupTarget::Tab(_) => None,
+    }
+}
+
+/// Why `text` cannot be saved by the editor of `target`.
+fn editor_name_problem<T>(
+    tabs: &TabSet<T>,
+    target: GroupTarget,
+    text: &str,
+) -> Option<groups::NameProblem> {
+    groups::name_problem(text, &other_group_names(tabs, edited_group(target)))
+}
+
+/// Gives group `g` the colour `color`; whether that changed it.
+fn live_recolor<T>(tabs: &mut TabSet<T>, g: GroupId, color: GroupColor) -> bool {
+    tabs.group(g).is_some_and(|group| group.color != color) && tabs.recolor_group(g, color)
+}
+
+/// Whether dialog `modal` has nothing left to act on. A close question forgets the tabs that are
+/// gone (a close-group one also those that left the group, and says so in its message).
+fn modal_is_moot<T>(
+    tabs: &TabSet<T>,
+    modal: &mut ModalState,
+    strings: Option<&StringTable>,
+) -> bool {
+    match modal {
+        ModalState::Rename { id, .. } => tabs.get(*id).is_none(),
+        ModalState::Confirm { ids, .. } => {
+            ids.retain(|id| tabs.get(*id).is_some());
+            ids.is_empty()
+        }
+        ModalState::GroupEditor { target, .. } => match *target {
+            GroupTarget::NewTab => false,
+            GroupTarget::Tab(id) => tabs.get(id).is_none(),
+            GroupTarget::Edit(g) => tabs.group(g).is_none(),
+        },
+        ModalState::CloseGroup {
+            group,
+            ids,
+            message,
+        } => {
+            let before = ids.len();
+            ids.retain(|id| tabs.group_of(*id) == Some(*group));
+            if ids.len() != before
+                && let Some((strings, open)) = strings.zip(tabs.group(*group))
+            {
+                *message = shell::close_group_message(strings, &open.name, ids.len());
+            }
+            ids.is_empty()
+        }
+    }
+}
+
+/// Whether the menu's tab or group is gone.
+fn menu_is_moot<T>(tabs: &TabSet<T>, menu: &OpenMenu) -> bool {
+    match (menu.tab, menu.kind) {
+        (Some(id), _) => tabs.get(id).is_none(),
+        (None, MenuKind::Group { .. }) => menu.groups.own.is_none_or(|g| tabs.group(g).is_none()),
+        _ => false,
+    }
+}
+
+/// The names of the open groups, without `except`'s: what a typed name may not be.
+fn other_group_names<T>(tabs: &TabSet<T>, except: Option<GroupId>) -> Vec<String> {
+    tabs.groups()
+        .filter(|(g, _)| Some(*g) != except)
+        .map(|(_, group)| group.name.clone())
+        .collect()
+}
+
+/// The groups as a menu about group `own` shows them.
+fn menu_groups<T>(tabs: &TabSet<T>, own: Option<GroupId>) -> MenuGroups {
+    MenuGroups {
+        own,
+        open: tabs
+            .groups()
+            .map(|(g, group)| (g, group.name.clone()))
+            .collect(),
+    }
+}
+
+/// The editor as it opens for `target`: the group's own name and colour, or for a new group the
+/// first free "Group N" and the colour [`groups::default_color`] gives. `None` when the tab or
+/// group is gone.
+fn open_group_editor_state<T>(
+    tabs: &TabSet<T>,
+    target: GroupTarget,
+    strings: &StringTable,
+) -> Option<ModalState> {
+    let (text, color) = match target {
+        GroupTarget::Edit(g) => {
+            let group = tabs.group(g)?;
+            (group.name.clone(), group.color)
+        }
+        GroupTarget::NewTab | GroupTarget::Tab(_) => {
+            if let GroupTarget::Tab(id) = target {
+                tabs.get(id)?;
+            }
+            let name = groups::first_free_name(
+                |n| strings.tr_fmt("group.defaultName", &[&n], &DisplayFormat),
+                &other_group_names(tabs, None),
+            );
+            let color = groups::default_color(tabs.groups().map(|(_, g)| g.color));
+            (name, color)
+        }
+    };
+    Some(ModalState::GroupEditor {
+        target,
+        text,
+        color,
+        frames: 0,
+    })
+}
+
+/// The close-group question for `g` as it is now; `None` when there is no such group.
+fn close_group_state<T>(tabs: &TabSet<T>, g: GroupId, strings: &StringTable) -> Option<ModalState> {
+    let name = &tabs.group(g)?.name;
+    let ids = tabs.close_group_ids(g);
+    let message = shell::close_group_message(strings, name, ids.len());
+    Some(ModalState::CloseGroup {
+        group: g,
+        ids,
+        message,
+    })
 }
 
 /// A menu that is open: which, and where.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct OpenMenu {
     kind: MenuKind,
     place: MenuPlace,
     /// The tab a tab menu was opened on (its picks act on it, not on the active tab); `None` for
     /// the other menus.
     tab: Option<TabId>,
+    /// The groups as the menu opened: its rows and the group its group entries act on.
+    groups: MenuGroups,
 }
 
 /// The settings file is written this long after the last change (typing in a field changes it
@@ -858,8 +1051,8 @@ struct App {
     tabs: TabSet<Tab>,
     /// Sessions of tabs closed as the app leaves: closed with a wait in `shutdown`.
     leaving: Vec<Session>,
-    /// A new tab waiting for the check of the directory it should start in.
-    pending_new: Option<CwdCheck>,
+    /// A new tab waiting for the check of the directory it should start in, and where it goes.
+    pending_new: Option<(CwdCheck, NewTabPlace)>,
     modal: Option<ModalState>,
     /// The settings page, covering the card while it is open.
     page: Option<PageState>,
@@ -1617,6 +1810,17 @@ impl App {
             }
             MenuAction::SelectAll => self.send(Command::Select(SelectCmd::All)),
             MenuAction::Clear => self.send(Command::ClearBuffer),
+            MenuAction::NewTabGroup => self.open_group_editor(GroupTarget::NewTab),
+            // Rows of a tab's or a group's menu only (`menus::tab_op`, `menus::group_op`).
+            MenuAction::AddToNewGroup
+            | MenuAction::AddToGroup(_)
+            | MenuAction::RemoveFromGroup
+            | MenuAction::EditGroup
+            | MenuAction::CloseGroup
+            | MenuAction::NewTabInGroup
+            | MenuAction::CollapseGroup
+            | MenuAction::ExpandGroup
+            | MenuAction::Ungroup => {}
         }
         self.request_redraw();
     }
@@ -1645,11 +1849,104 @@ impl App {
         }
     }
 
+    // ----------------------------------------------------------------------------- the groups
+
+    /// The group editor, over whatever is on screen; nothing when its tab or group is gone.
+    fn open_group_editor(&mut self, target: GroupTarget) {
+        let Some(stack) = &self.stack else {
+            return;
+        };
+        if let Some(state) = open_group_editor_state(&self.tabs, target, stack.renderer.strings()) {
+            self.modal = Some(state);
+            self.request_redraw();
+        }
+    }
+
+    /// Asks before group `g` is closed, whatever its tabs run and whatever the setting says.
+    fn ask_close_group(&mut self, g: GroupId) {
+        let Some(stack) = &self.stack else {
+            return;
+        };
+        if let Some(state) = close_group_state(&self.tabs, g, stack.renderer.strings()) {
+            self.modal = Some(state);
+            self.request_redraw();
+        }
+    }
+
+    /// A pick of a group's menu, or a group entry of a tab menu. A group that is gone since the
+    /// menu opened: nothing.
+    fn run_group_op(&mut self, op: GroupOp) {
+        match op {
+            GroupOp::Edit(g) => self.open_group_editor(GroupTarget::Edit(g)),
+            GroupOp::Close(g) => self.ask_close_group(g),
+            GroupOp::NewTab(g) => {
+                if self.tabs.group(g).is_some() {
+                    self.new_tab_request_at(NewTabPlace::InGroup(g));
+                }
+            }
+            GroupOp::SetCollapsed(g, collapsed) => {
+                if self.tabs.group(g).is_some() {
+                    self.tabs.set_collapsed(g, collapsed);
+                    self.workspace_changed(true);
+                }
+            }
+            GroupOp::Ungroup(g) => {
+                if self.tabs.group(g).is_some() {
+                    self.tabs.ungroup_all(g);
+                    self.workspace_changed(true);
+                }
+            }
+        }
+        self.request_redraw();
+    }
+
+    /// The editor's confirm. A new group's colour is the picked one; an open group's colour
+    /// was applied as it was picked.
+    fn apply_group_editor(&mut self, target: GroupTarget, name: String, color: GroupColor) {
+        match target {
+            GroupTarget::NewTab => {
+                self.new_tab_request_at(NewTabPlace::NewGroup { name, color });
+            }
+            GroupTarget::Tab(id) => {
+                if self.tabs.get(id).is_some() {
+                    let g = self.tabs.set_group(id, &name);
+                    self.tabs.recolor_group(g, color);
+                    self.workspace_changed(true);
+                }
+            }
+            GroupTarget::Edit(g) => {
+                if self.tabs.rename_group(g, &name) {
+                    self.tabs.recolor_group(g, color);
+                    self.workspace_changed(true);
+                }
+            }
+        }
+    }
+
+    /// The colour picked in the editor of an open group is that group's at once, and saved.
+    fn apply_editor_color(&mut self) {
+        if let Some(ModalState::GroupEditor {
+            target: GroupTarget::Edit(g),
+            color,
+            ..
+        }) = &self.modal
+            && live_recolor(&mut self.tabs, *g, *color)
+        {
+            self.workspace_changed(true);
+            self.request_redraw();
+        }
+    }
+
     // ------------------------------------------------------------------------------- the tabs
 
-    /// A new tab was asked for: in the active tab's directory when the shell reported one that
-    /// checks out (off the UI thread, [`CwdCheck`]), else in the default one.
+    /// A new tab was asked for, from the active tab ([`NewTabPlace::From`]).
     fn new_tab_request(&mut self) {
+        self.new_tab_request_at(NewTabPlace::From(self.tabs.active()));
+    }
+
+    /// A new tab was asked for, to go to `place`: in the active tab's directory when the shell
+    /// reported one that checks out (off the UI thread, [`CwdCheck`]), else in the default one.
+    fn new_tab_request_at(&mut self, place: NewTabPlace) {
         if self.pending_new.is_some() || self.win.is_none() {
             return;
         }
@@ -1669,25 +1966,30 @@ impl App {
         });
         match check {
             Some(check) => {
-                self.pending_new = Some(check);
+                self.pending_new = Some((check, place));
                 // The check's timeout reaches the event loop only through a frame's
                 // `pending_flow`: every new-tab path (the strip, the menu and the shortcut) asks
                 // for one, or a worker hung in `stat` would wake nothing.
                 self.request_redraw();
             }
             None => {
-                self.open_tab(None, None);
+                self.open_tab(None, None, &place);
                 self.workspace_changed(true);
             }
         }
     }
 
     /// Spawns a shell and adds its tab, active, at the window's grid size: a restored tab at the
-    /// end, a new one where the user's new tab goes (after the active tab's group, D22). On
-    /// failure the tab's grid tells why (D12) and it can be closed.
+    /// end, a new one where `place` says (D22). On failure the tab's grid tells why (D12) and it
+    /// can be closed.
     /// `restored` is the saved tab this one comes back as: its launch directory and its name.
     /// The tab's id, or `None` when none was made (no window yet).
-    fn open_tab(&mut self, dir: Option<PathBuf>, restored: Option<&TabState>) -> Option<TabId> {
+    fn open_tab(
+        &mut self,
+        dir: Option<PathBuf>,
+        restored: Option<&TabState>,
+        place: &NewTabPlace,
+    ) -> Option<TabId> {
         // A shell is never refused (only a program is).
         let Some(Ok(tab)) = self.new_tab(dir, restored, None) else {
             return None;
@@ -1697,7 +1999,7 @@ impl App {
         let id = if restored.is_some() {
             self.tabs.push(tab)
         } else {
-            self.tabs.insert_by_hand(tab, before)
+            place_new_tab(&mut self.tabs, tab, place)
         };
         if failed {
             // Ledger 12: while this tab shows its failure the workspace is not written.
@@ -1838,7 +2140,7 @@ impl App {
     /// restore, one tab.
     fn start_tabs(&mut self) {
         let Some(workspace) = self.startup_workspace.take() else {
-            self.open_tab(None, None);
+            self.open_tab(None, None, &NewTabPlace::From(None));
             return;
         };
         let saved = workspace.tabs.clone();
@@ -1858,7 +2160,7 @@ impl App {
         let ids: Vec<Option<TabId>> = saved
             .iter()
             .zip(dirs)
-            .map(|(state, dir)| self.open_tab(dir, Some(state)))
+            .map(|(state, dir)| self.open_tab(dir, Some(state), &NewTabPlace::From(None)))
             .collect();
         let before = self.tabs.active();
         restore_layout(&mut self.tabs, &ids, &workspace);
@@ -2043,24 +2345,19 @@ impl App {
         self.request_redraw();
     }
 
-    /// A dialog or a tab menu about tabs that are all gone has nothing to act on: it closes. One
-    /// path for every way a tab goes without the user (its child exits, `ctl tab close`).
+    /// A dialog or a menu about tabs or a group that are all gone has nothing to act on: it
+    /// closes. One path for every way a tab goes without the user (its child exits, `ctl`).
     fn drop_overlays_of_gone_tabs(&mut self) {
-        let gone = match &mut self.modal {
-            Some(ModalState::Rename { id, .. }) => self.tabs.get(*id).is_none(),
-            Some(ModalState::Confirm { ids, .. }) => {
-                ids.retain(|id| self.tabs.get(*id).is_some());
-                ids.is_empty()
-            }
-            None => false,
-        };
-        if gone {
+        let strings = self.stack.as_ref().map(|s| s.renderer.strings());
+        if let Some(modal) = &mut self.modal
+            && modal_is_moot(&self.tabs, modal, strings)
+        {
             self.modal = None;
         }
         if self
             .menu
-            .and_then(|m| m.tab)
-            .is_some_and(|id| self.tabs.get(id).is_none())
+            .as_ref()
+            .is_some_and(|m| menu_is_moot(&self.tabs, m))
         {
             self.menu = None;
         }
@@ -2124,6 +2421,8 @@ impl App {
                 }
             }
         }
+        // A regroup can empty the group a dialog or menu is about.
+        self.drop_overlays_of_gone_tabs();
         self.request_redraw();
     }
 
@@ -2222,6 +2521,19 @@ impl App {
                 self.active_changed(before);
                 self.run_menu_action(action, event_loop);
             }
+            Some(TabOp::AddToNewGroup(id)) => self.open_group_editor(GroupTarget::Tab(id)),
+            Some(TabOp::AddToGroup(id, g)) => {
+                if let Some(name) = self.tabs.group(g).map(|g| g.name.clone()) {
+                    self.tabs.set_group(id, &name);
+                    self.workspace_changed(true);
+                }
+            }
+            Some(TabOp::RemoveFromGroup(id)) => {
+                if self.tabs.group_of(id).is_some() {
+                    self.tabs.ungroup(id);
+                    self.workspace_changed(true);
+                }
+            }
             None => {}
         }
         self.request_redraw();
@@ -2274,6 +2586,13 @@ impl App {
         if !out.confirmed && !out.cancelled {
             return;
         }
+        // The editor never takes a name that cannot be used: it stays open.
+        if out.confirmed
+            && let Some(ModalState::GroupEditor { target, text, .. }) = &self.modal
+            && editor_name_problem(&self.tabs, *target, text).is_some()
+        {
+            return;
+        }
         let modal = self.modal.take();
         if out.confirmed {
             match modal {
@@ -2289,6 +2608,21 @@ impl App {
                         tab.rename(&text);
                         self.workspace_changed(true);
                     }
+                }
+                Some(ModalState::GroupEditor {
+                    target,
+                    text,
+                    color,
+                    ..
+                }) => self.apply_group_editor(target, text, color),
+                Some(ModalState::CloseGroup { group, ids, .. }) => {
+                    // The tabs asked about that are still its members; one answer for all,
+                    // with no further question about what they run.
+                    let ids: Vec<TabId> = ids
+                        .into_iter()
+                        .filter(|id| self.tabs.group_of(*id) == Some(group))
+                        .collect();
+                    self.close_tabs(&ids, event_loop, true);
                 }
                 None => {}
             }
@@ -2387,10 +2721,14 @@ impl App {
             self.close_tabs(&exited, event_loop, false);
             worth_a_frame = true;
         }
-        let done = self.pending_new.as_ref().map(|c| c.poll(Instant::now()));
-        if let Some(CwdState::Done(dir)) = done {
-            self.pending_new = None;
-            self.open_tab(dir, None);
+        let done = self
+            .pending_new
+            .as_ref()
+            .map(|(c, _)| c.poll(Instant::now()));
+        if let Some(CwdState::Done(dir)) = done
+            && let Some((_, place)) = self.pending_new.take()
+        {
+            self.open_tab(dir, None, &place);
             self.workspace_changed(true);
             worth_a_frame = true;
         }
@@ -2633,7 +2971,9 @@ impl App {
         let check = self
             .pending_new
             .as_ref()
-            .map_or(ControlFlow::Wait, |c| ControlFlow::WaitUntil(c.deadline()));
+            .map_or(ControlFlow::Wait, |(c, _)| {
+                ControlFlow::WaitUntil(c.deadline())
+            });
         // The workspace write waits for its debounce.
         let write = if self.ws_dirty && !self.ws_frozen {
             ControlFlow::WaitUntil(self.ws_last_write + WORKSPACE_DEBOUNCE)
@@ -2810,24 +3150,58 @@ impl App {
             self.window_title = os_title.to_owned();
             win.window.set_title(os_title);
         }
+        let group_taken = match &self.modal {
+            Some(ModalState::GroupEditor { target, .. }) => {
+                other_group_names(&self.tabs, edited_group(*target))
+            }
+            _ => Vec::new(),
+        };
+        let close_group_title = stack.renderer.strings().tr("group.close.title").to_owned();
+        let look = self.settings.theme;
         let modal = match &mut self.modal {
             Some(ModalState::Confirm {
                 message, dont_ask, ..
-            }) => Some(Modal::Confirm { message, dont_ask }),
+            }) => Some(Modal::Confirm {
+                title: shell::CLOSE_SESSION_TITLE,
+                message,
+                dont_ask: Some(dont_ask),
+            }),
             Some(ModalState::Rename { text, frames, .. }) => {
                 let focus = *frames == 1;
                 *frames = frames.saturating_add(1);
                 Some(Modal::Rename { text, focus })
             }
+            Some(ModalState::GroupEditor {
+                target,
+                text,
+                color,
+                frames,
+            }) => {
+                let focus = *frames == 1;
+                *frames = frames.saturating_add(1);
+                Some(Modal::GroupEditor {
+                    editing: edited_group(*target).is_some(),
+                    text,
+                    color,
+                    taken: &group_taken,
+                    look,
+                    focus,
+                })
+            }
+            Some(ModalState::CloseGroup { message, .. }) => Some(Modal::Confirm {
+                title: &close_group_title,
+                message,
+                dont_ask: None,
+            }),
             None => None,
         };
 
         let macos = cfg!(target_os = "macos");
-        // A tab menu closes with its tab.
+        // A menu closes with its tab or group.
         if self
             .menu
-            .and_then(|m| m.tab)
-            .is_some_and(|id| self.tabs.get(id).is_none())
+            .as_ref()
+            .is_some_and(|m| menu_is_moot(&self.tabs, m))
         {
             self.menu = None;
         }
@@ -2859,9 +3233,10 @@ impl App {
             )
         };
         let inbox_name = shell::inbox_button_name(&inbox_list_name, inbox_unread);
-        let menu_model = self
-            .menu
-            .map(|m| (m, MenuModel::new(m.kind, stack.renderer.strings(), macos)));
+        let menu_model = self.menu.as_ref().map(|m| {
+            let model = MenuModel::with_groups(m.kind, &m.groups, stack.renderer.strings(), macos);
+            (m.clone(), model)
+        });
         let menu_name = menu_model
             .as_ref()
             .map(|(_, m)| stack.renderer.strings().tr(m.name_key()).to_owned());
@@ -3067,13 +3442,15 @@ impl App {
         if let Some(r) = menu_out {
             let action = r.picked.and_then(|i| menu_model.as_ref()?.1.action_at(i));
             let target = menu_model.as_ref().and_then(|(m, _)| m.tab);
+            let own = menu_model.as_ref().and_then(|(m, _)| m.groups.own);
             if r.picked.is_some() || r.dismissed {
                 self.menu = None;
             }
             if let Some(action) = action {
-                match target {
-                    Some(tab) => self.run_tab_menu_action(action, tab, event_loop),
-                    None => self.run_menu_action(action, event_loop),
+                match (own.and_then(|g| menus::group_op(action, g)), target) {
+                    (Some(op), _) => self.run_group_op(op),
+                    (None, Some(tab)) => self.run_tab_menu_action(action, tab, event_loop),
+                    (None, None) => self.run_menu_action(action, event_loop),
                 }
             }
         }
@@ -3098,6 +3475,7 @@ impl App {
                 },
                 place: MenuPlace::At(ctx.at),
                 tab: Some(ctx.id),
+                groups: menu_groups(&self.tabs, self.tabs.group_of(ctx.id)),
             });
             self.request_redraw();
         }
@@ -3111,9 +3489,12 @@ impl App {
                     gap: 4.0,
                 },
                 tab: None,
+                groups: MenuGroups::default(),
             });
             self.request_redraw();
         }
+        // Before the answer: Cancel keeps a colour that was picked.
+        self.apply_editor_color();
         if let Some(out) = modal_out {
             self.resolve_modal(out, event_loop);
         } else {
@@ -3432,6 +3813,7 @@ impl App {
                 },
                 place: MenuPlace::At(pos),
                 tab: None,
+                groups: MenuGroups::default(),
             });
             self.request_redraw();
             return;
@@ -5219,5 +5601,239 @@ mod tests {
         assert_eq!(h, held);
         assert_eq!(e, Ended::default());
         assert!(held.any() && !Holds::default().any());
+    }
+
+    // ------------------------------------------------------------------- groups, by hand
+
+    /// A set from a picture: one char per tab, `.` for no group, a letter for the group of that
+    /// name. The first tab is active.
+    fn tab_set(picture: &str) -> (TabSet<()>, Vec<TabId>) {
+        let mut s = TabSet::new();
+        let ids: Vec<TabId> = picture.chars().map(|_| s.push(())).collect();
+        for (id, c) in ids.iter().zip(picture.chars()) {
+            if c != '.' {
+                s.set_group(*id, &c.to_string());
+            }
+        }
+        s.activate(ids[0]);
+        (s, ids)
+    }
+
+    fn picture(s: &TabSet<()>) -> String {
+        s.ids()
+            .into_iter()
+            .map(|id| match s.group_of(id).and_then(|g| s.group(g)) {
+                Some(group) => group.name.clone(),
+                None => ".".to_owned(),
+            })
+            .collect()
+    }
+
+    fn group(s: &TabSet<()>, name: &str) -> GroupId {
+        s.group_named(name).expect("a group of that name")
+    }
+
+    /// D22: the key, `+` and the app menu ask from the active tab; the tab menu's Duplicate Tab
+    /// from the menu's tab, which it activates first.
+    #[test]
+    fn a_new_tab_asked_from_a_grouped_tab_joins_its_group_after_the_last_member() {
+        let (mut s, ids) = tab_set(".aa.b");
+        let new = place_new_tab(&mut s, (), &NewTabPlace::From(Some(ids[1])));
+        assert_eq!(picture(&s), ".aaa.b");
+        assert_eq!(s.index_of(new), Some(3));
+        assert_eq!(s.active(), Some(new));
+        // From a tab in no group, and from a tab that is gone: the end, in no group.
+        for from in [Some(ids[0]), Some(999), None] {
+            let (mut s, _) = tab_set(".aa.b");
+            let new = place_new_tab(&mut s, (), &NewTabPlace::From(from));
+            assert_eq!(picture(&s), ".aa.b.", "{from:?}");
+            assert_eq!(s.active(), Some(new));
+        }
+    }
+
+    #[test]
+    fn a_new_tab_in_a_group_goes_to_its_end_and_to_the_end_when_it_is_gone() {
+        let (mut s, _) = tab_set(".aa.b");
+        let a = group(&s, "a");
+        let new = place_new_tab(&mut s, (), &NewTabPlace::InGroup(a));
+        assert_eq!(picture(&s), ".aaa.b");
+        assert_eq!(s.active(), Some(new));
+        let new = place_new_tab(&mut s, (), &NewTabPlace::InGroup(GroupId::NONE));
+        assert_eq!(picture(&s), ".aaa.b.");
+        assert_eq!(s.active(), Some(new));
+    }
+
+    #[test]
+    fn a_new_tab_group_is_a_new_tab_at_the_end_with_the_picked_colour() {
+        let (mut s, _) = tab_set(".a");
+        let place = NewTabPlace::NewGroup {
+            name: "infra".to_owned(),
+            color: GroupColor::Cyan,
+        };
+        let new = place_new_tab(&mut s, (), &place);
+        assert_eq!(s.ids().last(), Some(&new));
+        assert_eq!(s.active(), Some(new));
+        let g = s.group_of(new).expect("grouped");
+        let made = s.group(g).expect("group");
+        assert_eq!(
+            (made.name.as_str(), made.color),
+            ("infra", GroupColor::Cyan)
+        );
+        // The name was taken meanwhile: it joins, and the group keeps its colour.
+        let before = s.group(group(&s, "a")).expect("a").color;
+        let taken = NewTabPlace::NewGroup {
+            name: "a".to_owned(),
+            color: GroupColor::Orange,
+        };
+        let joined = place_new_tab(&mut s, (), &taken);
+        assert_eq!(s.group_of(joined), Some(group(&s, "a")));
+        assert_eq!(s.group(group(&s, "a")).expect("a").color, before);
+    }
+
+    fn editor(state: Option<ModalState>) -> (GroupTarget, String, GroupColor) {
+        match state {
+            Some(ModalState::GroupEditor {
+                target,
+                text,
+                color,
+                frames: 0,
+            }) => (target, text, color),
+            other => panic!("no editor: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_editor_opens_prefilled_with_the_first_free_number_and_the_next_colour() {
+        let strings = crate::strings::english();
+        let (mut s, ids) = tab_set("..");
+        for target in [GroupTarget::NewTab, GroupTarget::Tab(ids[1])] {
+            let (t, text, color) = editor(open_group_editor_state(&s, target, &strings));
+            assert_eq!((t, text.as_str()), (target, "Group 1"));
+            assert_eq!(color, GroupColor::Grey);
+        }
+        s.set_group(ids[0], "Group 1");
+        let (_, text, color) = editor(open_group_editor_state(&s, GroupTarget::NewTab, &strings));
+        assert_eq!((text.as_str(), color), ("Group 2", GroupColor::Blue));
+        // An open group's editor shows its own name and colour.
+        let g = group(&s, "Group 1");
+        s.recolor_group(g, GroupColor::Pink);
+        let (_, text, color) = editor(open_group_editor_state(&s, GroupTarget::Edit(g), &strings));
+        assert_eq!((text.as_str(), color), ("Group 1", GroupColor::Pink));
+        // Its own name is usable there, and taken everywhere else.
+        assert_eq!(
+            editor_name_problem(&s, GroupTarget::Edit(g), "Group 1"),
+            None
+        );
+        for other in [GroupTarget::NewTab, GroupTarget::Tab(ids[0])] {
+            assert_eq!(
+                editor_name_problem(&s, other, "Group 1"),
+                Some(groups::NameProblem::Taken)
+            );
+        }
+        assert!(open_group_editor_state(&s, GroupTarget::Tab(999), &strings).is_none());
+        assert!(open_group_editor_state(&s, GroupTarget::Edit(GroupId::NONE), &strings).is_none());
+    }
+
+    #[test]
+    fn a_picked_colour_is_the_groups_at_once_and_only_a_change_counts() {
+        let (mut s, _) = tab_set("a");
+        let g = group(&s, "a");
+        assert!(!live_recolor(&mut s, g, GroupColor::Grey), "no change");
+        assert!(live_recolor(&mut s, g, GroupColor::Red));
+        assert_eq!(s.group(g).expect("a").color, GroupColor::Red);
+        assert!(!live_recolor(&mut s, g, GroupColor::Red));
+        assert!(!live_recolor(&mut s, GroupId::NONE, GroupColor::Blue));
+    }
+
+    fn close_state(state: Option<ModalState>) -> (Vec<TabId>, String) {
+        match state {
+            Some(ModalState::CloseGroup { ids, message, .. }) => (ids, message),
+            other => panic!("no question: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closing_a_group_asks_about_all_its_tabs_whatever_they_run() {
+        let strings = crate::strings::english();
+        let (s, ids) = tab_set(".aaa.");
+        let (asked, message) = close_state(close_group_state(&s, group(&s, "a"), &strings));
+        assert_eq!(asked, ids[1..4]);
+        assert!(
+            message.contains("\u{201c}a\u{201d} and its 3 tabs"),
+            "{message}"
+        );
+        assert!(close_group_state(&s, GroupId::NONE, &strings).is_none());
+        // One tab: still asked.
+        let (s, ids) = tab_set("b");
+        let (asked, message) = close_state(close_group_state(&s, group(&s, "b"), &strings));
+        assert_eq!(asked, ids);
+        assert!(message.ends_with("and its tab?"), "{message}");
+    }
+
+    #[test]
+    fn a_close_question_forgets_tabs_that_left_and_goes_with_the_last_one() {
+        let strings = crate::strings::english();
+        let (mut s, ids) = tab_set(".aaa");
+        let g = group(&s, "a");
+        let mut modal = close_group_state(&s, g, &strings).expect("asked");
+        assert!(!modal_is_moot(&s, &mut modal, Some(&strings)));
+        // One is regrouped, one closes, one joins: the question is about the one asked that is
+        // still a member.
+        s.ungroup(ids[1]);
+        s.close(ids[2]);
+        s.set_group(ids[0], "a");
+        assert!(!modal_is_moot(&s, &mut modal, Some(&strings)));
+        let (asked, message) = close_state(Some(modal));
+        assert_eq!(asked, [ids[3]]);
+        assert!(message.ends_with("and its tab?"), "{message}");
+        let mut modal = ModalState::CloseGroup {
+            group: g,
+            ids: asked,
+            message,
+        };
+        s.close(ids[3]);
+        assert!(modal_is_moot(&s, &mut modal, Some(&strings)));
+    }
+
+    #[test]
+    fn dialogs_and_menus_about_gone_tabs_and_groups_close() {
+        let strings = crate::strings::english();
+        let (mut s, ids) = tab_set(".ab");
+        let (a, b) = (group(&s, "a"), group(&s, "b"));
+        let mut edit_a = open_group_editor_state(&s, GroupTarget::Edit(a), &strings).expect("a");
+        let mut edit_b = open_group_editor_state(&s, GroupTarget::Edit(b), &strings).expect("b");
+        let mut for_tab =
+            open_group_editor_state(&s, GroupTarget::Tab(ids[0]), &strings).expect("tab");
+        let mut for_new = open_group_editor_state(&s, GroupTarget::NewTab, &strings).expect("new");
+        let menu = |kind, tab, own| OpenMenu {
+            kind,
+            place: MenuPlace::At((0.0, 0.0)),
+            tab,
+            groups: menu_groups(&s, own),
+        };
+        let tab_menu = menu(MenuKind::Tab { closable: true }, Some(ids[0]), None);
+        let a_menu = menu(MenuKind::Group { collapsed: false }, None, Some(a));
+        let b_menu = menu(MenuKind::Group { collapsed: false }, None, Some(b));
+        let app_menu = menu(MenuKind::App, None, None);
+        assert_eq!(a_menu.groups.open.len(), 2);
+        // The only member of `a` is ungrouped, and the first tab closes.
+        s.ungroup(ids[1]);
+        s.close(ids[0]);
+        for (modal, moot) in [
+            (&mut edit_a, true),
+            (&mut edit_b, false),
+            (&mut for_tab, true),
+            (&mut for_new, false),
+        ] {
+            assert_eq!(modal_is_moot(&s, modal, Some(&strings)), moot, "{modal:?}");
+        }
+        for (menu, moot) in [
+            (&tab_menu, true),
+            (&a_menu, true),
+            (&b_menu, false),
+            (&app_menu, false),
+        ] {
+            assert_eq!(menu_is_moot(&s, menu), moot, "{:?}", menu.kind);
+        }
     }
 }
