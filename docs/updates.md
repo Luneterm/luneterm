@@ -48,7 +48,9 @@ pair from `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`, the private bucket's pair
 
 ## How a release reaches users
 
-1. Push the tag `v<version>` (or `v<version>-rc.<N>`; the version must equal the workspace version).
+1. Push the tag `v<version>` (or `v<version>-rc.<N>`; the version must equal the workspace version). A
+   stable tag must be on `main`, an rc on `main` or `develop` (`release.yml` checks the tagged commit is
+   an ancestor of `origin/main`, or for an rc of `origin/main` or `origin/develop`).
    `release.yml` verifies it, builds the Linux and Windows build inputs and creates a draft release
    holding them (`luneterm-<version>-linux-x64-build.tar.gz`, `...-windows-x64-build.zip`, each with
    a `.sha256`). These are not user downloads.
@@ -244,8 +246,8 @@ Only then tag the stable release.
 
 ### Beta releases (from `main` or `develop`)
 
-The beta channel is the pre-release track: a tag `v<version>-rc.<N>` on any commit (on `main`, or on
-`develop` for work not ready for `main`) goes through the same release and publish flow and is listed in
+The beta channel is the pre-release track: a tag `v<version>-rc.<N>` on a commit of `main` or
+`develop` (`develop` for work not ready for `main`) goes through the same release and publish flow and is listed in
 the beta feed only. Copies installed from a beta setup update to it; stable copies never see it. The
 workspace version in `Cargo.toml` must be `<version>` (the version the rc leads to): bump it on that
 branch first. CI runs on pushes to `develop` too; wait for it to be green before tagging. A later stable

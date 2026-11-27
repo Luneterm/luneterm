@@ -34,7 +34,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: The tag names this version and a commit on main
+      - name: The tag names this version and a commit on main (main or develop for an rc)
         shell: bash
         run: |
           set -euo pipefail
@@ -49,8 +49,19 @@ jobs:
             echo "tag $TAG does not match the workspace version $cargo_version in Cargo.toml" >&2
             exit 1
           fi
-          if ! git merge-base --is-ancestor HEAD origin/main; then
-            echo "tag $TAG is not on main" >&2
+          # A branch counts only when its remote-tracking ref exists and HEAD (the tagged commit) is an
+          # ancestor of it: a missing ref is "not on it", never a pass.
+          on_branch() {
+            git rev-parse --verify --quiet "refs/remotes/origin/$1" > /dev/null \
+              && git merge-base --is-ancestor HEAD "refs/remotes/origin/$1"
+          }
+          if [[ "$TAG" == *-rc.* ]]; then
+            if ! on_branch main && ! on_branch develop; then
+              echo "tag $TAG is a release candidate and must be on main or develop; it is on neither (checked origin/main and origin/develop)" >&2
+              exit 1
+            fi
+          elif ! on_branch main; then
+            echo "tag $TAG is a stable release and must be on main; it is not (checked origin/main)" >&2
             exit 1
           fi
 
