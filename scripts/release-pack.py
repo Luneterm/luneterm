@@ -189,10 +189,9 @@ def child_env(extra=None):
 
 
 class Lunepack:
-    def __init__(self, cli, secrets, config):
+    def __init__(self, cli, secrets):
         self.cli = cli
         self.secrets = secrets
-        self.config = config
 
     def run(self, args, epoch=None, sign=False):
         """One lunepack child. Only a signing one gets the release key; only pack and setup get
@@ -579,7 +578,7 @@ def cmd_pack(args, secrets):
     if os.path.exists(work):
         raise Abort("%s exists; give a new work directory" % work)
     os.makedirs(work)
-    lp = Lunepack(os.path.abspath(args.lunepack), secrets, config)
+    lp = Lunepack(os.path.abspath(args.lunepack), secrets)
     release = None if args.inputs_dir else Release(secrets, args.tag)
 
     inputs = gather_inputs(args.inputs_dir, version, work, rev, release)

@@ -19,8 +19,8 @@ keys = [
     "7c4f44f54daf49ca873f3aac937f0f19e668364a01178aa339f64690f998e996",
 ]
 
-# The release key is a GitHub secret (PKCS#8 PEM in the environment of the push job); the root
-# key stays offline and is not named here.
+# The release key is a GitHub secret (PKCS#8 PEM) of the release-pack, release-push and
+# release-refresh environments; the root key stays offline and is not named here.
 [signers.release]
 env = "LUNEPACK_RELEASE_KEY"
 
@@ -58,7 +58,8 @@ icon = "../assets/icon/Luneterm.icns"
 
 # Where and how `lunepack publish` ships releases (docs/updates.md). Names of environment
 # variables only. The public pair signs for the public bucket, the private pair for the state
-# bucket; each is a separate R2 token in its own GitHub environment.
+# bucket. push and drop set both pairs to the push token; refresh sets them to its two tokens
+# (docs/updates.md).
 [publish]
 prefix = "luneterm"
 store = "r2"

@@ -233,13 +233,22 @@ Only then tag the stable release.
 PUBLISHING.md's "Rerun and recovery" and "When something is refused" are the reference. Luneterm's
 specifics:
 
-- **A job failed.** Re-run only the failed job ("Re-run failed jobs" of the same run), never the whole
-  run and never with another version. Once `publish push` has written a feed, `publish fetch` refuses
-  that version ("is already published"), so a new run cannot rebuild the setup files; the `pack` job's
-  `release` and `setup` artifacts are kept 90 days for exactly this, so a failed `push` or `attach` is
-  finished by re-running that job within 90 days. After that window, publish the next version.
-- **`push` or `refresh` is refused for a feed that changed** ("the store changed since fetch"): another
-  publish ran. The runs share one concurrency group; re-run.
+- **A job failed.** Say which case it is:
+  - `push` failed part-way (a network error, a timeout) or `attach` failed: re-run only the failed job
+    ("Re-run failed jobs" of the same run), never with another version. Once `publish push` has written a
+    feed, `publish fetch` refuses that version ("is already published"), so a new run cannot rebuild the
+    setup files; the `pack` job's `release` and `setup` artifacts are kept 90 days for exactly this, so
+    the re-run finishes the job within 90 days (the `push` rerun also before the next scheduled refresh
+    runs, which re-signs feeds: PUBLISHING.md "Rerun and recovery"). After that window, publish the next
+    version.
+  - `push` refused with **"the store changed since fetch"**: the store's feeds no longer equal the copies
+    `fetch` put in the `release` artifact (usually the weekly `refresh` re-signed a feed after the pack
+    job ran). Nothing was written and no feed lists the version yet, so re-running `push` is refused again
+    every time. Start a new full run instead: Actions > publish-updates > Run workflow from the `v*` tag,
+    mode `publish`, `dry_run` off (or "Re-run all jobs"). It fetches and packs again; the build inputs are
+    still on the release because `attach` only runs after a successful `push`.
+- **`refresh` or `drop` is refused because a feed changed since that run read it**: another publish or
+  refresh wrote meanwhile. Re-run the job.
 - **A bad version is live.** Publish a fixed higher version: every copy that checks takes the newest of
   its channel, including copies already on the bad one. A version that crashes before `confirm_healthy`
   is rolled back on the user's machine by lunepack. To stop offering a version without a replacement:
