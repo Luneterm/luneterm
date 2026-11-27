@@ -122,6 +122,8 @@ pub struct GroupTone {
 
 /// The share of `fill` in a group card's tint (mock F).
 pub const CARD_TINT: f32 = 0.08;
+/// The share of `fill` in the 1 px ring of a group's card (mock F).
+pub const CARD_RING: f32 = 0.15;
 
 /// Whether `name` may be typed for a group: the rule `ctl` has ([`label_ok`], at most
 /// [`MAX_GROUP_CHARS`]) and no other open group is called so (`taken`). Never trimmed.
@@ -316,16 +318,18 @@ mod tests {
             .collect()
     }
 
+    /// The card of `color` over `back`: its fill's tint.
+    fn card(color: GroupColor, look: Theme, back: [f32; 3]) -> [f32; 3] {
+        let fill = unit(color.tone(look).fill);
+        [0, 1, 2].map(|i| fill[i] * CARD_TINT + back[i] * (1.0 - CARD_TINT))
+    }
+
     /// The contrast of a group's text on its tinted card, the worst over the backdrops.
     fn worst_ratio(color: GroupColor, look: Theme) -> f32 {
-        let tone = color.tone(look);
-        let fill = unit(tone.fill);
+        let text = unit(color.tone(look).text);
         card_backdrops(look)
             .into_iter()
-            .map(|back| {
-                let card = [0, 1, 2].map(|i| fill[i] * CARD_TINT + back[i] * (1.0 - CARD_TINT));
-                contrast(unit(tone.text), card)
-            })
+            .map(|back| contrast(text, card(color, look, back)))
             .fold(f32::INFINITY, f32::min)
     }
 
@@ -351,6 +355,36 @@ mod tests {
                 let ratio = worst_ratio(color, look);
                 println!("{look:?} {}: {ratio:.2}", color.as_str());
                 assert!(ratio >= 4.5, "{look:?} {}: {ratio:.2}", color.as_str());
+            }
+        }
+    }
+
+    /// The unread dot is the theme's attention colour on every card: a non-text mark, so 3:1
+    /// over each backdrop.
+    #[test]
+    fn the_unread_dot_stands_out_on_every_colours_card_under_both_looks() {
+        for look in Theme::ALL.iter().copied() {
+            let dot =
+                crate::render::theme(true, look, crate::settings::WindowOpacity::P0).attention();
+            assert_eq!(dot[3], 255, "opaque, so the card does not change it");
+            let dot = unit([dot[0], dot[1], dot[2]]);
+            for color in GroupColor::ALL {
+                let ratios: Vec<f32> = card_backdrops(look)
+                    .into_iter()
+                    .map(|back| contrast(dot, card(color, look, back)))
+                    .collect();
+                println!(
+                    "dot {look:?} {}: #10 {:.2}, #60 {:.2}, opaque {:.2}",
+                    color.as_str(),
+                    ratios[0],
+                    ratios[1],
+                    ratios[2]
+                );
+                assert!(
+                    ratios.iter().all(|r| *r >= 3.0),
+                    "{look:?} {}: {ratios:?}",
+                    color.as_str()
+                );
             }
         }
     }

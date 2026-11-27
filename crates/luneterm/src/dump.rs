@@ -6,8 +6,10 @@
 //! The scenes are the shell with one default tab, and the tab strip, the close-confirm and rename
 //! dialogs and a failed start (M10 step 2), then the settings page in its sections, the menus, a
 //! palette switch and the opaque look Linux gets (step 6), and the tab menus with groups, the group
-//! editor and the close-group question in both looks; a dialog or menu is drawn after its entry
-//! animation, and a menu or scroll the toolkit owns is driven with scripted input.
+//! editor and the close-group question in both looks, and the side pane: its frame and its tab list
+//! (groups, collapsed cards, unread marks, progress, a long list, the menus asked from it). A dialog
+//! or menu is drawn after its entry animation, and a menu or scroll the toolkit owns is driven with
+//! scripted input.
 //!
 //! The fonts are the window's, system fonts included (the demo has an emoji), so the PNGs are
 //! reproducible on one machine and may differ between machines.
@@ -34,7 +36,7 @@ use crate::groups::{GroupColor, GroupId};
 use crate::links;
 use crate::menus::{MenuGroups, MenuKind, MenuModel};
 use crate::notices::{Admit, Inbox, TOAST_LIFE, ToastSlots};
-use crate::pane;
+use crate::pane::{self, PaneEvent, PaneList};
 use crate::render::{Content, InboxDraw, LinkTip, MenuDraw, Renderer};
 use crate::settings::{DEFAULT_PANE_WIDTH, MAX_PANE_WIDTH, MIN_PANE_WIDTH};
 use crate::settings::{Settings, Theme};
@@ -44,7 +46,7 @@ use crate::shell::{
     ScrollView, StripTab, TAB_CLOSABLE, WINDOWS_CHROME, close_group_message, notice_toast,
 };
 use crate::spawn::SpawnFailure;
-use crate::tabs::confirm_message;
+use crate::tabs::{TabSet, confirm_message};
 
 /// The offscreen colour format (the surface's preferred one).
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
@@ -224,6 +226,32 @@ impl Input {
     }
 }
 
+/// A group of a pane list scene: its name, colour and collapsed flag, and its tabs (the index of
+/// the first and how many).
+#[derive(Debug, Clone, Copy)]
+struct DumpGroup {
+    name: &'static str,
+    color: GroupColor,
+    collapsed: bool,
+    tabs: (usize, usize),
+}
+
+/// A group of a list scene.
+const fn dump_group(
+    name: &'static str,
+    color: GroupColor,
+    collapsed: bool,
+    first: usize,
+    count: usize,
+) -> DumpGroup {
+    DumpGroup {
+        name,
+        color,
+        collapsed,
+        tabs: (first, count),
+    }
+}
+
 /// One dumped frame: a file name, a scale, the scroll state the thumb shows, the tabs (none: the
 /// single unlabelled tab of a fresh window), whether the window is focused, and what lies over it.
 #[derive(Debug, Clone, Copy)]
@@ -259,12 +287,14 @@ struct Scene {
     /// Each message of `notices` also earns a notification toast, pushed through the app's own
     /// path (the slots, then `notice_toast`).
     toasts: bool,
-    /// The tab (index) that shows an OSC 9;4 progress report, if any.
-    progress: Option<usize>,
+    /// The tabs (by index) that show an OSC 9;4 progress report, with its tone.
+    progress: &'static [(usize, Tone)],
     /// A full inbox (the header button, and the list when open); the clock is [`INBOX_NOW`].
     inbox: Option<InboxScene>,
     /// The saved choice is the side pane, this wide; `None` is the top bar.
     pane: Option<u32>,
+    /// The pane's tab list and the groups in it; `None` draws the pane's frame with no list.
+    list: Option<&'static [DumpGroup]>,
     /// The chrome the frame is drawn with.
     chrome: Chrome,
     /// The window's width, logical px (its height is [`SIZE`]'s).
@@ -326,6 +356,98 @@ const TOAST: &[SceneNotice] = &[SceneNotice::Message(
 )];
 const TOAST_PLAIN: &[SceneNotice] = &[SceneNotice::Message(2, "", "Build finished: 1342 passed")];
 
+/// The tabs of the pane list scenes, mock F's: a loose tab, then three groups.
+const MOCK_TABS: &[&str] = &["zsh", "server", "logs", "claude", "web", "worker", "deploy"];
+const MOCK_GROUPS: &[DumpGroup] = &[
+    dump_group("api", GroupColor::Blue, false, 1, 3),
+    dump_group("orch: shop", GroupColor::Pink, false, 4, 2),
+    dump_group("infra", GroupColor::Yellow, true, 6, 1),
+];
+/// An unread member of an expanded card (`claude`) and of the collapsed one (`deploy`).
+const MOCK_NOTICES: &[SceneNotice] = &[SceneNotice::Bell(3), SceneNotice::Bell(6)];
+/// The scene of mock F: `server` active.
+const MOCK: Scene = Scene {
+    tabs: MOCK_TABS,
+    active: 1,
+    notices: MOCK_NOTICES,
+    inbox: NOTICE_BELL,
+    pane: PANE,
+    list: Some(MOCK_GROUPS),
+    ..BASE
+};
+/// Two loose tabs (the second's title 80 chars long), then one collapsed card of each colour, each
+/// with an unread member; the first card's name is 64 chars long.
+const COLOR_TABS: &[&str] = &[
+    "zsh",
+    "cargo test --workspace --all-features -- --nocapture 2>&1 | tee target/run.log &",
+    "build",
+    "server",
+    "publish",
+    "deploy",
+    "watch",
+    "web",
+    "notes",
+    "etl",
+    "rollout",
+];
+const COLOR_GROUPS: &[DumpGroup] = &[
+    dump_group(LONGEST_NAME, GroupColor::Grey, true, 2, 1),
+    dump_group("api", GroupColor::Blue, true, 3, 1),
+    dump_group("release", GroupColor::Red, true, 4, 1),
+    dump_group("infra", GroupColor::Yellow, true, 5, 1),
+    dump_group("tests", GroupColor::Green, true, 6, 1),
+    dump_group("orch: shop", GroupColor::Pink, true, 7, 1),
+    dump_group("docs", GroupColor::Purple, true, 8, 1),
+    dump_group("data", GroupColor::Cyan, true, 9, 1),
+    dump_group("deploy", GroupColor::Orange, true, 10, 1),
+];
+const COLOR_NOTICES: &[SceneNotice] = &[
+    SceneNotice::Bell(2),
+    SceneNotice::Bell(3),
+    SceneNotice::Bell(4),
+    SceneNotice::Bell(5),
+    SceneNotice::Bell(6),
+    SceneNotice::Bell(7),
+    SceneNotice::Bell(8),
+    SceneNotice::Bell(9),
+    SceneNotice::Bell(10),
+];
+const COLORS: Scene = Scene {
+    tabs: COLOR_TABS,
+    notices: COLOR_NOTICES,
+    inbox: NOTICE_BELL,
+    pane: PANE,
+    list: Some(COLOR_GROUPS),
+    ..BASE
+};
+/// Sixty tabs in ten expanded groups, the active one deep in the list.
+const SIXTY_TABS: &[&str] = &[
+    "tab 1", "tab 2", "tab 3", "tab 4", "tab 5", "tab 6", "tab 7", "tab 8", "tab 9", "tab 10",
+    "tab 11", "tab 12", "tab 13", "tab 14", "tab 15", "tab 16", "tab 17", "tab 18", "tab 19",
+    "tab 20", "tab 21", "tab 22", "tab 23", "tab 24", "tab 25", "tab 26", "tab 27", "tab 28",
+    "tab 29", "tab 30", "tab 31", "tab 32", "tab 33", "tab 34", "tab 35", "tab 36", "tab 37",
+    "tab 38", "tab 39", "tab 40", "tab 41", "tab 42", "tab 43", "tab 44", "tab 45", "tab 46",
+    "tab 47", "tab 48", "tab 49", "tab 50", "tab 51", "tab 52", "tab 53", "tab 54", "tab 55",
+    "tab 56", "tab 57", "tab 58", "tab 59", "tab 60",
+];
+const SIXTY_GROUPS: &[DumpGroup] = &[
+    dump_group("area 1", GroupColor::Grey, false, 0, 6),
+    dump_group("area 2", GroupColor::Blue, false, 6, 6),
+    dump_group("area 3", GroupColor::Red, false, 12, 6),
+    dump_group("area 4", GroupColor::Yellow, false, 18, 6),
+    dump_group("area 5", GroupColor::Green, false, 24, 6),
+    dump_group("area 6", GroupColor::Pink, false, 30, 6),
+    dump_group("area 7", GroupColor::Purple, false, 36, 6),
+    dump_group("area 8", GroupColor::Cyan, false, 42, 6),
+    dump_group("area 9", GroupColor::Orange, false, 48, 6),
+    dump_group("area 10", GroupColor::Blue, false, 54, 6),
+];
+/// A progress report in a loose tab and in two members, one tone each.
+const SHINES: &[(usize, Tone)] = &[(0, Tone::Neutral), (4, Tone::Warn), (5, Tone::Err)];
+/// Points of mock F's list: over the `logs` row, and over the `api` card's header.
+const OVER_LOGS_ROW: (f32, f32) = (110.0, 155.0);
+const OVER_API_HEADER: (f32, f32) = (110.0, 90.0);
+
 const BASE: Scene = Scene {
     name: "",
     scale: 2,
@@ -346,9 +468,10 @@ const BASE: Scene = Scene {
     link: None,
     notices: &[],
     toasts: false,
-    progress: None,
+    progress: &[],
     inbox: None,
     pane: None,
+    list: None,
     chrome: HOST,
     width: SIZE.0 as u32,
 };
@@ -632,7 +755,7 @@ const SCENES: &[Scene] = &[
         name: "tabs-attention@2x.png",
         tabs: FOUR,
         notices: ATTENTION,
-        progress: Some(2),
+        progress: &[(2, Tone::Neutral)],
         ..BASE
     },
     Scene {
@@ -640,7 +763,7 @@ const SCENES: &[Scene] = &[
         tabs: FOUR,
         look: Theme::Lunegit,
         notices: ATTENTION,
-        progress: Some(2),
+        progress: &[(2, Tone::Neutral)],
         ..BASE
     },
     // The notification toast: a message from the third tab while the first is in view (the
@@ -1000,7 +1123,7 @@ const SCENES: &[Scene] = &[
         name: "bar-windows@2x.png",
         tabs: FOUR,
         notices: ATTENTION,
-        progress: Some(2),
+        progress: &[(2, Tone::Neutral)],
         chrome: WINDOWS_CHROME,
         ..BASE
     },
@@ -1009,7 +1132,7 @@ const SCENES: &[Scene] = &[
         tabs: FOUR,
         look: Theme::Lunegit,
         notices: ATTENTION,
-        progress: Some(2),
+        progress: &[(2, Tone::Neutral)],
         chrome: WINDOWS_CHROME,
         ..BASE
     },
@@ -1017,10 +1140,110 @@ const SCENES: &[Scene] = &[
         name: "bar-narrow@2x.png",
         tabs: FOUR,
         notices: ATTENTION,
-        progress: Some(2),
+        progress: &[(2, Tone::Neutral)],
         pane: PANE,
         width: 737,
         ..BASE
+    },
+    // The side pane's tab list: mock F in both looks, opaque and at 1x, the active tab in a
+    // collapsed card, a hovered row, every colour collapsed with unread members, a long scrolled
+    // list, progress shines, and the card's and a row's menus.
+    Scene {
+        name: "pane-list@2x.png",
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list@1x.png",
+        scale: 1,
+        ..MOCK
+    },
+    Scene {
+        name: "lunegit-pane-list@2x.png",
+        look: Theme::Lunegit,
+        ..MOCK
+    },
+    Scene {
+        name: "lunegit-pane-list@1x.png",
+        scale: 1,
+        look: Theme::Lunegit,
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list-opaque@2x.png",
+        glass: false,
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list-collapsed-active@2x.png",
+        active: 6,
+        notices: &[SceneNotice::Bell(3)],
+        ..MOCK
+    },
+    Scene {
+        name: "lunegit-pane-list-collapsed-active@2x.png",
+        active: 6,
+        notices: &[SceneNotice::Bell(3)],
+        look: Theme::Lunegit,
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list-hover@2x.png",
+        script: &[(1, Input::Move(OVER_LOGS_ROW.0, OVER_LOGS_ROW.1))],
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list-colors@2x.png",
+        ..COLORS
+    },
+    Scene {
+        name: "lunegit-pane-list-colors@2x.png",
+        look: Theme::Lunegit,
+        ..COLORS
+    },
+    Scene {
+        name: "pane-list-colors-opaque@2x.png",
+        glass: false,
+        ..COLORS
+    },
+    Scene {
+        name: "pane-list-long@2x.png",
+        tabs: SIXTY_TABS,
+        active: 45,
+        notices: &[SceneNotice::Bell(43)],
+        inbox: NOTICE_BELL,
+        pane: PANE,
+        list: Some(SIXTY_GROUPS),
+        ..BASE
+    },
+    Scene {
+        name: "pane-list-shine@2x.png",
+        progress: SHINES,
+        ..MOCK
+    },
+    Scene {
+        name: "lunegit-pane-list-shine@2x.png",
+        progress: SHINES,
+        look: Theme::Lunegit,
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list-menu-group@2x.png",
+        script: &[
+            (1, Input::Move(OVER_API_HEADER.0, OVER_API_HEADER.1)),
+            (
+                1,
+                Input::SecondaryClick(OVER_API_HEADER.0, OVER_API_HEADER.1),
+            ),
+        ],
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list-menu-tab@2x.png",
+        script: &[
+            (1, Input::Move(OVER_LOGS_ROW.0, OVER_LOGS_ROW.1)),
+            (1, Input::SecondaryClick(OVER_LOGS_ROW.0, OVER_LOGS_ROW.1)),
+        ],
+        ..MOCK
     },
 ];
 
@@ -1096,6 +1319,17 @@ pub fn dump_frames_gated_text(
 /// the last, after the focus animations, is the picture. A scene's clock starts at zero on a fresh UI
 /// state, so a scene cannot show what an earlier one left behind.
 const FRAME_TIMES_MS: [u64; 4] = [0, 800, 1600, 2400];
+
+/// The groups a menu about group `own` shows, from a scene's set.
+fn set_groups(set: &TabSet<()>, own: Option<GroupId>) -> MenuGroups {
+    MenuGroups {
+        own,
+        open: set
+            .groups()
+            .map(|(g, group)| (g, group.name.clone()))
+            .collect(),
+    }
+}
 
 /// Draws `scene` into a fresh target, warming up first as the toolkit's own dump does, and writes
 /// the last frame.
@@ -1173,10 +1407,32 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         .map(|(i, title)| StripTab {
             id: i as u64 + 1,
             title,
-            progress: (scene.progress == Some(i)).then_some(Tone::Neutral),
+            progress: scene
+                .progress
+                .iter()
+                .find(|(tab, _)| *tab == i)
+                .map(|(_, tone)| *tone),
             attention: inbox.tab_unread(i as u64 + 1) > 0 && i != active,
         })
         .collect();
+    // The pane list's rows, through the app's own set and row builder: the set gives the same
+    // tabs the ids of the strip.
+    let mut set: TabSet<()> = TabSet::new();
+    for _ in titles {
+        set.push(());
+    }
+    for group in scene.list.unwrap_or_default() {
+        for i in group.tabs.0..group.tabs.0 + group.tabs.1 {
+            set.set_group(i as u64 + 1, group.name);
+        }
+        let id = set
+            .group_named(group.name)
+            .ok_or("a scene's group has no tab")?;
+        set.recolor_group(id, group.color);
+        set.set_collapsed(id, group.collapsed);
+    }
+    set.activate(active as u64 + 1);
+    let rows = pane::rows(&set, &strip);
     // The toasts, through the app's path: the slots admit, `notice_toast` builds, the slots are told.
     let strings = crate::strings::english();
     let inbox_rows = crate::shell::inbox_rows(&inbox, INBOX_NOW, &strings, |id| {
@@ -1349,6 +1605,12 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             title: label,
             tabs: &strip,
             active_tab: Some(active as u64 + 1),
+            pane_list: scene.list.map(|_| PaneList {
+                rows: &rows,
+                look: scene.look,
+                // As the app's first frame.
+                reveal: k == 0,
+            }),
             modal,
             maximized: false,
             grid: &mut grid,
@@ -1409,17 +1671,37 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             fading: Vec::new(),
         };
         let drawn = r.draw(&input, content, &view, size)?;
-        // The app opens the tab menu from the request the strip reports (the next frame shows it).
+        // The app opens the tab menu from the request the strip or a pane row reports, and a
+        // card's menu from its header (the next frame shows it).
+        let mut asked = None;
         if let Some(ctx) = drawn.tab_context {
-            model = Some(MenuModel::with_groups(
+            let groups = match scene.list {
+                Some(_) => set_groups(&set, set.group_of(ctx.id)),
+                None => menu_groups.clone(),
+            };
+            asked = Some((
                 MenuKind::Tab {
                     closable: TAB_CLOSABLE,
                 },
-                &menu_groups,
+                groups,
+                ctx.at,
+            ));
+        }
+        for event in &drawn.pane_events {
+            if let PaneEvent::GroupMenu { id, at } = *event {
+                let collapsed = set.group(id).is_some_and(|g| g.collapsed);
+                let kind = MenuKind::Group { collapsed };
+                asked = Some((kind, set_groups(&set, Some(id)), at));
+            }
+        }
+        if let Some((kind, groups, at)) = asked {
+            model = Some(MenuModel::with_groups(
+                kind,
+                &groups,
                 &strings,
                 cfg!(target_os = "macos"),
             ));
-            place = MenuPlace::At(ctx.at);
+            place = MenuPlace::At(at);
         }
         if let Some(out) = drawn.inbox {
             inbox_rect = Some(out.rect);
@@ -1576,7 +1858,7 @@ mod tests {
                 .iter()
                 .filter(|(p, _)| p.to_string_lossy().contains("opaque"))
                 .count(),
-            9
+            11
         );
         let first: Vec<PathBuf> = gated.into_iter().map(|(p, _)| p).collect();
         let second = dump_frames(&b).expect("second dump");

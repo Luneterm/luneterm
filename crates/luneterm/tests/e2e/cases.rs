@@ -1231,6 +1231,7 @@ fn draw_png(r: &mut Renderer, grid: &mut Grid, cursor: &ViewportCursor) -> Resul
             title: None,
             tabs: &[],
             active_tab: None,
+            pane_list: None,
             modal: None,
             maximized: false,
             grid,

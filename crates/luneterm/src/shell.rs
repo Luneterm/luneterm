@@ -41,7 +41,7 @@ use lune_ui::window::{ResizeEdge, edge_at};
 
 use crate::groups::{self, GroupColor, NameProblem};
 use crate::notices::{self, Age, Inbox, NoticeKind};
-use crate::pane::{self, PaneEdge, PaneRects};
+use crate::pane::{self, PaneEdge, PaneEvent, PaneList, PaneRects};
 use crate::settings::Theme as LookTheme;
 
 /// The title band's height.
@@ -676,6 +676,8 @@ pub struct ShellView<'a> {
     pub pane_button_name: &'a str,
     pub tabs: &'a [StripTab<'a>],
     pub active_tab: Option<u64>,
+    /// The side pane's tab list, drawn in the pane view; `None` draws no list.
+    pub pane_list: Option<PaneList<'a>>,
     pub modal: Option<Modal<'a>>,
     /// The app's toasts, drawn last, over the dialog.
     pub toasts: Option<&'a mut Toasts>,
@@ -774,6 +776,8 @@ pub struct ShellOut {
     pub pane_toggle: bool,
     /// What the pane's edge zone saw; `None` in the bar view.
     pub pane_edge: Option<PaneEdge>,
+    /// What the user asked of the pane's list this frame; a tab's menu is `tab_context`.
+    pub pane_events: Vec<PaneEvent>,
 }
 
 /// A tab's request for its context menu: the app opens the menu (the strip owns none).
@@ -981,6 +985,7 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
     let mut tab_context = None;
     let mut pane_toggle = false;
     let mut pane_edge = None;
+    let mut pane_events = Vec::new();
     if let Some(pane) = &layout.pane {
         let out = pane::controls(
             ui,
@@ -994,6 +999,11 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         pane_edge = out.edge;
         (overflow, inbox_clicked) =
             header_buttons(ui, &layout, view.overflow_name, view.inbox_button);
+        if let Some(list) = &view.pane_list {
+            let out = pane::list(ui, pane, list);
+            pane_events = out.events;
+            tab_context = out.tab_context;
+        }
     } else if !view.page_open {
         // The header of the card drags the window where no tab or button is: its region goes in
         // before the strip's, so what the strip registers sits on top of it.
@@ -1096,6 +1106,7 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         toast,
         pane_toggle,
         pane_edge,
+        pane_events,
     }
 }
 
@@ -1561,6 +1572,7 @@ fn swatches(ui: &mut Ui<'_>, x: f32, y: f32, chosen: &mut GroupColor, look: Look
 mod tests {
     use super::*;
     use crate::fonts;
+    use crate::pane::{PaneRow, TabRow};
     use lune_ui::input::{Modifiers, RawInput, keymap};
     use lune_ui::lunegit_dark::THEME;
     use lune_ui::motion::{Cadence, MotionTier};
@@ -1888,6 +1900,7 @@ mod tests {
             view: View::Bar,
             show_pane_button: false,
             pane_button_name: "Pane",
+            pane_list: None,
             tabs,
             active_tab: tabs.first().map(|t| t.id),
             modal: None,
@@ -1941,6 +1954,7 @@ mod tests {
             view: View::Bar,
             show_pane_button: false,
             pane_button_name: "Pane",
+            pane_list: None,
             tabs: &tabs,
             active_tab: Some(1),
             modal: None,
@@ -2243,6 +2257,7 @@ mod tests {
         show_pane_button: bool,
         inbox: bool,
         page_open: bool,
+        list: Option<&'static [PaneRow<'static>]>,
     }
 
     impl PaneShell {
@@ -2253,6 +2268,7 @@ mod tests {
                 show_pane_button: false,
                 inbox: true,
                 page_open: false,
+                list: None,
             }
         }
 
@@ -2285,6 +2301,11 @@ mod tests {
                 view: self.view,
                 show_pane_button: self.show_pane_button,
                 pane_button_name: "Pane",
+                pane_list: self.list.map(|rows| PaneList {
+                    rows,
+                    look: LookTheme::Luneterm,
+                    reveal: false,
+                }),
                 tabs: &tabs,
                 active_tab: Some(1),
                 modal: None,
@@ -2365,6 +2386,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A list of one loose tab.
+    const ONE_ROW: &[PaneRow<'static>] = &[PaneRow::Tab(TabRow {
+        id: 7,
+        title: "zsh",
+        progress: None,
+        unread: false,
+        active: false,
+        group: None,
+    })];
+
+    /// The tab list is the pane view's: in it a row reports itself, over the settings page too
+    /// (D31), and the bar view draws none of it.
+    #[test]
+    fn the_tab_list_is_drawn_in_the_pane_view_only() {
+        let at = (100.0, 50.0);
+        for page_open in [false, true] {
+            let scene = PaneShell {
+                page_open,
+                list: Some(ONE_ROW),
+                ..PaneShell::pane(MACOS_CHROME)
+            };
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            let (down, up) = scene.press(&mut store, &mut text, at);
+            assert_eq!(down.pane_events, [PaneEvent::Activate(7)], "{page_open}");
+            assert!(up.pane_events.is_empty() && down.commands.is_empty());
+            assert!(down.tab_events.is_empty());
+        }
+        let bar = PaneShell {
+            view: View::Bar,
+            list: Some(ONE_ROW),
+            ..PaneShell::pane(MACOS_CHROME)
+        };
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let (down, up) = bar.press(&mut store, &mut text, at);
+        assert!(down.pane_events.is_empty() && up.pane_events.is_empty());
     }
 
     #[test]
@@ -2489,6 +2547,7 @@ mod tests {
                 show_pane_button: true,
                 inbox: false,
                 page_open: false,
+                list: None,
             };
             for page_open in [false, true] {
                 let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
@@ -2925,6 +2984,7 @@ mod tests {
             view: View::Bar,
             show_pane_button: false,
             pane_button_name: "Pane",
+            pane_list: None,
             tabs: &tabs,
             active_tab: Some(1),
             modal: None,
@@ -3179,6 +3239,7 @@ mod tests {
             view: View::Bar,
             show_pane_button: false,
             pane_button_name: "Pane",
+            pane_list: None,
             tabs: &tabs,
             active_tab: Some(1),
             modal: Some(modal),

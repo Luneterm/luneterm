@@ -124,8 +124,9 @@ impl MenuAction {
     }
 }
 
-/// The codicon `terminal` (the toolkit's icon list has no app glyphs).
-const ICON_TERMINAL: &str = "\u{ea85}";
+/// The codicon `terminal` (the toolkit's icon list has no app glyphs): also a tab row's of the
+/// side pane.
+pub(crate) const ICON_TERMINAL: &str = "\u{ea85}";
 /// The codicon `clippy`.
 const ICON_CLIPPY: &str = "\u{eac0}";
 /// The codicon `list-selection`.

@@ -74,7 +74,7 @@ use crate::menus::{self, GroupOp, MenuAction, MenuGroups, MenuKind, MenuModel, T
 use crate::notices::{self, Admit, DrawnRows, Inbox, PressClock, TOAST_LIFE, ToastSlots, route};
 use crate::pacing::{self, EventKind, Pacer, PresentAsk};
 use crate::palettes;
-use crate::pane::{self, PaneEdge, WidthDrag};
+use crate::pane::{self, PaneEdge, PaneEvent, PaneList, WidthDrag};
 use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, restore_layout,
     snapshot,
@@ -779,9 +779,9 @@ enum NewTabPlace {
 
 /// Adds `item` where `place` says, active, and returns its id. A tab or group that is gone by now
 /// puts it at the end, in no group; a new group's name that was taken meanwhile joins that group
-/// and leaves its colour.
+/// and leaves its colour. A group the tab joins is expanded, so the side pane shows it.
 fn place_new_tab<T>(tabs: &mut TabSet<T>, item: T, place: &NewTabPlace) -> TabId {
-    match place {
+    let id = match place {
         NewTabPlace::From(reference) => tabs.insert_by_hand(item, *reference),
         NewTabPlace::InGroup(g) => {
             let last = tabs.members(*g).last().copied();
@@ -796,7 +796,9 @@ fn place_new_tab<T>(tabs: &mut TabSet<T>, item: T, place: &NewTabPlace) -> TabId
             }
             id
         }
-    }
+    };
+    tabs.expand_for(id);
+    id
 }
 
 /// The open group the editor of `target` edits.
@@ -882,6 +884,17 @@ fn menu_groups<T>(tabs: &TabSet<T>, own: Option<GroupId>) -> MenuGroups {
             .map(|(g, group)| (g, group.name.clone()))
             .collect(),
     }
+}
+
+/// The header menu of group `g` at `at`; `None` when there is no such group.
+fn group_menu<T>(tabs: &TabSet<T>, g: GroupId, at: (f32, f32)) -> Option<OpenMenu> {
+    let collapsed = tabs.group(g)?.collapsed;
+    Some(OpenMenu {
+        kind: MenuKind::Group { collapsed },
+        place: MenuPlace::At(at),
+        tab: None,
+        groups: menu_groups(tabs, Some(g)),
+    })
 }
 
 /// The editor as it opens for `target`: the group's own name and colour, or for a new group the
@@ -1133,6 +1146,8 @@ struct App {
     thumb_drag: Option<ThumbDrag>,
     /// A drag of the side pane's right edge under way (its width is saved when it ends).
     pane_drag: Option<WidthDrag>,
+    /// The pane's list shows the active tab's row in its next frame (D32).
+    pane_reveal: bool,
     bell: BellLimiter,
     /// Bells and program notifications, the one store behind the tab dots, the bell and the list.
     /// In memory only (D15).
@@ -1250,6 +1265,7 @@ impl App {
             wheel: WheelState::default(),
             thumb_drag: None,
             pane_drag: None,
+            pane_reveal: false,
             bell: BellLimiter::default(),
             inbox: Inbox::new(),
             inbox_ring: None,
@@ -1944,6 +1960,8 @@ impl App {
             GroupOp::Close(g) => self.ask_close_group(g),
             GroupOp::NewTab(g) => {
                 if self.tabs.group(g).is_some() {
+                    // The new tab is what the user wants to see (D31).
+                    self.close_page();
                     self.new_tab_request_at(NewTabPlace::InGroup(g));
                 }
             }
@@ -2290,6 +2308,7 @@ impl App {
         if now == before {
             return;
         }
+        self.pane_reveal = true;
         if let (Some(t), Some(new)) = (&mut self.trace, now) {
             t.switched(new, Instant::now());
         }
@@ -2474,8 +2493,11 @@ impl App {
                     }
                 }
                 // The handler made it active and expanded its group (both saved); the side pane
-                // scrolls to the active row.
-                ControlEffect::Reveal(_) => self.workspace_changed(false),
+                // scrolls to the active row, also when the tab was active already.
+                ControlEffect::Reveal(_) => {
+                    self.pane_reveal = true;
+                    self.workspace_changed(false);
+                }
                 ControlEffect::Hold => self.input_hold_until = Some(now + INPUT_HOLD),
                 ControlEffect::Regrouped(id) => {
                     if self.tabs.get(id).is_some_and(|t| !t.program) {
@@ -2549,6 +2571,42 @@ impl App {
             TabEvent::Reorder { from, to } => {
                 self.tabs.reorder_bar(from, to);
                 self.workspace_changed(true);
+            }
+        }
+        self.request_redraw();
+    }
+
+    /// Sends the user to tab `id` (a toast's "Go to tab", an inbox entry): its group is
+    /// expanded and the pane shows its row (D21), then it is activated and saved.
+    fn go_to_tab(&mut self, id: TabId, event_loop: &ActiveEventLoop) {
+        self.tabs.expand_for(id);
+        self.pane_reveal = true;
+        self.tab_event(TabEvent::Activate(TabKey(id)), event_loop);
+    }
+
+    /// What the user asked of the side pane's list this frame.
+    fn pane_event(&mut self, event: PaneEvent, event_loop: &ActiveEventLoop) {
+        match event {
+            PaneEvent::Activate(id) => {
+                // A press on a row leaves the settings page (D31).
+                self.close_page();
+                self.tab_event(TabEvent::Activate(TabKey(id)), event_loop);
+            }
+            PaneEvent::Close(id) => self.tab_event(TabEvent::Close(TabKey(id)), event_loop),
+            PaneEvent::ToggleGroup(g) => {
+                if let Some(collapsed) = self.tabs.group(g).map(|g| g.collapsed) {
+                    self.run_group_op(GroupOp::SetCollapsed(g, !collapsed));
+                }
+            }
+            PaneEvent::NewTabIn(g) => self.run_group_op(GroupOp::NewTab(g)),
+            PaneEvent::NewTab => {
+                self.close_page();
+                self.new_tab_request_at(NewTabPlace::From(None));
+            }
+            PaneEvent::GroupMenu { id, at } => {
+                if let Some(menu) = group_menu(&self.tabs, id, at) {
+                    self.menu = Some(menu);
+                }
             }
         }
         self.request_redraw();
@@ -2885,7 +2943,7 @@ impl App {
         if action == shell::TOAST_GO_TO_TAB
             && let Some(tab) = target
         {
-            self.tab_event(TabEvent::Activate(TabKey(tab)), event_loop);
+            self.go_to_tab(tab, event_loop);
         }
         self.request_redraw();
     }
@@ -3161,6 +3219,11 @@ impl App {
         // Where things are in this frame; a changed grid size or cell size is the active
         // session's news (a hidden tab hears it when it is activated).
         let placed = stack.renderer.place(input.size, input.scale);
+        // A pane that was not there in the last frame (the first one, a toggle, a window grown
+        // wide enough again) shows the active tab's row.
+        if placed.layout.pane.is_some() && self.placed.is_none_or(|p| p.layout.pane.is_none()) {
+            self.pane_reveal = true;
+        }
         self.placed = Some(placed);
         let geometry = placed.geometry();
         if let Some(tab) = self.tabs.active_item_mut() {
@@ -3201,6 +3264,11 @@ impl App {
                 attention: *attention,
             })
             .collect();
+        let pane_rows = if placed.layout.pane.is_some() {
+            pane::rows(&self.tabs, &strip)
+        } else {
+            Vec::new()
+        };
         if let Some(t) = &mut self.trace {
             t.frame.slot0 = active_tab;
         }
@@ -3363,6 +3431,11 @@ impl App {
             title: label.as_deref(),
             tabs: &strip,
             active_tab,
+            pane_list: placed.layout.pane.map(|_| PaneList {
+                rows: &pane_rows,
+                look,
+                reveal: std::mem::take(&mut self.pane_reveal),
+            }),
             modal,
             maximized: win.window.is_maximized(),
             grid: &mut tab.grid,
@@ -3430,6 +3503,7 @@ impl App {
         let (inbox_clicked, inbox_out) = (drawn.inbox_clicked, drawn.inbox);
         let tab_context = drawn.tab_context;
         let (pane_toggle, pane_edge) = (drawn.pane_toggle, drawn.pane_edge);
+        let pane_events = drawn.pane_events;
         // Closing the window is closing every tab: it asks like they do.
         let close_asked = out
             .commands
@@ -3582,6 +3656,9 @@ impl App {
             for event in tab_events {
                 self.tab_event(event, event_loop);
             }
+            for event in pane_events {
+                self.pane_event(event, event_loop);
+            }
         }
         self.urgent_scope = false;
         if let Some(line) = self.trace.as_mut().and_then(|t| t.frame_done()) {
@@ -3625,7 +3702,7 @@ impl App {
                     .and_then(|id| self.inbox.tab_of(id))
                     .filter(|tab| self.tabs.get(*tab).is_some())
                 {
-                    Some(tab) => self.tab_event(TabEvent::Activate(TabKey(tab)), event_loop),
+                    Some(tab) => self.go_to_tab(tab, event_loop),
                     // Too soon after the rows changed: the press does nothing, the list stays.
                     None if !clicked && out.dismissed.is_none() => open = was_open,
                     None => {}
@@ -5729,6 +5806,50 @@ mod tests {
             assert_eq!(picture(&s), ".aa.b.", "{from:?}");
             assert_eq!(s.active(), Some(new));
         }
+    }
+
+    /// A new tab asked for into a collapsed group expands it, so the pane shows the tab; other
+    /// groups stay as they were.
+    #[test]
+    fn a_new_tab_joining_a_collapsed_group_expands_it() {
+        for place_in in [true, false] {
+            let (mut s, ids) = tab_set(".aa.b");
+            let (a, b) = (group(&s, "a"), group(&s, "b"));
+            s.set_collapsed(a, true);
+            s.set_collapsed(b, true);
+            let place = if place_in {
+                NewTabPlace::InGroup(a)
+            } else {
+                NewTabPlace::From(Some(ids[1]))
+            };
+            let new = place_new_tab(&mut s, (), &place);
+            assert_eq!(s.group_of(new), Some(a));
+            assert!(s.group(a).is_some_and(|g| !g.collapsed), "{place_in}");
+            assert!(s.group(b).is_some_and(|g| g.collapsed), "{place_in}");
+        }
+        // A tab for no group expands nothing.
+        let (mut s, _) = tab_set(".aa");
+        let a = group(&s, "a");
+        s.set_collapsed(a, true);
+        place_new_tab(&mut s, (), &NewTabPlace::From(None));
+        assert!(s.group(a).is_some_and(|g| g.collapsed));
+    }
+
+    /// The pane's header menu is the group's: its rows follow the collapsed state, its entries
+    /// act on that group, and a group that is gone opens none.
+    #[test]
+    fn a_header_menu_is_about_its_group() {
+        let (mut s, _) = tab_set(".aab");
+        let a = group(&s, "a");
+        for collapsed in [false, true] {
+            s.set_collapsed(a, collapsed);
+            let menu = group_menu(&s, a, (7.0, 9.0)).expect("a menu");
+            assert_eq!(menu.kind, MenuKind::Group { collapsed });
+            assert_eq!((menu.tab, menu.groups.own), (None, Some(a)));
+            assert!(matches!(menu.place, MenuPlace::At((7.0, 9.0))));
+            assert!(!menu_is_moot(&s, &menu));
+        }
+        assert!(group_menu(&s, GroupId::NONE, (0.0, 0.0)).is_none());
     }
 
     #[test]

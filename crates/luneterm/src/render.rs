@@ -31,7 +31,7 @@ use lune_ui::widgets::tone::Tone;
 
 use crate::fonts;
 use crate::links;
-use crate::pane::{self, PaneEdge};
+use crate::pane::{self, PaneEdge, PaneEvent, PaneList};
 use crate::session::Geometry;
 use crate::settings::{Settings, Theme as LookTheme, WindowOpacity};
 use crate::settings_page::{self, PageOut, PageView};
@@ -103,6 +103,8 @@ pub struct Content<'a> {
     pub title: Option<&'a str>,
     pub tabs: &'a [StripTab<'a>],
     pub active_tab: Option<u64>,
+    /// The side pane's tab list; drawn only in the pane view.
+    pub pane_list: Option<PaneList<'a>>,
     /// A dialog over everything: it takes the keyboard and the IME.
     pub modal: Option<Modal<'a>>,
     pub maximized: bool,
@@ -268,6 +270,8 @@ pub struct Drawn {
     pub pane_toggle: bool,
     /// What the pane's edge zone saw; `None` in the top bar view.
     pub pane_edge: Option<PaneEdge>,
+    /// What the user asked of the pane's tab list.
+    pub pane_events: Vec<PaneEvent>,
     /// The grid size the frame was laid out for.
     pub cols: usize,
     pub rows: usize,
@@ -688,6 +692,7 @@ impl Renderer {
             chrome: content.chrome,
             tabs: content.tabs,
             active_tab: content.active_tab,
+            pane_list: content.pane_list,
             modal: content.modal.take(),
             toasts: content.toasts.take(),
             page_open: content.page.is_some(),
@@ -876,6 +881,7 @@ impl Renderer {
             toast: shell_out.toast,
             pane_toggle: shell_out.pane_toggle,
             pane_edge: shell_out.pane_edge,
+            pane_events: shell_out.pane_events,
             cols: placement.cols,
             rows: placement.rows,
         })
@@ -1271,6 +1277,7 @@ mod text_tests {
                 title: None,
                 tabs: &[],
                 active_tab: None,
+                pane_list: None,
                 modal: None,
                 maximized: false,
                 grid: &mut active,
@@ -1468,6 +1475,7 @@ mod switch_harness {
             title: None,
             tabs: &strip,
             active_tab: Some(active as TabId),
+            pane_list: None,
             modal: None,
             maximized: false,
             grid,
