@@ -899,7 +899,7 @@ global state (M10: a `Tab` owns a session and everything that used to be per-ses
 | `spawn` | Shell candidates, cwd, environment, `WindowsPty` |
 | `shell_integration` | The scripts the user's shell sources (OSC 7, OSC 133), their checked install under the config directory, and what they add to a spawn (see "Shell integration" above) |
 | `tabs` | `Tab` (one session plus its UI-side state), `TabSet` (order, active, next focus after a close: pure list logic), the close rules (`asks_on_close`, `ClosePlan`), tab names |
-| `update` | Self-update over lunepack: `startup`/`confirm_healthy`, the `Updater` worker thread and its state machine, the compiled-in root (`root`), the channel a copy follows (`channel`), the 24 h timer and the toast rule (`auto`); see "Updates" below |
+| `update` | Self-update over lunepack: `startup`/`confirm_healthy`, the `Updater` worker thread and its state machine, the channel a copy follows (`channel`), the 24 h timer and the toast rule (`auto`); see "Updates" below |
 | `efficiency` | Efficiency mode in the background: the pure policy `wanted`, the `Controller` (UI thread only), and the OS backends (`windows.rs` EcoQoS + idle class, `macos.rs` utility QoS; none elsewhere); see "Efficiency mode" below |
 | `links` | `scan` (OSC 8 runs and bare `http(s)://` text), `open` (the closed URL grammar and the only code that opens anything), hover state |
 | `persist` | `settings.json` and `workspace.json`: bounded JSON reader and writer, atomic 0600 writes, versioned, `.bak` on a file it cannot read, `SaveGuard` (ledger 12) |
@@ -1242,9 +1242,9 @@ rolled back exits at once); `update::confirm_healthy()` runs once on the UI thre
 frame is presented and a tab has a session (D8), and only when `startup` said a confirmation is
 pending. A copy lunepack did not install (a `cargo run`, an old portable zip, no
 `lunepack-update.json` beside the executable) is `Unavailable`: no worker thread, no network, the
-About rows are disabled with "Updates need the Luneterm installer". A copy whose update config names
-another root than the compiled-in one (`update/root.rs`: app id, root version, threshold, keys,
-compared for equality; lunepack's builder has no root setter) is `Unavailable` too.
+About rows are disabled with "Updates need the Luneterm installer". The root of trust is the one in the
+installed copy's update config (`lunepack-update.json`, written by `lunepack pack` from the `[root]` table of
+`packaging/lunepack.toml`); the app compiles in no root key and does not compare it with anything.
 *Worker.* `Updater` owns one thread, `luneterm-update`, over `lunepack::blocking`. The UI thread
 sends `Check { auto }`, `Download` and `Restart`; the worker posts every `UpdateState` through a sink
 (`EventLoopProxy::send_event`, so it never blocks the UI thread). One operation at a time: a command
@@ -1277,17 +1277,25 @@ decides: a per-user first install, or a reinstall over a removed tree, queues an
 event that `lunepack::startup()` delivers once (`Launch::fresh_install`); an update queues `Updated`. On
 that start the tree's channel is recorded whatever was persisted, and saved at once. A per-machine
 install queues no events, so it keeps the persisted channel across a reinstall (docs/updates.md).
-*Trust.* The root public key is compiled in (`update/root.rs`, mirrored by the `[root]` table of
-`packaging/lunepack-{linux,windows,macos}.toml`; a test keeps them equal). It is a throwaway TEST root
-(`IS_TEST_ROOT`) until the real key exists; the publisher refuses to publish with it. Feed and manifest
-parsing and signature checks are lunepack's; the app treats a feed as untrusted input and shows only
-lunepack's message text.
-*Release side (`scripts/`).* Build jobs produce one build input per OS (`make-build-input.py`: the
-app tree + lunepack runtime, UI and, on Windows, the launcher stub, built from the pinned source by
-`build-lunepack.{sh,ps1}`, whose dependency graph check is fail-closed); `publish-updates.py` packs
-them, signs the two feeds (`stable`, `beta`; newest 10 versions each, D4), uploads to R2 in the order
-objects, feeds, state, deletes, and attaches the setup files. `packaging-config.py <os> <channel>`
-renders the lunepack config a pack uses. Retention, key handling and recovery are in
+*Trust.* The root public key lives in one place, the `[root]` table of `packaging/lunepack.toml`, and
+reaches an installed copy through the update config of its pack. It is a throwaway TEST root until the
+owner's key ceremony (docs/updates.md); `scripts/release-pack.py check-root` refuses to pack or to
+build the macOS input while it is in. Feed and manifest parsing and signature checks are lunepack's; the
+app treats a feed as untrusted input and shows only lunepack's message text.
+*Release side (`scripts/`, `.github/workflows/publish-updates.yml`).* Build jobs produce one build input
+per OS (`make-build-input.py`: the app tree + lunepack runtime, UI and, on Windows, the launcher stub,
+built from the pinned source by `build-lunepack.{sh,ps1}`, whose dependency graph check is fail-closed).
+Publishing is lunepack's standard `lunepack publish` flow (its `docs/PUBLISHING.md`): `tools-linux`
+builds the CLI from the pin and reports its hash; `pack` (environment `release-pack`) runs
+`release-pack.py pack`, which takes the build inputs from the GitHub release, checks them (SHA-256,
+safe extraction, `BUILD-INFO.txt`) and runs `publish fetch`, `pack` and `setup` for the three targets;
+`push` (environment `release-push`, the owner approves) runs `publish push`, which writes the two
+feeds (`stable`, `beta`; newest 10 versions each, a release candidate to `beta` only) to R2 in
+lunepack's order; `attach` puts the setup files on the release. A weekly `refresh` (environment
+`release-refresh`) keeps the feeds from expiring. The release key and the R2 tokens are secrets of the
+three environments, never of the repository; every key job checks the CLI hash and builds nothing.
+One config, `packaging/lunepack.toml`, serves every OS (`[install.<os>]`) and `lunepack publish`
+(`[publish]`); the channel is chosen at pack time (`pack --channel beta`). Names, setup and recovery are in
 `docs/updates.md`. The release binary grows by about 2.7 MiB (macOS arm64, measured on the probe
 build when lunepack was added).
 
