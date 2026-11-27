@@ -52,7 +52,11 @@ use lune_vt::{
     TerminalMouseEvent, ViewportCursor,
 };
 
-use crate::ctl;
+use crate::ctl::handler::{
+    self as control, Call, ControlTab, Ctx, Effect as ControlEffect, INPUT_HOLD, OpenSpec, Outcome,
+};
+use crate::ctl::server::{Reply, Server};
+use crate::ctl::{self, Code};
 use crate::cwd;
 use crate::dump;
 use crate::efficiency::{Controller, HostOs};
@@ -83,10 +87,10 @@ use crate::shell::{
     self, HOST, InboxButton, InboxList, Modal, ModalOut, ScrollView, StripTab, TAB_CLOSABLE,
     ThumbDrag,
 };
-use crate::spawn::{self, SpawnFailure};
+use crate::spawn::{self, ProgramFailure, ProgramSpec, Refused, SpawnFailure};
 use crate::tabs::{
-    ClosePlan, CwdCheck, CwdState, Message, PasteState, Tab, TabId, TabSet, confirm_message,
-    plan_close,
+    ClosePlan, CwdCheck, CwdState, Message, Origin, PasteState, Tab, TabId, TabSet,
+    confirm_message, plan_close,
 };
 use crate::title::DEFAULT_TITLE;
 use crate::update::auto::{AutoCheck, ToastRule, keeps_restart_toast};
@@ -110,7 +114,7 @@ const UPDATE_SLOT_TAB: TabId = TabId::MAX;
 const UPDATE_WAIT: Duration = Duration::from_secs(1);
 
 /// Events other threads post to the event loop.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum UserEvent {
     /// The session has an Update for the UI: draw a frame.
     Wake,
@@ -122,6 +126,9 @@ pub enum UserEvent {
     /// `LUNETERM_TRACE_SWITCH_AUTO`: switch to the next tab, as the shortcut does; posted at the
     /// instant it carries, so the trace sees how long the event loop took to get to it.
     TraceSwitch(Instant),
+    /// A `luneterm ctl` request from the control listener (`ctl::handler::Bridge`), answered on
+    /// this thread.
+    Control(Call),
 }
 
 /// The cursor blink phase. It runs only while the window is focused and the cursor blinks; when it
@@ -433,12 +440,9 @@ fn run_window(launch: Launch) -> ExitCode {
         }
     };
     event_loop.set_control_flow(ControlFlow::Wait);
-    // The config directory: the platform's, or the one `LUNETERM_CONFIG_DIR` names (this is the
-    // only place the variable is read; tests and trial runs use it to leave the real one alone).
-    let dir = std::env::var_os("LUNETERM_CONFIG_DIR")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(Store::default_dir);
+    // The config directory: the platform's, or the one `LUNETERM_CONFIG_DIR` names (tests and
+    // trial runs use it to leave the real one alone); found as `luneterm ctl` finds it.
+    let dir = ctl::client::config_dir();
     let config_dir = dir.clone();
     let (persist, start) = match dir {
         Some(dir) => Persist::load(Store::new(dir)),
@@ -483,6 +487,11 @@ fn run_window(launch: Launch) -> ExitCode {
     });
     app.update_state = app.update.initial_state();
     app.sync_auto_check();
+    app.ctl = start_control(
+        app.config_dir.as_deref(),
+        &app.instance,
+        event_loop.create_proxy(),
+    );
     // The tab-switch trace (this is the only place the variable is read).
     if std::env::var_os("LUNETERM_TRACE_SWITCH").is_some_and(|v| v == "1") {
         app.trace = Some(Box::default());
@@ -525,6 +534,68 @@ fn run_window(launch: Launch) -> ExitCode {
         return ExitCode::from(1);
     }
     ExitCode::from(app.exit_code)
+}
+
+/// The control listener for this run (D19): it runs whatever the setting says (`ctl status`
+/// answers when control is off). When it cannot run, one line says why (never a path) and the
+/// app runs without it.
+fn start_control(
+    config_dir: Option<&Path>,
+    instance: &str,
+    proxy: EventLoopProxy<UserEvent>,
+) -> Option<Server> {
+    let off = |why: &dyn std::fmt::Display| {
+        eprintln!("luneterm: tab control is unavailable for this run: {why}");
+    };
+    if instance.is_empty() {
+        off(&"no instance token (the OS gave no randomness)");
+        return None;
+    }
+    let Some(dir) = config_dir else {
+        off(&"no config directory");
+        return None;
+    };
+    let bridge =
+        control::Bridge::new(move |call| proxy.send_event(UserEvent::Control(call)).is_ok());
+    match Server::start(dir, instance, bridge) {
+        Ok(server) => Some(server),
+        Err(e) => {
+            off(&e);
+            None
+        }
+    }
+}
+
+/// Whether input typed, pasted or composed into `tab` at `now` goes through: not while a control
+/// request's hold lasts (D9; dropped, not queued). Input that goes through is the tab's latest
+/// (`tab list`'s `input_idle_ms`).
+fn admit_input(hold_until: Option<Instant>, tab: Option<&mut Tab>, now: Instant) -> bool {
+    if hold_until.is_some_and(|until| now < until) {
+        return false;
+    }
+    if let Some(tab) = tab {
+        tab.note_input(now);
+    }
+    true
+}
+
+/// What `luneterm ctl` reads of a tab (`ctl::handler`): never its session or what it shows.
+impl ControlTab for Tab {
+    fn origin(&self) -> Origin {
+        self.origin
+    }
+    fn title(&self) -> &str {
+        self.strip_title()
+    }
+    fn cwd(&self) -> Option<&str> {
+        self.cwd.as_deref()
+    }
+    fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+    fn last_input(&self) -> Option<Instant> {
+        self.last_input
+    }
 }
 
 /// The window and what turns its events into frames and its frames into window actions.
@@ -892,6 +963,11 @@ struct App {
     /// This version waits for its health confirm (plan D8: after the first frame is presented and
     /// the first shell spawned).
     health_pending: bool,
+    /// The control listener (`luneterm ctl`); `None` when control is unavailable for this run.
+    ctl: Option<Server>,
+    /// Keyboard, paste and IME input is dropped until then: a control request just changed the
+    /// active tab (D9).
+    input_hold_until: Option<Instant>,
 }
 
 impl App {
@@ -976,6 +1052,8 @@ impl App {
             update_slots: ToastSlots::new(),
             restart_toast_pending: false,
             health_pending: false,
+            ctl: None,
+            input_hold_until: None,
         }
     }
 
@@ -1402,6 +1480,8 @@ impl App {
             Effect::CopyOnSelect => {}
             // Nothing to do live: `pump` reads the field (step 5).
             Effect::OscNotifications => {}
+            // Read per request (`control`).
+            Effect::TabControl => {}
             Effect::Efficiency => self
                 .efficiency
                 .set_enabled(self.settings.efficiency_mode, Instant::now()),
@@ -1583,12 +1663,41 @@ impl App {
         }
     }
 
-    /// Spawns a shell and adds its tab, active, at the window's grid size. On failure the tab's
-    /// grid tells why (D12) and it can be closed.
+    /// Spawns a shell and adds its tab, active, at the window's grid size: a restored tab at the
+    /// end, a new one where the user's new tab goes (after the active tab's group, D22). On
+    /// failure the tab's grid tells why (D12) and it can be closed.
     /// `restored` is the saved tab this one comes back as: its launch directory and its name.
     fn open_tab(&mut self, dir: Option<PathBuf>, restored: Option<&TabState>) {
-        let (Some(win), Some(stack)) = (&self.win, &mut self.stack) else {
+        // A shell is never refused (only a program is).
+        let Some(Ok(tab)) = self.new_tab(dir, restored, None) else {
             return;
+        };
+        let failed = tab.failure.is_some();
+        let before = self.tabs.active();
+        let id = if restored.is_some() {
+            self.tabs.push(tab)
+        } else {
+            self.tabs.insert_by_hand(tab, before)
+        };
+        if failed {
+            // Ledger 12: while this tab shows its failure the workspace is not written.
+            self.guard.spawn_failed(id);
+        }
+        self.active_changed(before);
+    }
+
+    /// A tab with its child started at the window's grid size, not yet in the list: the user's
+    /// shell, or `program` (a control tab's). `None` without a window; a refused program starts
+    /// nothing. A child that fails to start leaves the tab with its failure (D12). The child is
+    /// told the id [`TabSet::next_id`] gives, so the caller adds the tab before any other.
+    fn new_tab(
+        &mut self,
+        dir: Option<PathBuf>,
+        restored: Option<&TabState>,
+        program: Option<&ProgramSpec>,
+    ) -> Option<Result<Tab, Refused>> {
+        let (Some(win), Some(stack)) = (&self.win, &mut self.stack) else {
+            return None;
         };
         let scale = win.window.scale_factor() as f32;
         let size = win.window.inner_size();
@@ -1618,8 +1727,8 @@ impl App {
         let tab_env = spawn::tab_env(&self.bin, &self.instance, self.tabs.next_id());
         let settings = &self.settings;
         let config_dir = self.config_dir.as_deref();
-        let launched = self.efficiency.lifted(Instant::now(), || {
-            spawn::launch_with(
+        let launched = self.efficiency.lifted(Instant::now(), || match program {
+            None => spawn::launch_with(
                 &PortablePtyBackend,
                 settings,
                 geometry.pty_size(),
@@ -1627,16 +1736,31 @@ impl App {
                 config_dir,
                 &tab_env,
             )
+            .map_err(ProgramFailure::Spawn),
+            Some(spec) => spawn::launch_program(
+                &PortablePtyBackend,
+                settings,
+                geometry.pty_size(),
+                spec,
+                &tab_env,
+            ),
         });
         match launched {
-            Err(failure) => {
+            Err(ProgramFailure::Refused(refused)) => return Some(Err(refused)),
+            Err(ProgramFailure::Spawn(failure)) => {
+                // A program's path is the caller's text: it is not logged.
+                let what = if program.is_some() {
+                    "a program tab"
+                } else {
+                    failure.program.as_str()
+                };
                 eprintln!(
-                    "luneterm: failed to start a shell: {:?} ({})",
-                    failure.kind, failure.program
+                    "luneterm: failed to start a shell: {:?} ({what})",
+                    failure.kind
                 );
                 tab.failure = Some(failure);
             }
-            Ok((pty, program)) => {
+            Ok((pty, started)) => {
                 let pid = pty.process_id();
                 let proxy = self.proxy.clone();
                 let config = SessionConfig {
@@ -1655,10 +1779,12 @@ impl App {
                 // its creator's, measured) and Windows has one priority class per process.
                 match Session::start(pty, config, waker) {
                     Ok(session) => {
-                        let shell = if program == "login shell" {
-                            std::env::var("SHELL").unwrap_or(program)
+                        let shell = if program.is_some() {
+                            "(program tab)".to_owned()
+                        } else if started == "login shell" {
+                            std::env::var("SHELL").unwrap_or(started)
                         } else {
-                            program
+                            started
                         };
                         eprintln!(
                             "luneterm: gpu {} ({:?}); shell {shell} (pid {}); grid {}x{}",
@@ -1670,6 +1796,7 @@ impl App {
                         );
                         tab.session = Some(session);
                         tab.sent_geometry = Some(geometry);
+                        tab.pid = pid;
                     }
                     Err(e) => {
                         tab.failure = Some(SpawnFailure {
@@ -1681,14 +1808,7 @@ impl App {
                 }
             }
         }
-        let failed = tab.failure.is_some();
-        let before = self.tabs.active();
-        let id = self.tabs.push(tab);
-        if failed {
-            // Ledger 12: while this tab shows its failure the workspace is not written.
-            self.guard.spawn_failed(id);
-        }
-        self.active_changed(before);
+        Some(Ok(tab))
     }
 
     /// The tabs of the last run come back: each starts in its live directory, else the one it was
@@ -1904,9 +2024,139 @@ impl App {
             event_loop.exit();
             return;
         }
+        self.drop_overlays_of_gone_tabs();
         self.workspace_changed(user);
         self.active_changed(before);
         self.request_redraw();
+    }
+
+    /// A dialog or a tab menu about tabs that are all gone has nothing to act on: it closes. One
+    /// path for every way a tab goes without the user (its child exits, `ctl tab close`).
+    fn drop_overlays_of_gone_tabs(&mut self) {
+        let gone = match &mut self.modal {
+            Some(ModalState::Rename { id, .. }) => self.tabs.get(*id).is_none(),
+            Some(ModalState::Confirm { ids, .. }) => {
+                ids.retain(|id| self.tabs.get(*id).is_some());
+                ids.is_empty()
+            }
+            None => false,
+        };
+        if gone {
+            self.modal = None;
+        }
+        if self
+            .menu
+            .and_then(|m| m.tab)
+            .is_some_and(|id| self.tabs.get(id).is_none())
+        {
+            self.menu = None;
+        }
+    }
+
+    // ------------------------------------------------------------------------------ control
+
+    /// A `luneterm ctl` request: answered from the tabs (`ctl::handler`), then what it asks is
+    /// done. One that is overdue or given up on is dropped unanswered: its client has been told
+    /// "did not answer", so nothing may happen after it.
+    fn control(&mut self, call: Call, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        if event_loop.exiting() || !call.take(now) {
+            return;
+        }
+        let ctx = Ctx {
+            control_on: self.settings.tab_control,
+            window: self.win.is_some() && self.stack.is_some(),
+            version: spawn::VERSION,
+            instance: &self.instance,
+            now,
+        };
+        let before = self.tabs.active();
+        let (reply, effects) =
+            match control::handle(&mut self.tabs, call.request.clone(), call.cwd_ok, &ctx) {
+                Outcome::Answer(reply, effects) => (reply, effects),
+                Outcome::Spawn(spec) => match self.control_tab(&spec) {
+                    Ok(tab) => {
+                        let id = self.tabs.next_id();
+                        let placed = control::place(&mut self.tabs, tab, &spec);
+                        debug_assert!(self.tabs.get(id).is_some(), "the id its child was told");
+                        // A shell tab is saved like any tab; a program tab is not (D15).
+                        self.workspace_changed(false);
+                        placed
+                    }
+                    Err(reply) => (reply, Vec::new()),
+                },
+            };
+        // Answered before the effects: closing the last tab ends the app.
+        call.answer(reply);
+        self.active_changed(before);
+        for effect in effects {
+            match effect {
+                ControlEffect::Close(ids) => self.close_tabs(&ids, event_loop, false),
+                ControlEffect::Raise => {
+                    // The normal window calls only: the OS may decline to bring the app to the
+                    // front (CC5).
+                    if let Some(win) = &self.win {
+                        win.window.set_minimized(false);
+                        win.window.focus_window();
+                    }
+                }
+                // The handler expanded its group; the side pane scrolls to the active row.
+                ControlEffect::Reveal(_) => {}
+                ControlEffect::Hold => self.input_hold_until = Some(now + INPUT_HOLD),
+                ControlEffect::Regrouped(id) => {
+                    if self.tabs.get(id).is_some_and(|t| !t.program) {
+                        self.workspace_changed(false);
+                    }
+                }
+            }
+        }
+        self.request_redraw();
+    }
+
+    /// The tab a `tab new` asked for, its child started, or the reply that says why there is
+    /// none. A child that does not start is no tab: the caller hears it (1).
+    fn control_tab(&mut self, spec: &OpenSpec) -> Result<Tab, Reply> {
+        let program = (!spec.argv.is_empty()).then(|| ProgramSpec {
+            cwd: spec.cwd.clone(),
+            argv: spec.argv.clone(),
+        });
+        let refused = |code: Code, reason: &str| Err(Reply::new(code, reason));
+        match self.new_tab(Some(spec.cwd.clone()), None, program.as_ref()) {
+            None => refused(Code::Failed, "Luneterm is starting"),
+            Some(Err(Refused::BatchFile)) => refused(
+                Code::Usage,
+                "a .bat or .cmd program is refused (cmd.exe would parse its arguments again)",
+            ),
+            Some(Err(Refused::NotFound)) => refused(Code::Failed, "program not found"),
+            Some(Err(Refused::Directory)) => {
+                refused(Code::Usage, "--cwd cannot be handed to the shell")
+            }
+            Some(Ok(tab)) if tab.session.is_none() => {
+                refused(Code::Failed, "the tab's program could not be started")
+            }
+            Some(Ok(mut tab)) => {
+                tab.origin = Origin::Control;
+                tab.program = program.is_some();
+                if let Some(title) = &spec.title {
+                    tab.rename(title);
+                }
+                Ok(tab)
+            }
+        }
+    }
+
+    /// Typed, pasted or composed input for tab `id`, unless the hold drops it.
+    fn send_input_to(&mut self, id: TabId, command: Command) {
+        if admit_input(self.input_hold_until, self.tabs.get_mut(id), Instant::now()) {
+            self.send_to(id, command);
+        }
+    }
+
+    /// [`App::send_input_to`] the active tab.
+    fn send_input(&mut self, command: Command) {
+        if let Some(id) = self.tabs.active() {
+            self.send_input_to(id, command);
+        }
     }
 
     /// What the user asked of the strip this frame.
@@ -2127,19 +2377,6 @@ impl App {
             self.pending_new = None;
             self.open_tab(dir, None);
             self.workspace_changed(true);
-            worth_a_frame = true;
-        }
-        // A dialog about a tab that is gone has nothing to act on.
-        let gone = match &mut self.modal {
-            Some(ModalState::Rename { id, .. }) => self.tabs.get(*id).is_none(),
-            Some(ModalState::Confirm { ids, .. }) => {
-                ids.retain(|id| self.tabs.get(*id).is_some());
-                ids.is_empty()
-            }
-            None => false,
-        };
-        if gone {
-            self.modal = None;
             worth_a_frame = true;
         }
         self.show_notice_toasts();
@@ -2494,7 +2731,9 @@ impl App {
         // The clipboard's answer to a paste goes to the tab that asked, as a paste, nowhere else.
         for event in &input.events {
             if let Some((id, text)) = self.paste.answer(event)
-                && let Some(session) = self.tabs.get(id).and_then(|t| t.session.as_ref())
+                && let Some(tab) = self.tabs.get_mut(id)
+                && admit_input(self.input_hold_until, Some(&mut *tab), Instant::now())
+                && let Some(session) = &tab.session
             {
                 session.send(Command::Paste(text));
             }
@@ -2970,11 +3209,11 @@ impl App {
             KeyRoute::Shortcut(cmd) => self.app_command(cmd, event_loop),
             KeyRoute::Terminal(key) if live => {
                 self.typed();
-                self.send(Command::Key(key));
+                self.send_input(Command::Key(key));
             }
             KeyRoute::Text(text) if live => {
                 self.typed();
-                self.send(Command::Text(text));
+                self.send_input(Command::Text(text));
             }
             _ => {}
         }
@@ -3022,7 +3261,7 @@ impl App {
                 self.preedit = None;
                 if !text.is_empty() && self.has_session() {
                     self.typed();
-                    self.send(Command::Text(text.clone()));
+                    self.send_input(Command::Text(text.clone()));
                 }
             }
             Ime::Disabled => {
@@ -3374,14 +3613,19 @@ impl ApplicationHandler<UserEvent> for App {
             t.callback_begin();
         }
         let kind = match event {
-            UserEvent::Wake | UserEvent::Update(_) | UserEvent::UpdateRestart => Callback::Wake,
+            UserEvent::Wake
+            | UserEvent::Update(_)
+            | UserEvent::UpdateRestart
+            | UserEvent::Control(_) => Callback::Wake,
             UserEvent::TraceSwitch(_) => Callback::Auto,
         };
         self.efficiency.tick(Instant::now());
         self.urgent_scope = pacing::is_urgent(match event {
             UserEvent::Wake => EventKind::Wake,
             UserEvent::TraceSwitch(_) => EventKind::TraceSwitch,
-            UserEvent::Update(_) | UserEvent::UpdateRestart => EventKind::Other,
+            UserEvent::Update(_) | UserEvent::UpdateRestart | UserEvent::Control(_) => {
+                EventKind::Other
+            }
         });
         self.user_event_inner(event_loop, event);
         self.urgent_scope = false;
@@ -3447,6 +3691,9 @@ impl ApplicationHandler<UserEvent> for App {
         if !self.update.shutdown(UPDATE_WAIT) {
             eprintln!("luneterm: the update thread did not stop in time");
         }
+        // Last, so the answer to the request that closed the last tab is out first; this takes
+        // the socket away.
+        self.ctl = None;
     }
 }
 
@@ -3475,6 +3722,7 @@ impl App {
                 self.app_command(AppCommand::NextTab, event_loop);
             }
             UserEvent::Update(state) => self.on_update_state(state),
+            UserEvent::Control(call) => self.control(call, event_loop),
             UserEvent::UpdateRestart => {
                 // The normal quit: `exiting` saves the workspace and settings and ends the
                 // sessions; the runtime applies the update once this process is gone.
@@ -4765,6 +5013,31 @@ mod tests {
         assert!(b.due(t0 + ms(2000), false));
         assert!(!b.due(t0 + ms(3999), false));
         assert!(b.due(t0 + ms(4000), false));
+    }
+
+    #[test]
+    fn input_inside_the_control_hold_is_dropped_and_from_its_end_delivered() {
+        let t0 = Instant::now();
+        let mut tab = Tab::empty(TermTheme::lunegit_one_dark());
+        // No hold: through, and noted.
+        assert!(admit_input(None, Some(&mut tab), t0));
+        assert_eq!(tab.last_input, Some(t0));
+        // A control focus at t0 holds until t0 + 400 ms, for every tab.
+        let hold = Some(t0 + INPUT_HOLD);
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut other = Tab::empty(TermTheme::lunegit_one_dark());
+        for at in [0, 1, 200, 399] {
+            assert!(!admit_input(hold, Some(&mut tab), ms(at)), "{at} ms");
+            assert!(!admit_input(hold, Some(&mut other), ms(at)), "{at} ms");
+        }
+        // Dropped input is no input: the idle time still runs from t0.
+        assert_eq!(tab.last_input, Some(t0));
+        assert_eq!(other.last_input, None);
+        for at in [400, 401, 5000] {
+            assert!(admit_input(hold, Some(&mut tab), ms(at)), "{at} ms");
+            assert_eq!(tab.last_input, Some(ms(at)));
+        }
+        assert!(admit_input(hold, None, ms(400)));
     }
 
     #[test]

@@ -3,7 +3,8 @@
 //! of the words ([`parse`]), the framing on the wire ([`wire`]) and the JSON lines of the replies
 //! ([`reply`]); these open nothing, [`wire`] reads from the reader it is given. Around it:
 //! [`endpoint`] (where an instance listens), [`server`] (the app's end), [`client`]
-//! (`luneterm ctl`) and [`token`] (what names an instance).
+//! (`luneterm ctl`), [`token`] (what names an instance) and [`handler`] (what the app does with
+//! a request).
 //!
 //! A request comes from any process of the same user, so it is untrusted: nothing here panics,
 //! every length is checked before it is allocated, and input over a limit is refused, never cut.
@@ -11,6 +12,7 @@
 mod args;
 pub mod client;
 pub mod endpoint;
+pub mod handler;
 pub mod reply;
 pub mod server;
 pub mod token;

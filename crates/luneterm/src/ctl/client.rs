@@ -49,9 +49,10 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     }))
 }
 
-/// The config directory, found as the app finds it: the one `LUNETERM_CONFIG_DIR` names, or the
-/// platform's.
-fn config_dir() -> Option<PathBuf> {
+/// The config directory: the one `LUNETERM_CONFIG_DIR` names, or the platform's. The app and the
+/// client both find it here (the only reader of the variable but the child environment's
+/// rewrite, `spawn::child_env`).
+pub fn config_dir() -> Option<PathBuf> {
     std::env::var_os("LUNETERM_CONFIG_DIR")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)

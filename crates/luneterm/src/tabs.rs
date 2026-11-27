@@ -623,6 +623,8 @@ pub struct Tab {
     pub program: bool,
     /// When the user last typed, pasted or composed into the tab; `None` for never.
     pub last_input: Option<Instant>,
+    /// The child's process id, as the PTY gave it at the start.
+    pub pid: Option<u32>,
 }
 
 impl std::fmt::Debug for Tab {
@@ -661,6 +663,7 @@ impl Tab {
             origin: Origin::User,
             program: false,
             last_input: None,
+            pid: None,
         }
     }
 

@@ -545,9 +545,8 @@ impl SettingId {
             SettingId::OscClipboard => Effect::OscClipboard,
             SettingId::OptionAsMeta => Effect::OptionAsMeta,
             SettingId::CopyOnSelect => Effect::CopyOnSelect,
-            // Nothing to do live, as the notifications row: the control listener reads the field
-            // per request. (No effect of its own: app.rs has no arm for one yet.)
-            SettingId::OscNotifications | SettingId::TabControl => Effect::OscNotifications,
+            SettingId::OscNotifications => Effect::OscNotifications,
+            SettingId::TabControl => Effect::TabControl,
             SettingId::EfficiencyMode => Effect::Efficiency,
             SettingId::AutoUpdateCheck => Effect::AutoUpdateCheck,
             SettingId::ConfirmClose => Effect::ConfirmClose,
@@ -593,6 +592,8 @@ pub enum Effect {
     CopyOnSelect,
     /// Nothing to do live: `pump` reads the field each time it handles a notification.
     OscNotifications,
+    /// Nothing to do live: the UI thread reads the field for each control request.
+    TabControl,
     /// The efficiency controller re-evaluates now (step 3).
     Efficiency,
     /// The app starts or stops its 24 h update timer (a check runs at once when it is switched
@@ -846,7 +847,7 @@ mod tests {
             (S::OptionAsMeta, E::OptionAsMeta),
             (S::CopyOnSelect, E::CopyOnSelect),
             (S::OscNotifications, E::OscNotifications),
-            (S::TabControl, E::OscNotifications),
+            (S::TabControl, E::TabControl),
             (S::EfficiencyMode, E::Efficiency),
             (S::AutoUpdateCheck, E::AutoUpdateCheck),
         ];
