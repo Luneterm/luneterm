@@ -151,6 +151,9 @@ jobs:
           WANT: ${{ needs.tools-linux.outputs.cli_sha256 }}
         run: |
           set -euo pipefail
+          # The tools dir must hold the CLI alone (lunepack PUBLISHING.md: no planted file beside it).
+          shopt -s nullglob dotglob; FILES=("$RUNNER_TEMP"/tools/*); shopt -u nullglob dotglob
+          if [ "${#FILES[@]}" -ne 1 ] || [ "${FILES[0]}" != "$RUNNER_TEMP/tools/lunepack" ] || [ ! -f "${FILES[0]}" ] || [ -L "${FILES[0]}" ]; then echo "lunepack-cli holds more than the CLI" >&2; exit 1; fi
           GOT="$(sha256sum "$RUNNER_TEMP/tools/lunepack" | cut -d' ' -f1)"
           if [ -z "$WANT" ] || [ "$GOT" != "$WANT" ]; then echo "the CLI is not the one tools-linux built" >&2; exit 1; fi
           chmod +x "$RUNNER_TEMP/tools/lunepack"
@@ -204,6 +207,9 @@ jobs:
           WANT: ${{ needs.tools-linux.outputs.cli_sha256 }}
         run: |
           set -euo pipefail
+          # The tools dir must hold the CLI alone (lunepack PUBLISHING.md: no planted file beside it).
+          shopt -s nullglob dotglob; FILES=("$RUNNER_TEMP"/tools/*); shopt -u nullglob dotglob
+          if [ "${#FILES[@]}" -ne 1 ] || [ "${FILES[0]}" != "$RUNNER_TEMP/tools/lunepack" ] || [ ! -f "${FILES[0]}" ] || [ -L "${FILES[0]}" ]; then echo "lunepack-cli holds more than the CLI" >&2; exit 1; fi
           GOT="$(sha256sum "$RUNNER_TEMP/tools/lunepack" | cut -d' ' -f1)"
           if [ -z "$WANT" ] || [ "$GOT" != "$WANT" ]; then echo "the CLI is not the one tools-linux built" >&2; exit 1; fi
           chmod +x "$RUNNER_TEMP/tools/lunepack"
@@ -290,6 +296,9 @@ jobs:
           WANT: ${{ needs.tools-linux.outputs.cli_sha256 }}
         run: |
           set -euo pipefail
+          # The tools dir must hold the CLI alone (lunepack PUBLISHING.md: no planted file beside it).
+          shopt -s nullglob dotglob; FILES=("$RUNNER_TEMP"/tools/*); shopt -u nullglob dotglob
+          if [ "${#FILES[@]}" -ne 1 ] || [ "${FILES[0]}" != "$RUNNER_TEMP/tools/lunepack" ] || [ ! -f "${FILES[0]}" ] || [ -L "${FILES[0]}" ]; then echo "lunepack-cli holds more than the CLI" >&2; exit 1; fi
           GOT="$(sha256sum "$RUNNER_TEMP/tools/lunepack" | cut -d' ' -f1)"
           if [ -z "$WANT" ] || [ "$GOT" != "$WANT" ]; then echo "the CLI is not the one tools-linux built" >&2; exit 1; fi
           chmod +x "$RUNNER_TEMP/tools/lunepack"
@@ -344,6 +353,9 @@ jobs:
           WANT: ${{ needs.tools-linux.outputs.cli_sha256 }}
         run: |
           set -euo pipefail
+          # The tools dir must hold the CLI alone (lunepack PUBLISHING.md: no planted file beside it).
+          shopt -s nullglob dotglob; FILES=("$RUNNER_TEMP"/tools/*); shopt -u nullglob dotglob
+          if [ "${#FILES[@]}" -ne 1 ] || [ "${FILES[0]}" != "$RUNNER_TEMP/tools/lunepack" ] || [ ! -f "${FILES[0]}" ] || [ -L "${FILES[0]}" ]; then echo "lunepack-cli holds more than the CLI" >&2; exit 1; fi
           GOT="$(sha256sum "$RUNNER_TEMP/tools/lunepack" | cut -d' ' -f1)"
           if [ -z "$WANT" ] || [ "$GOT" != "$WANT" ]; then echo "the CLI is not the one tools-linux built" >&2; exit 1; fi
           chmod +x "$RUNNER_TEMP/tools/lunepack"
