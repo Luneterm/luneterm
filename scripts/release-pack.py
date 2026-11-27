@@ -55,6 +55,7 @@ third-party code: the pinned lunepack CLI and the Python standard library only.
 import argparse
 import base64
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
@@ -76,7 +77,7 @@ REPO = os.path.dirname(HERE)
 # The throwaway test root of packaging/lunepack.toml (its private half was discarded).
 TEST_ROOT_KEYS = frozenset({"7c4f44f54daf49ca873f3aac937f0f19e668364a01178aa339f64690f998e996"})
 
-SECRET_NAMES = ("LUNEPACK_RELEASE_KEY", "GITHUB_TOKEN")
+SECRET_NAMES = ("LUNEPACK_RELEASE_KEY", "GITHUB_TOKEN", "GH_TOKEN")
 # Never handed to a child: store and cloud credentials no child here has any use for (the push and
 # refresh jobs hold the store tokens; these jobs never do), by name prefix.
 DROPPED_PREFIXES = ("R2_", "CLOUDFLARE_", "CF_", "AWS_")
@@ -670,7 +671,7 @@ def http_get(url, cap):
             status = response.status
     except urllib.error.HTTPError as err:
         return err.code, b""
-    except (OSError, ValueError) as err:
+    except (OSError, ValueError, http.client.HTTPException) as err:
         raise Abort("GET %s: %s" % (url, type(err).__name__)) from err
     if len(data) > cap:
         raise Abort("%s is larger than %d bytes" % (url, cap))

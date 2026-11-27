@@ -287,10 +287,10 @@ class Secrets(unittest.TestCase):
         self.assertEqual(str(ctx.exception), "LUNEPACK_RELEASE_KEY is not set")
 
     def test_child_env_carries_no_secret(self):
-        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "x", "CF_API_TOKEN": "y", "R2_ACCESS_KEY_ID": "z",
-                                          "LUNEPACK_RELEASE_KEY": "k"}):
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "x", "GH_TOKEN": "g", "CF_API_TOKEN": "y",
+                                          "R2_ACCESS_KEY_ID": "z", "LUNEPACK_RELEASE_KEY": "k"}):
             env = rp.child_env({"SOURCE_DATE_EPOCH": "1"})
-        for name in ("GITHUB_TOKEN", "CF_API_TOKEN", "R2_ACCESS_KEY_ID", "LUNEPACK_RELEASE_KEY"):
+        for name in ("GITHUB_TOKEN", "GH_TOKEN", "CF_API_TOKEN", "R2_ACCESS_KEY_ID", "LUNEPACK_RELEASE_KEY"):
             self.assertNotIn(name, env)
         self.assertEqual(env["SOURCE_DATE_EPOCH"], "1")
 
@@ -1058,6 +1058,15 @@ class Dmg(unittest.TestCase):
         class Opener:
             def open(self, request, timeout=None):
                 return Response()
+
+        with mock.patch.object(rp.urllib.request, "build_opener", lambda *h: Opener()):
+            with self.assertRaises(rp.Abort):
+                REAL_HTTP_GET(BASE + "keys.json", 10)
+
+    def test_a_truncated_body_is_an_abort_not_a_traceback(self):
+        class Opener:
+            def open(self, request, timeout=None):
+                raise rp.http.client.IncompleteRead(b"x")
 
         with mock.patch.object(rp.urllib.request, "build_opener", lambda *h: Opener()):
             with self.assertRaises(rp.Abort):

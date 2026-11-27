@@ -44,7 +44,7 @@ asset_version="${tag#v}"
 version="${asset_version%%-rc.*}"
 
 # No release ships with the throwaway test root.
-python3 -I scripts/release-pack.py check-root --config packaging/lunepack.toml || die "the config names the test root"
+env -u GH_TOKEN -u GITHUB_TOKEN python3 -I scripts/release-pack.py check-root --config packaging/lunepack.toml || die "the config names the test root"
 
 cargo_version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)"
 [ "$version" = "$cargo_version" ] || die "tag $tag does not match the workspace version '$cargo_version'"
@@ -69,15 +69,22 @@ if [ "$no_upload" = 0 ]; then
 fi
 
 out=target/package-macos-dmg
+out_abs="$root/$out"
+# --lunepack is checked before $out is removed, and may not live inside it.
+if [ -n "$cli" ]; then
+  [ -f "$cli" ] && [ -x "$cli" ] || die "--lunepack $cli is not an executable file"
+  cli="$(cd "$(dirname "$cli")" && pwd -P)/$(basename "$cli")"
+  case "$cli" in
+    "$out_abs"/*|"$(cd "$root" && pwd -P)/$out"/*) die "--lunepack $cli is inside $out, which this script removes; copy it elsewhere" ;;
+  esac
+fi
 rm -rf "$out"
 mkdir -p "$out"
 
-if [ -n "$cli" ]; then
-  [ -f "$cli" ] && [ -x "$cli" ] || die "--lunepack $cli is not an executable file"
-  cli="$(cd "$(dirname "$cli")" && pwd)/$(basename "$cli")"
-else
-  scripts/build-lunepack.sh macos-aarch64 "$out/lunepack"
-  cli="$root/$out/lunepack/lunepack"
+# The token is for the `gh` calls only: no other child (the build scripts, lunepack, hdiutil) gets it.
+if [ -z "$cli" ]; then
+  env -u GH_TOKEN -u GITHUB_TOKEN scripts/build-lunepack.sh macos-aarch64 "$out/lunepack"
+  cli="$out_abs/lunepack/lunepack"
   [ -x "$cli" ] || die "build-lunepack.sh produced no lunepack CLI"
   pin="$(sed -n 's/^lunepack = {.*rev = "\([0-9a-f]\{40\}\)".*$/\1/p' Cargo.toml)"
   [[ "$pin" =~ ^[0-9a-f]{40}$ ]] || die "the lunepack dependency has no 40-hex rev in Cargo.toml"
@@ -85,7 +92,7 @@ else
   [ "$built" = "$pin" ] || die "the built lunepack is at $built, Cargo.toml pins $pin"
 fi
 
-python3 -I scripts/release-pack.py dmg --tag "$tag" --lunepack "$cli" --config packaging/lunepack.toml --work "$out/work"
+env -u GH_TOKEN -u GITHUB_TOKEN python3 -I scripts/release-pack.py dmg --tag "$tag" --lunepack "$cli" --config packaging/lunepack.toml --work "$out/work"
 
 dmg="$out/work/setup/$dmg_name"
 [ -s "$dmg" ] && [ -s "$dmg.sha256" ] || die "release-pack.py wrote no $dmg_name"
