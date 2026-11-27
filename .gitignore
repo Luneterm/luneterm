@@ -11,3 +11,6 @@ node_modules/
 /STATE.md
 /docs/tasks/
 /CLAUDE.md
+
+# lunepack's publisher state file, written next to the config by local pack/keys runs (never committed)
+/packaging/lunepack-state.json

@@ -87,44 +87,6 @@ class MakeBuildInput(unittest.TestCase):
             self.assertNotEqual(make_input(root, out).returncode, 0)
 
 
-class PackagingConfig(unittest.TestCase):
-    def run_script(self, *args):
-        return subprocess.run(
-            [sys.executable, "-I", "-B", str(SCRIPTS / "packaging-config.py"), *args],
-            capture_output=True,
-            text=True,
-        )
-
-    def test_only_the_channel_and_the_icon_paths_change(self):
-        repo = SCRIPTS.parent
-        with tempfile.TemporaryDirectory() as tmp:
-            for target_os in ("linux", "windows", "macos"):
-                out = pathlib.Path(tmp, target_os + ".toml")
-                r = self.run_script(target_os, "beta", str(out))
-                self.assertEqual(r.returncode, 0, r.stderr)
-                base = (repo / "packaging" / ("lunepack-%s.toml" % target_os)).read_text().splitlines()
-                got = out.read_text().splitlines()
-                self.assertEqual(len(base), len(got))
-                changed = [(a, b) for a, b in zip(base, got) if a != b]
-                self.assertIn(('channel = "stable"', 'channel = "beta"'), changed)
-                for a, b in changed:
-                    if a != 'channel = "stable"':
-                        # an icon path: relative to packaging/ before, absolute and existing now
-                        self.assertTrue(a.startswith('icon = "../'), a)
-                        self.assertTrue(pathlib.Path(b.split('"')[1]).is_file(), b)
-                stable = pathlib.Path(tmp, target_os + "-stable.toml")
-                self.assertEqual(self.run_script(target_os, "stable", str(stable)).returncode, 0)
-                self.assertIn('channel = "stable"', stable.read_text())
-
-    def test_it_refuses_bad_arguments_and_an_existing_output(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            out = pathlib.Path(tmp, "o.toml")
-            self.assertNotEqual(self.run_script("plan9", "stable", str(out)).returncode, 0)
-            self.assertNotEqual(self.run_script("linux", "nightly", str(out)).returncode, 0)
-            self.assertEqual(self.run_script("linux", "stable", str(out)).returncode, 0)
-            self.assertNotEqual(self.run_script("linux", "stable", str(out)).returncode, 0)
-
-
 class PublishRelease(unittest.TestCase):
     def test_it_wants_exactly_the_two_build_inputs_of_the_version(self):
         pr = load("publish_release", "publish-release.py")

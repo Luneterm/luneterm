@@ -33,6 +33,9 @@ done
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
+# No release ships with the throwaway test root: refuse before anything is built.
+python3 -I scripts/release-pack.py check-root --config packaging/lunepack.toml || die "the config names the test root"
+
 # The same rule as the verify job of release.yml.
 [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] \
   || die "tag $tag is not v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-rc.<N>"

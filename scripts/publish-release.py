@@ -7,9 +7,9 @@ Run by the publish job of .github/workflows/release.yml:
 
 <artifacts-dir> holds linux/ (luneterm-<version>-linux-x64-build.tar.gz and glibc-min.txt) and
 windows/ (luneterm-<version>-windows-x64-build.zip). A build input is the app plus lunepack's runtime
-for the target (scripts/make-build-input.py); the publish-updates workflow packs them into the update
-feed and the installers once the draft is published, and scripts/package-macos.sh adds the macOS
-input. Needs GITHUB_TOKEN (contents: write) and GITHUB_REPOSITORY in the environment. Standard
+for the target (scripts/make-build-input.py); the publish-updates workflow (scripts/release-pack.py,
+then `lunepack publish`) packs them into the update feed and the installers once the draft is
+published, and scripts/package-macos.sh adds the macOS input. Needs GITHUB_TOKEN (contents: write) and GITHUB_REPOSITORY in the environment. Standard
 library only: the runner image has python3 and no gh.
 
 Everything local is checked before the first API call. An existing release for the tag, draft or
