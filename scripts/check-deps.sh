@@ -24,7 +24,7 @@ set -euo pipefail
 # repo, a branch or tag, or another rev of either repo fails.
 ALLOWED_GIT=(
   "https://github.com/lune-rs/luneui 8177b9d0175218d4ae5862d34b2184d8d8381bd5"
-  "https://github.com/lune-rs/lunepack a3d23376a89b3825f9cc92e674af8ce04bfc09e4"
+  "https://github.com/lune-rs/lunepack be29be066341c52a1af95f9f6d7d30cabe2cba35"
 )
 
 mode="check"

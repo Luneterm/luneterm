@@ -108,7 +108,7 @@ jobs:
           format=1
           version=$version
           target=linux-x86_64
-          config=packaging/lunepack-linux.toml
+          config=packaging/lunepack.toml
           channel=$channel
           entry=luneterm
           tree=tree
@@ -185,7 +185,7 @@ jobs:
           $channel = if ($version -like "*-rc.*") { "beta" } else { "stable" }
           $info = @(
             "format=1", "version=$version", "target=windows-x86_64",
-            "config=packaging/lunepack-windows.toml", "channel=$channel", "entry=luneterm.exe", "tree=tree",
+            "config=packaging/lunepack.toml", "channel=$channel", "entry=luneterm.exe", "tree=tree",
             "runtime=lunepack/lunepack-runtime.exe", "stub=lunepack/lunepack-stub.exe",
             "ui=lunepack/lunepack-ui.exe", "lunepack_rev=$rev", "source_date_epoch=$epoch"
           ) -join "`n"

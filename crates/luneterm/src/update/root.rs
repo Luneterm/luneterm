@@ -58,21 +58,11 @@ mod tests {
         assert_eq!(root.version(), ROOT_VERSION);
     }
 
-    /// The release build's `packaging/lunepack-<os>.toml` files, as text.
-    const CONFIGS: [(&str, &str); 3] = [
-        (
-            "linux",
-            include_str!("../../../../packaging/lunepack-linux.toml"),
-        ),
-        (
-            "windows",
-            include_str!("../../../../packaging/lunepack-windows.toml"),
-        ),
-        (
-            "macos",
-            include_str!("../../../../packaging/lunepack-macos.toml"),
-        ),
-    ];
+    /// The release build's `packaging/lunepack.toml`, as text (one file for every OS).
+    const CONFIGS: [(&str, &str); 1] = [(
+        "all",
+        include_str!("../../../../packaging/lunepack.toml"),
+    )];
 
     /// Reads the small TOML subset of those files: `[section]` headers, `key = "text"`,
     /// `key = number`, `key = true|false` and multi-line `key = [ "text", ]` lists, as
@@ -118,7 +108,7 @@ mod tests {
         key.iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    /// The root every `packaging/lunepack-<os>.toml` names is the root compiled in here (app id,
+    /// The root `packaging/lunepack.toml` names is the root compiled in here (app id,
     /// version, threshold, keys), so a copy installed from the feed accepts what the feed signs and
     /// the other way round; they also agree on the feed and the signer, and hold no key.
     #[test]
@@ -152,12 +142,13 @@ mod tests {
         }
     }
 
-    /// The entry and the icons of each OS (plan Revision 3): the files they name exist.
+    /// The entry and the icons of each OS (`[install.<os>]`, `[windows]`, `[macos]`): the files
+    /// they name exist.
     #[test]
-    fn the_packaging_configs_name_each_oss_entry_and_icons() {
+    fn the_packaging_config_names_each_oss_entry_and_icons() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let want = [
-            ("linux", "luneterm", "install.icon", "luneterm-256.png"),
+            ("linux", "luneterm", "install.linux.icon", "luneterm-256.png"),
             (
                 "windows",
                 "luneterm.exe",
@@ -171,12 +162,16 @@ mod tests {
                 "../assets/icon/Luneterm.icns",
             ),
         ];
-        for ((os, text), (os2, entry, icon_key, icon)) in CONFIGS.into_iter().zip(want) {
-            assert_eq!(os, os2);
-            let c = read_config(text);
-            let get = |k: &str| c.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
-            assert_eq!(get("install.entry").as_deref(), Some(entry), "{os}");
-            assert_eq!(get("install.name").as_deref(), Some("Luneterm"), "{os}");
+        let c = read_config(CONFIGS[0].1);
+        let get = |k: &str| c.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+        assert_eq!(get("install.name").as_deref(), Some("Luneterm"));
+        assert_eq!(get("install.icon"), None, "the icon is per OS");
+        for (os, entry, icon_key, icon) in want {
+            assert_eq!(
+                get(&format!("install.{os}.entry")).as_deref(),
+                Some(entry),
+                "{os}"
+            );
             assert_eq!(get(icon_key).as_deref(), Some(icon), "{os}");
             // An icon of a config is relative to packaging/; the Linux one is a file of the tree,
             // staged from assets/icon by the build job.

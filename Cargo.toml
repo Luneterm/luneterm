@@ -16,13 +16,13 @@ lune-pty = { path = "crates/lune-pty" }
 lune-ui = { git = "https://github.com/lune-rs/luneui", rev = "8177b9d0175218d4ae5862d34b2184d8d8381bd5" }
 lune-termview = { path = "crates/lune-termview" }
 # The update client (auto-update plan step 2; CLAUDE.md decision 2 note in step 7). One pinned rev, held by scripts/check-deps.sh.
-lunepack = { git = "https://github.com/lune-rs/lunepack", rev = "a3d23376a89b3825f9cc92e674af8ce04bfc09e4" }
+lunepack = { git = "https://github.com/lune-rs/lunepack", rev = "be29be066341c52a1af95f9f6d7d30cabe2cba35" }
 # Test-only (crates/luneterm update tests): the writers that build a signed fixture feed at test time, from the same repo and rev.
-lunepack-testkit = { git = "https://github.com/lune-rs/lunepack", rev = "a3d23376a89b3825f9cc92e674af8ce04bfc09e4" }
-lunepack-core = { git = "https://github.com/lune-rs/lunepack", rev = "a3d23376a89b3825f9cc92e674af8ce04bfc09e4" }
-lunepack-crypto = { git = "https://github.com/lune-rs/lunepack", rev = "a3d23376a89b3825f9cc92e674af8ce04bfc09e4" }
-lunepack-codec-lzma = { git = "https://github.com/lune-rs/lunepack", rev = "a3d23376a89b3825f9cc92e674af8ce04bfc09e4" }
-lunepack-fs = { git = "https://github.com/lune-rs/lunepack", rev = "a3d23376a89b3825f9cc92e674af8ce04bfc09e4" }
+lunepack-testkit = { git = "https://github.com/lune-rs/lunepack", rev = "be29be066341c52a1af95f9f6d7d30cabe2cba35" }
+lunepack-core = { git = "https://github.com/lune-rs/lunepack", rev = "be29be066341c52a1af95f9f6d7d30cabe2cba35" }
+lunepack-crypto = { git = "https://github.com/lune-rs/lunepack", rev = "be29be066341c52a1af95f9f6d7d30cabe2cba35" }
+lunepack-codec-lzma = { git = "https://github.com/lune-rs/lunepack", rev = "be29be066341c52a1af95f9f6d7d30cabe2cba35" }
+lunepack-fs = { git = "https://github.com/lune-rs/lunepack", rev = "be29be066341c52a1af95f9f6d7d30cabe2cba35" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

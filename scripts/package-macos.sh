@@ -97,7 +97,6 @@ export SOURCE_DATE_EPOCH
 # The channel is baked into the bundle's update config, and a signed bundle must be packed with
 # exactly the config that assembled it: a release candidate (beta feed only) says beta.
 case "$asset_version" in *-rc.*) channel=beta ;; *) channel=stable ;; esac
-python3 -I scripts/packaging-config.py macos "$channel" "$out/lunepack-macos.toml"
 
 # Assemble (lunepack places its runtime, update config and helper app in the bundle), then sign
 # inner code first: a signature seals what is inside it, so the outer bundle goes last. The pack
@@ -107,7 +106,7 @@ tree="$stage/tree"
 mkdir -p "$stage"
 "$out/lunepack/lunepack" pack --input "$app" --version "$asset_version" --target macos-aarch64 \
   --runtime "$out/lunepack/lunepack-runtime" --ui "$out/lunepack/lunepack-ui" \
-  --assemble "$tree" --config "$out/lunepack-macos.toml"
+  --assemble "$tree" --config packaging/lunepack.toml --channel "$channel"
 helper="$tree/Contents/Helpers/lunepack-update.app"
 codesign --force --sign - "$tree/Contents/MacOS/lunepack-runtime"
 codesign --force --sign - "$helper/Contents/MacOS/lunepack-ui"
@@ -120,7 +119,7 @@ cat > "$stage/BUILD-INFO.txt" <<INFO
 format=1
 version=$asset_version
 target=macos-aarch64
-config=packaging/lunepack-macos.toml
+config=packaging/lunepack.toml
 channel=$channel
 entry=Contents/MacOS/luneterm
 tree=tree

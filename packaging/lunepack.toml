@@ -1,0 +1,77 @@
+# lunepack configuration for Luneterm: the one file for every OS and for `lunepack publish`. It
+# holds public keys, the names of environment variables and where to find signers, never a key or
+# a value. Per-OS differences are `[install.<os>]` (entry and icon); the channel is chosen at pack
+# time (`lunepack pack --channel beta` for a release candidate), not here.
+#
+# Used by the release build (scripts/package-macos.sh for the macOS build input) and by
+# .github/workflows/publish-updates.yml (scripts/release-pack.py and `lunepack publish`):
+#   lunepack pack --config packaging/lunepack.toml ...
+app_id = "my.ijat.luneterm"
+
+# The root of trust: the one place it is written (the app reads it from the update config that
+# lunepack puts in every installed copy). THIS IS THE TEST ROOT until the real root public key
+# exists (docs/updates.md); a release must not ship with it (scripts/release-pack.py check-root
+# refuses it).
+[root]
+version = 1
+threshold = 1
+keys = [
+    "7c4f44f54daf49ca873f3aac937f0f19e668364a01178aa339f64690f998e996",
+]
+
+# The release key is a GitHub secret (PKCS#8 PEM in the environment of the push job); the root
+# key stays offline and is not named here.
+[signers.release]
+env = "LUNEPACK_RELEASE_KEY"
+
+# Where an installed copy looks. The channel written here is the default; a pack of a release
+# candidate (listed in the beta feed only) overrides it with `pack --channel beta`.
+[update]
+feed = "https://updates.izzat.dev/luneterm/"
+channel = "stable"
+
+[install]
+entry = "luneterm"
+name = "Luneterm"
+comment = "A standalone glass terminal"
+bin = "luneterm"
+terminal = false
+categories = ["System", "TerminalEmulator"]
+
+[install.linux]
+entry = "luneterm"
+icon = "luneterm-256.png"   # staged beside the executable by the build job
+
+[install.windows]
+entry = "luneterm.exe"
+
+[install.macos]
+entry = "Contents/MacOS/luneterm"
+
+# The icon of the launcher stub and the setup program (the exe carries its own, assets/icon).
+[windows]
+icon = "../assets/icon/luneterm.ico"
+
+# The icon of the update window's helper app (the app's own is Contents/Resources/Luneterm.icns).
+[macos]
+icon = "../assets/icon/Luneterm.icns"
+
+# Where and how `lunepack publish` ships releases (docs/updates.md). Names of environment
+# variables only. The public pair signs for the public bucket, the private pair for the state
+# bucket; each is a separate R2 token in its own GitHub environment.
+[publish]
+prefix = "luneterm"
+store = "r2"
+account_id_env = "CLOUDFLARE_ACCOUNT_ID"
+access_key_env = "R2_ACCESS_KEY_ID"
+secret_key_env = "R2_SECRET_ACCESS_KEY"
+private_access_key_env = "R2_STATE_ACCESS_KEY_ID"
+private_secret_key_env = "R2_STATE_SECRET_ACCESS_KEY"
+public_bucket = "izzat-updates"
+private_bucket = "izzat-updates-publisher"
+keep = 10
+deltas = 3
+feed_days = 90
+channels = ["stable", "beta"]
+prerelease_channels = ["beta"]
+require_targets = ["linux-x86_64", "windows-x86_64", "macos-aarch64"]
