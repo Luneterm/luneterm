@@ -230,6 +230,15 @@ lunepack --config packaging/lunepack.toml publish fetch --release-dir /tmp/publi
 Install the rc setup file on each OS, publish a later rc, and look at About > Check for updates.
 Only then tag the stable release.
 
+### Beta releases (from `main` or `develop`)
+
+The beta channel is the pre-release track: a tag `v<version>-rc.<N>` on any commit (on `main`, or on
+`develop` for work not ready for `main`) goes through the same release and publish flow and is listed in
+the beta feed only. Copies installed from a beta setup update to it; stable copies never see it. The
+workspace version in `Cargo.toml` must be `<version>` (the version the rc leads to): bump it on that
+branch first. CI runs on pushes to `develop` too; wait for it to be green before tagging. A later stable
+`v<version>` is listed in both feeds, so beta copies move to it.
+
 ## When something goes wrong
 
 PUBLISHING.md's "Rerun and recovery" and "When something is refused" are the reference. Luneterm's
