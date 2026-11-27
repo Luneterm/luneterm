@@ -254,23 +254,26 @@ pub struct PaneOut {
 
 /// The pane's controls: the edge zone and the hide button. They are registered after the window's
 /// drag regions, so a press on them never drags the window. `window_edge` is whether the pointer is
-/// at an edge the app resizes the window by (that press is the window's).
+/// at an edge the app resizes the window by, and `edge_pressed` whether this frame's press landed
+/// on one: such a press is the window's and starts no width drag, while a drag already under way
+/// goes on past those edges.
 pub fn controls(
     ui: &mut Ui<'_>,
     rects: &PaneRects,
     chrome: Chrome,
     name: &str,
     window_edge: bool,
+    edge_pressed: bool,
 ) -> PaneOut {
     let id = ui.id("pane-edge");
     let zone = ui.interact(id, rects.edge, Sense::DRAG);
-    let edge = (!window_edge).then(|| {
-        if zone.hovered || zone.pressed {
+    let edge = (!edge_pressed).then(|| {
+        if (zone.hovered && !window_edge) || zone.dragged {
             ui.set_cursor(CursorIcon::ColResize);
         }
         let moving = zone.drag_started || zone.dragged || zone.drag_stopped;
         PaneEdge {
-            started: zone.drag_started,
+            started: zone.drag_started && !window_edge,
             dx: if moving { zone.drag_delta.0 } else { 0.0 },
             held: zone.pressed,
         }

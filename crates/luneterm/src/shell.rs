@@ -987,7 +987,8 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
             pane,
             view.chrome,
             view.pane_button_name,
-            window_edge || pressed_edge.is_some(),
+            window_edge,
+            pressed_edge.is_some(),
         );
         pane_toggle = out.toggle;
         pane_edge = out.edge;
@@ -2438,39 +2439,41 @@ mod tests {
     }
 
     /// A drag of the pane's edge through real frames: the width follows the pointer, and the end
-    /// of the drag asks for one save.
+    /// of the drag asks for one save. A drag that wanders over the window's resize edge goes on.
     #[test]
     fn dragging_the_panes_edge_widens_it_and_saves_once() {
-        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
-        let scene = PaneShell::pane(MACOS_CHROME);
-        let mut drag = None;
-        let (mut width, mut saves) = (248u32, 0);
-        let moved = |x| Event::PointerMoved { pos: (x, 300.0) };
-        let frames = [
-            vec![],
-            vec![moved(245.0)],
-            vec![],
-            vec![button((245.0, 300.0), true)],
-            vec![moved(275.0)],
-            vec![moved(345.0)],
-            vec![],
-            vec![button((345.0, 300.0), false)],
-            vec![],
-        ];
-        for events in frames {
-            // The pane is where the width so far puts it.
-            let scene = PaneShell {
-                view: pane::resolve(true, width, 1040.0, MACOS_CHROME),
-                ..scene
-            };
-            let out = scene.run(&mut store, &mut text, events);
-            assert!(out.commands.is_empty(), "{:?}", out.commands);
-            let step = pane::drag_step(&mut drag, out.pane_edge, width, 1040.0);
-            width = step.width.unwrap_or(width);
-            saves += usize::from(step.save);
+        for (chrome, y) in [(MACOS_CHROME, 300.0), (WINDOWS_CHROME, 659.0)] {
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            let scene = PaneShell::pane(chrome);
+            let mut drag = None;
+            let (mut width, mut saves) = (248u32, 0);
+            let moved = |x, y| Event::PointerMoved { pos: (x, y) };
+            let frames = [
+                vec![],
+                vec![moved(245.0, 300.0)],
+                vec![],
+                vec![button((245.0, 300.0), true)],
+                vec![moved(275.0, 300.0)],
+                vec![moved(345.0, y)],
+                vec![],
+                vec![button((345.0, y), false)],
+                vec![],
+            ];
+            for events in frames {
+                // The pane is where the width so far puts it.
+                let scene = PaneShell {
+                    view: pane::resolve(true, width, 1040.0, chrome),
+                    ..scene
+                };
+                let out = scene.run(&mut store, &mut text, events);
+                assert!(out.commands.is_empty(), "{:?}", out.commands);
+                let step = pane::drag_step(&mut drag, out.pane_edge, width, 1040.0);
+                width = step.width.unwrap_or(width);
+                saves += usize::from(step.save);
+            }
+            assert_eq!((width, saves), (348, 1), "{chrome:?}");
+            assert!(drag.is_none());
         }
-        assert_eq!((width, saves), (348, 1));
-        assert!(drag.is_none());
     }
 
     #[test]
