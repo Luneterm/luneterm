@@ -7,9 +7,10 @@
 //! dialogs and a failed start (M10 step 2), then the settings page in its sections, the menus, a
 //! palette switch and the opaque look Linux gets (step 6), and the tab menus with groups, the group
 //! editor and the close-group question in both looks, and the side pane: its frame and its tab list
-//! (groups, collapsed cards, unread marks, progress, a long list, the menus asked from it, and
-//! drags of its rows and cards held in mid-air). A dialog or menu is drawn after its entry
-//! animation, and a menu, scroll or drag the toolkit owns is driven with scripted input.
+//! (groups, collapsed cards, unread marks, progress, a running command's cue on the card, a long
+//! list, the menus asked from it, and drags of its rows and cards held in mid-air). A dialog or
+//! menu is drawn after its entry animation, and a menu, scroll or drag the toolkit owns is driven
+//! with scripted input.
 //!
 //! The fonts are the window's, system fonts included (the demo has an emoji), so the PNGs are
 //! reproducible on one machine and may differ between machines.
@@ -26,6 +27,7 @@ use lune_ui::paint::Rect;
 use lune_ui::text::TextRendering;
 use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
+use lune_ui::widgets::tab_strip::BusyCue;
 use lune_ui::widgets::toast::Toasts;
 use lune_ui::widgets::tone::Tone;
 
@@ -310,6 +312,8 @@ struct Scene {
     toasts: bool,
     /// The tabs (by index) that show an OSC 9;4 progress report, with its tone.
     progress: &'static [(usize, Tone)],
+    /// The cue the outline runs, as for an active tab with a running command.
+    busy: Option<BusyCue>,
     /// A full inbox (the header button, and the list when open); the clock is [`INBOX_NOW`].
     inbox: Option<InboxScene>,
     /// The saved choice is the side pane, this wide; `None` is the top bar.
@@ -539,6 +543,7 @@ const BASE: Scene = Scene {
     notices: &[],
     toasts: false,
     progress: &[],
+    busy: None,
     inbox: None,
     pane: None,
     list: None,
@@ -1357,6 +1362,30 @@ const SCENES: &[Scene] = &[
         look: Theme::Lunegit,
         ..MOCK
     },
+    // The pane view with a running command in the active tab: the cue on the card's outline
+    // (D37), the sweep and the breath, at the last frame's time.
+    Scene {
+        name: "pane-busy-sweep@2x.png",
+        busy: Some(BusyCue::Sweep),
+        ..MOCK
+    },
+    Scene {
+        name: "lunegit-pane-busy-sweep@2x.png",
+        busy: Some(BusyCue::Sweep),
+        look: Theme::Lunegit,
+        ..MOCK
+    },
+    Scene {
+        name: "pane-busy-breath@2x.png",
+        busy: Some(BusyCue::Breath),
+        ..MOCK
+    },
+    Scene {
+        name: "lunegit-pane-busy-breath@2x.png",
+        busy: Some(BusyCue::Breath),
+        look: Theme::Lunegit,
+        ..MOCK
+    },
     Scene {
         name: "pane-list-menu-group@2x.png",
         script: &[
@@ -1900,7 +1929,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
                     rows: &inbox_message_rows,
                 }),
             }),
-            busy: None,
+            busy: scene.busy,
             busy_tone: Tone::Neutral,
             grid_alpha: 1.0,
             fading: Vec::new(),
@@ -2191,6 +2220,13 @@ mod tests {
         }
         // Open groups add no row to the tab menu: they are in its submenu.
         assert_eq!(named("menu-tab-ungrouped@2x.png"), named("menu-tab@2x.png"));
+        // A running cue shows on the pane view's card, each treatment its own.
+        for pre in ["", "lunegit-"] {
+            let of = |n: &str| named(&format!("{pre}{n}@2x.png"));
+            assert_ne!(of("pane-busy-sweep"), of("pane-list"), "{pre}");
+            assert_ne!(of("pane-busy-breath"), of("pane-list"), "{pre}");
+            assert_ne!(of("pane-busy-breath"), of("pane-busy-sweep"), "{pre}");
+        }
         // The pane view differs from the bar view, and its states from each other.
         assert_ne!(named("pane@2x.png"), tabs);
         assert_ne!(named("pane@2x.png"), named("pane-inbox@2x.png"));

@@ -6,8 +6,9 @@
 //! the left, right and bottom. The 32 px tab strip heads the card (the toolkit draws it and the
 //! outline around the card); the terminal's body sits under it, inset 10 px inside the card. In
 //! the side pane view ([`crate::pane`]) the pane takes the left column, and the band and the card
-//! the rest: the band holds the title, centred on the card, and the card has no strip. The
-//! close-confirm and rename dialogs are drawn here too, on the modal layer.
+//! the rest: the band holds the title, centred on the card, and the card has no strip, so its
+//! outline and the running-command cue on it ([`card_cue`]) are drawn here. The close-confirm and
+//! rename dialogs are drawn here too, on the modal layer.
 
 use std::time::Duration;
 
@@ -702,8 +703,9 @@ pub struct ShellView<'a> {
     pub toasts: Option<&'a mut Toasts>,
     /// The settings page covers the card: no terminal, no thumb, no strip and no `⋯`.
     pub page_open: bool,
-    /// The cue the active tab's outline runs, `None` when nothing runs (plan M10 step 6: the
-    /// settings decide the cue, the tab decides whether it is busy).
+    /// The cue the outline runs (the strip's round the active tab and the card, or the pane
+    /// view's card's), `None` when nothing runs (plan M10 step 6: the settings decide the cue,
+    /// the tab decides whether it is busy).
     pub busy: Option<BusyCue>,
     /// The outline's colour while it runs: the active tab's progress tone (error, warning), else
     /// neutral.
@@ -880,6 +882,105 @@ fn band_title(label: Option<&str>, theme: &lune_ui::theme::Theme) -> Spec {
     }
 }
 
+/// The treatment of the running-command cue on the pane view's card (D37) in this frame; `None`
+/// for a still outline, for the settings page (it covers the card) and in the bar view, whose
+/// strip draws its own.
+fn pane_cue(
+    layout: &Layout,
+    page_open: bool,
+    busy: Option<BusyCue>,
+    tier: MotionTier,
+) -> Option<BusyCue> {
+    if layout.pane.is_none() || page_open {
+        return None;
+    }
+    busy.and_then(|cue| tab_strip::busy_treatment(cue, tier))
+}
+
+/// The running-command cue on a card with no strip. `cue_color` and `paint_busy` are copied from
+/// luneui-rs 8177b9d `crates/lune-ui-core/src/widgets/tab_strip.rs:232-239` and `:253-281`,
+/// private there: drop the copy if luneui makes them public. The loop is the strip's
+/// ([`chrome::outline`]) with no tab's notch.
+mod card_cue {
+    use lune_ui::chrome;
+    use lune_ui::color::{Rgba, with_alpha};
+    use lune_ui::motion::Time;
+    use lune_ui::paint::{Painter, Rect, StrokeStyle};
+    use lune_ui::ui::WidgetId;
+    use lune_ui::widgets::progress::{breath_opacity, travel_phase};
+    use lune_ui::widgets::tab_strip::{BusyCue, COMET_FRACTION, SWEEP_PASSES};
+    use lune_ui::widgets::tone::Tone;
+
+    /// The closed loop round `card`, half a stroke inside its edges: a seam at the card's
+    /// bottom leaves a plain rounded rect.
+    pub(super) fn outline(card: Rect) -> Vec<[f32; 2]> {
+        chrome::outline(card.w, card.h, card.h, None)
+            .iter()
+            .map(|q| [q[0] + card.x, q[1] + card.y])
+            .collect()
+    }
+
+    /// Draws `treatment` in `tone` over the outline of `card` at time `t`.
+    pub(super) fn paint(
+        p: &mut Painter<'_, WidgetId>,
+        card: Rect,
+        treatment: BusyCue,
+        tone: Tone,
+        t: Time,
+    ) {
+        if card.w <= 0.0 || card.h <= 0.0 {
+            return;
+        }
+        let pts = outline(card);
+        let center = [card.x + card.w / 2.0, card.y + card.h / 2.0];
+        let color = cue_color(p, tone);
+        paint_busy(p, &pts, center, treatment, color, t);
+    }
+
+    /// `tone`'s colour for the busy cue: `Neutral` is `accent`, `Warn` and `Err` are the light
+    /// status brushes the source names for the cue (D132).
+    fn cue_color(p: &Painter<'_, WidgetId>, tone: Tone) -> Rgba {
+        match tone {
+            Tone::Neutral => p.theme.accent,
+            Tone::Warn => p.theme.status_warning_light,
+            Tone::Err => p.theme.status_error_light,
+            _ => tone.color(&p.theme),
+        }
+    }
+
+    /// Draws `treatment` over the loop `pts` around `center` at time `t`.
+    fn paint_busy(
+        p: &mut Painter<'_, WidgetId>,
+        pts: &[[f32; 2]],
+        center: [f32; 2],
+        treatment: BusyCue,
+        color: Rgba,
+        t: Time,
+    ) {
+        match treatment {
+            BusyCue::Sweep => {
+                for (width, opacity) in SWEEP_PASSES {
+                    p.stroke_sweep(
+                        pts,
+                        with_alpha(color, opacity),
+                        width,
+                        travel_phase(t),
+                        center,
+                    );
+                }
+            }
+            BusyCue::Comet => {
+                p.stroke_comet(pts, color, chrome::STROKE, COMET_FRACTION, travel_phase(t));
+            }
+            BusyCue::Breath => {
+                let style =
+                    StrokeStyle::solid(with_alpha(color, breath_opacity(t)), chrome::STROKE);
+                p.stroke(pts, true, style);
+            }
+        }
+    }
+}
+
 /// Draws the shell into `ui` and returns the terminal body, the chrome's window commands, the
 /// tab events and the dialog's answer.
 ///
@@ -894,6 +995,11 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
     let inbox_shown = view.inbox_button.is_some() && (!view.page_open || view.view != View::Bar);
     let layout = Layout::for_view(win, inbox_shown, view.view);
     let show_pane_button = layout.pane.is_none() && view.show_pane_button;
+    let cue = pane_cue(&layout, view.page_open, view.busy, ui.tier());
+    if cue.is_some() {
+        ui.request_busy_frame(layout.card);
+    }
+    let now = ui.time();
     {
         let p = ui.painter();
         p.on(LayerId::Base);
@@ -942,6 +1048,9 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
                 theme.border_subtle
             };
             p.ring(layout.card, CARD_RADIUS, 1.0, color, false);
+        }
+        if let Some(treatment) = cue {
+            card_cue::paint(p, layout.card, treatment, view.busy_tone, now);
         }
 
         if !view.page_open {
@@ -1603,7 +1712,7 @@ mod tests {
     use super::*;
     use crate::fonts;
     use crate::pane::{DragItem, PaneRow, TabRow};
-    use lune_ui::input::{Modifiers, RawInput, keymap};
+    use lune_ui::input::{Modifiers, RawInput, Repaint, keymap};
     use lune_ui::lunegit_dark::THEME;
     use lune_ui::motion::{Cadence, MotionTier};
     use lune_ui::shortcuts::Shortcuts;
@@ -2330,6 +2439,8 @@ mod tests {
         inbox: bool,
         page_open: bool,
         list: Option<&'static [PaneRow<'static>]>,
+        busy: Option<BusyCue>,
+        tier: MotionTier,
     }
 
     impl PaneShell {
@@ -2341,10 +2452,22 @@ mod tests {
                 inbox: true,
                 page_open: false,
                 list: None,
+                busy: None,
+                tier: MotionTier::Off,
             }
         }
 
         fn run(self, store: &mut UiStore, text: &mut TextCache, events: Vec<Event>) -> ShellOut {
+            self.frame(store, text, events).0
+        }
+
+        /// A frame: what the shell reported and when it asks for the next one.
+        fn frame(
+            self,
+            store: &mut UiStore,
+            text: &mut TextCache,
+            events: Vec<Event>,
+        ) -> (ShellOut, Repaint) {
             let input = RawInput {
                 size: (1040.0, 660.0),
                 scale: 1.0,
@@ -2355,7 +2478,7 @@ mod tests {
             let (strings, shortcuts) = (StringTable::default(), Shortcuts::default());
             let config = FrameConfig {
                 theme: THEME,
-                tier: MotionTier::Off,
+                tier: self.tier,
                 busy_cadence: Cadence::BUSY,
                 strings: &strings,
                 arg_format: &DisplayFormat,
@@ -2383,7 +2506,7 @@ mod tests {
                 modal: None,
                 toasts: None,
                 page_open: self.page_open,
-                busy: None,
+                busy: self.busy,
                 busy_tone: Tone::Neutral,
                 overflow_name: "More",
                 inbox_button: self.inbox.then_some(InboxButton {
@@ -2397,8 +2520,8 @@ mod tests {
             };
             let mut ui = Ui::begin(store, &input, config, text);
             let out = draw(&mut ui, view);
-            let _ = ui.finish();
-            out
+            let (_, output) = ui.finish();
+            (out, output.repaint)
         }
 
         /// A press and a release at `at` after the pointer got there: what each reported.
@@ -2710,6 +2833,84 @@ mod tests {
         }
     }
 
+    /// The pane view asks for busy frames exactly while its card's cue runs: not with motion off,
+    /// with nothing running or under the settings page.
+    #[test]
+    fn the_pane_view_asks_for_a_busy_frame_exactly_while_its_cue_runs() {
+        let layout = Layout::for_view(
+            Rect::new(0.0, 0.0, 1040.0, 660.0),
+            false,
+            PaneShell::pane(MACOS_CHROME).view,
+        );
+        let bar = Layout::new(Rect::new(0.0, 0.0, 1040.0, 660.0));
+        let cues = [BusyCue::Sweep, BusyCue::Comet, BusyCue::Breath];
+        for tier in [MotionTier::Full, MotionTier::Reduced, MotionTier::Off] {
+            for busy in cues.map(Some).into_iter().chain([None]) {
+                for page_open in [false, true] {
+                    let treatment = match (busy, tier, page_open) {
+                        (Some(cue), MotionTier::Full, false) => Some(cue),
+                        (Some(_), MotionTier::Reduced, false) => Some(BusyCue::Breath),
+                        _ => None,
+                    };
+                    let case = format!("{tier:?} {busy:?} page={page_open}");
+                    assert_eq!(
+                        pane_cue(&layout, page_open, busy, tier),
+                        treatment,
+                        "{case}"
+                    );
+                    // The bar view's strip draws its own.
+                    assert_eq!(pane_cue(&bar, page_open, busy, tier), None, "{case}");
+                    let scene = PaneShell {
+                        busy,
+                        tier,
+                        page_open,
+                        inbox: false,
+                        ..PaneShell::pane(MACOS_CHROME)
+                    };
+                    let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+                    scene.frame(&mut store, &mut text, vec![]);
+                    scene.frame(&mut store, &mut text, vec![]);
+                    let (_, repaint) = scene.frame(&mut store, &mut text, vec![]);
+                    if treatment.is_some() {
+                        assert!(matches!(repaint, Repaint::At(_)), "{case}: {repaint:?}");
+                    } else {
+                        assert_eq!(repaint, Repaint::Idle, "{case}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The cue runs on the card's own rounded rect: a closed loop, half a stroke inside it.
+    #[test]
+    fn the_card_cues_loop_is_closed_and_just_inside_the_card() {
+        for width in [200, 248, 420] {
+            let win = Rect::new(0.0, 0.0, 1040.0, 660.0);
+            let view = pane::resolve(true, width, win.w, MACOS_CHROME);
+            let card = Layout::for_view(win, false, view).card;
+            let pts = card_cue::outline(card);
+            assert!(pts.len() > 8, "{}", pts.len());
+            let ends = |axis: usize| {
+                pts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                    (lo.min(p[axis]), hi.max(p[axis]))
+                })
+            };
+            let ((left, right), (top, bottom)) = (ends(0), ends(1));
+            for (got, want) in [
+                (left, card.x + 0.5),
+                (right, card.right() - 0.5),
+                (top, card.y + 0.5),
+                (bottom, card.bottom() - 0.5),
+            ] {
+                assert!((got - want).abs() < 0.01, "{width}: {got} {want}");
+            }
+            // It ends where it began.
+            let (first, last) = (pts[0], pts[pts.len() - 1]);
+            let gap = (first[0] - last[0]).hypot(first[1] - last[1]);
+            assert!(gap < 0.01, "{width}: {first:?} {last:?}");
+        }
+    }
+
     #[test]
     fn the_bar_views_show_button_toggles_and_does_not_drag() {
         for chrome in [MACOS_CHROME, WINDOWS_CHROME, LINUX_CHROME] {
@@ -2724,6 +2925,8 @@ mod tests {
                 inbox: false,
                 page_open: false,
                 list: None,
+                busy: None,
+                tier: MotionTier::Off,
             };
             for page_open in [false, true] {
                 let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());

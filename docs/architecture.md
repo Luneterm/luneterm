@@ -1131,10 +1131,15 @@ shows, the choice stays and the show button is not drawn.
   collapsed). A row activates on the press, as on the strip; the active and the hovered row have a
   close button; a header toggles collapse and has a `+`; secondary press opens the tab or the group
   menu. A collapsed card holding the active tab draws its header selected, and shows one dot when any
-  member has an unread notice; an expanded card shows dots on its member rows only. Rows show the
-  progress (OSC 9;4) shine; the pane view draws no running-command outline, so the Animate outline
-  setting has no effect there. Rows, headers and buttons are nodes of the accessibility tree
+  member has an unread notice; an expanded card shows dots on its member rows only. A row has no
+  icon: a fixed column left of the title holds the unread dot, so a title does not move when the dot
+  comes or goes, and a header's dot and name share the left edges of its members'. Rows show the
+  progress (OSC 9;4) shine. Rows, headers and buttons are nodes of the accessibility tree
   (checked against the toolkit's tree in a test, not with a screen reader).
+- *Running outline.* The bar view's outline is the strip's. The pane view draws the same cue on the
+  terminal card's outline (`shell::card_cue`, a copy of the toolkit's private drawing): the setting,
+  the full-screen rule, the tones and the motion level apply as on the strip (reduced motion
+  breathes, no motion leaves the still outline), and the settings page covers it.
 - *Pane drag (D24).* A tab row drags past the toolkit's threshold; the gaps of the flattened list are
   the slots: inside an expanded card joins that group there, a collapsed card's header joins at its
   end, between blocks makes the tab ungrouped. The last member leaving drops the group without a

@@ -3,9 +3,9 @@
 //! the footer, its New Tab button and the width drag at its right edge) and the tab list: loose
 //! tabs and group cards, scrolling between the header and the footer, with its drag reorder
 //! (D24): a tab's row, or a whole card by its header, dropped in a gap of the list. The window's
-//! drag regions, the footer's bell and `⋯` buttons and the terminal card are the shell's
-//! ([`crate::shell`]). A tab's progress report shines over its title; the running-command outline
-//! is the top bar's only.
+//! drag regions, the footer's bell and `⋯` buttons and the terminal card, with its outline and
+//! running-command cue, are the shell's ([`crate::shell`]). A tab's progress report shines over
+//! its title.
 
 use std::time::Duration;
 
@@ -28,7 +28,6 @@ use lune_ui::widgets::tone::Tone;
 use lune_ui::widgets::{scrollbar, shine};
 
 use crate::groups::{CARD_RING, CARD_TINT, GroupColor, GroupId};
-use crate::menus::ICON_TERMINAL;
 use crate::settings::{MAX_PANE_WIDTH, MIN_PANE_WIDTH, Theme as LookTheme};
 use crate::shell::{
     CARD_MARGIN, Chrome, INBOX_GAP, OVERFLOW_SIZE, StripTab, TITLE_BAND, TabContext, View,
@@ -359,13 +358,16 @@ const LOOSE_INSET: f32 = 4.0;
 const HEADER_PAD: f32 = 8.0;
 const CHEVRON: f32 = 12.0;
 const HEADER_GAP: f32 = 8.0;
-/// Where a row's glyph starts, from the row's left: in a loose row, and in a member row, whose
-/// glyph lines up with its header's name (D26).
+/// Where a row's dot column starts, from the row's left: in a loose row, and in a member row,
+/// whose column is its header's, right after the chevron (D38).
 pub const LOOSE_INDENT: f32 = 8.0;
 pub const MEMBER_INDENT: f32 = HEADER_PAD + CHEVRON + HEADER_GAP;
-/// A row's glyph, and the gap between it and the title.
+/// Between the dot column and the text after it.
+const DOT_GAP: f32 = 7.0;
+/// The size of the footer's New Tab glyph.
 const GLYPH: f32 = 16.0;
-const GLYPH_GAP: f32 = 10.0;
+/// Between a title and what follows it, and between the dot and the close glyph's column.
+const TITLE_GAP: f32 = 10.0;
 /// A row's close button, how far its right edge stays inside the row's, and its glyph.
 const CLOSE_SIZE: f32 = 20.0;
 const CLOSE_INSET: f32 = 5.0;
@@ -376,14 +378,12 @@ const PLUS_SIZE: f32 = 24.0;
 const PLUS_INSET: f32 = 2.0;
 const PLUS_GLYPH: f32 = 14.0;
 const PLUS_ROUND: f32 = 6.0;
-/// The unread dot (the strip's size).
+/// The unread dot (the strip's size), and the width of its column.
 const DOT: f32 = 7.0;
 /// Font sizes: a tab's title, a group's name, its count.
 const TITLE_FONT: f32 = 13.0;
 const NAME_FONT: f32 = 12.0;
 const COUNT_FONT: f32 = 11.0;
-/// The share of a row's text colour its glyph is drawn at.
-const GLYPH_ALPHA: f32 = 0.75;
 /// The scroll area's key.
 const LIST_KEY: &str = "pane-list";
 /// The longest step an auto-scroll takes at once: a late frame does not jump the list.
@@ -1281,9 +1281,9 @@ struct RowLook {
     close: Option<ButtonState>,
 }
 
-/// A tab's row: the glyph, the title (shining while the tab reports progress), the unread dot,
-/// and on the active or hovered row the close button (D33-D35). A press activates the tab; a drag
-/// of the row moves it (D24) and activates nothing more.
+/// A tab's row: the unread dot in its column, the title after it (shining while the tab reports
+/// progress), and on the active or hovered row the close button (D33-D35, D38). A press activates
+/// the tab; a drag of the row moves it (D24) and activates nothing more.
 fn tab_row(
     ui: &mut Ui<'_>,
     theme: &Theme,
@@ -1368,6 +1368,54 @@ fn tab_row(
     }
 }
 
+/// Where the parts of a tab's row stand across it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RowColumns {
+    /// The unread dot's column.
+    dot_x: f32,
+    /// Where the title starts, and the width it is elided to.
+    title_x: f32,
+    title_w: f32,
+}
+
+/// The columns of `tab`'s row at `rect` (D38): the dot's column and the close button's room are
+/// kept whether they show or not, so a title never moves or re-elides.
+fn row_columns(tab: &TabRow<'_>, rect: Rect) -> RowColumns {
+    let indent = if tab.group.is_some() {
+        MEMBER_INDENT
+    } else {
+        LOOSE_INDENT
+    };
+    let dot_x = rect.x + indent;
+    let title_x = dot_x + DOT + DOT_GAP;
+    // The title stops short of the close glyph's left edge.
+    let close_glyph_x = close_rect(rect).x + (CLOSE_SIZE - CLOSE_GLYPH) / 2.0;
+    RowColumns {
+        dot_x,
+        title_x,
+        title_w: (close_glyph_x - TITLE_GAP - title_x).max(0.0),
+    }
+}
+
+/// Where the parts at a header's left stand: its chevron, the dot's column (the members') and the
+/// name (D38).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HeaderColumns {
+    chevron_x: f32,
+    dot_x: f32,
+    name_x: f32,
+}
+
+fn header_columns(rect: Rect) -> HeaderColumns {
+    let chevron_x = rect.x + HEADER_PAD;
+    let dot_x = chevron_x + CHEVRON + HEADER_GAP;
+    HeaderColumns {
+        chevron_x,
+        dot_x,
+        name_x: dot_x + DOT + DOT_GAP,
+    }
+}
+
 /// What a tab's row at `rect` shows.
 fn paint_tab(ui: &mut Ui<'_>, theme: &Theme, tab: &TabRow<'_>, rect: Rect, look: &RowLook) {
     let (tier, now) = (ui.tier(), ui.time());
@@ -1379,28 +1427,16 @@ fn paint_tab(ui: &mut Ui<'_>, theme: &Theme, tab: &TabRow<'_>, rect: Rect, look:
     } else {
         theme.fg_secondary
     };
-    let indent = if tab.group.is_some() {
-        MEMBER_INDENT
-    } else {
-        LOOSE_INDENT
-    };
     let close_rect = close_rect(rect);
-    let glyph_x = rect.x + indent;
-    let title_x = glyph_x + GLYPH + GLYPH_GAP;
-    // The close button's room is kept whether it shows or not, so a title never re-elides; its
-    // glyph's left edge is where the title (or the dot) stops.
-    let close_glyph_x = close_rect.x + (CLOSE_SIZE - CLOSE_GLYPH) / 2.0;
-    let dot_x = close_glyph_x - GLYPH_GAP - DOT;
-    let title_end = if tab.unread { dot_x } else { close_glyph_x } - GLYPH_GAP;
+    let columns = row_columns(tab, rect);
 
     let p = ui.painter();
     if let Some(fill) = look.fill {
         p.fill(rect, ROW_ROUND, fill);
     }
-    let glyph = icon::glyph(ICON_TERMINAL, GLYPH, with_alpha(color, GLYPH_ALPHA));
-    p.text_in(&glyph, Rect::new(glyph_x, rect.y, GLYPH, rect.h), 0.0);
     let title = Spec::plain(tab.title, Style::ui(TITLE_FONT, color));
-    let title = p.elide(&title, (title_end - title_x).max(0.0));
+    let title = p.elide(&title, columns.title_w);
+    let title_x = columns.title_x;
     match tab.progress {
         Some(tone) => {
             let light = shine_light(theme, tone);
@@ -1411,7 +1447,7 @@ fn paint_tab(ui: &mut Ui<'_>, theme: &Theme, tab: &TabRow<'_>, rect: Rect, look:
         }
     }
     if tab.unread {
-        dot(p, theme, dot_x, rect);
+        dot(p, theme, columns.dot_x, rect);
     }
     if let Some(state) = look.close {
         let button = IconButton {
@@ -1446,8 +1482,8 @@ fn plus_button<'a>(theme: &Theme, name: &'a str) -> IconButton<'a> {
     }
 }
 
-/// What a card's header at `rect` shows under its `+`: the chevron, the name in the group's text
-/// colour, on a collapsed card with an unread member the dot, and the count (D26, D34).
+/// What a card's header at `rect` shows under its `+`: the chevron, on a collapsed card with an
+/// unread member the dot, the name in the group's text colour, and the count (D26, D34, D38).
 fn paint_header(
     p: &mut Painter<'_, WidgetId>,
     theme: &Theme,
@@ -1465,10 +1501,10 @@ fn paint_header(
     } else {
         icon::CHEVRON_DOWN
     };
-    let chevron_x = rect.x + HEADER_PAD;
+    let columns = header_columns(rect);
     p.text_centered(
         &icon::glyph(chevron, CHEVRON, text),
-        Rect::new(chevron_x, rect.y, CHEVRON, rect.h),
+        Rect::new(columns.chevron_x, rect.y, CHEVRON, rect.h),
     );
     let count = Spec::plain(
         group.count.to_string(),
@@ -1476,16 +1512,13 @@ fn paint_header(
     );
     let count_x = plus_rect(rect).x - HEADER_GAP - p.measure(&count).0;
     p.text_in(&count, Rect::new(count_x, rect.y, 0.0, rect.h), 0.0);
-    let mut name_end = count_x - HEADER_GAP;
     if group.unread {
-        let x = name_end - DOT;
-        dot(p, theme, x, rect);
-        name_end = x - HEADER_GAP;
+        dot(p, theme, columns.dot_x, rect);
     }
-    let name_x = chevron_x + CHEVRON + HEADER_GAP;
+    let name_end = count_x - HEADER_GAP;
     let name = Spec::plain(&group.name, Style::ui(NAME_FONT, text).medium());
-    let name = p.elide(&name, (name_end - name_x).max(0.0));
-    p.text_in(&name, Rect::new(name_x, rect.y, 0.0, rect.h), 0.0);
+    let name = p.elide(&name, (name_end - columns.name_x).max(0.0));
+    p.text_in(&name, Rect::new(columns.name_x, rect.y, 0.0, rect.h), 0.0);
 }
 
 /// A card's header and its `+` button (D35); `header` is what its region saw. A click toggles the
@@ -1990,14 +2023,53 @@ mod tests {
         // The last block, and the 6 under it.
         assert_eq!(l.height, 255.0 - 34.0);
         assert_eq!(l.rows.len(), built.len());
-        // The member's glyph starts where the header's name does.
-        let name_x = l.rows[1].x + HEADER_PAD + CHEVRON + HEADER_GAP;
-        assert_eq!(l.rows[2].x + MEMBER_INDENT, name_x);
-        assert_eq!(l.rows[0].x + LOOSE_INDENT, area.x + 12.0);
         // No rows: nothing.
         let empty = layout_list(&[], area);
         assert!(empty.rows.is_empty() && empty.cards.is_empty());
         assert_eq!(empty.height, 0.0);
+    }
+
+    /// The dot's column is kept whether the dot shows: a title never moves or re-elides, and a
+    /// header's dot and name share the left edges of its members' (D38).
+    #[test]
+    fn the_dot_has_a_column_left_of_the_title_whether_it_shows_or_not() {
+        let (set, strip) = tabs(MOCK);
+        let built = rows(&set, &strip);
+        for width in [200.0, 248.0, 420.0] {
+            let l = layout_list(&built, PaneRects::new(WINDOW, width).list);
+            let mut seen = (0, 0);
+            for (row, rect) in built.iter().zip(&l.rows) {
+                let PaneRow::Tab(tab) = row else {
+                    continue;
+                };
+                let [read, unread] =
+                    [false, true].map(|unread| row_columns(&TabRow { unread, ..*tab }, *rect));
+                assert_eq!(read, unread, "{width} {}", tab.title);
+                let indent = if tab.group.is_some() {
+                    seen.1 += 1;
+                    28.0
+                } else {
+                    seen.0 += 1;
+                    8.0
+                };
+                assert_eq!(read.dot_x, rect.x + indent, "{}", tab.title);
+                // 7 of dot, 7 of gap.
+                assert_eq!(read.title_x, read.dot_x + 14.0, "{}", tab.title);
+                // The title stops 10 short of the close glyph (5 inside a 20 button, which is
+                // 5 inside the row).
+                assert_eq!(read.title_x + read.title_w, rect.right() - 22.0 - 10.0);
+            }
+            assert!(seen.0 > 0 && seen.1 > 0, "loose and member rows: {seen:?}");
+            // `api`'s header and its first member.
+            let (header, member) = (header_columns(l.rows[1]), l.rows[2]);
+            let PaneRow::Tab(tab) = &built[2] else {
+                panic!("a member under the header");
+            };
+            let member = row_columns(tab, member);
+            assert_eq!(header.dot_x, member.dot_x, "{width}");
+            assert_eq!(header.name_x, member.title_x, "{width}");
+            assert_eq!(header.chevron_x + CHEVRON + HEADER_GAP, header.dot_x);
+        }
     }
 
     // ------------------------------------------------------------------- the list, in frames
