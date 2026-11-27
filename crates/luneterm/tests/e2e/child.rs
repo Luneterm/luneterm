@@ -1,6 +1,6 @@
 //! The PTY children: the test binary re-runs itself as `e2e --child <mode> ...` (plan M9 D19, the
 //! pattern of lune-pty's `conpty_input` test). No `unsafe`; no child prints its environment except
-//! `env3`, which prints the three variables E9 names.
+//! `env3`, which prints the three variables E9 names, and `argv`, which prints those E15 names.
 //!
 //! Modes:
 //!
@@ -13,6 +13,8 @@
 //!   arguments, prints `S`, then prints every input byte as two lowercase hex digits, and a `!`
 //!   for the sentinel byte 0x1E.
 //! * `env3`: prints `$TERM $COLORTERM $TERM_PROGRAM`.
+//! * `argv [word]...`: prints `ARGV:`, then its working directory, the variables [`ARGV_VARS`]
+//!   and each word, in hex with `;` between, then `;END`, and waits like `emit`.
 //! * `exit <code>`, `sleep`, `heartbeat <file>`.
 //!
 //! Every child ends by itself after at most [`LIFETIME`], so a crashed test leaves nothing behind.
@@ -28,6 +30,14 @@ use std::time::Duration;
 const LIFETIME: Duration = Duration::from_secs(180);
 /// How long `emit` and `echo-hex` wait for stdin to close.
 const WAIT: Duration = Duration::from_secs(10);
+
+/// The variables an `argv` child reports, in this order.
+pub(crate) const ARGV_VARS: [&str; 4] = [
+    "LT_E2E_MARK",
+    "LUNETERM_BIN",
+    "LUNETERM_INSTANCE",
+    "LUNETERM_TAB_ID",
+];
 
 /// What the flood child prints when it is done.
 pub(crate) const FLOOD_DONE: &str = "FLOOD-DONE";
@@ -48,7 +58,7 @@ pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     s
 }
 
-fn hex_decode(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn hex_decode(s: &str) -> Option<Vec<u8>> {
     if s.len() % 2 == 1 {
         return None;
     }
@@ -98,6 +108,16 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         }
         "flood" => flood(rest),
         "echo-hex" => echo_hex(rest),
+        "argv" => match argv_report(rest) {
+            Ok(()) => {
+                wait_for_eof();
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("child argv: {e}");
+                ExitCode::from(2)
+            }
+        },
         "env3" => {
             let var = |k: &str| std::env::var(k).unwrap_or_else(|_| "<unset>".to_owned());
             let line = format!(
@@ -141,6 +161,15 @@ fn emit(args: &[String]) -> Result<(), String> {
         out.flush().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+fn argv_report(words: &[String]) -> io::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let mut fields = vec![cwd.display().to_string()];
+    fields.extend(ARGV_VARS.map(|k| std::env::var(k).unwrap_or_else(|_| "<unset>".to_owned())));
+    fields.extend_from_slice(words);
+    let fields: Vec<String> = fields.iter().map(|f| hex_encode(f.as_bytes())).collect();
+    write_out(format!("ARGV:{};END", fields.join(";")).as_bytes())
 }
 
 /// Returns when stdin reaches EOF (or fails), or after [`WAIT`].

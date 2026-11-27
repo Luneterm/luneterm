@@ -52,6 +52,7 @@ use lune_vt::{
     TerminalMouseEvent, ViewportCursor,
 };
 
+use crate::ctl;
 use crate::cwd;
 use crate::dump;
 use crate::efficiency::{Controller, HostOs};
@@ -781,6 +782,10 @@ struct App {
     persist: Persist,
     /// The app's config directory: where the shell-integration scripts live (D12).
     config_dir: Option<PathBuf>,
+    /// This run's executable, as every tab is told it (`LUNETERM_BIN`).
+    bin: String,
+    /// This run's instance token (`LUNETERM_INSTANCE`); empty if the OS gave no randomness.
+    instance: String,
     /// The tabs of the last run, restored when the window exists.
     startup_workspace: Option<Workspace>,
     /// What the files had wrong, shown once the first frame can show it.
@@ -901,6 +906,8 @@ impl App {
         let efficiency = Controller::new(HostOs::default(), settings.efficiency_mode);
         App {
             config_dir,
+            bin: spawn::own_binary(),
+            instance: ctl::token::new().unwrap_or_default(),
             persist,
             startup_workspace,
             startup_notices,
@@ -1608,6 +1615,7 @@ impl App {
             tab.rename(title);
         }
         // The shell (and conhost on Windows) is created unthrottled: the idle class is inherited.
+        let tab_env = spawn::tab_env(&self.bin, &self.instance, self.tabs.next_id());
         let settings = &self.settings;
         let config_dir = self.config_dir.as_deref();
         let launched = self.efficiency.lifted(Instant::now(), || {
@@ -1617,6 +1625,7 @@ impl App {
                 geometry.pty_size(),
                 dir.as_deref(),
                 config_dir,
+                &tab_env,
             )
         });
         match launched {

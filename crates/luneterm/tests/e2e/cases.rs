@@ -1,4 +1,4 @@
-//! The end-to-end cases E1-E9 (plan M9 step 8): the real [`Session`] on real PTY children, its
+//! The end-to-end cases E1-E9 (plan M9 step 8) and the ones added since: the real [`Session`] on real PTY children, its
 //! Updates mirrored into a termview `Grid`, assertions on the grid's text (and, for E8, on
 //! offscreen PNGs).
 //!
@@ -31,7 +31,7 @@ use luneterm::settings::Settings;
 use luneterm::shell::HOST;
 use luneterm::{fonts, spawn};
 
-use super::child::{FLOOD_DONE, SENTINEL, flood_payload, hex_encode};
+use super::child::{ARGV_VARS, FLOOD_DONE, SENTINEL, flood_payload, hex_decode, hex_encode};
 use super::rss;
 
 /// What a case reports.
@@ -124,6 +124,11 @@ pub(crate) const CASES: &[Case] = &[
         id: "E14",
         name: "notifications",
         run: e14_notifications,
+    },
+    Case {
+        id: "E15",
+        name: "program tabs",
+        run: e15_program_tabs,
     },
 ];
 
@@ -1757,4 +1762,285 @@ fn e14_notifications() -> CaseResult {
         )
     })?;
     ok(format!("2 notifications, DONE after {} ms", ms(took)))
+}
+
+// ------------------------------------------------------------------------------- E15
+
+/// The words a program tab's child must get exactly as they are: nothing may split, expand or
+/// read any of them.
+const PROGRAM_WORDS: [&str; 10] = [
+    "two words",
+    "$(echo x)",
+    "\"q\"",
+    "a\\b",
+    "%PATH%",
+    "",
+    "--",
+    "--env",
+    "-n",
+    "; exit 9 #",
+];
+/// The variable a profile exports, to show the program tab's shell read it.
+const FROM_PROFILE: &str = "from-profile";
+const PROGRAM_BIN: &str = "/opt/lt e2e/luneterm";
+const PROGRAM_INSTANCE: &str = "E2eInstance_0123456789";
+const PROGRAM_TAB: u64 = 42;
+
+/// What an `argv` child reported.
+struct Report {
+    cwd: String,
+    vars: Vec<String>,
+    words: Vec<String>,
+}
+
+/// Starts `options` and reads the `argv` child's report off the grid.
+fn argv_report(options: &SpawnOptions) -> Result<Report, String> {
+    let pty = lune_pty::PortablePtyBackend::new()
+        .spawn(options, pty_size())
+        .map_err(|e| format!("spawn: {:?}", e.kind()))?;
+    let mut rig = Rig::start(pty, config(true))?;
+    rig.wait("the child's report", WAIT, |r| r.flat().contains(";END"))?;
+    let flat = rig.flat();
+    ensure(rig.close(), || "close timed out".to_owned())?;
+    let body = flat
+        .split_once("ARGV:")
+        .and_then(|(_, rest)| rest.split_once(";END"))
+        .map(|(body, _)| body)
+        .ok_or_else(|| format!("no report in {flat:?}"))?;
+    let mut fields = body
+        .split(';')
+        .map(|f| {
+            hex_decode(f)
+                .and_then(|b| String::from_utf8(b).ok())
+                .ok_or_else(|| format!("bad field {f:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure(fields.len() > ARGV_VARS.len(), || {
+        format!("{} fields", fields.len())
+    })?;
+    let words = fields.split_off(1 + ARGV_VARS.len());
+    let vars = fields.split_off(1);
+    Ok(Report {
+        cwd: fields.remove(0),
+        vars,
+        words,
+    })
+}
+
+/// The report is what was asked for: the directory, the profile's variable (`mark`), the three
+/// tab variables and the words, byte for byte.
+fn check_report(name: &str, got: &Report, cwd: &Path, mark: &str) -> Result<(), String> {
+    let real = |p: &Path| std::fs::canonicalize(p).map_err(|e| format!("{name}: {:?}", e.kind()));
+    ensure(real(Path::new(&got.cwd))? == real(cwd)?, || {
+        format!("{name}: ran in {:?}, wanted {cwd:?}", got.cwd)
+    })?;
+    let id = PROGRAM_TAB.to_string();
+    let want = [mark, PROGRAM_BIN, PROGRAM_INSTANCE, id.as_str()];
+    for ((key, got), want) in ARGV_VARS.iter().zip(&got.vars).zip(want) {
+        ensure(got == want, || {
+            format!("{name}: {key} is {got:?}, wanted {want:?}")
+        })?;
+    }
+    ensure(got.words == PROGRAM_WORDS, || {
+        format!("{name}: the words arrived as {:?}", got.words)
+    })
+}
+
+/// The words `argv` of a program tab running this binary as `program`.
+fn program_argv(program: &str) -> Vec<String> {
+    let mut argv = strs(&[program, "--child", "argv"]);
+    argv.extend(strs(&PROGRAM_WORDS));
+    argv
+}
+
+#[cfg(unix)]
+fn symlink(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(not(unix))]
+fn symlink(_target: &Path, _link: &Path) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+/// A program tab through the real `shell`, with a scratch home and ZDOTDIR (so none of the
+/// user's own rc files or history is read or written). The program is a bare name only the
+/// profile's `PATH` finds, and the profile changes directory, so the report shows the shell read
+/// the profile and the script went to the tab's directory afterwards.
+fn program_through(shell: &Path, name: &str) -> Result<(), String> {
+    let home = scratch_dir(&format!("e15-{name}-home"))?;
+    let work = scratch_dir(&format!("e15-{name}-a dir $(echo no);x"))?;
+    let io = |e: io::Error| format!("{name}: scratch files: {:?}", e.kind());
+    let bin = home.join("bin");
+    std::fs::create_dir(&bin).map_err(io)?;
+    symlink(&exe(), &bin.join("lt-e2e-prog")).map_err(io)?;
+    let profile = format!(
+        "LT_E2E_MARK={FROM_PROFILE}\nexport LT_E2E_MARK\nPATH=\"$HOME/bin:$PATH\"\nexport PATH\ncd /\n"
+    );
+    match name {
+        "zsh" => {
+            std::fs::write(home.join(".zprofile"), &profile).map_err(io)?;
+            // Without any startup file an interactive zsh asks to set one up.
+            std::fs::write(home.join(".zshrc"), "PROMPT='%# '\n").map_err(io)?;
+        }
+        "fish" => {
+            let config = home.join(".config").join("fish");
+            std::fs::create_dir_all(&config).map_err(io)?;
+            let text =
+                format!("set -gx LT_E2E_MARK {FROM_PROFILE}\nset -gx PATH $HOME/bin $PATH\ncd /\n");
+            std::fs::write(config.join("config.fish"), text).map_err(io)?;
+        }
+        _ => std::fs::write(home.join(".profile"), &profile).map_err(io)?,
+    }
+    let shell_text = shell.display().to_string();
+    let home_text = home.display().to_string();
+    let settings = Settings::default();
+    let mut env = spawn::child_env(
+        &settings,
+        &|k| std::env::var(k).ok(),
+        spawn::Os::HOST,
+        &spawn::tab_env(PROGRAM_BIN, PROGRAM_INSTANCE, PROGRAM_TAB),
+    );
+    for (key, value) in [
+        ("HOME", home_text.clone()),
+        ("ZDOTDIR", home_text.clone()),
+        ("XDG_CONFIG_HOME", format!("{home_text}/.config")),
+        ("XDG_DATA_HOME", format!("{home_text}/.local/share")),
+        ("SHELL", shell_text.clone()),
+        // A posix shell reads `$ENV` when interactive.
+        ("ENV", String::new()),
+        ("HISTFILE", "/dev/null".to_owned()),
+    ] {
+        env.push((key.to_owned(), value));
+    }
+    let lookup = |k: &str| (k == "SHELL").then(|| shell_text.clone());
+    let spec = spawn::ProgramSpec {
+        cwd: work.clone(),
+        argv: program_argv("lt-e2e-prog"),
+    };
+    let options = spawn::program_spawn(&settings, spawn::Os::HOST, &lookup, &spec, &env)
+        .map_err(|e| format!("{name}: refused: {e:?}"))?;
+    ensure(options.program.as_deref() == Some(shell), || {
+        format!("{name}: not started through the shell")
+    })?;
+    check_report(name, &argv_report(&options)?, &work, FROM_PROFILE)?;
+
+    // A directory that is gone by the time the shell gets there: status 127, no program.
+    let gone = spawn::ProgramSpec {
+        cwd: work.join("gone"),
+        ..spec
+    };
+    let mut options = spawn::program_spawn(&settings, spawn::Os::HOST, &lookup, &gone, &env)
+        .map_err(|e| format!("{name}: refused: {e:?}"))?;
+    // The backend would refuse the missing directory itself; the shell starts in the home.
+    options.cwd = Some(home.clone());
+    let pty = lune_pty::PortablePtyBackend::new()
+        .spawn(&options, pty_size())
+        .map_err(|e| format!("{name}: spawn: {:?}", e.kind()))?;
+    let mut rig = Rig::start(pty, config(true))?;
+    let exit = rig.wait_exit(WAIT)?;
+    ensure(
+        exit.code == Some(127) && !rig.flat().contains("ARGV:"),
+        || {
+            format!(
+                "{name}: with no directory, exit {:?}:\n{}",
+                exit.code,
+                rig.screen()
+            )
+        },
+    )?;
+    ensure(rig.close(), || format!("{name}: close timed out"))?;
+    // Only our own scratch directories are removed (the link, not what it points at).
+    for d in [home, work] {
+        std::fs::remove_dir_all(&d).map_err(|e| format!("remove scratch: {:?}", e.kind()))?;
+    }
+    Ok(())
+}
+
+/// Program tabs on Unix: through `/bin/sh` and every other supported shell this machine has.
+fn unix_program_tabs() -> CaseResult {
+    program_through(Path::new("/bin/sh"), "sh")?;
+    let mut done = vec!["sh"];
+    let mut absent = Vec::new();
+    for name in ["zsh", "bash", "dash", "ksh", "fish"] {
+        match find_on_path(name) {
+            Some(shell) => {
+                program_through(&shell, name)?;
+                done.push(name);
+            }
+            None => absent.push(name),
+        }
+    }
+    if !absent.is_empty() {
+        eprintln!("E15: not run, shell absent: {absent:?}");
+    }
+    ok(format!(
+        "profile, tab variables, directory, byte-exact words and a missing directory (127) \
+         through {done:?}"
+    ))
+}
+
+/// Program tabs on Windows: the program is started itself, and a batch file never is.
+fn windows_program_tabs() -> CaseResult {
+    let work = std::env::temp_dir().join(format!("luneterm-e15-{}-win", std::process::id()));
+    ensure(!work.exists(), || {
+        format!("{} already exists", work.display())
+    })?;
+    let io = |e: io::Error| format!("scratch files: {:?}", e.kind());
+    std::fs::create_dir(&work).map_err(io)?;
+    let settings = Settings::default();
+    let lookup = |k: &str| std::env::var(k).ok();
+    let env = spawn::child_env(
+        &settings,
+        &lookup,
+        spawn::Os::HOST,
+        &spawn::tab_env(PROGRAM_BIN, PROGRAM_INSTANCE, PROGRAM_TAB),
+    );
+    let spec = spawn::ProgramSpec {
+        cwd: work.clone(),
+        argv: program_argv(&exe().display().to_string()),
+    };
+    let options = spawn::program_spawn(&settings, spawn::Os::HOST, &lookup, &spec, &env)
+        .map_err(|e| format!("refused: {e:?}"))?;
+    let mark = lookup(ARGV_VARS[0]).unwrap_or_else(|| "<unset>".to_owned());
+    check_report("windows", &argv_report(&options)?, &work, &mark)?;
+
+    // A batch file that would leave a file behind if anything ran it.
+    let batch = work.join("lt-e2e-batch.cmd");
+    std::fs::write(&batch, "@echo ran> ran.txt\r\n").map_err(io)?;
+    let by_path = batch.display().to_string();
+    for program in [by_path.as_str(), "lt-e2e-batch", "lt-e2e-batch.cmd. "] {
+        let spec = spawn::ProgramSpec {
+            cwd: work.clone(),
+            argv: strs(&[program, "a&b"]),
+        };
+        let tab = [("PATH".to_owned(), work.display().to_string())];
+        let got = spawn::launch_program(
+            &lune_pty::PortablePtyBackend::new(),
+            &settings,
+            pty_size(),
+            &spec,
+            &tab,
+        );
+        ensure(
+            matches!(
+                got,
+                Err(spawn::ProgramFailure::Refused(spawn::Refused::BatchFile))
+            ),
+            || format!("{program:?} was not refused as a batch file"),
+        )?;
+    }
+    ensure(!work.join("ran.txt").exists(), || {
+        "the batch file ran".to_owned()
+    })?;
+    std::fs::remove_dir_all(&work).map_err(io)?;
+    ok("tab variables, directory and byte-exact words; a batch file refused before any spawn")
+}
+
+fn e15_program_tabs() -> CaseResult {
+    if cfg!(windows) {
+        windows_program_tabs()
+    } else {
+        unix_program_tabs()
+    }
 }
