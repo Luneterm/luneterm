@@ -12,10 +12,14 @@ when you choose Update, and "Restart to update" closes all shells.
 There is no Apple Developer ID, no notarization and no Windows Authenticode signature, so each
 system warns on first launch.
 
-**macOS** (Apple silicon only; `luneterm-{version}-macos-arm64-setup.zip`). Unzip it and move
-`Luneterm.app` to `/Applications` or `~/Applications` (updates work from those two places). On first
-launch macOS refuses to open it; go to System Settings > Privacy & Security and choose Open Anyway.
-Or remove the quarantine flag in a terminal:
+**macOS** (Apple silicon only; `luneterm-{version}-macos-arm64-setup.dmg`). Open the disk image and
+run Install Luneterm. The `.dmg` is attached a few minutes after the release is published; if it is
+not on the page yet, wait, or use the zip below. On first launch macOS refuses to open the installer
+(and, if you use the zip, the app); go to System Settings > Privacy & Security and choose Open Anyway.
+
+Alternative: `luneterm-{version}-macos-arm64-setup.zip`. Unzip it and move `Luneterm.app` to
+`/Applications` or `~/Applications` (updates work from those two places). Or remove the quarantine
+flag in a terminal:
 
     xattr -dr com.apple.quarantine /Applications/Luneterm.app
 
