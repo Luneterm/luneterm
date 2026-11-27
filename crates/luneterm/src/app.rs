@@ -1912,7 +1912,7 @@ impl App {
             TabEvent::Close(key) => self.request_close(vec![key.0], event_loop),
             TabEvent::New => self.new_tab_request(),
             TabEvent::Reorder { from, to } => {
-                self.tabs.reorder(from, to);
+                self.tabs.reorder_bar(from, to);
                 self.workspace_changed(true);
             }
         }

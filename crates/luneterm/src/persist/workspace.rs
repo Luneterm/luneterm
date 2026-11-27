@@ -4,7 +4,7 @@
 //! shape of Lunegit's `TerminalWorkspaceState`: per tab the directory it was started in, the last
 //! directory its shell reported, and the name the user gave it. At most [`MAX_TABS`] tabs are
 //! read. Directories are checked ([`crate::cwd::syntax`] on read, [`crate::cwd::validated`] at
-//! restore, which stats and so runs off the UI thread); titles go through [`title::sanitize`].
+//! restore, which stats and so runs off the UI thread); titles go through [`title::sanitize_name`].
 //! Nothing in the file is executed.
 //!
 //! **Ledger 12: the file only ever describes tabs that really started.** [`SaveGuard`] suppresses
@@ -21,13 +21,13 @@ use lune_ui::json::{self, Value};
 use super::json_write::{Json, WriteError};
 use super::{Reject, read_version};
 use crate::cwd;
-use crate::title::{self, DEFAULT_TITLE};
+use crate::title;
 
 /// The version this build writes and reads.
 pub const WORKSPACE_VERSION: i64 = 1;
 /// Tabs read from a file; the rest are ignored.
 pub const MAX_TABS: usize = 32;
-/// Characters of a title read (it is then sanitized, and at most 80).
+/// Characters of a title read (it is then sanitized, and at most [`title::MAX_NAME_CHARS`]).
 pub const MAX_TITLE_CHARS: usize = 256;
 /// A tab whose child exits within this long of its start counts as a failed start.
 pub const STARTUP_GRACE: Duration = Duration::from_secs(3);
@@ -70,8 +70,7 @@ fn dir_text(members: &[(String, Value)], key: &str) -> Option<String> {
 fn title_text(members: &[(String, Value)]) -> Option<String> {
     let raw = string_member(members, "title")?;
     let capped: String = raw.chars().take(MAX_TITLE_CHARS).collect();
-    let clean = title::sanitize(&capped);
-    (clean != DEFAULT_TITLE).then_some(clean)
+    title::sanitize_name(&capped)
 }
 
 /// Reads a workspace file's bytes. A file that is not a valid workspace document is [`Reject`]ed;
@@ -366,7 +365,7 @@ mod tests {
             8,
             "the string is skipped, every object is a tab"
         );
-        assert_eq!(ws.tabs[1].manual_title.as_deref().map(str::len), Some(80));
+        assert_eq!(ws.tabs[1].manual_title.as_deref().map(str::len), Some(128));
         assert_eq!(
             ws.tabs[2].manual_title, None,
             "nothing printable is no title"

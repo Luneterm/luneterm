@@ -1,11 +1,12 @@
-//! Tabs (plan M10 step 2, D1): one [`Tab`] per [`Session`], the pure list logic ([`TabSet`]), the
-//! rules that decide what closing asks, the tab's name, the paste routing and the check of a
-//! directory for a new tab.
+//! Tabs (plan M10 step 2, D1): one [`Tab`] per [`Session`], the pure list logic ([`TabSet`], tab
+//! groups included: [`crate::groups`]), the rules that decide what closing asks, the tab's name,
+//! the paste routing and the check of a directory for a new tab.
 //!
 //! The UI thread owns all of it. What needs the buffer or the PTY stays on the session's engine
 //! thread and arrives in an [`Update`] (M9 I1); nothing here touches a `Terminal`.
 
 use std::io;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
@@ -18,6 +19,7 @@ use lune_vt::ProgressState;
 
 use crate::app::{cursor_of, theme_with_palette};
 use crate::cwd;
+use crate::groups::{Group, GroupColor, GroupId, default_color};
 use crate::links::{self, Hover, LinkSpan, MAX_URI_TABLE, UriTable};
 use crate::outline::CommandState;
 use crate::session::{
@@ -40,21 +42,37 @@ pub const CWD_CHECK_TIMEOUT: Duration = Duration::from_millis(300);
 
 // ----------------------------------------------------------------------------------- the list
 
-/// The tabs in order, which one is active, and the next id. Pure list logic: no window, no
-/// session.
+/// The tabs in order, their groups, which tab is active, and the next ids. Pure list logic: no
+/// window, no session.
+///
+/// Every public method keeps this true: the members of a group are next to each other (the
+/// group's run), a group has at least one member, group names are unique (compared exactly), and a
+/// tab or group id is never given twice.
 #[derive(Debug)]
 pub struct TabSet<T> {
-    items: Vec<(TabId, T)>,
+    items: Vec<Entry<T>>,
+    /// The open groups. Their order is that of their runs, not of this list.
+    groups: Vec<(GroupId, Group)>,
     active: Option<TabId>,
     next: TabId,
+    next_group: u64,
+}
+
+#[derive(Debug)]
+struct Entry<T> {
+    id: TabId,
+    group: Option<GroupId>,
+    item: T,
 }
 
 impl<T> Default for TabSet<T> {
     fn default() -> Self {
         TabSet {
             items: Vec::new(),
+            groups: Vec::new(),
             active: None,
             next: 1,
+            next_group: GroupId::NONE.0 + 1,
         }
     }
 }
@@ -72,12 +90,49 @@ impl<T> TabSet<T> {
         self.items.is_empty()
     }
 
-    /// Appends `item` at the end and makes it active.
+    /// The id the next new tab gets ([`push`](Self::push), [`insert`](Self::insert),
+    /// [`insert_by_hand`](Self::insert_by_hand)). Nothing else uses ids up, so a child can be
+    /// told it before its tab is in the list.
+    pub fn next_id(&self) -> TabId {
+        self.next
+    }
+
+    /// Appends `item` at the end, in no group, and makes it active.
     pub fn push(&mut self, item: T) -> TabId {
+        self.insert(item, self.items.len(), true)
+    }
+
+    /// Adds `item`, in no group, at index `at`; past the end means the end, and an index inside a
+    /// group's run means just after that run. It becomes active only with `activate`.
+    pub fn insert(&mut self, item: T, at: usize, activate: bool) -> TabId {
+        let at = at.min(self.items.len());
+        let at = self.run_split_at(at).map_or(at, |run| run.end);
         let id = self.next;
         self.next += 1;
-        self.items.push((id, item));
-        self.active = Some(id);
+        let entry = Entry {
+            id,
+            group: None,
+            item,
+        };
+        self.items.insert(at, entry);
+        if activate {
+            self.active = Some(id);
+        }
+        id
+    }
+
+    /// A tab the user asked for, opened from `reference` (the active tab, or the one a menu is
+    /// about), and made active. From a grouped tab it joins that group after the last member;
+    /// else it goes to the end, in no group.
+    pub fn insert_by_hand(&mut self, item: T, reference: Option<TabId>) -> TabId {
+        let group = reference.and_then(|id| self.group_of(id));
+        let at = group
+            .and_then(|g| self.run(g))
+            .map_or(self.items.len(), |run| run.end);
+        let id = self.insert(item, at, true);
+        if let Some(entry) = self.items.iter_mut().find(|e| e.id == id) {
+            entry.group = group;
+        }
         id
     }
 
@@ -86,22 +141,22 @@ impl<T> TabSet<T> {
     }
 
     pub fn ids(&self) -> Vec<TabId> {
-        self.items.iter().map(|(id, _)| *id).collect()
+        self.items.iter().map(|e| e.id).collect()
     }
 
     pub fn index_of(&self, id: TabId) -> Option<usize> {
-        self.items.iter().position(|(i, _)| *i == id)
+        self.items.iter().position(|e| e.id == id)
     }
 
     pub fn get(&self, id: TabId) -> Option<&T> {
-        self.items.iter().find(|(i, _)| *i == id).map(|(_, t)| t)
+        self.items.iter().find(|e| e.id == id).map(|e| &e.item)
     }
 
     pub fn get_mut(&mut self, id: TabId) -> Option<&mut T> {
         self.items
             .iter_mut()
-            .find(|(i, _)| *i == id)
-            .map(|(_, t)| t)
+            .find(|e| e.id == id)
+            .map(|e| &mut e.item)
     }
 
     pub fn active_item(&self) -> Option<&T> {
@@ -114,14 +169,15 @@ impl<T> TabSet<T> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (TabId, &T)> {
-        self.items.iter().map(|(id, t)| (*id, t))
+        self.items.iter().map(|e| (e.id, &e.item))
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (TabId, &mut T)> {
-        self.items.iter_mut().map(|(id, t)| (*id, t))
+        self.items.iter_mut().map(|e| (e.id, &mut e.item))
     }
 
-    /// Makes `id` active. `false` when there is no such tab.
+    /// Makes `id` active. `false` when there is no such tab. A collapsed group stays collapsed
+    /// ([`expand_for`](Self::expand_for)).
     pub fn activate(&mut self, id: TabId) -> bool {
         if self.index_of(id).is_some() {
             self.active = Some(id);
@@ -131,7 +187,8 @@ impl<T> TabSet<T> {
         }
     }
 
-    /// Activates the tab `delta` places after the active one, wrapping around.
+    /// Activates the tab `delta` places after the active one, wrapping around: over all tabs,
+    /// those of collapsed groups included.
     pub fn activate_step(&mut self, delta: isize) {
         let (Some(at), len) = (self.active.and_then(|a| self.index_of(a)), self.items.len()) else {
             return;
@@ -142,14 +199,14 @@ impl<T> TabSet<T> {
         self.active = usize::try_from(to)
             .ok()
             .and_then(|i| self.items.get(i))
-            .map(|(id, _)| *id);
+            .map(|e| e.id);
     }
 
-    /// Activates the tab at `index` (0-based); `false` when there is none.
+    /// Activates the tab at `index` (0-based, over all tabs); `false` when there is none.
     pub fn activate_index(&mut self, index: usize) -> bool {
         match self.items.get(index) {
-            Some((id, _)) => {
-                self.active = Some(*id);
+            Some(entry) => {
+                self.active = Some(entry.id);
                 true
             }
             None => false,
@@ -157,28 +214,312 @@ impl<T> TabSet<T> {
     }
 
     /// Removes `id`. Closing the active tab activates its right neighbour, else its left one;
-    /// closing another tab leaves the active one.
+    /// closing another tab leaves the active one. A group left without members is gone.
     pub fn close(&mut self, id: TabId) -> Option<T> {
         let at = self.index_of(id)?;
-        let (_, item) = self.items.remove(at);
+        let entry = self.items.remove(at);
+        if let Some(group) = entry.group {
+            self.drop_if_empty(group);
+        }
         if self.active == Some(id) {
             self.active = self
                 .items
                 .get(at)
                 .or_else(|| self.items.last())
-                .map(|(i, _)| *i);
+                .map(|e| e.id);
         }
-        Some(item)
+        Some(entry.item)
     }
 
-    /// Moves the tab at `from` to index `to` (remove, then insert: the toolkit's `Reorder`). Out
-    /// of range indices do nothing. The active tab stays the same tab.
-    pub fn reorder(&mut self, from: usize, to: usize) {
+    // ------------------------------------------------------------------------------- groups
+
+    /// The group of tab `id`; `None` when it has none or there is no such tab.
+    pub fn group_of(&self, id: TabId) -> Option<GroupId> {
+        self.items.iter().find(|e| e.id == id).and_then(|e| e.group)
+    }
+
+    /// The tabs of group `g`, in order; empty when there is no such group.
+    pub fn members(&self, g: GroupId) -> Vec<TabId> {
+        self.items
+            .iter()
+            .filter(|e| e.group == Some(g))
+            .map(|e| e.id)
+            .collect()
+    }
+
+    pub fn group(&self, g: GroupId) -> Option<&Group> {
+        self.groups.iter().find(|(i, _)| *i == g).map(|(_, g)| g)
+    }
+
+    /// The open groups, in the order of their runs.
+    pub fn groups(&self) -> impl Iterator<Item = (GroupId, &Group)> {
+        let mut last = None;
+        self.items.iter().filter_map(move |e| {
+            let first = e.group != last;
+            last = e.group;
+            let id = e.group.filter(|_| first)?;
+            self.group(id).map(|g| (id, g))
+        })
+    }
+
+    /// The group with exactly this name.
+    pub fn group_named(&self, name: &str) -> Option<GroupId> {
+        self.groups
+            .iter()
+            .find(|(_, g)| g.name == name)
+            .map(|(id, _)| *id)
+    }
+
+    /// Puts tab `id` into the group called `name`, making it (expanded, with
+    /// [`default_color`]) when there is none, and returns that group. The caller has checked
+    /// that `name` is a usable name.
+    ///
+    /// A tab already in it stays where it is. Joining an existing group moves the tab to just
+    /// after its last member. A new group leaves the tab in place, unless the tab sits between
+    /// members of its old group: then it moves to just after that run. With no such tab nothing
+    /// happens and the result is [`GroupId::NONE`].
+    pub fn set_group(&mut self, id: TabId, name: &str) -> GroupId {
+        let Some(at) = self.index_of(id) else {
+            return GroupId::NONE;
+        };
+        if let Some(g) = self.group_named(name) {
+            if self.group_of(id) != Some(g) {
+                let mut entry = self.items.remove(at);
+                if let Some(old) = entry.group.replace(g) {
+                    self.drop_if_empty(old);
+                }
+                let end = self.run(g).map_or(self.items.len(), |run| run.end);
+                self.items.insert(end, entry);
+            }
+            return g;
+        }
+        self.ungroup(id);
+        let color = default_color(self.groups.iter().map(|(_, g)| g.color));
+        let g = GroupId(self.next_group);
+        self.next_group += 1;
+        let group = Group {
+            name: name.to_owned(),
+            color,
+            collapsed: false,
+        };
+        self.groups.push((g, group));
+        if let Some(entry) = self.items.iter_mut().find(|e| e.id == id) {
+            entry.group = Some(g);
+        }
+        g
+    }
+
+    /// Takes tab `id` out of its group. A tab between other members moves to just after the run;
+    /// one at either end stays where it is. A group left without members is gone.
+    pub fn ungroup(&mut self, id: TabId) {
+        let (Some(at), Some(g)) = (self.index_of(id), self.group_of(id)) else {
+            return;
+        };
+        let Some(run) = self.run(g) else {
+            return;
+        };
+        let mut entry = self.items.remove(at);
+        entry.group = None;
+        // The run is one shorter now; between two members means after what is left of it.
+        let to = if run.start < at && at + 1 < run.end {
+            run.end - 1
+        } else {
+            at
+        };
+        self.items.insert(to, entry);
+        self.drop_if_empty(g);
+    }
+
+    /// Drops group `g` and keeps its tabs, in place.
+    pub fn ungroup_all(&mut self, g: GroupId) {
+        for entry in &mut self.items {
+            if entry.group == Some(g) {
+                entry.group = None;
+            }
+        }
+        self.drop_if_empty(g);
+    }
+
+    /// Renames group `g`. `false`, and nothing changes, when there is no such group or another
+    /// group has that name. The caller has checked that `name` is a usable name.
+    pub fn rename_group(&mut self, g: GroupId, name: &str) -> bool {
+        if self.group_named(name).is_some_and(|other| other != g) {
+            return false;
+        }
+        match self.group_mut(g) {
+            Some(group) => {
+                name.clone_into(&mut group.name);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Changes the colour of group `g`; `false` when there is no such group.
+    pub fn recolor_group(&mut self, g: GroupId, color: GroupColor) -> bool {
+        match self.group_mut(g) {
+            Some(group) => {
+                group.color = color;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Collapses or expands group `g` in the side pane. The active tab does not change, even when
+    /// it is a member.
+    pub fn set_collapsed(&mut self, g: GroupId, collapsed: bool) {
+        if let Some(group) = self.group_mut(g) {
+            group.collapsed = collapsed;
+        }
+    }
+
+    /// Expands the group of tab `id`, if it has one: for the actions that send the user to a tab.
+    pub fn expand_for(&mut self, id: TabId) {
+        if let Some(g) = self.group_of(id) {
+            self.set_collapsed(g, false);
+        }
+    }
+
+    /// The tabs that closing group `g` closes.
+    pub fn close_group_ids(&self, g: GroupId) -> Vec<TabId> {
+        self.members(g)
+    }
+
+    // -------------------------------------------------------------------------------- moves
+
+    /// The side pane's drop of one tab: moves `id` to index `slot` of the list without it, into
+    /// `group`. Refused (`false`, nothing changes) unless every run stays whole: into a group,
+    /// the slot is inside or at either end of the run of its other members (a group's only member
+    /// can only stay where it is); out of any group, the slot is not inside a run. A group left
+    /// without members is gone. The active tab stays the same tab.
+    pub fn move_tab(&mut self, id: TabId, slot: usize, group: Option<GroupId>) -> bool {
+        let Some(from) = self.index_of(id) else {
+            return false;
+        };
+        if group.is_some_and(|g| self.group(g).is_none()) {
+            return false;
+        }
+        let mut entry = self.items.remove(from);
+        let fits = slot <= self.items.len()
+            && match group {
+                Some(g) => match self.run(g) {
+                    Some(run) => (run.start..=run.end).contains(&slot),
+                    // The moved tab is the whole group.
+                    None => slot == from,
+                },
+                None => self.run_split_at(slot).is_none(),
+            };
+        if !fits {
+            self.items.insert(from, entry);
+            return false;
+        }
+        let old = std::mem::replace(&mut entry.group, group);
+        self.items.insert(slot, entry);
+        if let Some(old) = old {
+            self.drop_if_empty(old);
+        }
+        true
+    }
+
+    /// The side pane's drop of a whole group: moves the run of `g` to index `slot` of the list
+    /// without it, members in the same order. Refused (`false`, nothing changes) when the slot is
+    /// inside another run or past the end, or there is no such group.
+    pub fn move_group(&mut self, g: GroupId, slot: usize) -> bool {
+        let Some(run) = self.run(g) else {
+            return false;
+        };
+        let from = run.start;
+        let moved: Vec<Entry<T>> = self.items.drain(run).collect();
+        let fits = slot <= self.items.len() && self.run_split_at(slot).is_none();
+        let to = if fits { slot } else { from };
+        self.items.splice(to..to, moved);
+        fits
+    }
+
+    /// The top bar's drop: moves the tab at `from` to index `to` (remove, then insert: the
+    /// toolkit's `Reorder`) without changing any tab's group, because the bar does not show
+    /// groups. A grouped tab stays inside its run; a tab in no group dropped inside a run goes to
+    /// the nearer end of it (a tie: after). Out of range indices do nothing. The active tab stays
+    /// the same tab.
+    pub fn reorder_bar(&mut self, from: usize, to: usize) {
         if from >= self.items.len() || to >= self.items.len() {
             return;
         }
-        let item = self.items.remove(from);
-        self.items.insert(to, item);
+        let entry = self.items.remove(from);
+        let to = match entry.group {
+            // With no other member there is nowhere to go.
+            Some(g) => self.run(g).map_or(from, |run| to.clamp(run.start, run.end)),
+            None => match self.run_split_at(to) {
+                Some(run) if to - run.start < run.end - to => run.start,
+                Some(run) => run.end,
+                None => to,
+            },
+        };
+        self.items.insert(to, entry);
+    }
+
+    // ------------------------------------------------------------------------------ helpers
+
+    fn group_mut(&mut self, g: GroupId) -> Option<&mut Group> {
+        self.groups
+            .iter_mut()
+            .find(|(i, _)| *i == g)
+            .map(|(_, g)| g)
+    }
+
+    /// The indices from the first to the last member of `g`; `None` when no tab is in it.
+    fn run(&self, g: GroupId) -> Option<Range<usize>> {
+        let first = self.items.iter().position(|e| e.group == Some(g))?;
+        let last = self.items.iter().rposition(|e| e.group == Some(g))?;
+        Some(first..last + 1)
+    }
+
+    /// The run that inserting at index `at` would cut in two.
+    fn run_split_at(&self, at: usize) -> Option<Range<usize>> {
+        let before = self.items.get(at.checked_sub(1)?)?.group?;
+        let after = self.items.get(at)?.group?;
+        if before == after {
+            self.run(after)
+        } else {
+            None
+        }
+    }
+
+    fn drop_if_empty(&mut self, g: GroupId) {
+        if self.run(g).is_none() {
+            self.groups.retain(|(i, _)| *i != g);
+        }
+    }
+
+    /// Panics unless what every public method promises holds.
+    #[cfg(test)]
+    pub(crate) fn assert_invariants(&self) {
+        use std::collections::HashSet;
+
+        let mut tabs = HashSet::new();
+        for e in &self.items {
+            assert!(e.id < self.next && tabs.insert(e.id), "tab id {}", e.id);
+            if let Some(g) = e.group {
+                assert!(self.group(g).is_some(), "{g:?} has a member and no entry");
+            }
+        }
+        let mut ids = HashSet::new();
+        let mut names = HashSet::new();
+        for (id, group) in &self.groups {
+            assert!(*id != GroupId::NONE && id.0 < self.next_group, "{id:?}");
+            assert!(ids.insert(*id), "{id:?} twice");
+            assert!(names.insert(group.name.as_str()), "a name twice: {id:?}");
+            let run = self.run(*id);
+            let run = run.unwrap_or_else(|| panic!("{id:?} has no member"));
+            assert!(
+                self.items[run].iter().all(|e| e.group == Some(*id)),
+                "{id:?} is split"
+            );
+        }
+        if let Some(active) = self.active {
+            assert!(tabs.contains(&active), "the active tab {active} is gone");
+        }
     }
 }
 
@@ -224,6 +565,16 @@ pub struct Effects {
     pub output: bool,
 }
 
+/// Who asked for a tab.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Origin {
+    /// The user: a key, a menu, or the saved workspace.
+    #[default]
+    User,
+    /// A program, through `luneterm ctl`.
+    Control,
+}
+
 /// One terminal tab: its session (or why there is none) and the mirror of what the session
 /// last published.
 pub struct Tab {
@@ -266,6 +617,12 @@ pub struct Tab {
     pub progress_state: ProgressState,
     /// The focus the session was last told (focus reports, mode 1004).
     pub focused: bool,
+    /// Who asked for the tab.
+    pub origin: Origin,
+    /// The tab runs a program given to `luneterm ctl`, not the user's shell.
+    pub program: bool,
+    /// When the user last typed, pasted or composed into the tab; `None` for never.
+    pub last_input: Option<Instant>,
 }
 
 impl std::fmt::Debug for Tab {
@@ -301,7 +658,15 @@ impl Tab {
             command: CommandState::default(),
             progress_state: ProgressState::None,
             focused: false,
+            origin: Origin::User,
+            program: false,
+            last_input: None,
         }
+    }
+
+    /// The user typed, pasted or composed into this tab at `now`.
+    pub fn note_input(&mut self, now: Instant) {
+        self.last_input = Some(now);
     }
 
     /// Tells the session its focus changed; nothing is sent when it did not.
@@ -324,10 +689,11 @@ impl Tab {
         self.label().unwrap_or(DEFAULT_TAB_NAME)
     }
 
-    /// The user renames the tab. The name is sanitized like a title; an empty result clears the
-    /// manual name, so the program's title shows again.
+    /// Names the tab by hand (the user, the saved workspace, `ctl --title`). The name goes
+    /// through [`title::sanitize_name`]; an empty result clears the manual name, so the
+    /// program's title shows again.
     pub fn rename(&mut self, raw: &str) {
-        self.name = named(raw);
+        self.name = title::sanitize_name(raw);
     }
 
     /// The manual name, for the rename field.
@@ -498,8 +864,8 @@ pub fn asks_on_close(
         }
 }
 
-/// A name from untrusted or typed text: sanitized, `None` when nothing printable is left (the
-/// sanitizer's fallback, [`DEFAULT_TITLE`], counts as none).
+/// A program's title: sanitized, `None` when nothing printable is left (the sanitizer's
+/// fallback, [`DEFAULT_TITLE`], counts as none).
 fn named(raw: &str) -> Option<String> {
     let s = title::sanitize(raw);
     (s != DEFAULT_TITLE).then_some(s)
@@ -699,19 +1065,19 @@ mod tests {
     }
 
     #[test]
-    fn reorder_is_remove_then_insert_and_the_active_tab_stays_the_same_tab() {
+    fn a_bar_reorder_is_remove_then_insert_and_the_active_tab_stays_the_same_tab() {
         let (mut s, ids) = set(&["a", "b", "c", "d"]);
         s.activate(ids[0]);
-        s.reorder(0, 2);
+        s.reorder_bar(0, 2);
         assert_eq!(s.ids(), vec![ids[1], ids[2], ids[0], ids[3]]);
         assert_eq!(s.active(), Some(ids[0]));
-        s.reorder(3, 0);
+        s.reorder_bar(3, 0);
         assert_eq!(s.ids(), vec![ids[3], ids[1], ids[2], ids[0]]);
         // Out of range is a no-op.
-        s.reorder(9, 0);
-        s.reorder(0, 9);
+        s.reorder_bar(9, 0);
+        s.reorder_bar(0, 9);
         assert_eq!(s.ids(), vec![ids[3], ids[1], ids[2], ids[0]]);
-        s.reorder(1, 1);
+        s.reorder_bar(1, 1);
         assert_eq!(s.ids(), vec![ids[3], ids[1], ids[2], ids[0]]);
     }
 
@@ -757,6 +1123,49 @@ mod tests {
         let long = named(&"x".repeat(500)).expect("name");
         assert_eq!(long.chars().count(), 80);
         assert_eq!(named("a\u{202e}b\nc").as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn a_name_by_hand_keeps_128_chars_and_a_program_title_80() {
+        let mut t = Tab::empty(TermTheme::lunegit_one_dark());
+        for (typed, kept) in [(80, 80), (81, 81), (128, 128), (129, 128), (500, 128)] {
+            t.rename(&"é".repeat(typed));
+            assert_eq!(
+                t.manual_name().map(|n| n.chars().count()),
+                Some(kept),
+                "{typed}"
+            );
+        }
+        // The app's own name is a name like any other when the user (or `ctl`) gives it.
+        t.rename("Luneterm");
+        assert_eq!(t.manual_name(), Some("Luneterm"));
+        t.rename("\u{202e}");
+        assert_eq!(t.manual_name(), None);
+
+        let mut update = empty_update();
+        update.title = Some("x".repeat(500).into());
+        t.apply(update);
+        assert_eq!(t.strip_title().chars().count(), 80);
+        // A program that sets the app's name sets no title.
+        let mut update = empty_update();
+        update.title = Some("Luneterm".into());
+        t.apply(update);
+        assert_eq!(t.label(), None);
+    }
+
+    #[test]
+    fn a_new_tab_is_the_users_and_has_had_no_input() {
+        let mut t = Tab::empty(TermTheme::lunegit_one_dark());
+        assert_eq!(
+            (t.origin, t.program, t.last_input),
+            (Origin::User, false, None)
+        );
+        let first = Instant::now();
+        t.note_input(first);
+        assert_eq!(t.last_input, Some(first));
+        let later = first + Duration::from_millis(5);
+        t.note_input(later);
+        assert_eq!(t.last_input, Some(later));
     }
 
     /// The tab's gate is `outline::should_show` over its own state; the full-screen setting is the

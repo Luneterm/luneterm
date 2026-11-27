@@ -1098,7 +1098,7 @@ fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
                 }
                 let opts = FieldOptions {
                     placeholder: "Tab name",
-                    max_chars: Some(crate::title::MAX_TITLE_CHARS),
+                    max_chars: Some(crate::title::MAX_NAME_CHARS),
                     label: Some("Tab name"),
                     ..FieldOptions::default()
                 };

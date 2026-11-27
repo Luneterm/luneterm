@@ -15,7 +15,7 @@ pub const MAX_PROGRAM_BYTES: usize = 64 * 1024;
 /// The longest group name, in Unicode scalar values.
 pub const MAX_GROUP_CHARS: usize = 64;
 /// The longest `--title`, in Unicode scalar values.
-pub const MAX_TITLE_CHARS: usize = 128;
+pub const MAX_TITLE_CHARS: usize = crate::title::MAX_NAME_CHARS;
 
 /// The words `tab new` knows: none of them is taken as the value of an option.
 const NEW_WORDS: [&str; 5] = ["--cwd", "--group", "--title", "--focus", "--"];
@@ -588,15 +588,15 @@ mod tests {
     }
 
     /// A name `label_ok` accepts, up to the title's own cap, is what a rename shows:
-    /// `title::sanitize` leaves it as it is. (`title::sanitize_text` is another rule: it collapses
-    /// runs of whitespace, which a name may hold.)
+    /// `title::sanitize_name` leaves it as it is. (`title::sanitize_text` is another rule: it
+    /// collapses runs of whitespace, which a name may hold.)
     #[test]
     fn an_accepted_label_up_to_the_title_cap_is_unchanged_by_the_title_sanitizer() {
-        const CAP: usize = title::MAX_TITLE_CHARS;
+        const CAP: usize = MAX_TITLE_CHARS;
         let mut accepted = 0usize;
         let mut check = |s: &str| {
             if label_ok(s, CAP) {
-                assert!(title::sanitize(s) == s, "{s:?}");
+                assert!(title::sanitize_name(s).as_deref() == Some(s), "{s:?}");
                 accepted += 1;
             }
         };
@@ -614,7 +614,10 @@ mod tests {
         ] {
             let s = format!("a{}b", c.to_string().repeat(CAP - 2));
             assert!(label_ok(&s, CAP), "{c:?}");
-            assert!(title::sanitize(&s) == s, "{c:?}");
+            assert!(
+                title::sanitize_name(&s).as_deref() == Some(s.as_str()),
+                "{c:?}"
+            );
         }
     }
 

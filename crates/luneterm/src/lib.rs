@@ -15,6 +15,7 @@ pub mod dump;
 pub mod efficiency;
 pub mod fade;
 pub mod fonts;
+pub mod groups;
 pub mod input;
 pub mod links;
 pub mod menus;
