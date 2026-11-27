@@ -886,7 +886,7 @@ impl UpdatePanel {
     }
 }
 
-/// The status line under the updates toggle.
+/// The About status line under the version row.
 pub fn update_status(strings: &StringTable, state: &UpdateState) -> String {
     let key = |k: &str| format!("settings.about.updates.status.{k}");
     match state {
@@ -894,7 +894,7 @@ pub fn update_status(strings: &StringTable, state: &UpdateState) -> String {
             strings.tr(&key("notInstalled")).to_owned()
         }
         UpdateState::Unavailable(Unavailable::Broken(why)) => {
-            strings.tr_fmt(&key("broken"), &[&capitalise(why)], &DisplayFormat)
+            strings.tr_fmt(&key("broken"), &[&sentence(why)], &DisplayFormat)
         }
         UpdateState::Idle => strings.tr(&key("idle")).to_owned(),
         UpdateState::Checking => strings.tr(&key("checking")).to_owned(),
@@ -907,18 +907,24 @@ pub fn update_status(strings: &StringTable, state: &UpdateState) -> String {
         }
         UpdateState::Ready(version) => strings.tr_fmt(&key("ready"), &[version], &DisplayFormat),
         UpdateState::Failed(why) => {
-            strings.tr_fmt(&key("failed"), &[&capitalise(why)], &DisplayFormat)
+            strings.tr_fmt(&key("failed"), &[&sentence(why)], &DisplayFormat)
         }
     }
 }
 
-/// A reason (lunepack's message, lower case) starts a sentence after the colon: first letter up.
-fn capitalise(text: &str) -> String {
+/// A reason (lunepack's message, lower case) is a sentence after the two-sentence status text:
+/// first letter up, and a final period unless it already ends in `.`, `…`, `!` or `?`
+/// (`redact()` truncates with `…`).
+fn sentence(text: &str) -> String {
     let mut chars = text.chars();
-    match chars.next() {
+    let mut out: String = match chars.next() {
         Some(c) => c.to_uppercase().chain(chars).collect(),
-        None => String::new(),
+        None => return String::new(),
+    };
+    if !out.ends_with(['.', '…', '!', '?']) {
+        out.push('.');
     }
+    out
 }
 
 fn spec(text: &str, size: f32, color: Rgba) -> Spec {
@@ -1942,7 +1948,7 @@ mod tests {
         );
         assert_eq!(
             line(UpdateState::Failed("no network".into())),
-            "The update failed: No network"
+            "The update failed. No network."
         );
         // The reasons a copy cannot update come from the string table too.
         assert_eq!(
@@ -1953,8 +1959,21 @@ mod tests {
             line(UpdateState::Unavailable(Unavailable::Broken(
                 "state".into()
             ))),
-            "Updates are unavailable: State"
+            "Updates are unavailable. State."
         );
+    }
+
+    #[test]
+    fn a_reason_gets_a_final_period_unless_it_has_a_closing_mark() {
+        assert_eq!(sentence("no network"), "No network.");
+        assert_eq!(sentence("cancelled."), "Cancelled.");
+        assert_eq!(
+            sentence("cut off at https://host/…"),
+            "Cut off at https://host/…"
+        );
+        assert_eq!(sentence("really?"), "Really?");
+        assert_eq!(sentence("stop!"), "Stop!");
+        assert_eq!(sentence(""), "");
     }
 
     #[test]
