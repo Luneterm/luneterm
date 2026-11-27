@@ -1401,7 +1401,7 @@ checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 
 [[package]]
 name = "lune-pty"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "nix",
  "portable-pty",
@@ -1410,7 +1410,7 @@ dependencies = [
 
 [[package]]
 name = "lune-termview"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -1498,11 +1498,11 @@ dependencies = [
 
 [[package]]
 name = "lune-vt"
-version = "0.8.0"
+version = "0.9.0"
 
 [[package]]
 name = "lune-vt-conformance"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "lune-vt",
 ]
@@ -1631,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "luneterm"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "dirs",
  "libc",
@@ -1658,7 +1658,7 @@ dependencies = [
 
 [[package]]
 name = "luneterm-ffi"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "lune-vt",
 ]
