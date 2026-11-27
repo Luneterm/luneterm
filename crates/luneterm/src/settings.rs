@@ -205,6 +205,10 @@ pub struct Settings {
     /// their tab is in the background and an entry in the notification list. Off: such messages
     /// are dropped (the bell is not affected). A Luneterm-only setting: Lunegit has none.
     pub osc_notifications: bool,
+    /// Let command-line programs list, open, close, focus and group tabs through `luneterm ctl`.
+    /// Off: every request but `ctl status` is refused (the control listener reads it per
+    /// request). A Luneterm-only setting: Lunegit has none.
+    pub tab_control: bool,
     /// Throttle Luneterm itself while its window is unfocused or minimized and no tab prints
     /// output; shells keep normal priority. Linux has no mechanism, so it has no effect there. A
     /// Luneterm-only setting: Lunegit has none.
@@ -249,6 +253,7 @@ impl Default for Settings {
             option_as_meta: false,
             copy_on_select: true,
             osc_notifications: true,
+            tab_control: true,
             efficiency_mode: true,
             auto_update_check: true,
             update_channel: String::new(),
@@ -378,6 +383,7 @@ impl Settings {
             option_as_meta,
             copy_on_select,
             osc_notifications,
+            tab_control,
             efficiency_mode,
             auto_update_check,
             // Bookkeeping, not a row of the page: it never counts as a change.
@@ -441,6 +447,7 @@ impl Settings {
                 SettingId::OscNotifications,
                 *osc_notifications != other.osc_notifications,
             ),
+            (SettingId::TabControl, *tab_control != other.tab_control),
             (
                 SettingId::EfficiencyMode,
                 *efficiency_mode != other.efficiency_mode,
@@ -484,13 +491,14 @@ pub enum SettingId {
     OptionAsMeta,
     CopyOnSelect,
     OscNotifications,
+    TabControl,
     EfficiencyMode,
     AutoUpdateCheck,
 }
 
 impl SettingId {
     /// Every setting, in the order of the [`Settings`] fields.
-    pub const ALL: [SettingId; 26] = [
+    pub const ALL: [SettingId; 27] = [
         SettingId::Theme,
         SettingId::Glass,
         SettingId::MenuBlur,
@@ -515,6 +523,7 @@ impl SettingId {
         SettingId::OptionAsMeta,
         SettingId::CopyOnSelect,
         SettingId::OscNotifications,
+        SettingId::TabControl,
         SettingId::EfficiencyMode,
         SettingId::AutoUpdateCheck,
     ];
@@ -536,7 +545,9 @@ impl SettingId {
             SettingId::OscClipboard => Effect::OscClipboard,
             SettingId::OptionAsMeta => Effect::OptionAsMeta,
             SettingId::CopyOnSelect => Effect::CopyOnSelect,
-            SettingId::OscNotifications => Effect::OscNotifications,
+            // Nothing to do live, as the notifications row: the control listener reads the field
+            // per request. (No effect of its own: app.rs has no arm for one yet.)
+            SettingId::OscNotifications | SettingId::TabControl => Effect::OscNotifications,
             SettingId::EfficiencyMode => Effect::Efficiency,
             SettingId::AutoUpdateCheck => Effect::AutoUpdateCheck,
             SettingId::ConfirmClose => Effect::ConfirmClose,
@@ -835,6 +846,7 @@ mod tests {
             (S::OptionAsMeta, E::OptionAsMeta),
             (S::CopyOnSelect, E::CopyOnSelect),
             (S::OscNotifications, E::OscNotifications),
+            (S::TabControl, E::OscNotifications),
             (S::EfficiencyMode, E::Efficiency),
             (S::AutoUpdateCheck, E::AutoUpdateCheck),
         ];
@@ -849,7 +861,7 @@ mod tests {
     #[test]
     fn changing_one_field_changes_exactly_its_id() {
         let d = Settings::default();
-        let cases: [(SettingId, Settings); 26] = [
+        let cases: [(SettingId, Settings); 27] = [
             (
                 SettingId::Theme,
                 Settings {
@@ -1015,6 +1027,13 @@ mod tests {
                 SettingId::OscNotifications,
                 Settings {
                     osc_notifications: false,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::TabControl,
+                Settings {
+                    tab_control: false,
                     ..d.clone()
                 },
             ),

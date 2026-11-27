@@ -265,6 +265,11 @@ static TERMINAL: [Group; 3] = [
                 "settings.terminal.behavior.oscNotifications",
             ),
             row(
+                SettingId::TabControl,
+                Control::Toggle,
+                "settings.terminal.behavior.tabControl",
+            ),
+            row(
                 SettingId::OptionAsMeta,
                 Control::Toggle,
                 "settings.terminal.behavior.optionAsMeta",
@@ -547,6 +552,7 @@ pub fn flag(settings: &Settings, id: SettingId) -> Option<bool> {
         SettingId::OptionAsMeta => settings.option_as_meta,
         SettingId::CopyOnSelect => settings.copy_on_select,
         SettingId::OscNotifications => settings.osc_notifications,
+        SettingId::TabControl => settings.tab_control,
         SettingId::EfficiencyMode => settings.efficiency_mode,
         SettingId::AutoUpdateCheck => settings.auto_update_check,
         _ => return None,
@@ -567,6 +573,7 @@ pub fn set_flag(settings: &mut Settings, id: SettingId, on: bool) {
         SettingId::OptionAsMeta => settings.option_as_meta = on,
         SettingId::CopyOnSelect => settings.copy_on_select = on,
         SettingId::OscNotifications => settings.osc_notifications = on,
+        SettingId::TabControl => settings.tab_control = on,
         SettingId::EfficiencyMode => settings.efficiency_mode = on,
         SettingId::AutoUpdateCheck => settings.auto_update_check = on,
         _ => {}
@@ -1622,6 +1629,7 @@ mod tests {
             SettingId::OptionAsMeta,
             SettingId::CopyOnSelect,
             SettingId::OscNotifications,
+            SettingId::TabControl,
             SettingId::EfficiencyMode,
             SettingId::AutoUpdateCheck,
         ] {

@@ -27,7 +27,7 @@ pub struct SettingsDoc {
 }
 
 /// The names this build writes, in the order it writes them.
-const KEYS: [&str; 27] = [
+const KEYS: [&str; 28] = [
     "theme",
     "glass",
     "menu_blur",
@@ -52,6 +52,7 @@ const KEYS: [&str; 27] = [
     "option_as_meta",
     "copy_on_select",
     "osc_notifications",
+    "tab_control",
     "efficiency_mode",
     "auto_update_check",
     "update_channel",
@@ -133,6 +134,7 @@ pub fn parse_settings(bytes: &[u8]) -> Result<SettingsDoc, Reject> {
     flag(members, "option_as_meta", &mut s.option_as_meta);
     flag(members, "copy_on_select", &mut s.copy_on_select);
     flag(members, "osc_notifications", &mut s.osc_notifications);
+    flag(members, "tab_control", &mut s.tab_control);
     flag(members, "efficiency_mode", &mut s.efficiency_mode);
     flag(members, "auto_update_check", &mut s.auto_update_check);
     text(members, "update_channel", &mut s.update_channel);
@@ -183,6 +185,7 @@ pub fn render_settings(doc: &SettingsDoc) -> Result<String, WriteError> {
         ("option_as_meta".into(), Json::Bool(s.option_as_meta)),
         ("copy_on_select".into(), Json::Bool(s.copy_on_select)),
         ("osc_notifications".into(), Json::Bool(s.osc_notifications)),
+        ("tab_control".into(), Json::Bool(s.tab_control)),
         ("efficiency_mode".into(), Json::Bool(s.efficiency_mode)),
         ("auto_update_check".into(), Json::Bool(s.auto_update_check)),
         ("update_channel".into(), Json::Str(s.update_channel)),
@@ -221,6 +224,7 @@ mod tests {
             option_as_meta: true,
             copy_on_select: false,
             osc_notifications: false,
+            tab_control: false,
             efficiency_mode: false,
             auto_update_check: false,
             update_channel: "beta".into(),
@@ -454,6 +458,31 @@ mod tests {
         assert!(text.contains("\"osc_notifications\":false"), "{text}");
         assert_eq!(parse_settings(text.as_bytes()), Ok(doc));
         let unknown = parse_settings(br#"{"version":1,"osc_notifications":true}"#)
+            .expect("parses")
+            .unknown;
+        assert!(unknown.is_empty(), "a known key is not unknown");
+    }
+
+    /// A file without `tab_control` loads it on; a string keeps the default on; `false` reads off
+    /// and is written back as `false`.
+    #[test]
+    fn tab_control_defaults_on_and_reads_off() {
+        let read = |json: &str| parse_settings(json.as_bytes()).expect("parses").settings;
+        assert!(read(r#"{"version":1,"palette":"Nord"}"#).tab_control);
+        assert!(
+            read(r#"{"version":1,"tab_control":"off"}"#).tab_control,
+            "a string is no bool: the default stays on"
+        );
+        let off = read(r#"{"version":1,"tab_control":false}"#);
+        assert!(!off.tab_control);
+        let doc = SettingsDoc {
+            settings: off,
+            unknown: Vec::new(),
+        };
+        let text = render_settings(&doc).expect("writes");
+        assert!(text.contains("\"tab_control\":false"), "{text}");
+        assert_eq!(parse_settings(text.as_bytes()), Ok(doc));
+        let unknown = parse_settings(br#"{"version":1,"tab_control":true}"#)
             .expect("parses")
             .unknown;
         assert!(unknown.is_empty(), "a known key is not unknown");
