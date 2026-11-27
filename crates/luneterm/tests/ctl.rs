@@ -499,6 +499,7 @@ mod windows {
         pub(super) token: String,
         connections: Arc<AtomicUsize>,
         hang_up: Arc<AtomicBool>,
+        hung_up: Arc<AtomicUsize>,
         stop: Option<Box<dyn Interrupt>>,
         thread: Option<JoinHandle<()>>,
     }
@@ -510,9 +511,11 @@ mod windows {
             let stop: Box<dyn Interrupt> = Box::new(listener.interrupter().expect("interrupter"));
             let connections = Arc::new(AtomicUsize::new(0));
             let hang_up = Arc::new(AtomicBool::new(false));
+            let hung_up = Arc::new(AtomicUsize::new(0));
             let thread = thread::spawn({
                 let connections = Arc::clone(&connections);
                 let hang_up = Arc::clone(&hang_up);
+                let hung_up = Arc::clone(&hung_up);
                 move || {
                     while let Ok(Some(mut connection)) =
                         listener.accept(Instant::now() + Duration::from_secs(600))
@@ -524,6 +527,8 @@ mod windows {
                             // server is by then, so what it sees is the hang-up, not a server
                             // it cannot name.
                             let _ = connection.read(&mut [0; 1]);
+                            drop(connection);
+                            hung_up.fetch_add(1, Ordering::SeqCst);
                         } else {
                             let _ = std::io::copy(&mut connection, &mut std::io::sink());
                         }
@@ -534,6 +539,7 @@ mod windows {
                 token,
                 connections,
                 hang_up,
+                hung_up,
                 stop: Some(stop),
                 thread: Some(thread),
             }
@@ -544,11 +550,13 @@ mod windows {
             self.connections.swap(0, Ordering::SeqCst) > 0
         }
 
-        /// Hangs up on the next connection, and waits for it.
+        /// Hangs up on the next connection, and waits until it has: dropping `Raw` (which
+        /// interrupts the pipe) any earlier could end the connection before the client has
+        /// checked who the server is, and the client would then not count it at all.
         pub(super) fn hang_up_on_one(&self) {
             self.hang_up.store(true, Ordering::SeqCst);
             let start = Instant::now();
-            while self.connections.load(Ordering::SeqCst) == 0 {
+            while self.hung_up.load(Ordering::SeqCst) == 0 {
                 assert!(start.elapsed() < Duration::from_secs(20), "no connection");
                 thread::sleep(Duration::from_millis(5));
             }
