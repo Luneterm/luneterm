@@ -7,9 +7,9 @@
 //! dialogs and a failed start (M10 step 2), then the settings page in its sections, the menus, a
 //! palette switch and the opaque look Linux gets (step 6), and the tab menus with groups, the group
 //! editor and the close-group question in both looks, and the side pane: its frame and its tab list
-//! (groups, collapsed cards, unread marks, progress, a long list, the menus asked from it). A dialog
-//! or menu is drawn after its entry animation, and a menu or scroll the toolkit owns is driven with
-//! scripted input.
+//! (groups, collapsed cards, unread marks, progress, a long list, the menus asked from it, and
+//! drags of its rows and cards held in mid-air). A dialog or menu is drawn after its entry
+//! animation, and a menu, scroll or drag the toolkit owns is driven with scripted input.
 //!
 //! The fonts are the window's, system fonts included (the demo has an emoji), so the PNGs are
 //! reproducible on one machine and may differ between machines.
@@ -198,6 +198,8 @@ const LINK_TEXT: &str = "see https://example.com/docs/getting-started?lang=en fo
 #[derive(Debug, Clone, Copy)]
 enum Input {
     Move(f32, f32),
+    /// The pointer comes to the point and the primary button goes down, and stays down.
+    Press(f32, f32),
     SecondaryClick(f32, f32),
     /// A wheel of `y` lines with the pointer at the point.
     Wheel(f32, f32, f32),
@@ -208,6 +210,15 @@ impl Input {
         let mods = Modifiers::default();
         match self {
             Input::Move(x, y) => vec![Event::PointerMoved { pos: (x, y) }],
+            Input::Press(x, y) => vec![
+                Event::PointerMoved { pos: (x, y) },
+                Event::PointerButton {
+                    pos: (x, y),
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: mods,
+                },
+            ],
             Input::SecondaryClick(x, y) => ["press", "release"]
                 .iter()
                 .map(|k| Event::PointerButton {
@@ -447,6 +458,55 @@ const SHINES: &[(usize, Tone)] = &[(0, Tone::Neutral), (4, Tone::Warn), (5, Tone
 /// Points of mock F's list: over the `logs` row, and over the `api` card's header.
 const OVER_LOGS_ROW: (f32, f32) = (110.0, 155.0);
 const OVER_API_HEADER: (f32, f32) = (110.0, 90.0);
+
+/// Drags of mock F's list: the press in the second frame, the pointer held where the third
+/// takes it. `logs` to the end of its card; `zsh` between the `orch: shop` and `infra` cards;
+/// `logs` over the collapsed `infra` header; the `orch: shop` card by its header to above `api`,
+/// and over `api`'s rows, where nothing may drop; and `logs` into the gap under its card.
+const DRAG_WITHIN: &[(usize, Input)] = &drag((110.0, 155.0), (110.0, 196.0));
+const DRAG_LOOSE: &[(usize, Input)] = &drag((110.0, 50.0), (110.0, 318.0));
+const DRAG_INTO: &[(usize, Input)] = &drag((110.0, 155.0), (110.0, 339.0));
+const DRAG_CARD: &[(usize, Input)] = &drag((110.0, 231.0), (110.0, 80.0));
+const DRAG_REFUSED: &[(usize, Input)] = &drag((110.0, 231.0), (110.0, 155.0));
+const DRAG_OUT: &[(usize, Input)] = &drag((110.0, 155.0), (110.0, 210.0));
+
+const fn drag(from: (f32, f32), to: (f32, f32)) -> [(usize, Input); 2] {
+    [
+        (1, Input::Press(from.0, from.1)),
+        (2, Input::Move(to.0, to.1)),
+    ]
+}
+
+/// A press on a row activates its tab, so a dragged tab is the active one; a press on a header
+/// activates nothing (mock F's `server` stays).
+const D1: Scene = Scene {
+    active: 2,
+    script: DRAG_WITHIN,
+    ..MOCK
+};
+const D2: Scene = Scene {
+    active: 0,
+    script: DRAG_LOOSE,
+    ..MOCK
+};
+const D3: Scene = Scene {
+    active: 2,
+    script: DRAG_INTO,
+    ..MOCK
+};
+const D4: Scene = Scene {
+    script: DRAG_CARD,
+    ..MOCK
+};
+const D5: Scene = Scene {
+    script: DRAG_REFUSED,
+    ..MOCK
+};
+const D6: Scene = Scene {
+    active: 2,
+    script: DRAG_OUT,
+    ..MOCK
+};
 
 const BASE: Scene = Scene {
     name: "",
@@ -1244,6 +1304,94 @@ const SCENES: &[Scene] = &[
             (1, Input::SecondaryClick(OVER_LOGS_ROW.0, OVER_LOGS_ROW.1)),
         ],
         ..MOCK
+    },
+    // Drags held in mid-air (D24), at 2x and 1x.
+    Scene {
+        name: "pane-drag-d1@2x.png",
+        ..D1
+    },
+    Scene {
+        name: "lunegit-pane-drag-d1@2x.png",
+        look: Theme::Lunegit,
+        ..D1
+    },
+    Scene {
+        name: "pane-drag-d1@1x.png",
+        scale: 1,
+        ..D1
+    },
+    Scene {
+        name: "lunegit-pane-drag-d1@1x.png",
+        scale: 1,
+        look: Theme::Lunegit,
+        ..D1
+    },
+    Scene {
+        name: "pane-drag-d2@2x.png",
+        ..D2
+    },
+    Scene {
+        name: "pane-drag-d2@1x.png",
+        scale: 1,
+        ..D2
+    },
+    Scene {
+        name: "pane-drag-d3@2x.png",
+        ..D3
+    },
+    Scene {
+        name: "lunegit-pane-drag-d3@2x.png",
+        look: Theme::Lunegit,
+        ..D3
+    },
+    Scene {
+        name: "pane-drag-d3@1x.png",
+        scale: 1,
+        ..D3
+    },
+    Scene {
+        name: "lunegit-pane-drag-d3@1x.png",
+        scale: 1,
+        look: Theme::Lunegit,
+        ..D3
+    },
+    Scene {
+        name: "pane-drag-d4@2x.png",
+        ..D4
+    },
+    Scene {
+        name: "lunegit-pane-drag-d4@2x.png",
+        look: Theme::Lunegit,
+        ..D4
+    },
+    Scene {
+        name: "pane-drag-d4@1x.png",
+        scale: 1,
+        ..D4
+    },
+    Scene {
+        name: "lunegit-pane-drag-d4@1x.png",
+        scale: 1,
+        look: Theme::Lunegit,
+        ..D4
+    },
+    Scene {
+        name: "pane-drag-d5@2x.png",
+        ..D5
+    },
+    Scene {
+        name: "pane-drag-d5@1x.png",
+        scale: 1,
+        ..D5
+    },
+    Scene {
+        name: "pane-drag-d6@2x.png",
+        ..D6
+    },
+    Scene {
+        name: "pane-drag-d6@1x.png",
+        scale: 1,
+        ..D6
     },
 ];
 

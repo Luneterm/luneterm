@@ -339,6 +339,20 @@ fn inbox_open_after(was_open: bool, clicked: bool, out: Option<&shell::InboxOut>
     }
 }
 
+/// Whether an Escape key event is the side pane's drag's (D24), so the toolkit gets it and
+/// neither the terminal nor the settings page does: a fresh press while a drag is under way, and
+/// that press's repeats and release. `held` remembers which the last press was.
+fn drag_takes_escape(held: &mut bool, dragging: bool, pressed: bool, repeat: bool) -> bool {
+    if pressed && !repeat {
+        *held = dragging;
+    }
+    let takes = *held;
+    if !pressed {
+        *held = false;
+    }
+    takes
+}
+
 /// Keeps the inbox true against the tab set (D13): rows of closed tabs go, and while the window is
 /// focused the active tab has nothing unread. One call covers every way the active tab changes or
 /// a tab closes. Returns whether anything changed.
@@ -1148,6 +1162,10 @@ struct App {
     pane_drag: Option<WidthDrag>,
     /// The pane's list shows the active tab's row in its next frame (D32).
     pane_reveal: bool,
+    /// The last frame drew a drag of the pane's list: Escape ends it.
+    pane_dragging: bool,
+    /// The Escape key now held was pressed during such a drag.
+    drag_escape: bool,
     bell: BellLimiter,
     /// Bells and program notifications, the one store behind the tab dots, the bell and the list.
     /// In memory only (D15).
@@ -1266,6 +1284,8 @@ impl App {
             thumb_drag: None,
             pane_drag: None,
             pane_reveal: false,
+            pane_dragging: false,
+            drag_escape: false,
             bell: BellLimiter::default(),
             inbox: Inbox::new(),
             inbox_ring: None,
@@ -2608,6 +2628,15 @@ impl App {
                     self.menu = Some(menu);
                 }
             }
+            // Reported by every frame of a drag: `redraw` reads it, and it asks for no frame.
+            PaneEvent::Dragging => return,
+            PaneEvent::Drop { item, index, group } => {
+                if pane::commit(&mut self.tabs, item, index, group) {
+                    self.workspace_changed(true);
+                    // A tab dragged out can take its group with it.
+                    self.drop_overlays_of_gone_tabs();
+                }
+            }
         }
         self.request_redraw();
     }
@@ -3504,6 +3533,7 @@ impl App {
         let tab_context = drawn.tab_context;
         let (pane_toggle, pane_edge) = (drawn.pane_toggle, drawn.pane_edge);
         let pane_events = drawn.pane_events;
+        self.pane_dragging = pane_events.contains(&PaneEvent::Dragging);
         // Closing the window is closing every tab: it asks like they do.
         let close_asked = out
             .commands
@@ -4300,6 +4330,19 @@ impl App {
         if let Some(t) = &mut self.trace {
             t.event(&event);
         }
+        let dragged_escape = match &event {
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.logical_key == Key::Named(NamedKey::Escape) =>
+            {
+                drag_takes_escape(
+                    &mut self.drag_escape,
+                    self.pane_dragging,
+                    key.state.is_pressed(),
+                    key.repeat,
+                )
+            }
+            _ => false,
+        };
         match &event {
             WindowEvent::CloseRequested => {
                 // Closing the window closes every tab: it asks like they do.
@@ -4328,7 +4371,7 @@ impl App {
                 event,
                 is_synthetic,
                 ..
-            } if !self.overlay_open() => {
+            } if !self.overlay_open() && !dragged_escape => {
                 self.on_key(event, *is_synthetic, event_loop);
                 return;
             }
@@ -4338,7 +4381,11 @@ impl App {
                 event: key,
                 is_synthetic,
                 ..
-            } if self.page.is_some() && self.modal.is_none() && self.menu.is_none() => {
+            } if self.page.is_some()
+                && self.modal.is_none()
+                && self.menu.is_none()
+                && !dragged_escape =>
+            {
                 if self.page_key(key, *is_synthetic) {
                     return;
                 }
@@ -5161,6 +5208,29 @@ mod tests {
         assert!(!is_modifier_key(&Key::Named(NamedKey::Enter)));
         assert!(!is_modifier_key(&Key::Named(NamedKey::Escape)));
         assert!(!is_modifier_key(&Key::Character("a".into())));
+    }
+
+    #[test]
+    fn escape_is_a_drags_from_its_press_to_its_release() {
+        let mut held = false;
+        let mut key =
+            |dragging, pressed, repeat| drag_takes_escape(&mut held, dragging, pressed, repeat);
+        // No drag: the terminal's, with its repeats and release.
+        assert!(!key(false, true, false));
+        assert!(!key(false, true, true));
+        assert!(!key(false, false, false));
+        // During a drag: the drag's, also once the press has ended the drag.
+        assert!(key(true, true, false));
+        assert!(key(false, true, true));
+        assert!(key(false, false, false));
+        // The next one is the terminal's again, and a release lost with the window's focus is
+        // made good by the next press.
+        assert!(!key(false, true, false));
+        assert!(key(true, true, false));
+        assert!(!key(false, true, false));
+        // A drag that starts while the key is down takes nothing of that press.
+        assert!(!key(true, true, true));
+        assert!(!key(true, false, false));
     }
 
     #[test]
