@@ -5,9 +5,9 @@
 //! Layout, logical px, of the top bar view: a 34 px title band, then the card inset 10 px from
 //! the left, right and bottom. The 32 px tab strip heads the card (the toolkit draws it and the
 //! outline around the card); the terminal's body sits under it, inset 10 px inside the card. In
-//! the side pane view ([`crate::pane`]) the pane takes the left column, the card has no strip and
-//! the band is only the room above the card. The close-confirm and rename dialogs are drawn here
-//! too, on the modal layer.
+//! the side pane view ([`crate::pane`]) the pane takes the left column, and the band and the card
+//! the rest: the band holds the title, centred on the card, and the card has no strip. The
+//! close-confirm and rename dialogs are drawn here too, on the modal layer.
 
 use std::time::Duration;
 
@@ -50,6 +50,13 @@ pub const TITLE_BAND: f32 = 34.0;
 pub const CARD_MARGIN: f32 = 10.0;
 /// The gap between the card and the terminal body.
 pub const BODY_PAD: f32 = 10.0;
+/// The title's line box stands this far under the band's top, which optically centres it.
+const TITLE_DROP: f32 = 2.0;
+/// The pane view's title keeps this far inside the card's edges.
+const TITLE_CARD_INSET: f32 = 12.0;
+/// How far from the window's right the title keeps clear of the drawn caption buttons: three
+/// 46 px buttons and a margin.
+const CAPTION_CLEAR: f32 = 3.0 * 46.0 + 8.0;
 /// The scrollbar thumb's opacity (accent colour).
 pub const THUMB_ALPHA: f32 = 0.55;
 /// The slot of the active tab's terminal in the frame's custom-draw list; grids fading out in a
@@ -109,8 +116,7 @@ pub struct Chrome {
 /// Windows: a borderless window with drawn caption buttons.
 pub const WINDOWS_CHROME: Chrome = Chrome {
     drawn_caption: true,
-    // Three 46 px buttons and a margin.
-    title_inset: 3.0 * 46.0 + 8.0,
+    title_inset: CAPTION_CLEAR,
     band_double_click: true,
     native_lights: false,
 };
@@ -154,7 +160,7 @@ pub enum View {
     #[default]
     Bar,
     /// The pane is `width` logical px wide. With `drawn_caption` the app draws the caption
-    /// buttons, so a title band over the terminal column keeps them off the terminal (D27).
+    /// buttons, over the title band's right end: the title keeps clear of them.
     Pane { width: f32, drawn_caption: bool },
 }
 
@@ -162,18 +168,21 @@ pub enum View {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
     pub window: Rect,
-    /// The title band. In the pane view it is the room above the card, right of the pane: a press
-    /// there drags the window.
+    /// The title band. In the pane view it is over the terminal column, right of the pane. A
+    /// press there drags the window.
     pub band: Rect,
+    /// The pane view's title: the rect it is centred in and clipped to, its middle the card's
+    /// (D27'). `None` in the bar view, which centres its title on the window.
+    pub title: Option<Rect>,
     pub card: Rect,
     /// The tab strip, at the card's top (its right end stays free, see [`STRIP_RESERVE`]); empty
     /// in the pane view.
     pub strip: Rect,
     /// The `⋯` button: in the strip's reserved right end, or at the pane's footer.
     pub overflow: Rect,
-    /// The inbox button; drawn only while the inbox has entries. In the bar view it is left of
-    /// `⋯` ([`INBOX_GAP`] between them) and the strip is narrower by its width plus the gap; in
-    /// the pane view it is at the footer's left.
+    /// The inbox button; drawn only while the inbox has entries. It is left of `⋯`
+    /// ([`INBOX_GAP`] between them), in the pane view in the footer; in the bar view the strip is
+    /// narrower by its width plus the gap.
     pub inbox: Rect,
     pub body: Rect,
     /// The side pane's rects; `None` in the bar view.
@@ -198,21 +207,29 @@ impl Layout {
         }
     }
 
-    /// The pane view's layout (D26, D27): the pane at the left, the card from its right edge, no
-    /// strip.
+    /// The pane view's layout (D26', D27'): the pane at the left over the window's whole height;
+    /// from its right edge the title band, the card under it, no strip.
     fn with_pane(window: Rect, width: f32, drawn_caption: bool) -> Layout {
         let pane = PaneRects::new(window, width);
-        let top = if drawn_caption {
-            TITLE_BAND
-        } else {
-            CARD_MARGIN
-        };
         let left = pane.rect.right();
         let card = Rect::new(
             left,
-            window.y + top,
+            window.y + TITLE_BAND,
             (window.right() - left - CARD_MARGIN).max(0.0),
-            (window.h - top - CARD_MARGIN).max(0.0),
+            (window.h - TITLE_BAND - CARD_MARGIN).max(0.0),
+        );
+        // The title's room reaches the same distance either side of the card's middle.
+        let middle = card.x + card.w / 2.0;
+        let mut half = card.w / 2.0 - TITLE_CARD_INSET;
+        if drawn_caption {
+            half = half.min(window.right() - CAPTION_CLEAR - middle);
+        }
+        let half = half.max(0.0);
+        let title = Rect::new(
+            middle - half,
+            window.y,
+            2.0 * half,
+            TITLE_BAND.min(window.h),
         );
         let body = Rect::new(
             card.x + BODY_PAD,
@@ -226,8 +243,9 @@ impl Layout {
                 left,
                 window.y,
                 (window.right() - left).max(0.0),
-                top.min(window.h),
+                TITLE_BAND.min(window.h),
             ),
+            title: Some(title),
             card,
             strip: Rect::new(card.x, card.y, 0.0, 0.0),
             overflow: pane.menu,
@@ -275,6 +293,7 @@ impl Layout {
         Layout {
             window,
             band: Rect::new(window.x, window.y, window.w, TITLE_BAND.min(window.h)),
+            title: None,
             card,
             strip,
             overflow,
@@ -867,7 +886,7 @@ fn band_title(label: Option<&str>, theme: &lune_ui::theme::Theme) -> Spec {
 /// The glass layers go on the fixed base layer (panel over the window, card on top); the
 /// terminal's custom slot sits in the body, below the thumb. In the bar view the strip heads the
 /// card and its outline wraps it; in the pane view the pane stands left of the card and its footer
-/// holds the inbox and `⋯` buttons. The dialogs come last, on the modal layer.
+/// holds the New Tab, inbox and `⋯` buttons. The dialogs come last, on the modal layer.
 pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
     let theme = *ui.theme();
     let win = ui.painter().window;
@@ -883,30 +902,36 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         p.acrylic(win, 0.0, panel, [0.0; 4], true);
         p.acrylic(layout.card, CARD_RADIUS, card, panel, true);
 
-        match &layout.pane {
-            // The pane shows the tabs, so no title (D27).
-            Some(pane) => pane::paint(p, pane, &theme),
+        if let Some(pane) = &layout.pane {
+            pane::paint(p, pane, &theme);
+        }
+        // The title, centred in the band and kept clear of the window buttons: on the window in
+        // the bar view, on the card in the pane view.
+        let (clip, centre) = match layout.title {
+            Some(title) => (title, title),
             None => {
-                // The title, centred in the band and kept clear of the window buttons.
                 let mut side = view.chrome.title_inset;
                 if show_pane_button {
                     side = side.max(pane::show_button(win, view.chrome).right() + 4.0);
                 }
-                let spec = band_title(view.title, &theme);
-                p.set_clip(Some(Rect::new(
-                    side,
-                    0.0,
-                    (win.w - 2.0 * side).max(0.0),
-                    TITLE_BAND,
-                )));
-                // Optically centred: the line box's centre is 2 pt above the cap block's (room
-                // for descenders), so the box moves down 2 pt. Measured on a 2x screenshot: caps
-                // 9 pt from the band's top and 13.5 pt from the card before; with descenders the
-                // lower gap filled in.
-                p.text_centered(&spec, Rect::new(0.0, 2.0, win.w, TITLE_BAND - 2.0));
-                p.set_clip(None);
+                let clip = Rect::new(side, 0.0, (win.w - 2.0 * side).max(0.0), TITLE_BAND);
+                (clip, Rect::new(0.0, 0.0, win.w, TITLE_BAND))
             }
-        }
+        };
+        let spec = band_title(view.title, &theme);
+        p.set_clip(Some(clip));
+        // Optically centred: the line box's centre is 2 pt above the cap block's (room for
+        // descenders), so the box moves down 2 pt. Measured on a 2x screenshot: caps 9 pt from
+        // the band's top and 13.5 pt from the card before; with descenders the lower gap filled
+        // in.
+        let line = Rect::new(
+            centre.x,
+            centre.y + TITLE_DROP,
+            centre.w,
+            TITLE_BAND - TITLE_DROP,
+        );
+        p.text_centered(&spec, line);
+        p.set_clip(None);
 
         // With no strip to draw it, the card's outline is the app's: the strip's colours (a
         // dialog or an unfocused window takes the subtle one). The page draws its own.
@@ -1003,6 +1028,11 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
             let out = pane::list(ui, pane, list);
             pane_events = out.events;
             tab_context = out.tab_context;
+        }
+        // After the list, which says whether a drag is under way.
+        let dragging = pane_events.contains(&PaneEvent::Dragging);
+        if pane::new_tab_button(ui, pane, view.inbox_button.is_some(), dragging) {
+            pane_events.push(PaneEvent::NewTab);
         }
     } else if !view.page_open {
         // The header of the card drags the window where no tab or button is: its region goes in
@@ -1572,7 +1602,7 @@ fn swatches(ui: &mut Ui<'_>, x: f32, y: f32, chosen: &mut GroupColor, look: Look
 mod tests {
     use super::*;
     use crate::fonts;
-    use crate::pane::{PaneRow, TabRow};
+    use crate::pane::{DragItem, PaneRow, TabRow};
     use lune_ui::input::{Modifiers, RawInput, keymap};
     use lune_ui::lunegit_dark::THEME;
     use lune_ui::motion::{Cadence, MotionTier};
@@ -1646,29 +1676,73 @@ mod tests {
         assert_eq!(l.band.h, 20.0);
     }
 
-    /// The pane view at 1040 x 660 and width 248 (the macOS and Linux chrome), and with the drawn
-    /// caption buttons, where the card starts under a band over the terminal column.
+    /// The pane view at 1040 x 660 and width 248: the same on every chrome, the card under a title
+    /// band over the terminal column.
     #[test]
     fn layout_pins_the_pane_view() {
         let win = Rect::new(0.0, 0.0, 1040.0, 660.0);
-        for chrome in [MACOS_CHROME, LINUX_CHROME] {
+        for chrome in [MACOS_CHROME, LINUX_CHROME, WINDOWS_CHROME] {
             let view = pane::resolve(true, 248, win.w, chrome);
-            let l = Layout::for_view(win, false, view);
-            assert_eq!(l.card, Rect::new(248.0, 10.0, 782.0, 640.0));
-            assert_eq!(l.body, Rect::new(258.0, 20.0, 762.0, 620.0));
-            assert_eq!(l.band, Rect::new(248.0, 0.0, 792.0, 10.0));
+            let l = Layout::for_view(win, true, view);
+            assert_eq!(l.card, Rect::new(248.0, 34.0, 782.0, 616.0));
+            assert_eq!(l.body, Rect::new(258.0, 44.0, 762.0, 596.0));
+            assert_eq!(l.band, Rect::new(248.0, 0.0, 792.0, 34.0));
             assert_eq!((l.strip.w, l.strip.h), (0.0, 0.0), "no strip");
             let pane = l.pane.expect("the pane");
             assert_eq!(pane.rect, Rect::new(0.0, 0.0, 248.0, 660.0));
             assert_eq!((l.overflow, l.inbox), (pane.menu, pane.bell));
+            // The inbox button changes no rect of the pane view.
+            assert_eq!(l, Layout::for_view(win, false, view));
         }
-        let view = pane::resolve(true, 248, win.w, WINDOWS_CHROME);
-        let l = Layout::for_view(win, true, view);
-        assert_eq!(l.card, Rect::new(248.0, 34.0, 782.0, 616.0));
-        assert_eq!(l.body, Rect::new(258.0, 44.0, 762.0, 596.0));
-        assert_eq!(l.band, Rect::new(248.0, 0.0, 792.0, 34.0));
-        // The inbox button changes no rect of the pane view.
-        assert_eq!(l, Layout::for_view(win, false, view));
+    }
+
+    /// The pane view's title is centred on the card, never over the pane, 12 inside the card's
+    /// edges, and where the app draws the caption buttons short of them.
+    #[test]
+    fn the_pane_views_title_is_centred_on_the_card() {
+        let title = |window_w: f32, width: u32, chrome: Chrome| {
+            let win = Rect::new(0.0, 0.0, window_w, 660.0);
+            let l = Layout::for_view(win, false, pane::resolve(true, width, window_w, chrome));
+            let title = l.title.expect("the pane view's title");
+            assert_eq!(title.x + title.w / 2.0, l.card.x + l.card.w / 2.0);
+            assert_eq!((title.y, title.h), (l.band.y, l.band.h));
+            assert!(title.x >= l.card.x + 12.0, "{title:?}");
+            assert!(title.right() <= l.card.right() - 12.0, "{title:?}");
+            if chrome.drawn_caption {
+                // The caption buttons are three of 46 at the window's right.
+                assert!(title.right() < window_w - 3.0 * 46.0, "{title:?}");
+            }
+            assert!(title.w > 0.0, "{title:?}");
+            title
+        };
+        for chrome in [MACOS_CHROME, LINUX_CHROME] {
+            assert_eq!(
+                title(1040.0, 248, chrome),
+                Rect::new(260.0, 0.0, 758.0, 34.0)
+            );
+        }
+        assert_eq!(
+            title(1040.0, 248, WINDOWS_CHROME),
+            Rect::new(384.0, 0.0, 510.0, 34.0)
+        );
+        // The widest pane in the narrowest window that shows it, and a wide window.
+        for chrome in [MACOS_CHROME, LINUX_CHROME, WINDOWS_CHROME] {
+            for (window_w, width) in [(910.0, 420), (690.0, 200), (3840.0, 248), (911.0, 248)] {
+                title(window_w, width, chrome);
+            }
+        }
+        // The bar view centres its title on the window.
+        assert_eq!(Layout::new(Rect::new(0.0, 0.0, 1040.0, 660.0)).title, None);
+        // A window with no room for a card has an empty title, not a negative one.
+        let tiny = Layout::for_view(
+            Rect::new(0.0, 0.0, 20.0, 20.0),
+            false,
+            View::Pane {
+                width: 248.0,
+                drawn_caption: true,
+            },
+        );
+        assert_eq!(tiny.title.map(|t| t.w), Some(0.0));
     }
 
     #[test]
@@ -1694,17 +1768,15 @@ mod tests {
             (g.origin, g.cols, g.rows)
         };
         assert_eq!(grid(View::Bar), ((20.0, 76.0), 125, 33));
-        assert_eq!(
-            grid(pane::resolve(true, 248, win.w, MACOS_CHROME)),
-            ((258.0, 20.0), 95, 36)
-        );
-        assert_eq!(
-            grid(pane::resolve(true, 248, win.w, WINDOWS_CHROME)),
-            ((258.0, 44.0), 95, 35)
-        );
+        for chrome in [MACOS_CHROME, WINDOWS_CHROME] {
+            assert_eq!(
+                grid(pane::resolve(true, 248, win.w, chrome)),
+                ((258.0, 44.0), 95, 35)
+            );
+        }
         assert_eq!(
             grid(pane::resolve(true, 420, win.w, MACOS_CHROME)),
-            ((430.0, 20.0), 73, 36)
+            ((430.0, 44.0), 73, 35)
         );
     }
 
@@ -2349,10 +2421,10 @@ mod tests {
         (r.x + r.w / 2.0, r.y + r.h / 2.0)
     }
 
-    /// The pane view's drag regions: the header's empty part and the room above the card drag; no
-    /// button and no edge zone does.
+    /// The pane view's drag regions: the header's empty part and the title band over the terminal
+    /// column drag; no button and no edge zone does.
     #[test]
-    fn the_pane_header_and_the_room_above_the_card_drag_the_window() {
+    fn the_pane_header_and_the_title_band_drag_the_window() {
         for chrome in [MACOS_CHROME, LINUX_CHROME, WINDOWS_CHROME] {
             let layout = Layout::for_view(
                 Rect::new(0.0, 0.0, 1040.0, 660.0),
@@ -2360,24 +2432,50 @@ mod tests {
                 PaneShell::pane(chrome).view,
             );
             let pane = layout.pane.expect("pane");
-            let above = (600.0, if chrome.drawn_caption { 17.0 } else { 7.0 });
-            for at in [(150.0, 17.0), above] {
+            let hide = pane::hide_button(&pane, chrome);
+            // The header right of the hide button (to where that button once stood) and the band,
+            // the title's place included.
+            for at in [
+                (hide.right() + 8.0, 17.0),
+                (150.0, 17.0),
+                (228.0, 17.0),
+                (300.0, 17.0),
+                (639.0, 17.0),
+                (600.0, 31.0),
+            ] {
                 let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
                 let (down, _) = PaneShell::pane(chrome).press(&mut store, &mut text, at);
                 assert_eq!(down.commands, vec![WindowCommand::DragMove], "{at:?}");
+                // The second press does what the band's double press does on this chrome.
+                let again =
+                    PaneShell::pane(chrome).run(&mut store, &mut text, vec![button(at, true)]);
+                let double = if chrome.drawn_caption {
+                    Some(WindowCommand::ToggleMaximize)
+                } else {
+                    crate::double_click::system_action()
+                };
+                let want: Vec<_> = band_command(2, chrome, || double).into_iter().collect();
+                assert_eq!(again.commands, want, "{at:?}");
             }
             for at in [
-                centre(pane::hide_button(&pane, chrome)),
+                centre(hide),
                 centre(layout.overflow),
                 centre(layout.inbox),
+                NEW_TAB_POINT,
                 (245.0, 17.0),
                 (245.0, 300.0),
-                // The list area and the body are no drag regions either.
+                // The list area, the card and the body are no drag regions either.
+                (100.0, 50.0),
                 (100.0, 300.0),
+                (600.0, 36.0),
                 (600.0, 300.0),
             ] {
                 let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
-                let (down, up) = PaneShell::pane(chrome).press(&mut store, &mut text, at);
+                let scene = PaneShell {
+                    list: Some(TWO_ROWS),
+                    ..PaneShell::pane(chrome)
+                };
+                let (down, up) = scene.press(&mut store, &mut text, at);
                 assert!(
                     down.commands.is_empty() && up.commands.is_empty(),
                     "{at:?}: {:?} {:?}",
@@ -2386,6 +2484,80 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A point on the footer's New Tab button, with the bell or without it.
+    const NEW_TAB_POINT: (f32, f32) = (24.0, 638.0);
+
+    /// A list of two loose tabs.
+    const TWO_ROWS: &[PaneRow<'static>] = &[
+        PaneRow::Tab(TabRow {
+            id: 7,
+            title: "zsh",
+            progress: None,
+            unread: false,
+            active: false,
+            group: None,
+        }),
+        PaneRow::Tab(TabRow {
+            id: 8,
+            title: "logs",
+            progress: None,
+            unread: false,
+            active: false,
+            group: None,
+        }),
+    ];
+
+    /// The footer's New Tab button asks for a tab, beside the bell or without it and over the
+    /// settings page too (D31).
+    #[test]
+    fn the_panes_new_tab_button_asks_for_a_tab() {
+        for chrome in [MACOS_CHROME, LINUX_CHROME, WINDOWS_CHROME] {
+            for (inbox, page_open) in [(false, false), (true, false), (false, true), (true, true)] {
+                let scene = PaneShell {
+                    inbox,
+                    page_open,
+                    list: Some(TWO_ROWS),
+                    ..PaneShell::pane(chrome)
+                };
+                let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+                let (down, up) = scene.press(&mut store, &mut text, NEW_TAB_POINT);
+                assert!(down.pane_events.is_empty(), "{:?}", down.pane_events);
+                assert_eq!(up.pane_events, [PaneEvent::NewTab], "{inbox} {page_open}");
+                assert!(!up.pane_toggle && up.overflow.is_none() && !up.inbox_clicked);
+                assert!(down.commands.is_empty() && up.commands.is_empty());
+            }
+        }
+    }
+
+    /// A row dragged onto the footer's New Tab button and released there makes no tab: it drops at
+    /// the end of the list, as anywhere on the footer.
+    #[test]
+    fn a_drag_released_on_the_new_tab_button_makes_no_tab() {
+        let scene = PaneShell {
+            list: Some(TWO_ROWS),
+            ..PaneShell::pane(MACOS_CHROME)
+        };
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let mut go = |events| scene.run(&mut store, &mut text, events).pane_events;
+        let moved = |pos| Event::PointerMoved { pos };
+        let row = (100.0, 50.0);
+        go(vec![]);
+        go(vec![moved(row)]);
+        go(vec![]);
+        assert_eq!(go(vec![button(row, true)]), [PaneEvent::Activate(7)]);
+        assert_eq!(go(vec![moved(NEW_TAB_POINT)]), [PaneEvent::Dragging]);
+        assert_eq!(go(vec![]), [PaneEvent::Dragging]);
+        assert_eq!(
+            go(vec![button(NEW_TAB_POINT, false)]),
+            [PaneEvent::Drop {
+                item: DragItem::Tab(7),
+                index: 1,
+                group: None,
+            }]
+        );
+        assert!(go(vec![]).is_empty());
     }
 
     /// A list of one loose tab.
@@ -2428,19 +2600,23 @@ mod tests {
     #[test]
     fn the_panes_buttons_report_what_they_are() {
         let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
-        for page_open in [false, true] {
+        for (chrome, page_open) in [MACOS_CHROME, LINUX_CHROME, WINDOWS_CHROME]
+            .into_iter()
+            .flat_map(|c| [(c, false), (c, true)])
+        {
             let scene = PaneShell {
                 page_open,
-                ..PaneShell::pane(MACOS_CHROME)
+                ..PaneShell::pane(chrome)
             };
             let layout = Layout::for_view(Rect::new(0.0, 0.0, 1040.0, 660.0), true, scene.view);
             let pane = layout.pane.expect("pane");
-            let (_, up) = scene.press(
+            let (down, up) = scene.press(
                 &mut store,
                 &mut text,
-                centre(pane::hide_button(&pane, MACOS_CHROME)),
+                centre(pane::hide_button(&pane, chrome)),
             );
             assert!(up.pane_toggle && up.overflow.is_none() && !up.inbox_clicked);
+            assert!(down.commands.is_empty() && up.commands.is_empty());
             let (_, up) = scene.press(&mut store, &mut text, centre(layout.overflow));
             assert_eq!(up.overflow, Some(layout.overflow), "page {page_open}");
             assert!(!up.pane_toggle);

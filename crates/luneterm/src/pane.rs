@@ -1,13 +1,12 @@
 //! The side pane (plan D20-D22, D26-D35): which of the two views a window shows, the pane's
 //! rects, the bar view's show button, the pane's own controls (the hide button, the divider of
-//! the footer and the width drag at its right edge) and the tab list: loose tabs, group cards and
-//! the New Tab button, scrolling between the header and the footer, with its drag reorder (D24):
-//! a tab's row, or a whole card by its header, dropped in a gap of the list. The window's drag
-//! regions, the footer's bell and `⋯` buttons and the terminal card are the shell's
+//! the footer, its New Tab button and the width drag at its right edge) and the tab list: loose
+//! tabs and group cards, scrolling between the header and the footer, with its drag reorder
+//! (D24): a tab's row, or a whole card by its header, dropped in a gap of the list. The window's
+//! drag regions, the footer's bell and `⋯` buttons and the terminal card are the shell's
 //! ([`crate::shell`]). A tab's progress report shines over its title; the running-command outline
 //! is the top bar's only.
 
-use std::f32::consts::{FRAC_PI_2, PI};
 use std::time::Duration;
 
 use lune_ui::access::{Action, Node, Role, State};
@@ -25,13 +24,15 @@ use lune_ui::widgets::button::{
     ButtonKind, ButtonLook, ButtonState, IconButton, IconButtonExtras, paint_icon,
 };
 use lune_ui::widgets::scroll_area::{Bars, Extent, Reveal, ScrollOptions, Target};
-use lune_ui::widgets::shine;
 use lune_ui::widgets::tone::Tone;
+use lune_ui::widgets::{scrollbar, shine};
 
 use crate::groups::{CARD_RING, CARD_TINT, GroupColor, GroupId};
 use crate::menus::ICON_TERMINAL;
 use crate::settings::{MAX_PANE_WIDTH, MIN_PANE_WIDTH, Theme as LookTheme};
-use crate::shell::{CARD_MARGIN, Chrome, OVERFLOW_SIZE, StripTab, TITLE_BAND, TabContext, View};
+use crate::shell::{
+    CARD_MARGIN, Chrome, INBOX_GAP, OVERFLOW_SIZE, StripTab, TITLE_BAND, TabContext, View,
+};
 use crate::tabs::{TabId, TabSet};
 
 /// The least width the terminal card keeps beside the pane (D29): below it the top bar shows.
@@ -42,6 +43,11 @@ pub const PAD: f32 = 8.0;
 pub const FOOTER_INSET: f32 = 4.0;
 /// The gap between the footer's divider and its buttons.
 pub const FOOTER_GAP: f32 = 8.0;
+/// The New Tab button ends this far short of the footer's right-hand buttons.
+const NEW_TAB_CLEAR: f32 = 8.0;
+/// The New Tab button's padding before its glyph and after its label, and the gap between them.
+const NEW_TAB_PAD: (f32, f32) = (4.0, 8.0);
+const NEW_TAB_GAP: f32 = 6.0;
 /// The width of the zone at the pane's right edge that drags its width.
 pub const EDGE_ZONE: f32 = 6.0;
 /// The codicon `layout-sidebar-left`: the hide button, the show button and their menu row.
@@ -98,9 +104,9 @@ pub struct PaneRects {
     pub divider: Rect,
     /// The footer, from the divider to the window's bottom.
     pub footer: Rect,
-    /// The bell's place at the footer's left.
+    /// The bell's place at the footer's right, left of `⋯`.
     pub bell: Rect,
-    /// The `⋯` button's place at the footer's right.
+    /// The `⋯` button's place at the footer's right end.
     pub menu: Rect,
     /// The zone at the right edge that drags the width.
     pub edge: Rect,
@@ -115,6 +121,12 @@ impl PaneRects {
         let button_y = rect.bottom() - CARD_MARGIN - OVERFLOW_SIZE;
         let divider_y = button_y - FOOTER_GAP - 1.0;
         let inset = PAD + FOOTER_INSET;
+        let menu = Rect::new(
+            rect.right() - inset - OVERFLOW_SIZE,
+            button_y,
+            OVERFLOW_SIZE,
+            OVERFLOW_SIZE,
+        );
         PaneRects {
             rect,
             header,
@@ -136,15 +148,29 @@ impl PaneRects {
                 rect.w,
                 (rect.bottom() - divider_y).max(0.0),
             ),
-            bell: Rect::new(rect.x + inset, button_y, OVERFLOW_SIZE, OVERFLOW_SIZE),
-            menu: Rect::new(
-                rect.right() - inset - OVERFLOW_SIZE,
+            bell: Rect::new(
+                menu.x - INBOX_GAP - OVERFLOW_SIZE,
                 button_y,
                 OVERFLOW_SIZE,
                 OVERFLOW_SIZE,
             ),
+            menu,
             edge: Rect::new(rect.right() - EDGE_ZONE, rect.y, EDGE_ZONE, rect.h),
         }
+    }
+
+    /// The room of the footer's New Tab button (D22', D28'): from the footer's left to short of
+    /// the bell, or of `⋯` while there is no bell. The button is as wide as its content, up to
+    /// this.
+    pub fn new_tab_room(&self, bell_shown: bool) -> Rect {
+        let next = if bell_shown { self.bell } else { self.menu };
+        let left = self.divider.x;
+        Rect::new(
+            left,
+            self.menu.y,
+            (next.x - NEW_TAB_CLEAR - left).max(0.0),
+            self.menu.h,
+        )
     }
 }
 
@@ -154,14 +180,10 @@ fn title_button_y(chrome: Chrome) -> f32 {
     if chrome.native_lights { 4.0 } else { 5.0 }
 }
 
-/// The hide button, at the right end of the pane's header.
+/// The hide button, in the pane's header: exactly where the top bar's show button is (D20'; the
+/// pane starts at the window's top left), so toggling never moves it from under the pointer.
 pub fn hide_button(rects: &PaneRects, chrome: Chrome) -> Rect {
-    Rect::new(
-        rects.rect.right() - PAD - OVERFLOW_SIZE,
-        rects.rect.y + title_button_y(chrome),
-        OVERFLOW_SIZE,
-        OVERFLOW_SIZE,
-    )
+    show_button(rects.rect, chrome)
 }
 
 /// The show button of the top bar: right of the native traffic lights where there are some, else
@@ -321,14 +343,14 @@ pub fn controls(
 pub const ROW_HEIGHT: f32 = 32.0;
 /// The height of a card's header (D26).
 pub const HEADER_HEIGHT: f32 = 30.0;
-/// The height of the dashed New Tab button.
-pub const NEW_TAB_HEIGHT: f32 = 34.0;
 /// A card's padding, and the gap between its header and rows.
 pub const CARD_PAD: f32 = 3.0;
 pub const ROW_GAP: f32 = 1.0;
-/// Between two blocks of the list: a loose tab, a card, the New Tab button.
+/// Between two blocks of the list (a loose tab or a card), and under the last one.
 pub const BLOCK_GAP: f32 = 6.0;
-/// The corners of a card and of the New Tab button, and of a row.
+/// The room kept between a scrolled list's rows and the scroll thumb's track (D26').
+const GUTTER_GAP: f32 = 3.0;
+/// The corners of a card, and of a row.
 const CARD_ROUND: f32 = 10.0;
 const ROW_ROUND: f32 = 7.0;
 /// A loose tab's row stands this far inside the list on both sides (mock F's block padding).
@@ -362,8 +384,6 @@ const NAME_FONT: f32 = 12.0;
 const COUNT_FONT: f32 = 11.0;
 /// The share of a row's text colour its glyph is drawn at.
 const GLYPH_ALPHA: f32 = 0.75;
-/// The dashes of the New Tab button's outline, and their gaps.
-const DASH: (f32, f32) = (4.0, 3.0);
 /// The scroll area's key.
 const LIST_KEY: &str = "pane-list";
 /// The longest step an auto-scroll takes at once: a late frame does not jump the list.
@@ -484,18 +504,19 @@ pub fn active_row(rows: &[PaneRow<'_>]) -> Option<usize> {
 /// Where the list's parts stand when it is not scrolled.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListLayout {
+    /// The area the rows are laid out in: they and a drag's insertion line keep inside its sides.
+    pub area: Rect,
     /// The rect of each row, in the order of the rows.
     pub rows: Vec<Rect>,
     /// Each card, with its group's colour.
     pub cards: Vec<(GroupColor, Rect)>,
-    /// The New Tab button, after the last block.
-    pub new_tab: Rect,
-    /// The height of it all.
+    /// The height of it all, with the gap under the last block (where the mark of the last slot
+    /// stands); 0 for no rows.
     pub height: f32,
 }
 
 /// The layout of `rows` from the top of `area` (D26): blocks [`BLOCK_GAP`] apart, a loose tab or
-/// a card each, then the New Tab button.
+/// a card each.
 pub fn layout_list(rows: &[PaneRow<'_>], area: Rect) -> ListLayout {
     let mut rects = Vec::with_capacity(rows.len());
     let mut cards = Vec::new();
@@ -529,13 +550,27 @@ pub fn layout_list(rows: &[PaneRow<'_>], area: Rect) -> ListLayout {
         }
         y += BLOCK_GAP;
     }
-    let new_tab = Rect::new(area.x, y, area.w, NEW_TAB_HEIGHT);
     ListLayout {
+        area,
         rows: rects,
         cards,
-        new_tab,
-        height: new_tab.bottom() - area.y,
+        height: y - area.y,
     }
+}
+
+/// The layout of `rows` in a pane (D26'): over the whole list while they fit it; while they
+/// overflow, short of the scroll thumb's track, so the thumb never covers them. A frame draws,
+/// hit-tests, drags and reveals by this one layout.
+pub fn list_layout(rows: &[PaneRow<'_>], rects: &PaneRects) -> ListLayout {
+    let whole = layout_list(rows, rects.list);
+    let view = viewport(rects);
+    if whole.height <= view.h {
+        return whole;
+    }
+    let list = rects.list;
+    let right = view.right() - scrollbar::BAR - GUTTER_GAP;
+    let narrowed = Rect::new(list.x, list.y, (right - list.x).max(0.0), list.h);
+    layout_list(rows, narrowed)
 }
 
 /// What the list draws a frame from.
@@ -559,7 +594,7 @@ pub enum PaneEvent {
     ToggleGroup(GroupId),
     /// A card's `+`.
     NewTabIn(GroupId),
-    /// The New Tab button: a tab in no group, at the end.
+    /// The footer's New Tab button: a tab in no group, at the end.
     NewTab,
     /// A card's header menu, to open at `at`.
     GroupMenu { id: GroupId, at: (f32, f32) },
@@ -728,7 +763,7 @@ enum Gap {
 }
 
 /// The slot of a drag of `item` with the pointer at height `y` of the list (not scrolled, as
-/// `layout`, which is [`layout_list`] of `rows` in `area`): the gaps between the rows (D24).
+/// `layout`, which is [`layout_list`] of `rows`): the gaps between the rows (D24).
 /// `None` where nothing may drop, or when the list does not show the item.
 ///
 /// A tab drops before a loose row from its upper half; before a card from the upper half of an
@@ -736,13 +771,8 @@ enum Gap {
 /// the card's bottom; and into a collapsed card from anywhere on its header. A card drops only
 /// between blocks: another expanded card takes it before itself from its header, and refuses it
 /// over its rows.
-pub fn slot_at(
-    rows: &[PaneRow<'_>],
-    layout: &ListLayout,
-    area: Rect,
-    item: DragItem,
-    y: f32,
-) -> Option<Slot> {
+pub fn slot_at(rows: &[PaneRow<'_>], layout: &ListLayout, item: DragItem, y: f32) -> Option<Slot> {
+    let area = layout.area;
     let blocks = blocks(rows, layout);
     let held = Held::find(&blocks, rows, layout, item)?;
     let middle = |r: Rect| r.y + r.h / 2.0;
@@ -952,7 +982,7 @@ fn target(
     let (_, y) = ui.pointer_pos().filter(|p| rects.rect.contains(*p))?;
     // From the window to the list, here only.
     let y = y.min(rects.list.bottom() - 0.5).max(rects.list.y) + offset;
-    slot_at(rows, layout, rects.list, item, y)
+    slot_at(rows, layout, item, y)
 }
 
 /// Where the lifted copy stands when the pointer would have it at `copy` and the slot's mark is
@@ -1091,7 +1121,7 @@ pub fn list(ui: &mut Ui<'_>, rects: &PaneRects, list: &PaneList<'_>) -> ListOut 
     if view.w <= 0.0 || view.h <= 0.0 {
         return out;
     }
-    let layout = layout_list(list.rows, rects.list);
+    let layout = list_layout(list.rows, rects);
     let key = ui.id("pane-drag");
     let mut memory = std::mem::take(ui.transient::<DragMemory>(key));
     if let Some(live) = memory.live
@@ -1150,8 +1180,6 @@ pub fn list(ui: &mut Ui<'_>, rects: &PaneRects, list: &PaneList<'_>) -> ListOut 
                     ui.painter().pop_xform();
                 }
             }
-            let dragging = memory.live.is_some();
-            new_tab_button(ui, &theme, layout.new_tab, dragging, &mut out);
             if let Some(live) = memory.live {
                 slot = target(ui, rects, list.rows, &layout, live.item, offset);
             }
@@ -1515,54 +1543,47 @@ fn header(
     }
 }
 
-/// The dashed New Tab button after the last block (D22): no shortcut hint.
-fn new_tab_button(ui: &mut Ui<'_>, theme: &Theme, rect: Rect, dragging: bool, out: &mut ListOut) {
+/// The footer's New Tab button (D22', D28'): a `+` and its label with no outline, as wide as
+/// that needs up to [`PaneRects::new_tab_room`] (the label elided there), on the line of the
+/// footer's other buttons; no shortcut hint. `bell_shown` is whether the bell takes room beside
+/// it and `dragging` whether a drag of the list is under way (nothing hovers then). `true` when
+/// pressed.
+pub fn new_tab_button(
+    ui: &mut Ui<'_>,
+    rects: &PaneRects,
+    bell_shown: bool,
+    dragging: bool,
+) -> bool {
+    let room = rects.new_tab_room(bell_shown);
+    if room.w <= 0.0 {
+        return false;
+    }
+    let theme = *ui.theme();
+    let name = ui.tr("menu.newTab");
+    let label = Spec::plain(name, Style::ui(TITLE_FONT, theme.fg_muted));
+    // What the button is without its label.
+    let frame = NEW_TAB_PAD.0 + GLYPH + NEW_TAB_GAP + NEW_TAB_PAD.1;
+    let p = ui.painter();
+    let label = p.elide(&label, (room.w - frame).max(0.0));
+    let width = (frame + p.measure(&label).0).ceil().min(room.w);
+    let rect = Rect::new(room.x, room.y, width, room.h);
     let id = ui.id("pane-new-tab");
     let button = ui.interact(id, rect, Sense::CLICK);
-    let name = ui.tr("menu.newTab");
     let p = ui.painter();
     if button.hovered && !dragging {
-        p.fill(rect, CARD_ROUND, theme.surface_hover);
+        p.fill(rect, theme.item_radius, theme.surface_hover);
     }
-    // Half a px inside, so the 1 px stroke lies in the button.
-    let outline = rounded_outline(rect.inset(0.5, 0.5), CARD_ROUND - 0.5);
-    p.dash(&outline, true, 1.0, DASH.0, DASH.1, theme.border);
-    let x = rect.x + LOOSE_INSET + LOOSE_INDENT;
+    p.push_clip(rect);
+    let x = rect.x + NEW_TAB_PAD.0;
     let glyph = icon::glyph(icon::ADD, GLYPH, theme.fg_muted);
     p.text_in(&glyph, Rect::new(x, rect.y, GLYPH, rect.h), 0.0);
-    let label = Spec::plain(name, Style::ui(TITLE_FONT, theme.fg_muted));
-    let label_x = x + GLYPH + GLYPH_GAP;
+    let label_x = x + GLYPH + NEW_TAB_GAP;
     p.text_in(&label, Rect::new(label_x, rect.y, 0.0, rect.h), 0.0);
+    p.pop_clip();
     let mut node = Node::new(id, Role::Button, name, rect);
     node.actions.insert(Action::Default);
     ui.node(node);
-    if button.clicked {
-        out.events.push(PaneEvent::NewTab);
-    }
-}
-
-/// The outline of `rect` with corners of `radius`, as a closed polyline.
-fn rounded_outline(rect: Rect, radius: f32) -> Vec<[f32; 2]> {
-    /// The segments of a quarter circle.
-    const STEPS: u16 = 8;
-    let radius = radius.min(rect.w / 2.0).min(rect.h / 2.0).max(0.0);
-    let (left, right) = (rect.x + radius, rect.right() - radius);
-    let (top, bottom) = (rect.y + radius, rect.bottom() - radius);
-    // Clockwise from the top right corner: each corner's centre and start angle.
-    [
-        (right, top, -FRAC_PI_2),
-        (right, bottom, 0.0),
-        (left, bottom, FRAC_PI_2),
-        (left, top, PI),
-    ]
-    .into_iter()
-    .flat_map(|(x, y, start)| {
-        (0..=STEPS).map(move |i| {
-            let angle = start + FRAC_PI_2 * f32::from(i) / f32::from(STEPS);
-            [x + radius * angle.cos(), y + radius * angle.sin()]
-        })
-    })
-    .collect()
+    button.clicked
 }
 
 #[cfg(test)]
@@ -1618,29 +1639,38 @@ mod tests {
         assert_eq!(r.rect, Rect::new(0.0, 0.0, 248.0, 660.0));
         assert_eq!(r.header, Rect::new(0.0, 0.0, 248.0, 34.0));
         assert_eq!(r.edge, Rect::new(242.0, 0.0, 6.0, 660.0));
-        // Footer buttons end on the card's bottom line (660 - 10), the divider 8 above them.
-        assert_eq!(r.bell, Rect::new(12.0, 626.0, 24.0, 24.0));
+        // Footer buttons end on the card's bottom line (660 - 10), the divider 8 above them: the
+        // bell 4 left of `⋯`, New Tab from the footer's left to 8 short of the next button.
+        assert_eq!(r.bell, Rect::new(184.0, 626.0, 24.0, 24.0));
         assert_eq!(r.menu, Rect::new(212.0, 626.0, 24.0, 24.0));
+        assert_eq!(r.new_tab_room(true), Rect::new(12.0, 626.0, 164.0, 24.0));
+        assert_eq!(r.new_tab_room(false), Rect::new(12.0, 626.0, 192.0, 24.0));
         assert_eq!(r.divider, Rect::new(12.0, 617.0, 224.0, 1.0));
         assert_eq!(r.footer, Rect::new(0.0, 617.0, 248.0, 43.0));
         assert_eq!(r.list, Rect::new(8.0, 34.0, 232.0, 583.0));
         // No control overlaps the edge zone.
-        for c in [r.bell, r.menu, r.list, hide_button(&r, MACOS_CHROME)] {
+        for c in [
+            r.bell,
+            r.menu,
+            r.list,
+            r.new_tab_room(false),
+            hide_button(&r, MACOS_CHROME),
+        ] {
             assert!(c.right() <= r.edge.x, "{c:?}");
         }
     }
 
     #[test]
     fn the_title_buttons_sit_on_the_lights_line_or_the_caption_buttons() {
-        let r = PaneRects::new(WINDOW, 248.0);
-        assert_eq!(
-            hide_button(&r, MACOS_CHROME),
-            Rect::new(216.0, 4.0, 24.0, 24.0)
-        );
-        assert_eq!(
-            hide_button(&r, WINDOWS_CHROME),
-            Rect::new(216.0, 5.0, 24.0, 24.0)
-        );
+        // The hide button takes the show button's place at every width, inside the header.
+        for width in [200.0, 248.0, 420.0] {
+            let r = PaneRects::new(WINDOW, width);
+            for chrome in [MACOS_CHROME, WINDOWS_CHROME, LINUX_CHROME] {
+                let hide = hide_button(&r, chrome);
+                assert_eq!(hide, show_button(WINDOW, chrome));
+                assert!(hide.right() <= r.edge.x && hide.bottom() <= r.header.bottom());
+            }
+        }
         assert_eq!(
             show_button(WINDOW, MACOS_CHROME),
             Rect::new(76.0, 4.0, 24.0, 24.0)
@@ -1957,34 +1987,17 @@ mod tests {
         assert_eq!(l.rows[4].bottom(), l.cards[0].1.bottom() - CARD_PAD);
         // The collapsed card: its header alone.
         assert_eq!(l.cards[1].1, Rect::new(8.0, 213.0, 232.0, 36.0));
-        assert_eq!(l.new_tab, Rect::new(8.0, 255.0, 232.0, 34.0));
-        assert_eq!(l.height, 255.0);
+        // The last block, and the 6 under it.
+        assert_eq!(l.height, 255.0 - 34.0);
         assert_eq!(l.rows.len(), built.len());
         // The member's glyph starts where the header's name does.
         let name_x = l.rows[1].x + HEADER_PAD + CHEVRON + HEADER_GAP;
         assert_eq!(l.rows[2].x + MEMBER_INDENT, name_x);
         assert_eq!(l.rows[0].x + LOOSE_INDENT, area.x + 12.0);
-        // No rows: the button alone, at the top.
+        // No rows: nothing.
         let empty = layout_list(&[], area);
-        assert_eq!((empty.new_tab.y, empty.height), (34.0, 34.0));
-    }
-
-    #[test]
-    fn the_new_tab_outline_stays_in_its_rect_and_closes_on_itself() {
-        let r = Rect::new(10.0, 20.0, 100.0, 34.0);
-        let outline = rounded_outline(r, 10.0);
-        assert_eq!(outline.len(), 36);
-        for [x, y] in &outline {
-            assert!((r.x - 0.001..=r.right() + 0.001).contains(x), "{x}");
-            assert!((r.y - 0.001..=r.bottom() + 0.001).contains(y), "{y}");
-        }
-        // Clockwise from the top edge: the first point on it, the last on it too.
-        assert!((outline[0][1] - r.y).abs() < 0.001);
-        assert!((outline[35][1] - r.y).abs() < 0.001);
-        // A radius larger than the rect allows is cut to it.
-        for [x, y] in rounded_outline(Rect::new(0.0, 0.0, 8.0, 4.0), 10.0) {
-            assert!((-0.001..=8.001).contains(&x) && (-0.001..=4.001).contains(&y));
-        }
+        assert!(empty.rows.is_empty() && empty.cards.is_empty());
+        assert_eq!(empty.height, 0.0);
     }
 
     // ------------------------------------------------------------------- the list, in frames
@@ -2046,6 +2059,33 @@ mod tests {
             let out = list(&mut ui, &rects, &view);
             let (_, frame) = ui.finish();
             (out, frame.tree.nodes)
+        }
+
+        /// The footer's New Tab button alone in the same window: the frame's semantic nodes. Its
+        /// presses are the shell's tests'.
+        fn footer(&mut self, rects: &PaneRects, bell: bool) -> Vec<Node> {
+            let input = RawInput {
+                size: (1040.0, 660.0),
+                scale: 1.0,
+                time: self.time,
+                focused: true,
+                events: vec![],
+            };
+            let strings = crate::strings::english();
+            let shortcuts = Shortcuts::default();
+            let config = FrameConfig {
+                theme: THEME,
+                tier: self.tier,
+                busy_cadence: Cadence::BUSY,
+                strings: &strings,
+                arg_format: &DisplayFormat,
+                keymap: keymap(),
+                shortcuts: &shortcuts,
+            };
+            let mut ui = Ui::begin(&mut self.store, &input, config, &mut self.text);
+            new_tab_button(&mut ui, rects, bell, false);
+            let (_, frame) = ui.finish();
+            frame.tree.nodes
         }
 
         /// The pointer moves to `at`, a frame passes, and a button goes down and up there: the
@@ -2147,17 +2187,109 @@ mod tests {
     }
 
     #[test]
-    fn the_new_tab_button_asks_for_a_loose_tab_and_the_gaps_ask_for_nothing() {
+    fn the_gaps_of_the_list_ask_for_nothing() {
         let (set, strip) = tabs(MOCK);
         let rows = rows(&set, &strip);
         let layout = layout_list(&rows, PaneRects::new(WINDOW, 248.0).list);
-        let at = middle(layout.new_tab);
-        let (down, up) = Harness::new().click(&rows, at, PointerButton::Primary);
-        assert!(down.events.is_empty());
-        assert_eq!(up.events, [PaneEvent::NewTab]);
-        // The 6 px between the loose row and the first card.
-        let gap = (100.0, layout.rows[0].bottom() + 3.0);
-        let (down, up) = Harness::new().click(&rows, gap, PointerButton::Primary);
+        // The 6 px between the loose row and the first card, and the room under the last block.
+        for y in [
+            layout.rows[0].bottom() + 3.0,
+            layout.cards[1].1.bottom() + 30.0,
+        ] {
+            let (down, up) = Harness::new().click(&rows, (100.0, y), PointerButton::Primary);
+            assert_eq!((down, up), (ListOut::default(), ListOut::default()), "{y}");
+        }
+    }
+
+    /// The footer's New Tab button: from the footer's left on the line of its buttons, as wide as
+    /// its content, and in a narrow pane cut short of the button beside it.
+    #[test]
+    fn the_new_tab_button_stands_at_the_footers_left_short_of_the_next_button() {
+        let place = |width: f32, bell: bool| {
+            let rects = PaneRects::new(WINDOW, width);
+            let nodes = Harness::new().footer(&rects, bell);
+            let b = node(&nodes, Role::Button, "New Tab").bounds;
+            let next = if bell { rects.bell } else { rects.menu };
+            assert_eq!((b.x, b.y, b.h), (12.0, 626.0, 24.0), "{width} {bell}");
+            assert!(b.right() <= next.x - 8.0, "{width} {bell}: {b:?}");
+            b
+        };
+        // Room to spare at the default and the least width: the content's own width, the same
+        // with and without the bell.
+        let wide = place(248.0, false);
+        for (width, bell) in [(248.0, true), (200.0, false), (200.0, true), (420.0, true)] {
+            assert_eq!(place(width, bell), wide, "{width} {bell}");
+        }
+        assert!(wide.w > 60.0 && wide.right() < 176.0 - 8.0, "{wide:?}");
+        // Narrower than the content: the label gives way, never the bell.
+        let cut = place(130.0, true);
+        assert!(cut.w < wide.w, "{cut:?}");
+    }
+
+    /// While the rows overflow the list they keep clear of the scroll thumb's track; while they
+    /// fit they are as wide as the list (D26').
+    #[test]
+    fn an_overflowing_list_keeps_a_gutter_for_the_scroll_thumb() {
+        // Loose tabs are 38 apart in a list 583 high: 15 fit (570), 16 do not (608).
+        let titles: Vec<String> = (1..=60).map(|i| format!("tab {i}")).collect();
+        let loose: Vec<(&str, &str)> = titles.iter().map(|t| (t.as_str(), "")).collect();
+        let groups: Vec<String> = (0..60).map(|i| format!("area {}", i / 6)).collect();
+        let grouped: Vec<(&str, &str)> = titles
+            .iter()
+            .zip(&groups)
+            .map(|(t, g)| (t.as_str(), g.as_str()))
+            .collect();
+        for width in [200.0, 248.0, 420.0] {
+            let rects = PaneRects::new(WINDOW, width);
+            let limit = viewport(&rects).right() - scrollbar::BAR - 3.0;
+            for (picture, overflows) in [
+                (&loose[..15], false),
+                (&loose[..16], true),
+                (MOCK, false),
+                (&grouped[..], true),
+            ] {
+                let (set, strip) = tabs(picture);
+                let built = rows(&set, &strip);
+                let l = list_layout(&built, &rects);
+                let whole = layout_list(&built, rects.list);
+                assert_eq!(l.height > rects.list.h, overflows, "{width}");
+                if !overflows {
+                    assert_eq!(l, whole, "{width}");
+                    continue;
+                }
+                assert_eq!(l.area.right(), limit, "{width}");
+                assert_eq!(l.height, whole.height, "{width}");
+                let all = l.rows.iter().chain(l.cards.iter().map(|(_, c)| c));
+                for r in all {
+                    assert!(r.right() <= limit && r.w > 0.0, "{width}: {r:?}");
+                }
+                // The insertion line of a drag too.
+                let item = DragItem::Tab(strip[0].id);
+                for i in 0..200 {
+                    let y = l.area.y + i as f32 * 8.0;
+                    if let Some(Mark::Line(line)) = slot_at(&built, &l, item, y).map(|s| s.mark) {
+                        assert!(line.right() <= limit, "{width} {y}: {line:?}");
+                    }
+                }
+            }
+        }
+        // What a frame draws and presses is that layout.
+        let rects = PaneRects::new(WINDOW, 248.0);
+        let limit = viewport(&rects).right() - scrollbar::BAR - 3.0;
+        let (set, strip) = tabs(&grouped);
+        let built = rows(&set, &strip);
+        let mut h = Harness::new();
+        let (_, nodes) = h.frame(&built, vec![]);
+        let drawn: Vec<_> = nodes
+            .iter()
+            .filter(|n| matches!(n.role, Role::Tab | Role::Button))
+            .collect();
+        assert!(drawn.len() > 10, "{}", drawn.len());
+        for n in drawn {
+            assert!(n.bounds.right() <= limit, "{}: {:?}", n.name, n.bounds);
+        }
+        let row = node(&nodes, Role::Tab, "tab 2").bounds;
+        let (down, up) = h.click(&built, (limit + 1.0, row.y + 16.0), PointerButton::Primary);
         assert_eq!((down, up), (ListOut::default(), ListOut::default()));
     }
 
@@ -2196,7 +2328,6 @@ mod tests {
         );
         assert!(!infra_node.states.contains(State::Expanded));
         assert!(nodes.iter().all(|n| n.name != "deploy"), "left out");
-        node(&nodes, Role::Button, "New Tab");
         node(&nodes, Role::Button, "New Tab in Group");
         node(&nodes, Role::TabList, "Terminal sessions");
         // A press by an assistive technology, with no pointer.
@@ -2321,8 +2452,7 @@ mod tests {
 
     /// [`CARDS`] with `infra` collapsed, `server` active. In the list of a 660 px window: `zsh`
     /// 34..66; the card `api` 72..207 (header 75..105, rows from 106, 139, 172); `shop` 213..315
-    /// (header 216..246, rows from 247 and 280); `infra` 321..357 (header 324..354); New Tab
-    /// 363..397.
+    /// (header 216..246, rows from 247 and 280); `infra` 321..357 (header 324..354).
     fn cards() -> (TabSet<()>, Vec<StripTab<'static>>) {
         let (mut set, strip) = tabs(CARDS);
         let infra = set.group_named("infra").expect("group");
@@ -2338,7 +2468,7 @@ mod tests {
     /// The slot of a drag of `item` at `y` of the list of `set`.
     fn slot(set: &TabSet<()>, strip: &[StripTab<'_>], item: DragItem, y: f32) -> Option<Slot> {
         let rows = rows(set, strip);
-        slot_at(&rows, &layout_list(&rows, area()), area(), item, y)
+        slot_at(&rows, &layout_list(&rows, area()), item, y)
     }
 
     /// A line between blocks, centred at `y`: as wide as the list.
@@ -2523,7 +2653,7 @@ mod tests {
             };
             let height = layout.height as usize + 60;
             let y = area().y - 30.0 + rng.below(height * 4) as f32 / 4.0;
-            let found = slot_at(&list, &layout, area(), item, y);
+            let found = slot_at(&list, &layout, item, y);
             let dragged: Vec<TabId> = match item {
                 DragItem::Tab(id) => vec![id],
                 DragItem::Group(g) => set.members(g),
@@ -2788,17 +2918,19 @@ mod tests {
         let (up, _) = h.frame(&list, vec![button((110.0, 210.0), false)]);
         assert!(matches!(up.events[..], [PaneEvent::Drop { .. }]));
         // Over the header or the footer: the slot at that edge of the list.
-        let mut h = Harness::new();
-        start_drag(&mut h, &list, (110.0, 155.0), (110.0, 10.0));
-        let (up, _) = h.frame(&list, vec![button((110.0, 10.0), false)]);
-        assert!(matches!(
-            up.events[..],
-            [PaneEvent::Drop {
-                index: 0,
-                group: None,
-                ..
-            }]
-        ));
+        for (to, want) in [((110.0, 10.0), 0), ((110.0, 638.0), 6)] {
+            let mut h = Harness::new();
+            start_drag(&mut h, &list, (110.0, 155.0), to);
+            let (up, _) = h.frame(&list, vec![button(to, false)]);
+            assert!(
+                matches!(
+                    up.events[..],
+                    [PaneEvent::Drop { index, group: None, .. }] if index == want
+                ),
+                "{to:?}: {:?}",
+                up.events
+            );
+        }
     }
 
     #[test]

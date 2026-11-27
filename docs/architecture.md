@@ -892,7 +892,7 @@ global state (M10: a `Tab` owns a session and everything that used to be per-ses
 | Module | Holds |
 |---|---|
 | `app` | winit event loop (user event = session wake), window, frame loop, session wiring, bell and program notifications (`hear`, the inbox list's open state), exit |
-| `shell` | Layout of both views (the top bar's: 34 px title band, card radius 8, margins 10, body padding 10; the side pane's: the pane at the left and the card beside it, no strip), the Windows chrome (caption buttons, drag, edge resize), the band double press (Windows: maximize; macOS: the System Settings action via `double_click`; Linux: drag), scrollbar thumb geometry and drag, the inbox button and its list (`draw_inbox`, `inbox_rows`), the notification toast (`notice_toast`) |
+| `shell` | Layout of both views (the top bar's: 34 px title band, card radius 8, margins 10, body padding 10; the side pane's: the pane at the left, the title band and the card beside it, no strip), the Windows chrome (caption buttons, drag, edge resize), the band double press (Windows: maximize; macOS: the System Settings action via `double_click`; Linux: drag), scrollbar thumb geometry and drag, the inbox button and its list (`draw_inbox`, `inbox_rows`), the notification toast (`notice_toast`) |
 | `notices` | The notification model, pure: `Inbox` (rows, coalescing, `settle`), the D6 `route` table, `ToastSlots` (the live toasts, their arm delay), age labels |
 | `double_click` | What a double click on the title band does on macOS: the `AppleActionOnDoubleClick` setting (zoom, minimize or nothing) mapped to a `WindowCommand`; elsewhere maximize |
 | `render` | `Renderer`: one `Ui`, `TermView`, `FrameRenderer` and `TextCache`, shared by the window and by dump mode |
@@ -1099,24 +1099,29 @@ trimmed or cut; a name that fails it disables the editor's confirm.
   inside a run goes to the nearer end of it (a tie: after).
 
 **Two views and the side pane (D20, D26 to D35).** The saved choice (`side_pane`, see "Persistence")
-is toggled by the shortcut, the app menu, the pane header's hide button and the show button in the
-bar's title band (right of the traffic lights on macOS, at the left elsewhere). The pane shows only
-while the window is at least pane width + 490 px wide (the card keeps 480 plus its margin);
-narrower, the bar view shows, the choice stays and the show button is not drawn.
-- *Layout.* The pane takes the left column, 248 px wide by default, dragged within 200 to 420 by a
-  6 px zone on its right edge (a drag stops at window width - 490) and saved once, at the release.
-  Its 34 px header holds the traffic lights' room and the hide button; its empty part and the room
-  above the card drag the window. The terminal card sits to its right with no strip and no title
-  text, 10 px from the top, except where the app draws the caption buttons (Windows): there a 34 px
-  band over the terminal column holds them. The body reaches the PTY size through the same
-  `Renderer::place` to `Command::Resize` path a window resize takes. The pane has no glass layer of
-  its own (it sits on the window panel). The Settings page draws in the card with the pane live; a
-  press on a tab row, a New Tab action, an app menu row other than Settings, About and the pane
-  toggle, or opening the inbox leaves the page.
-- *Footer.* The bell (only while the inbox has entries) at the left and the app menu at the right;
-  both open upward, over the terminal. Toasts stay at the card's bottom right in both views.
-- *List.* Loose tab rows, group cards (header with name and tab count, then the member rows unless
-  collapsed) and a dashed New Tab button, scrolling between header and footer. An activation change,
+is toggled by the shortcut, the app menu, the hide button in the pane's header and the show button
+in the bar's title band. The two buttons share one place (right of the traffic lights on macOS, at
+the left elsewhere), so toggling does not move the button. The pane shows only while the window is
+at least pane width + 490 px wide (the card keeps 480 plus its margin); narrower, the bar view
+shows, the choice stays and the show button is not drawn.
+- *Layout.* The pane takes the left column over the window's whole height, 248 px wide by default,
+  dragged within 200 to 420 by a 6 px zone on its right edge (a drag stops at window width - 490)
+  and saved once, at the release. Its 34 px header holds the traffic lights' room and the hide
+  button. On every OS a 34 px title band lies over the terminal column, with the terminal card (no
+  strip) under it. The band shows the title centred on the card, clipped 12 px inside the card's
+  edges and, where the app draws the caption buttons (Windows), short of them. The header's empty
+  part and the band drag the window, and a double press there does what it does on the bar view's
+  band. The body reaches the PTY size through the same `Renderer::place` to `Command::Resize` path a
+  window resize takes. The pane has no glass layer of its own (it sits on the window panel). The
+  Settings page draws in the card with the pane live; a press on a tab row, a New Tab action, an app
+  menu row other than Settings, About and the pane toggle, or opening the inbox leaves the page.
+- *Footer.* One row: New Tab at the left (a `+` and its label, no outline, as wide as that needs up
+  to the next button, the label cut short there), and at the right the bell (only while the inbox has
+  entries) beside the app menu. The inbox list and the app menu open upward, over the terminal.
+  Toasts stay at the card's bottom right in both views.
+- *List.* Loose tab rows and group cards (header with name and tab count, then the member rows unless
+  collapsed), scrolling between header and footer. While they overflow the list, rows and cards stop
+  3 px short of the scroll thumb's track; while they fit they use the full width. An activation change,
   a go-to or the pane appearing scrolls the active row into view (the card header when the group is
   collapsed). A row activates on the press, as on the strip; the active and the hovered row have a
   close button; a header toggles collapse and has a `+`; secondary press opens the tab or the group

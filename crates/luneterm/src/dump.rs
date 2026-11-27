@@ -1275,6 +1275,18 @@ const SCENES: &[Scene] = &[
         list: Some(SIXTY_GROUPS),
         ..BASE
     },
+    // The same list under the pointer: the scroll thumb in its gutter.
+    Scene {
+        name: "pane-list-long-hover@2x.png",
+        tabs: SIXTY_TABS,
+        active: 45,
+        notices: &[SceneNotice::Bell(43)],
+        inbox: NOTICE_BELL,
+        pane: PANE,
+        list: Some(SIXTY_GROUPS),
+        script: &[(1, Input::Move(OVER_LOGS_ROW.0, OVER_LOGS_ROW.1))],
+        ..BASE
+    },
     Scene {
         name: "pane-list-shine@2x.png",
         progress: SHINES,
