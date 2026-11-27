@@ -1073,6 +1073,117 @@ class Dmg(unittest.TestCase):
         self.assertIn("dmg_sha256=", out.getvalue())
 
 
+# ------------------------------------------------------------------------------- drop-artifacts
+
+
+class DropArtifacts(unittest.TestCase):
+    def setUp(self):
+        env = mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"})
+        env.start()
+        self.addCleanup(env.stop)
+        self.requests = []
+        self.artifacts = []
+        self.delete_status = 204
+
+    def send(self, method, url, headers, data):
+        self.requests.append((method, url, headers))
+        if method == "GET":
+            query = dict(p.split("=") for p in url.split("?")[1].split("&"))
+            page, per = int(query["page"]), int(query["per_page"])
+            chunk = self.artifacts[(page - 1) * per:page * per]
+            return 200, json.dumps({"total_count": len(self.artifacts), "artifacts": chunk}).encode()
+        return self.delete_status, b"" if self.delete_status == 204 else b"nope " + TOKEN.encode()
+
+    def drop(self, run_id="123"):
+        return run_quiet(rp.cmd_drop_artifacts, argparse.Namespace(run_id=run_id),
+                         rp.Secrets({"GITHUB_TOKEN": TOKEN}), self.send)
+
+    def deleted(self):
+        return [u.rsplit("/", 1)[1] for m, u, _ in self.requests if m == "DELETE"]
+
+    def test_it_deletes_exactly_the_four_names_and_leaves_the_others_and_expired(self):
+        self.artifacts = [{"id": 1, "name": "lunepack-cli"}, {"id": 2, "name": "lunepack-cli-macos"},
+                          {"id": 3, "name": "release"}, {"id": 4, "name": "setup"},
+                          {"id": 5, "name": "other"}, {"id": 6, "name": "setup", "expired": True},
+                          {"id": 7, "name": "luneterm-windows-x64"}, {"id": 8, "name": "release-2"}]
+        _, out = self.drop()
+        self.assertEqual(self.deleted(), ["1", "2", "3", "4"])
+        for name in ("lunepack-cli", "lunepack-cli-macos", "release", "setup"):
+            self.assertIn("deleted artifact %s" % name, out)
+        self.assertIn("keep other", out)
+        self.assertIn("keep setup (expired)", out)
+
+    def test_it_asks_only_for_this_run_on_the_api_host_with_the_token_in_the_header_only(self):
+        self.artifacts = [{"id": 9, "name": "setup"}]
+        _, out = self.drop("4242")
+        for method, url, headers in self.requests:
+            self.assertTrue(url.startswith("https://api.github.com/repos/owner/repo/actions/"), url)
+            self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
+            self.assertNotIn(TOKEN, url)
+        self.assertEqual(self.requests[0][1], "https://api.github.com/repos/owner/repo/actions/runs/4242/artifacts?per_page=100&page=1")
+        self.assertEqual(self.requests[1][:2], ("DELETE", "https://api.github.com/repos/owner/repo/actions/artifacts/9"))
+        self.assertNotIn(TOKEN, out)
+
+    def test_pagination_lists_every_page_before_deleting(self):
+        self.artifacts = [{"id": i, "name": "other"} for i in range(1, 101)] + [{"id": 101, "name": "setup"}]
+        self.drop()
+        methods = [m for m, _, _ in self.requests]
+        self.assertEqual(methods, ["GET", "GET", "DELETE"])
+        self.assertEqual(self.deleted(), ["101"])
+
+    def test_a_full_last_page_is_followed_by_one_empty_page(self):
+        self.artifacts = [{"id": i, "name": "other"} for i in range(1, 101)]
+        self.drop()
+        self.assertEqual([m for m, _, _ in self.requests], ["GET", "GET"])
+
+    def test_nothing_to_delete_is_fine(self):
+        self.artifacts = []
+        _, out = self.drop()
+        self.assertEqual(self.deleted(), [])
+        self.assertIn("no artifact of run 123 to delete", out)
+
+    def test_a_run_id_that_is_not_digits_fails_before_any_request(self):
+        for bad in ("", "12a", "1 2", "../1", "-1", "\u0661\u0662", "1" * 21, "12/artifacts"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(rp.Abort):
+                    self.drop(bad)
+        self.assertEqual(self.requests, [])
+
+    def test_a_failed_delete_fails(self):
+        self.artifacts = [{"id": 1, "name": "setup"}]
+        self.delete_status = 403
+        with self.assertRaises(rp.Abort) as ctx:
+            self.drop()
+        self.assertIn("HTTP 403", str(ctx.exception))
+
+    def test_a_failed_list_fails_and_a_malformed_list_fails(self):
+        with mock.patch.object(self, "send", lambda *a: (500, b"boom")):
+            with self.assertRaises(rp.Abort):
+                self.drop()
+        for body in (b"[]", b'{"artifacts": 5}', b'{"artifacts": [{"id": "x", "name": "setup"}]}',
+                     b'{"artifacts": [5]}', b'{"artifacts": [{"id": true, "name": "setup"}]}'):
+            with self.subTest(body=body):
+                with mock.patch.object(self, "send", lambda *a, b=body: (200, b)):
+                    with self.assertRaises(rp.Abort):
+                        self.drop()
+        self.assertEqual(self.deleted(), [])
+
+    def test_a_missing_token_or_bad_repository_fails(self):
+        with self.assertRaises(rp.Abort):
+            rp.cmd_drop_artifacts(argparse.Namespace(run_id="1"), rp.Secrets({}), self.send)
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "not a repo"}):
+            with self.assertRaises(rp.Abort):
+                self.drop()
+
+    def test_main_redacts_the_token_from_a_failure(self):
+        err = io.StringIO()
+        with mock.patch.object(rp.RunArtifacts, "__init__", lambda self, secrets, run_id, send=None: (_ for _ in ()).throw(rp.Abort("x " + TOKEN))), \
+                mock.patch.dict(os.environ, {"GITHUB_TOKEN": TOKEN}), contextlib.redirect_stderr(err):
+            code = rp.main(["drop-artifacts", "--run-id", "1"])
+        self.assertEqual(code, 1)
+        self.assertNotIn(TOKEN, err.getvalue())
+
+
 class Scope(unittest.TestCase):
     def test_the_glue_holds_no_store_feed_retention_or_state_code(self):
         text = (SCRIPTS / "release-pack.py").read_text().lower()

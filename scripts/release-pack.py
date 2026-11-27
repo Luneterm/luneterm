@@ -9,6 +9,7 @@ the update store is `lunepack publish`; this file holds only what is Luneterm's 
         [--inputs-dir <dir> | (the GitHub release of <tag>)] [--output-file <path>]
     release-pack.py attach --tag <tag> --dir <setup dir> --expect <target>=<sha256> ...
     release-pack.py dmg --tag <tag> --lunepack <cli> --config <toml> --work <dir>
+    release-pack.py drop-artifacts --run-id <digits>
 
 `check-root` exits 1 while `[root] keys` of the config holds the throwaway test root (its private
 half was discarded): no release may ship with it.
@@ -36,6 +37,12 @@ manifest and the manifest's reference matches the pack (a publication check: it 
 documents to the bytes it downloaded and builds no path or URL from their contents), then runs
 `lunepack setup` (no `--zip`). The trust is lunepack's: its root walk, keys.json, manifest
 signature, pack and parse-back, as for the zip. The feed's own signature is not re-checked here.
+
+`drop-artifacts` runs on the drop-artifacts job (GITHUB_TOKEN with actions: write only), after every
+job of the run that downloads an artifact has succeeded: it deletes this run's `lunepack-cli`,
+`lunepack-cli-macos`, `release` and `setup` artifacts (the CLI, the release directory and the setup
+files; nothing else, nothing of another run), so a finished publish leaves nothing behind. A run
+whose later jobs failed keeps them until they expire.
 
 Secrets come from the environment and are removed from it at start: LUNEPACK_RELEASE_KEY reaches
 only the lunepack children that sign (`pack`), GITHUB_TOKEN only the GitHub API calls. No value of
@@ -810,6 +817,67 @@ def cmd_dmg(args, secrets):
     print("dmg_sha256=%s" % digest)
 
 
+RUN_ARTIFACTS = ("lunepack-cli", "lunepack-cli-macos", "release", "setup")
+RUN_ID_RE = re.compile(r"[0-9]{1,20}")
+
+
+class RunArtifacts:
+    """The artifacts of one workflow run (publish-release.py's client: the token goes to the API host only)."""
+
+    def __init__(self, secrets, run_id, send=None):
+        self.pr = load_publish_release()
+        repo = os.environ.get("GITHUB_REPOSITORY", "")
+        if not self.pr.REPO_RE.fullmatch(repo):
+            raise Abort("bad GITHUB_REPOSITORY: %r" % repo)
+        self.run_id = run_id
+        self.gh = self.pr.GitHub(repo, secrets.get("GITHUB_TOKEN"), send or self.pr.http_send)
+
+    def _call(self, method, path):
+        try:
+            return self.gh.call(method, self.pr.API, path)
+        except self.pr.Failure as err:
+            raise Abort(str(err)) from err
+
+    def list(self):
+        out = []
+        page = 1
+        while True:
+            found = self._call("GET", "actions/runs/%s/artifacts?per_page=100&page=%d" % (self.run_id, page))
+            items = found.get("artifacts") if isinstance(found, dict) else None
+            if not isinstance(items, list):
+                raise Abort("the artifact list of run %s is not a list" % self.run_id)
+            out.extend(items)
+            if len(items) < 100:
+                return out
+            page += 1
+
+    def delete(self, artifact_id):
+        self._call("DELETE", "actions/artifacts/%d" % artifact_id)
+
+
+def cmd_drop_artifacts(args, secrets, send=None):
+    if not RUN_ID_RE.fullmatch(args.run_id or ""):
+        raise Abort("--run-id must be digits")
+    artifacts = RunArtifacts(secrets, args.run_id, send)
+    # List everything first: deleting while paging would shift the pages.
+    found = artifacts.list()
+    doomed = []
+    for item in found:
+        name = item.get("name") if isinstance(item, dict) else None
+        ident = item.get("id") if isinstance(item, dict) else None
+        if not isinstance(name, str) or not isinstance(ident, int) or isinstance(ident, bool):
+            raise Abort("an artifact of run %s has no usable name or id" % args.run_id)
+        if name in RUN_ARTIFACTS and not item.get("expired"):
+            doomed.append((name, ident))
+        else:
+            print("keep %s%s" % (name, " (expired)" if item.get("expired") else ""))
+    for name, ident in doomed:
+        artifacts.delete(ident)
+        print("deleted artifact %s" % name)
+    if not doomed:
+        print("no artifact of run %s to delete" % args.run_id)
+
+
 def cmd_attach(args, secrets):
     version = parse_tag(args.tag)
     expect = {}
@@ -878,6 +946,8 @@ def main(argv=None):
     d.add_argument("--lunepack", required=True)
     d.add_argument("--config", required=True)
     d.add_argument("--work", required=True)
+    x = sub.add_parser("drop-artifacts")
+    x.add_argument("--run-id", required=True)
     args = ap.parse_args(argv)
     secrets = Secrets(os.environ)
     try:
@@ -887,6 +957,8 @@ def main(argv=None):
             cmd_pack(args, secrets)
         elif args.cmd == "dmg":
             cmd_dmg(args, secrets)
+        elif args.cmd == "drop-artifacts":
+            cmd_drop_artifacts(args, secrets)
         else:
             cmd_attach(args, secrets)
     except Abort as err:
