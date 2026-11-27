@@ -853,6 +853,27 @@ fn an_upgraded_install_keeps_the_top_bar_whichever_file_it_left() {
     }
 }
 
+/// D23: an earlier version's run that changed no setting and reported no directory left only the
+/// shell-integration scripts, which keeps the top bar. A new install decides before this run's
+/// first shell writes them, saves the decision and keeps the side pane.
+#[test]
+fn the_scripts_alone_mark_an_upgrade_and_a_new_install_decides_before_writing_them() {
+    let upgraded = Scratch::new("view-upgrade-scripts");
+    crate::shell_integration::install(&upgraded.0).expect("scripts");
+    let (persist, start) = Persist::load(upgraded.store());
+    assert_eq!(start.settings.side_pane, Some(false));
+    let again = save_and_restart(&upgraded, &persist, &start);
+    assert_eq!(again.settings.side_pane, Some(false));
+
+    let new = Scratch::new("view-new-scripts");
+    let (persist, start) = Persist::load(new.store());
+    assert_eq!(start.settings.side_pane, Some(true));
+    // This run's first shell.
+    crate::shell_integration::install(&new.0).expect("scripts");
+    let again = save_and_restart(&new, &persist, &start);
+    assert_eq!(again.settings.side_pane, Some(true));
+}
+
 /// A saved choice is the choice, whatever else is in the directory; nothing is written for it.
 #[test]
 fn a_saved_view_choice_is_kept() {

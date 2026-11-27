@@ -498,12 +498,15 @@ impl Persist {
                 None
             }
         };
-        // D23: a settings file or a workspace file is what an earlier version left behind, so a
-        // choice nobody saved yet keeps the top bar; with neither this is a new install, which
-        // starts with the side pane.
+        // D23: a settings file, a workspace file or the shell-integration scripts are what an
+        // earlier version left behind (a run with no settings change and no directory report
+        // leaves only the scripts), so a choice nobody saved yet keeps the top bar; with none of
+        // them this is a new install, which starts with the side pane. This runs before the
+        // first shell of this run, which is what writes the scripts.
         let save_view = settings.side_pane.is_none() && !rejected;
         if settings.side_pane.is_none() {
-            settings.side_pane = Some(!settings_file && !workspace_file);
+            let scripts = store.path(crate::shell_integration::DIR_NAME).is_dir();
+            settings.side_pane = Some(!settings_file && !workspace_file && !scripts);
         }
         persist.persister = match Persister::start(store) {
             Ok(p) => Some(p),
