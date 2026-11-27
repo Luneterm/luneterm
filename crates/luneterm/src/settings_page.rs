@@ -59,16 +59,23 @@ const OS: &str = "linux";
 /// A page of the settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Section {
+    General,
     Appearance,
     Terminal,
     About,
 }
 
 impl Section {
-    pub const ALL: [Section; 3] = [Section::Appearance, Section::Terminal, Section::About];
+    pub const ALL: [Section; 4] = [
+        Section::General,
+        Section::Appearance,
+        Section::Terminal,
+        Section::About,
+    ];
 
     fn key(self) -> &'static str {
         match self {
+            Section::General => "settings.section.general",
             Section::Appearance => "settings.section.appearance",
             Section::Terminal => "settings.section.terminal",
             Section::About => "settings.section.about",
@@ -269,29 +276,40 @@ static TERMINAL: [Group; 3] = [
                 Control::Toggle,
                 "settings.terminal.behavior.optionAsMeta",
             ),
-            row(
-                SettingId::EfficiencyMode,
-                Control::Toggle,
-                "settings.terminal.behavior.efficiencyMode",
-            ),
         ],
     },
 ];
 
-/// The About section's one group: the updates toggle (its status line and buttons are drawn under
-/// it by [`about`], from the [`UpdatePanel`]).
-static ABOUT: [Group; 1] = [Group {
-    header: "settings.about.updates.header",
-    rows: &[row(
-        SettingId::AutoUpdateCheck,
-        Control::Toggle,
-        "settings.about.updates.auto",
-    )],
-}];
+/// The General section: what is about the app as a whole, not about a terminal or the look. The
+/// rows keep their string keys from where they were (the updates toggle was on About, efficiency
+/// mode on Terminal > Behavior).
+static GENERAL: [Group; 2] = [
+    Group {
+        header: "settings.general.updates.header",
+        rows: &[row(
+            SettingId::AutoUpdateCheck,
+            Control::Toggle,
+            "settings.about.updates.auto",
+        )],
+    },
+    Group {
+        header: "settings.general.background.header",
+        rows: &[row(
+            SettingId::EfficiencyMode,
+            Control::Toggle,
+            "settings.terminal.behavior.efficiencyMode",
+        )],
+    },
+];
 
-/// The groups of a section (the rest of the About section is text).
+/// The About section has no setting rows: the app, its version with the update check, the notices
+/// (drawn by [`about`]).
+static ABOUT: [Group; 0] = [];
+
+/// The groups of a section (the About section has none: it is text and the update check).
 pub fn groups(section: Section) -> &'static [Group] {
     match section {
+        Section::General => &GENERAL,
         Section::Appearance => &APPEARANCE,
         Section::Terminal => &TERMINAL,
         Section::About => &ABOUT,
@@ -868,7 +886,7 @@ impl UpdatePanel {
     }
 }
 
-/// The status line under the updates toggle.
+/// The About status line under the version row.
 pub fn update_status(strings: &StringTable, state: &UpdateState) -> String {
     let key = |k: &str| format!("settings.about.updates.status.{k}");
     match state {
@@ -876,7 +894,7 @@ pub fn update_status(strings: &StringTable, state: &UpdateState) -> String {
             strings.tr(&key("notInstalled")).to_owned()
         }
         UpdateState::Unavailable(Unavailable::Broken(why)) => {
-            strings.tr_fmt(&key("broken"), &[why], &DisplayFormat)
+            strings.tr_fmt(&key("broken"), &[&sentence(why)], &DisplayFormat)
         }
         UpdateState::Idle => strings.tr(&key("idle")).to_owned(),
         UpdateState::Checking => strings.tr(&key("checking")).to_owned(),
@@ -888,8 +906,25 @@ pub fn update_status(strings: &StringTable, state: &UpdateState) -> String {
             strings.tr_fmt(&key("downloading"), &[pct], &DisplayFormat)
         }
         UpdateState::Ready(version) => strings.tr_fmt(&key("ready"), &[version], &DisplayFormat),
-        UpdateState::Failed(why) => strings.tr_fmt(&key("failed"), &[why], &DisplayFormat),
+        UpdateState::Failed(why) => {
+            strings.tr_fmt(&key("failed"), &[&sentence(why)], &DisplayFormat)
+        }
     }
+}
+
+/// A reason (lunepack's message, lower case) is a sentence after the two-sentence status text:
+/// first letter up, and a final period unless it already ends in `.`, `…`, `!` or `?`
+/// (`redact()` truncates with `…`).
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    let mut out: String = match chars.next() {
+        Some(c) => c.to_uppercase().chain(chars).collect(),
+        None => return String::new(),
+    };
+    if !out.ends_with(['.', '…', '!', '?']) {
+        out.push('.');
+    }
+    out
 }
 
 fn spec(text: &str, size: f32, color: Rgba) -> Spec {
@@ -1018,7 +1053,7 @@ fn content(
     ui.painter().text(&title, vp.x, vp.y);
     let mut y = vp.y + 40.0;
     if section == Section::About {
-        y = about(ui, strings, state, settings, system, vp, y, out);
+        y = about(ui, strings, state, vp, y, out);
     } else {
         for group in groups(section) {
             y = draw_group(ui, strings, state, settings, system, vp, y, group, out) + 16.0;
@@ -1198,15 +1233,12 @@ fn control(
     }
 }
 
-/// The About section: the app, its version, the updates group (toggle, status line, buttons) and
-/// the notices. Returns the next y.
-#[allow(clippy::too_many_arguments)]
+/// The About section: the app, its version with the update check beside it, the status of the
+/// update, the blurb and the notices. Returns the next y.
 fn about(
     ui: &mut Ui<'_>,
     strings: &StringTable,
-    state: &mut PageState,
-    settings: &mut Settings,
-    system: &[&'static str],
+    state: &PageState,
     vp: Rect,
     y: f32,
     out: &mut PageOut,
@@ -1219,20 +1251,51 @@ fn about(
         Style::ui(theme.font_m, theme.fg_primary).medium(),
     );
     y += ui.painter().text(&name, vp.x, y).1 + 6.0;
-    let version = strings.tr_fmt(
-        "settings.about.version",
-        &[&env!("CARGO_PKG_VERSION")],
-        &DisplayFormat,
+    // The version row: the version text, the update buttons beside it (on their own line under
+    // it when they do not fit within `w`).
+    let version = spec(
+        &strings.tr_fmt(
+            "settings.about.version",
+            &[&env!("CARGO_PKG_VERSION")],
+            &DisplayFormat,
+        ),
+        theme.font_base,
+        theme.fg_secondary,
     );
-    for line in [version.as_str(), strings.tr("settings.about.blurb")] {
-        let s = spec(line, theme.font_base, theme.fg_secondary).wrapped(w);
-        y += ui.painter().text(&s, vp.x, y).1 + 8.0;
-    }
-    y += 12.0;
-    for group in groups(Section::About) {
-        y = draw_group(ui, strings, state, settings, system, vp, y, group, out) + 12.0;
-    }
-    y = update_controls(ui, strings, &state.update, vp, y, out) + 16.0;
+    let (vw, vh) = ui.painter().measure(&version);
+    let plan = button_plan(&state.update);
+    let widths: Vec<f32> = plan
+        .iter()
+        .map(|b| {
+            ui.painter()
+                .measure(&spec(strings.tr(b.key), theme.font_base, theme.fg_primary))
+                .0
+                + 32.0
+        })
+        .collect();
+    let row = version_row(w, vw, vh, buttons_width(&widths));
+    ui.painter().text(&version, vp.x, y + row.version_y);
+    update_buttons(
+        ui,
+        strings,
+        &plan,
+        &widths,
+        vp.x + row.buttons_x,
+        y + row.buttons_y,
+        out,
+    );
+    y += row.h + 4.0;
+    // The status of the update, then the blurb.
+    let status = update_status(strings, &state.update);
+    let s = spec(&status, theme.font_s + 0.5, theme.fg_secondary).wrapped(w);
+    y += ui.painter().text(&s, vp.x, y).1 + 12.0;
+    let s = spec(
+        strings.tr("settings.about.blurb"),
+        theme.font_base,
+        theme.fg_secondary,
+    )
+    .wrapped(w);
+    y += ui.painter().text(&s, vp.x, y).1 + 20.0;
     let header = Spec::plain(
         strings.tr("settings.about.notices"),
         Style::ui(theme.font_m, theme.fg_primary).medium(),
@@ -1255,63 +1318,110 @@ fn about(
     y
 }
 
-/// The status line and the buttons under the updates group; returns the next y.
-fn update_controls(
-    ui: &mut Ui<'_>,
-    strings: &StringTable,
-    update: &UpdateState,
-    vp: Rect,
-    y: f32,
-    out: &mut PageOut,
-) -> f32 {
-    let theme = *ui.theme();
+/// One update button: what it asks, its string key, whether it can be pressed and its look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UpdateButton {
+    ask: UpdateAsk,
+    key: &'static str,
+    enabled: bool,
+    kind: ButtonKind,
+}
+
+/// The buttons the About version row shows for `update`: Check for updates, then the action
+/// (Update or Restart to update) when there is one. Check is the main button when it is alone,
+/// the quiet one beside an action.
+fn button_plan(update: &UpdateState) -> Vec<UpdateButton> {
     let panel = UpdatePanel::of(update);
-    let status = update_status(strings, update);
-    let line = spec(&status, theme.font_base, theme.fg_secondary).wrapped(vp.w.min(560.0));
-    let mut y = y + ui.painter().text(&line, vp.x, y).1 + 12.0;
-    let mut x = vp.x;
-    let mut button = |ui: &mut Ui<'_>, ask: UpdateAsk, key: &str, enabled: bool, kind| {
-        let text = strings.tr(key);
-        let w = ui
-            .painter()
-            .measure(&spec(text, theme.font_base, theme.fg_primary))
-            .0
-            + 32.0;
-        let r = Rect::new(x, y, w, CONTROL_H);
-        x += w + 8.0;
-        let resp = ui.with_enabled(enabled, |ui| {
-            ui.button(("update", ask as u8), r, text, kind)
-        });
-        if resp.clicked {
-            out.update = Some(ask);
-        }
-    };
-    button(
-        ui,
-        UpdateAsk::Check,
-        "settings.about.updates.check",
-        panel.check_enabled,
-        ButtonKind::Secondary,
-    );
+    let mut plan = vec![UpdateButton {
+        ask: UpdateAsk::Check,
+        key: "settings.about.updates.check",
+        enabled: panel.check_enabled,
+        kind: if panel.action.is_some() {
+            ButtonKind::Secondary
+        } else {
+            ButtonKind::Primary
+        },
+    }];
     match panel.action {
-        Some(UpdateAsk::Download) => button(
-            ui,
-            UpdateAsk::Download,
-            "settings.about.updates.download",
-            true,
-            ButtonKind::Primary,
-        ),
-        Some(UpdateAsk::Restart) => button(
-            ui,
-            UpdateAsk::Restart,
-            "settings.about.updates.restart",
-            true,
-            ButtonKind::Primary,
-        ),
+        Some(UpdateAsk::Download) => plan.push(UpdateButton {
+            ask: UpdateAsk::Download,
+            key: "settings.about.updates.download",
+            enabled: true,
+            kind: ButtonKind::Primary,
+        }),
+        Some(UpdateAsk::Restart) => plan.push(UpdateButton {
+            ask: UpdateAsk::Restart,
+            key: "settings.about.updates.restart",
+            enabled: true,
+            kind: ButtonKind::Primary,
+        }),
         _ => {}
     }
-    y += CONTROL_H;
-    y
+    plan
+}
+
+/// The gap between the version text and the buttons, and between two buttons.
+const VERSION_GAP: f32 = 16.0;
+const BUTTON_GAP: f32 = 8.0;
+
+/// The width of buttons of the given widths in a row.
+fn buttons_width(widths: &[f32]) -> f32 {
+    widths.iter().sum::<f32>() + BUTTON_GAP * widths.len().saturating_sub(1) as f32
+}
+
+/// Where the About version row puts things, relative to its top left.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VersionRow {
+    version_y: f32,
+    buttons_x: f32,
+    buttons_y: f32,
+    /// The row's height.
+    h: f32,
+}
+
+/// The version row of width `w`: the version text (`vw` x `vh`) with `bw` of buttons beside it,
+/// both centred on one row of [`CONTROL_H`]; when `vw + 16 + bw` does not fit in `w` the buttons
+/// go on their own line under the text.
+fn version_row(w: f32, vw: f32, vh: f32, bw: f32) -> VersionRow {
+    if vw + VERSION_GAP + bw <= w {
+        VersionRow {
+            version_y: (CONTROL_H - vh) / 2.0,
+            buttons_x: vw + VERSION_GAP,
+            buttons_y: 0.0,
+            h: CONTROL_H,
+        }
+    } else {
+        VersionRow {
+            version_y: 0.0,
+            buttons_x: 0.0,
+            buttons_y: vh + 6.0,
+            h: vh + 6.0 + CONTROL_H,
+        }
+    }
+}
+
+/// Draws the planned buttons in a row starting at (`x`, `y`).
+fn update_buttons(
+    ui: &mut Ui<'_>,
+    strings: &StringTable,
+    plan: &[UpdateButton],
+    widths: &[f32],
+    x: f32,
+    y: f32,
+    out: &mut PageOut,
+) {
+    let mut x = x;
+    for (b, w) in plan.iter().zip(widths) {
+        let r = Rect::new(x, y, *w, CONTROL_H);
+        x += w + BUTTON_GAP;
+        let text = strings.tr(b.key);
+        let resp = ui.with_enabled(b.enabled, |ui| {
+            ui.button(("update", b.ask as u8), r, text, b.kind)
+        });
+        if resp.clicked {
+            out.update = Some(b.ask);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1698,18 +1808,87 @@ mod tests {
         assert!(t.page.w >= 0.0 && t.page.h >= 0.0 && t.divider.h >= 0.0);
     }
 
-    /// The About section holds the one updates toggle, on by default, and no other row.
+    /// General holds the updates toggle (on by default) and efficiency mode, in that order;
+    /// About holds no row.
     #[test]
-    fn the_about_section_has_the_updates_toggle_only() {
-        let rows: Vec<SettingId> = groups(Section::About)
+    fn general_holds_the_app_rows_and_about_none() {
+        let rows: Vec<SettingId> = groups(Section::General)
             .iter()
             .flat_map(|g| g.rows.iter().map(|r| r.id))
             .collect();
-        assert_eq!(rows, [SettingId::AutoUpdateCheck]);
+        assert_eq!(
+            rows,
+            [SettingId::AutoUpdateCheck, SettingId::EfficiencyMode]
+        );
+        assert!(groups(Section::About).is_empty());
+        assert_eq!(Section::ALL[0], Section::General);
         assert_eq!(
             flag(&Settings::default(), SettingId::AutoUpdateCheck),
             Some(true)
         );
+    }
+
+    /// The About version row keeps its buttons inside the content width, under the text when they
+    /// do not fit beside it, for every update state's button set; the content width tried goes
+    /// down to 320 px (the window has no minimum size; the Restart pair is about 250 px wide).
+    #[test]
+    fn the_version_row_keeps_the_buttons_inside_the_width() {
+        // Text widths of "Version 0.9.0" (about 90 px at 13 px) and the buttons as drawn
+        // (text + 32): Check ~ 128, Update ~ 78, Restart to update ~ 138.
+        let sets: [&[f32]; 3] = [&[128.0], &[128.0, 78.0], &[128.0, 138.0]];
+        let (vw, vh) = (90.0, 16.0);
+        for w in [560.0, 400.0, 320.0] {
+            for set in sets {
+                let bw = buttons_width(set);
+                let row = version_row(w, vw, vh, bw);
+                assert!(row.buttons_x + bw <= w, "w {w} set {set:?}: {row:?}");
+                assert!(row.buttons_y + CONTROL_H <= row.h);
+                assert!(row.version_y + vh <= row.h);
+                // The text and the buttons never share the same pixels.
+                if row.buttons_y == 0.0 {
+                    assert!(row.buttons_x >= vw + VERSION_GAP);
+                } else {
+                    assert!(row.buttons_y >= row.version_y + vh);
+                }
+            }
+        }
+        // Beside the text when it fits, under it when it does not.
+        assert_eq!(version_row(560.0, vw, vh, 128.0).buttons_y, 0.0);
+        assert!(version_row(200.0, vw, vh, 128.0).buttons_y > 0.0);
+    }
+
+    /// Every update state gets the buttons its `UpdatePanel` allows, Check first, the action
+    /// last; Check is the main button only when it is alone.
+    #[test]
+    fn the_button_plan_follows_the_panel() {
+        for state in [
+            UpdateState::Idle,
+            UpdateState::Checking,
+            UpdateState::UpToDate,
+            UpdateState::Available {
+                version: "0.9.1".into(),
+                auto: false,
+            },
+            UpdateState::Ready("0.9.1".into()),
+            UpdateState::Downloading(42),
+            UpdateState::Failed("x".into()),
+            UpdateState::Unavailable(Unavailable::NotInstalled),
+        ] {
+            let panel = UpdatePanel::of(&state);
+            let plan = button_plan(&state);
+            assert_eq!(plan[0].ask, UpdateAsk::Check);
+            assert_eq!(plan[0].enabled, panel.check_enabled);
+            assert_eq!(plan.len(), 1 + usize::from(panel.action.is_some()));
+            assert_eq!(
+                plan[0].kind,
+                if panel.action.is_some() {
+                    ButtonKind::Secondary
+                } else {
+                    ButtonKind::Primary
+                }
+            );
+            assert_eq!(plan.get(1).map(|b| b.ask), panel.action);
+        }
     }
 
     #[test]
@@ -1769,19 +1948,32 @@ mod tests {
         );
         assert_eq!(
             line(UpdateState::Failed("no network".into())),
-            "The update failed: no network"
+            "The update failed. No network."
         );
         // The reasons a copy cannot update come from the string table too.
         assert_eq!(
             line(UpdateState::Unavailable(Unavailable::NotInstalled)),
-            "Updates need the Luneterm installer"
+            "Updates need the Luneterm installer."
         );
         assert_eq!(
             line(UpdateState::Unavailable(Unavailable::Broken(
                 "state".into()
             ))),
-            "Updates are unavailable: state"
+            "Updates are unavailable. State."
         );
+    }
+
+    #[test]
+    fn a_reason_gets_a_final_period_unless_it_has_a_closing_mark() {
+        assert_eq!(sentence("no network"), "No network.");
+        assert_eq!(sentence("cancelled."), "Cancelled.");
+        assert_eq!(
+            sentence("cut off at https://host/…"),
+            "Cut off at https://host/…"
+        );
+        assert_eq!(sentence("really?"), "Really?");
+        assert_eq!(sentence("stop!"), "Stop!");
+        assert_eq!(sentence(""), "");
     }
 
     #[test]

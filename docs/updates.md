@@ -18,9 +18,9 @@ the reference for every `lunepack` command below:
 
 | | |
 |---|---|
-| Installers | `luneterm-<version>-linux-x64-setup` (run `chmod +x` first), `luneterm-<version>-windows-x64-setup.exe`, `luneterm-<version>-macos-arm64-setup.zip` (holds `Luneterm.app`: move it to `/Applications` or `~/Applications`; lunepack adopts it on the first update check). Each has a `.sha256` beside it, attached to the GitHub release. All unsigned (no Developer ID, no Authenticode), so each OS warns on first launch. |
+| Installers | `luneterm-<version>-linux-x64-setup` (run `chmod +x` first), `luneterm-<version>-windows-x64-setup.exe`, `luneterm-<version>-macos-arm64-setup.dmg` (a disk image with `Install Luneterm.app`; attached by the `dmg` job a few minutes after the other files, see below) and `luneterm-<version>-macos-arm64-setup.zip` (holds `Luneterm.app`: move it to `/Applications` or `~/Applications`; lunepack adopts it on the first update check). Each has a `.sha256` beside it, attached to the GitHub release. All unsigned (no Developer ID, no Authenticode), so each OS warns on first launch. |
 | Installed to | macOS `~/Applications/Luneterm.app` (state in `~/Library/Application Support/my.ijat.luneterm`), Linux `~/.local/share/my.ijat.luneterm` (command link `~/.local/bin/luneterm`), Windows `%LOCALAPPDATA%\Programs\Luneterm`. Per user, no admin rights. |
-| Updating | Settings > About: "Check for updates automatically" (on by default: at launch and every 24 h, a found version shows a toast with Update / Dismiss), "Check for updates", and "Restart to update" once an update is downloaded and staged. Restarting closes all shells. |
+| Updating | Settings > General: "Check for updates automatically" (on by default: at launch and every 24 h, a found version shows a toast with Update / Dismiss); Settings > About: "Check for updates" beside the version, and "Restart to update" once an update is downloaded and staged. Restarting closes all shells. |
 | Not installed by lunepack | A `cargo run` build or an old portable zip says "Updates need the Luneterm installer" and never touches the network. |
 | Rollback | An update that does not confirm itself (`confirm_healthy`, after the first frame and the first shell) within lunepack's health timeout is rolled back to the previous version by lunepack's runtime. |
 | Channels | `stable` and `beta`. A copy follows the channel its installer came from: the first run records it as `update_channel` in `settings.json` and keeps it, whatever a later pack says (a beta copy that updates to a stable pack stays on beta). To switch, uninstall and run the other channel's setup file (a setup does not run over an install): the first start after a setup records that setup's channel, whatever `settings.json` (which survives the uninstall) held. Limit: a per-machine install gets no such signal from lunepack and keeps the recorded channel; edit `update_channel` (`stable` or `beta`) in `settings.json` to change it. |
@@ -35,7 +35,7 @@ the reference for every `lunepack` command below:
 | Feed layout | `luneterm/keys.json`, `luneterm/root-<k>.json` (after a root rotation), `luneterm/feed-stable.json`, `luneterm/feed-beta.json`, and per version `luneterm/<version>/<target>.{pack,manifest.json,from-<old>.delta}`, targets `linux-x86_64`, `windows-x86_64`, `macos-aarch64`. |
 | Trust root | The `[root]` table of `packaging/lunepack.toml` and nowhere else. `lunepack pack` writes it into the update config (`lunepack-update.json`) of every pack, and lunepack's updater verifies the feed against that. No Rust source holds a root key. The private root key stays offline with the user. |
 | Release signing key | The secret `LUNEPACK_RELEASE_KEY` of three GitHub environments (below), never a repository secret; read only by `.github/workflows/publish-updates.yml`. |
-| Glue | `scripts/release-pack.py` (standard library only; tests: `python3 -B -m unittest discover -s scripts/tests`): `check-root`, `pack` (the build inputs from the GitHub release, then `lunepack publish fetch`, `pack`, `setup`) and `attach` (the setup files to the release). Everything that publishes is `lunepack publish`. |
+| Glue | `scripts/release-pack.py` (standard library only; tests: `python3 -B -m unittest discover -s scripts/tests`): `check-root`, `pack` (the build inputs from the GitHub release, then `lunepack publish fetch`, `pack`, `setup`) and `attach` (the setup files to the release), `dmg` (the macOS `.dmg` of an already published release: downloads `keys.json`, the root walk, the channel's feed and the macOS manifest and pack from the feed URL, checks the feed, manifest and pack against one another, then `lunepack setup` verifies the chain and writes the `.dmg` and its `.sha256`; needs macOS) and `drop-artifacts` (deletes a run's `lunepack-cli`, `lunepack-cli-macos`, `release` and `setup` artifacts). Everything that publishes is `lunepack publish`. |
 | Build inputs | `.github/workflows/release.yml` (Linux, Windows) and `scripts/package-macos.sh` (macOS) build the app and lunepack's runtime for each OS (`scripts/build-lunepack.sh`, `scripts/build-lunepack.ps1`; format: `scripts/make-build-input.py`). |
 
 `[publish]` in `packaging/lunepack.toml` holds the names (`docs/CLI.md` "`[publish]`" has the keys):
@@ -48,7 +48,9 @@ pair from `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`, the private bucket's pair
 
 ## How a release reaches users
 
-1. Push the tag `v<version>` (or `v<version>-rc.<N>`; the version must equal the workspace version).
+1. Push the tag `v<version>` (or `v<version>-rc.<N>`; the version must equal the workspace version). A
+   stable tag must be on `main`, an rc on `main` or `develop` (`release.yml` checks the tagged commit is
+   an ancestor of `origin/main`, or for an rc of `origin/main` or `origin/develop`).
    `release.yml` verifies it, builds the Linux and Windows build inputs and creates a draft release
    holding them (`luneterm-<version>-linux-x64-build.tar.gz`, `...-windows-x64-build.zip`, each with
    a `.sha256`). These are not user downloads.
@@ -66,6 +68,17 @@ pair from `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`, the private bucket's pair
    digests `pack` reported, attaches them and deletes the `*-build.*` inputs. Every job that holds a
    secret checks the CLI against the `tools-linux` hash before its first `lunepack` call and builds
    nothing.
+   After `attach`, the macOS installer: `tools-macos` (GitHub-hosted `macos-14`, `contents: read`, no
+   secret; it starts with the run) builds the macOS `lunepack` CLI from the same pin and reports its
+   SHA-256, and `dmg` (`macos-14`, `GITHUB_TOKEN` with `contents: write` only, no environment, compiles
+   nothing) checks that CLI against it and runs `scripts/package-macos-dmg.sh <tag>`: it builds the
+   `luneterm-<version>-macos-arm64-setup.dmg` (+ `.sha256`, unsigned) from the release that is now
+   published and attaches both (never replacing an asset; a re-run finds them there and stops). Then
+   `drop-artifacts` (`actions: write`, no environment) deletes the run's artifacts, but only when
+   `attach` and `dmg` both succeeded. The hosted jobs are the only ones not on the self-hosted
+   runner. That GitHub-hosted runners work again (they were blocked by account billing on 2026-11-09)
+   is **not verified**: the first run proves it. If `dmg` does not run, run `scripts/package-macos-dmg.sh <tag>`
+   on a Mac at the tag (clean tree, `gh` logged in) once `attach` has finished.
 4. A stable tag goes to `stable` and `beta`, a release candidate to `beta` only (so no stable user can
    see an rc). Each channel keeps its newest 10 versions (by version precedence); `push` trims the rest
    and deletes a version's objects only when no channel lists it any more.
@@ -79,7 +92,7 @@ Actions tab if the repo is quiet. By hand: Actions > publish-updates > Run workf
 | Dispatch `mode` | Run from | What it does |
 |---|---|---|
 | `refresh` | the default branch | re-signs every feed |
-| `publish` | a `v*` tag ref | `pack`, `push`, `attach` for that tag (needs its draft published) |
+| `publish` | a `v*` tag ref | `pack`, `push`, `attach`, `dmg` and `drop-artifacts` for that tag (needs its draft published) |
 | `drop` + `drop_version` | a `v*` tag ref | takes one release out of the feeds and deletes its objects (`publish drop`; the owner approves) |
 
 `dry_run` (on by default for a dispatch) runs only the `--dry-run` commands (`publish push --dry-run`,
@@ -204,7 +217,8 @@ downloaded binary or a third-party action to a key job; give it its own job and 
 
 ### The runner probe (before the first real publish)
 
-The jobs run on the self-hosted Linux runner (`[self-hosted, linux, x64]`). Whether each job gets a fresh
+The jobs run on the self-hosted Linux runner (`[self-hosted, linux, x64]`), except `tools-macos` and `dmg`
+(GitHub-hosted `macos-14`; neither holds a secret). Whether each job gets a fresh
 container, so that a process or file one job leaves cannot be read by a later job holding a secret, has
 **not been checked**. Before setting `PUBLISH_READY`, run a throwaway two-job workflow on a pushed
 branch: job 1 writes a marker file in `$HOME`, in `/tmp` and in the workspace and leaves a background
@@ -232,8 +246,8 @@ Only then tag the stable release.
 
 ### Beta releases (from `main` or `develop`)
 
-The beta channel is the pre-release track: a tag `v<version>-rc.<N>` on any commit (on `main`, or on
-`develop` for work not ready for `main`) goes through the same release and publish flow and is listed in
+The beta channel is the pre-release track: a tag `v<version>-rc.<N>` on a commit of `main` or
+`develop` (`develop` for work not ready for `main`) goes through the same release and publish flow and is listed in
 the beta feed only. Copies installed from a beta setup update to it; stable copies never see it. The
 workspace version in `Cargo.toml` must be `<version>` (the version the rc leads to): bump it on that
 branch first. CI runs on pushes to `develop` too; wait for it to be green before tagging. A later stable
@@ -248,10 +262,17 @@ specifics:
   - `push` failed part-way (a network error, a timeout) or `attach` failed: re-run only the failed job
     ("Re-run failed jobs" of the same run), never with another version. Once `publish push` has written a
     feed, `publish fetch` refuses that version ("is already published"), so a new run cannot rebuild the
-    setup files; the `pack` job's `release` and `setup` artifacts are kept 90 days for exactly this, so
-    the re-run finishes the job within 90 days (the `push` rerun also before the next scheduled refresh
-    runs, which re-signs feeds: PUBLISHING.md "Rerun and recovery"). After that window, publish the next
-    version.
+    setup files; the run's artifacts (`lunepack-cli`, `release` and `setup`; `lunepack-cli-macos` too) are
+    kept 14 days for exactly this, so the re-run finishes the job within 14 days (the `push` rerun also
+    before the next scheduled refresh runs, which re-signs feeds: PUBLISHING.md "Rerun and recovery"). A
+    `push` can wait up to 14 days for the owner's approval for the same reason. After that window,
+    publish the next version. A successful run deletes its artifacts (`drop-artifacts`); a run where
+    `attach` or `dmg` failed keeps them until they expire.
+  - `dmg` or `tools-macos` failed, or never started (hosted runners unavailable): the release is already
+    published and the update feed is unaffected; only the `.dmg` is missing. Re-run the failed job (it
+    stops at once if the `.dmg` is already attached), or run `scripts/package-macos-dmg.sh <tag>` on a Mac
+    at the tag. If only one of the `.dmg` and its `.sha256` is on the release, delete it by hand first.
+    Until then the macOS `.zip` is the installer.
   - `push` refused with **"the store changed since fetch"**: the store's feeds no longer equal the copies
     `fetch` put in the `release` artifact (usually the weekly `refresh` re-signed a feed after the pack
     job ran). Nothing was written and no feed lists the version yet, so re-running `push` is refused again

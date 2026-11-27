@@ -8,6 +8,8 @@ the update store is `lunepack publish`; this file holds only what is Luneterm's 
     release-pack.py pack --tag <tag> --lunepack <cli> --config <toml> --work <dir>
         [--inputs-dir <dir> | (the GitHub release of <tag>)] [--output-file <path>]
     release-pack.py attach --tag <tag> --dir <setup dir> --expect <target>=<sha256> ...
+    release-pack.py dmg --tag <tag> --lunepack <cli> --config <toml> --work <dir>
+    release-pack.py drop-artifacts --run-id <digits>
 
 `check-root` exits 1 while `[root] keys` of the config holds the throwaway test root (its private
 half was discarded): no release may ship with it.
@@ -26,6 +28,22 @@ $GITHUB_OUTPUT, only after the digest is checked to be 64 lowercase hex characte
 the pack job reported, uploads what the release lacks (an asset of the same name and another size is
 exit 1), then deletes the release's `-build.` inputs.
 
+`dmg` runs on a Mac (scripts/package-macos-dmg.sh, or a macOS job): it builds the macOS installer
+`luneterm-<V>-macos-arm64-setup.dmg` (+ `.sha256`, in <work>/setup) from the release that is already
+published. It downloads `keys.json`, the `root-<k>.json` walk, `feed-<channel>.json`, and the
+`<V>/macos-aarch64` manifest and pack from the config's `[update] feed` (https only, no redirects,
+size caps, no credentials), checks that the feed lists <V> and that its reference matches the
+manifest and the manifest's reference matches the pack (a publication check: it compares the
+documents to the bytes it downloaded and builds no path or URL from their contents), then runs
+`lunepack setup` (no `--zip`). The trust is lunepack's: its root walk, keys.json, manifest
+signature, pack and parse-back, as for the zip. The feed's own signature is not re-checked here.
+
+`drop-artifacts` runs on the drop-artifacts job (GITHUB_TOKEN with actions: write only), after every
+job of the run that downloads an artifact has succeeded: it deletes this run's `lunepack-cli`,
+`lunepack-cli-macos`, `release` and `setup` artifacts (the CLI, the release directory and the setup
+files; nothing else, nothing of another run), so a finished publish leaves nothing behind. A run
+whose later jobs failed keeps them until they expire.
+
 Secrets come from the environment and are removed from it at start: LUNEPACK_RELEASE_KEY reaches
 only the lunepack children that sign (`pack`), GITHUB_TOKEN only the GitHub API calls. No value of
 one is ever printed. This is hygiene, not a boundary: processes of one user can read each other's
@@ -37,9 +55,11 @@ third-party code: the pinned lunepack CLI and the Python standard library only.
 import argparse
 import base64
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
+import platform
 import re
 import shutil
 import stat
@@ -57,7 +77,7 @@ REPO = os.path.dirname(HERE)
 # The throwaway test root of packaging/lunepack.toml (its private half was discarded).
 TEST_ROOT_KEYS = frozenset({"7c4f44f54daf49ca873f3aac937f0f19e668364a01178aa339f64690f998e996"})
 
-SECRET_NAMES = ("LUNEPACK_RELEASE_KEY", "GITHUB_TOKEN")
+SECRET_NAMES = ("LUNEPACK_RELEASE_KEY", "GITHUB_TOKEN", "GH_TOKEN")
 # Never handed to a child: store and cloud credentials no child here has any use for (the push and
 # refresh jobs hold the store tokens; these jobs never do), by name prefix.
 DROPPED_PREFIXES = ("R2_", "CLOUDFLARE_", "CF_", "AWS_")
@@ -106,6 +126,7 @@ TARGETS = {
         "os": "macos",
         "input": "luneterm-{v}-macos-arm64-build.tar.gz",
         "setup": "luneterm-{v}-macos-arm64-setup.zip",
+        "dmg": "luneterm-{v}-macos-arm64-setup.dmg",
         "notices": "Contents/Resources/lunepack-NOTICES.txt",
         "info": {
             "target": "macos-aarch64",
@@ -539,11 +560,12 @@ def parse_tag(tag):
     return m.group(1)
 
 
-def setup_argv(config, release_dir, version, target, out):
+def setup_argv(config, release_dir, version, target, out, zip=True):
     """`lunepack setup` of one target. lunepack stamps the Windows setup exe with the config's
-    `[windows] icon`, so the config is the same file the pack used."""
+    `[windows] icon`, so the config is the same file the pack used. A macOS target is a `.zip`
+    unless `zip` is False (then the installer `.dmg`, which needs a macOS host)."""
     argv = ["setup", release_dir, "--version", version, "--target", target, "--out", out, "--config", config]
-    if target.startswith("macos-"):
+    if zip and target.startswith("macos-"):
         argv.append("--zip")
     return argv
 
@@ -621,6 +643,241 @@ def cmd_pack(args, secrets):
         with open(args.output_file, "a", encoding="ascii", newline="\n") as f:
             f.write("".join(line + "\n" for line in lines))
 
+# ------------------------------------------------------------------------------ the dmg (published)
+
+FETCH_TIMEOUT = 60
+DOC_CAP = 1024 * 1024
+MANIFEST_CAP = 64 * 1024 * 1024
+MAX_ROOT_FILES = 1024
+DMG_TARGET = "macos-aarch64"
+
+
+def http_get(url, cap):
+    """GET `url` and return (status, body): https only, no credentials or cookies, a generic
+    User-Agent, no redirect followed (a 3xx comes back as its status), at most `cap` bytes (more
+    is an Abort). Module level so tests can replace it."""
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    if not url.startswith("https://"):
+        raise Abort("refusing a non-https URL: %s" % url)
+    request = urllib.request.Request(url, headers={"User-Agent": "luneterm-release-pack"}, method="GET")
+    opener = urllib.request.build_opener(NoRedirect)
+    try:
+        with opener.open(request, timeout=FETCH_TIMEOUT) as response:
+            data = response.read(cap + 1)
+            status = response.status
+    except urllib.error.HTTPError as err:
+        return err.code, b""
+    except (OSError, ValueError, http.client.HTTPException) as err:
+        raise Abort("GET %s: %s" % (url, type(err).__name__)) from err
+    if len(data) > cap:
+        raise Abort("%s is larger than %d bytes" % (url, cap))
+    return status, data
+
+
+def fetch_object(base, name, cap, work_release, accept=(200,)):
+    """One published object: `base` + the fixed `name`, written under `work_release` at the same
+    relative name. Returns (status, bytes); a status outside `accept` is an Abort."""
+    status, data = http_get(base + name, cap)
+    if status not in accept:
+        raise Abort("%s: HTTP %d" % (name, status))
+    if len(data) > cap:
+        raise Abort("%s is larger than %d bytes" % (name, cap))
+    if status == 200:
+        dest = os.path.join(work_release, *name.split("/"))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "xb") as f:
+            f.write(data)
+    return status, data
+
+
+def decode_doc(name, data, kind):
+    """The payload of a signed-document envelope as a dict (the signature is lunepack's to check)."""
+    try:
+        env = json.loads(data)
+        if not isinstance(env, dict) or not isinstance(env.get("payload"), str):
+            raise ValueError("no payload")
+        payload = json.loads(base64.b64decode(env["payload"], validate=True))
+    except (ValueError, RecursionError) as err:
+        raise Abort("%s does not parse as a signed document" % name) from err
+    if not isinstance(payload, dict) or payload.get("kind") != kind:
+        raise Abort("%s is not a %s document" % (name, kind))
+    return payload
+
+
+def _size_and_digest(name, ref):
+    size, digest = ref.get("size"), ref.get("sha256")
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        raise Abort("%s: a bad size" % name)
+    if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+        raise Abort("%s: a bad sha256" % name)
+    return size, digest
+
+
+def check_feed(name, data, app_id, channel, version):
+    """The feed entry of `version`'s macOS manifest: (size, sha256) it promises."""
+    payload = decode_doc(name, data, "feed")
+    if payload.get("app_id") != app_id or payload.get("channel") != channel:
+        raise Abort("%s is not the %s feed of %s" % (name, channel, app_id))
+    releases = payload.get("releases")
+    if not isinstance(releases, list):
+        raise Abort("%s: no releases list" % name)
+    found = [r for r in releases if isinstance(r, dict) and r.get("version") == version]
+    if not found:
+        raise Abort("%s is not listed in %s" % (version, name))
+    if len(found) > 1:
+        raise Abort("%s lists %s more than once" % (name, version))
+    targets = found[0].get("targets")
+    ref = targets.get(DMG_TARGET) if isinstance(targets, dict) else None
+    if not isinstance(ref, dict):
+        raise Abort("%s: %s has no %s" % (name, version, DMG_TARGET))
+    if ref.get("path") != "%s/%s.manifest.json" % (version, DMG_TARGET):
+        raise Abort("%s: an unexpected manifest path for %s" % (name, DMG_TARGET))
+    return _size_and_digest(name, ref)
+
+
+def check_manifest(name, data, version):
+    """The pack the macOS manifest promises: (size, sha256)."""
+    payload = decode_doc(name, data, "manifest")
+    if payload.get("version") != version or payload.get("target") != DMG_TARGET:
+        raise Abort("%s is not the manifest of %s %s" % (name, version, DMG_TARGET))
+    ref = payload.get("pack")
+    if not isinstance(ref, dict):
+        raise Abort("%s: no pack reference" % name)
+    if ref.get("path") != "%s/%s.pack" % (version, DMG_TARGET):
+        raise Abort("%s: an unexpected pack path" % name)
+    return _size_and_digest(name, ref)
+
+
+def cmd_dmg(args, secrets):
+    version = parse_tag(args.tag)
+    if platform.system() != "Darwin":
+        raise Abort("dmg needs a macOS host (lunepack builds the .dmg with hdiutil)")
+    config = os.path.abspath(args.config)
+    check_root(config)
+    try:
+        with open(config, "rb") as f:
+            cfg = tomllib.load(f)
+        base = cfg["update"]["feed"]
+        app_id = cfg["app_id"]
+        root_version = cfg["root"]["version"]
+    except (OSError, KeyError, tomllib.TOMLDecodeError) as err:
+        raise Abort("cannot read the dmg settings of %s: %s" % (config, type(err).__name__)) from err
+    if not isinstance(base, str) or not base.startswith("https://") or not base.endswith("/"):
+        raise Abort("%s: [update] feed must be an https URL ending in /" % config)
+    if not isinstance(app_id, str) or not app_id:
+        raise Abort("%s: no app_id" % config)
+    if not isinstance(root_version, int) or isinstance(root_version, bool) or root_version < 1:
+        raise Abort("%s: [root] version is not a positive integer" % config)
+    work = os.path.abspath(args.work)
+    if os.path.exists(work):
+        raise Abort("%s exists; give a new work directory" % work)
+    channel = channel_of(version)
+    release_dir = os.path.join(work, "release")
+    os.makedirs(release_dir)
+
+    fetch_object(base, "keys.json", DOC_CAP, release_dir)
+    k = root_version + 1
+    while True:
+        if k > root_version + MAX_ROOT_FILES:
+            raise Abort("more than %d root files" % MAX_ROOT_FILES)
+        status, _ = fetch_object(base, "root-%d.json" % k, DOC_CAP, release_dir, accept=(200, 403, 404, 410))
+        if status != 200:
+            break
+        k += 1
+    feed_name = "feed-%s.json" % channel
+    _, feed = fetch_object(base, feed_name, DOC_CAP, release_dir)
+    m_size, m_digest = check_feed(feed_name, feed, app_id, channel, version)
+
+    m_name = "%s/%s.manifest.json" % (version, DMG_TARGET)
+    _, manifest = fetch_object(base, m_name, MANIFEST_CAP, release_dir)
+    if len(manifest) != m_size or hashlib.sha256(manifest).hexdigest() != m_digest:
+        raise Abort("%s is not the manifest the feed lists (size or SHA-256 differs)" % m_name)
+    p_size, p_digest = check_manifest(m_name, manifest, version)
+    if p_size > MAX_INPUT_BYTES:
+        raise Abort("the pack of %s is larger than a pack may be" % version)
+    p_name = "%s/%s.pack" % (version, DMG_TARGET)
+    _, pack = fetch_object(base, p_name, p_size, release_dir)
+    if len(pack) != p_size or hashlib.sha256(pack).hexdigest() != p_digest:
+        raise Abort("%s is not the pack the manifest lists (size or SHA-256 differs)" % p_name)
+
+    setup_dir = os.path.join(work, "setup")
+    os.makedirs(setup_dir)
+    name = TARGETS[DMG_TARGET]["dmg"].format(v=version)
+    out = os.path.join(setup_dir, name)
+    lp = Lunepack(os.path.abspath(args.lunepack), secrets)
+    lp.run(setup_argv(config, release_dir, version, DMG_TARGET, out, zip=False))
+    if not os.path.isfile(out) or os.path.islink(out) or os.path.getsize(out) == 0:
+        raise Abort("lunepack setup wrote no %s" % name)
+    digest = file_sha256(out)
+    sidecar(out, name, digest)
+    print("dmg: %s" % out)
+    print("dmg_sha256=%s" % digest)
+
+
+RUN_ARTIFACTS = ("lunepack-cli", "lunepack-cli-macos", "release", "setup")
+RUN_ID_RE = re.compile(r"[0-9]{1,20}")
+
+
+class RunArtifacts:
+    """The artifacts of one workflow run (publish-release.py's client: the token goes to the API host only)."""
+
+    def __init__(self, secrets, run_id, send=None):
+        self.pr = load_publish_release()
+        repo = os.environ.get("GITHUB_REPOSITORY", "")
+        if not self.pr.REPO_RE.fullmatch(repo):
+            raise Abort("bad GITHUB_REPOSITORY: %r" % repo)
+        self.run_id = run_id
+        self.gh = self.pr.GitHub(repo, secrets.get("GITHUB_TOKEN"), send or self.pr.http_send)
+
+    def _call(self, method, path):
+        try:
+            return self.gh.call(method, self.pr.API, path)
+        except self.pr.Failure as err:
+            raise Abort(str(err)) from err
+
+    def list(self):
+        out = []
+        page = 1
+        while True:
+            found = self._call("GET", "actions/runs/%s/artifacts?per_page=100&page=%d" % (self.run_id, page))
+            items = found.get("artifacts") if isinstance(found, dict) else None
+            if not isinstance(items, list):
+                raise Abort("the artifact list of run %s is not a list" % self.run_id)
+            out.extend(items)
+            if len(items) < 100:
+                return out
+            page += 1
+
+    def delete(self, artifact_id):
+        self._call("DELETE", "actions/artifacts/%d" % artifact_id)
+
+
+def cmd_drop_artifacts(args, secrets, send=None):
+    if not RUN_ID_RE.fullmatch(args.run_id or ""):
+        raise Abort("--run-id must be digits")
+    artifacts = RunArtifacts(secrets, args.run_id, send)
+    # List everything first: deleting while paging would shift the pages.
+    found = artifacts.list()
+    doomed = []
+    for item in found:
+        name = item.get("name") if isinstance(item, dict) else None
+        ident = item.get("id") if isinstance(item, dict) else None
+        if not isinstance(name, str) or not isinstance(ident, int) or isinstance(ident, bool):
+            raise Abort("an artifact of run %s has no usable name or id" % args.run_id)
+        if name in RUN_ARTIFACTS and not item.get("expired"):
+            doomed.append((name, ident))
+        else:
+            print("keep %s%s" % (name, " (expired)" if item.get("expired") else ""))
+    for name, ident in doomed:
+        artifacts.delete(ident)
+        print("deleted artifact %s" % name)
+    if not doomed:
+        print("no artifact of run %s to delete" % args.run_id)
+
 
 def cmd_attach(args, secrets):
     version = parse_tag(args.tag)
@@ -685,6 +942,13 @@ def main(argv=None):
     a.add_argument("--tag", required=True)
     a.add_argument("--dir", required=True)
     a.add_argument("--expect", required=True, nargs="+", metavar="TARGET=SHA256")
+    d = sub.add_parser("dmg")
+    d.add_argument("--tag", required=True)
+    d.add_argument("--lunepack", required=True)
+    d.add_argument("--config", required=True)
+    d.add_argument("--work", required=True)
+    x = sub.add_parser("drop-artifacts")
+    x.add_argument("--run-id", required=True)
     args = ap.parse_args(argv)
     secrets = Secrets(os.environ)
     try:
@@ -692,6 +956,10 @@ def main(argv=None):
             check_root(args.config)
         elif args.cmd == "pack":
             cmd_pack(args, secrets)
+        elif args.cmd == "dmg":
+            cmd_dmg(args, secrets)
+        elif args.cmd == "drop-artifacts":
+            cmd_drop_artifacts(args, secrets)
         else:
             cmd_attach(args, secrets)
     except Abort as err:

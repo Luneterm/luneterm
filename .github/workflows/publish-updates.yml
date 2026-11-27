@@ -5,11 +5,20 @@ name: publish-updates
 # the same one Whipspot uses); docs/updates.md here is the runbook (environments, tokens, key ceremony).
 #
 #   tools-linux  builds the lunepack CLI from the pin of Cargo.toml and reports its SHA-256; no secret
+#   tools-macos  (GitHub-hosted macos-14; contents: read, no secret) builds the macOS lunepack CLI from the
+#                same pin and reports its SHA-256, for the dmg job; it runs only when a dmg will be made
 #   pack         (environment release-pack)  release-pack.py pack: build inputs from the release, then
 #                `publish fetch`, `pack` and `setup` for the three targets; holds the release key only
 #   push         (environment release-push)  the OWNER APPROVES here: `publish push --dry-run`, then
 #                `publish push`; holds the release key and the push token
 #   attach       (no environment; GITHUB_TOKEN with contents: write only) the setup files to the release
+#   dmg          (GitHub-hosted macos-14; GITHUB_TOKEN with contents: write only, no environment) builds the
+#                macOS installer (.dmg) from the release that was just published and attaches it, with the
+#                CLI of tools-macos checked against its hash: scripts/package-macos-dmg.sh, which is also
+#                the manual path (run it on a Mac at the tag). It compiles nothing.
+#   drop-artifacts (no environment; GITHUB_TOKEN with actions: write, plus contents: read for the checkout)
+#                after every job that downloads an artifact has succeeded (attach and dmg): deletes this run's
+#                lunepack-cli, lunepack-cli-macos, release and setup artifacts (release-pack.py drop-artifacts)
 #   refresh      (environment release-refresh, default branch only) re-signs feeds that expire soon;
 #                holds the release key and the two refresh tokens (public: read and write; private: read)
 #   drop         (environment release-push) takes one release out of the feeds and deletes its objects
@@ -21,8 +30,8 @@ name: publish-updates
 # a branch gets none of them. The environments (their ref rules and reviewers) are made before any secret
 # is added (docs/updates.md).
 #
-#   release published  -> pack, push (owner approves) and attach for that tag; this is an apply run
-#   workflow_dispatch  -> mode refresh (all feeds), publish (run from a v* tag ref: pack, push, attach)
+#   release published  -> pack, push (owner approves), attach and dmg for that tag; this is an apply run
+#   workflow_dispatch  -> mode refresh (all feeds), publish (run from a v* tag ref: pack, push, attach, dmg)
 #                         or drop (run from a v* tag ref; drop_version); dry_run (default) runs only the
 #                         `--dry-run` commands and attaches nothing
 #   schedule (weekly)  -> refresh the feeds that expire within 30 days; nothing while nothing is published
@@ -31,11 +40,14 @@ name: publish-updates
 # 'true'; until then a run ends green with a notice.
 #
 # Recovery: once `publish push` has written a feed, `publish fetch` refuses that version, so a new run
-# cannot rebuild the setup files. The pack job's artifacts are kept 90 days; a failed push or attach is
-# finished by "re-run failed jobs" of the same run within that window (docs/updates.md).
+# cannot rebuild the setup files. The run's artifacts (the CLI, the release directory, the setup files)
+# are kept 14 days, and deleted by drop-artifacts once the run succeeded; a failed push or attach is
+# finished by "re-run failed jobs" of the same run within that window (docs/updates.md). A push can
+# wait up to 14 days for the owner's approval.
 #
 # Runners and their images: see ci.yml. The jobs run on the self-hosted Linux runner (never the
-# Windows VM). Whether a job's container is fresh is not checked here (docs/updates.md, "Runner").
+# Windows VM), except tools-macos and dmg, which run on GitHub-hosted macos-14 (the only hosted jobs;
+# neither holds a secret). Whether a job's container is fresh is not checked here (docs/updates.md, "Runner").
 on:
   release:
     types: [published]
@@ -114,7 +126,50 @@ jobs:
         with:
           name: lunepack-cli
           path: ${{ runner.temp }}/lunepack-cli/lunepack
-          retention-days: 90
+          # A publish run's push waits for the owner and can be re-run: it needs the CLI that long. A
+          # refresh or drop run (weekly) keeps it a day.
+          retention-days: ${{ (github.event_name == 'release' || inputs.mode == 'publish') && 14 || 1 }}
+
+  # The CLI the dmg job runs, built apart from it: dmg holds a token that can rewrite the release, so it
+  # compiles nothing and runs this checked binary only (as the key jobs do with tools-linux).
+  tools-macos:
+    if: vars.PUBLISH_READY == 'true' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && !inputs.dry_run))
+    runs-on: macos-14
+    timeout-minutes: 60
+    permissions:
+      contents: read               # the checkout; no write permission, no environment, no secret
+    outputs:
+      cli_sha256: ${{ steps.hash.outputs.cli_sha256 }}
+    steps:
+      - name: Check the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "'$TAG' is not v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-rc.<N>" >&2
+            exit 1
+          fi
+      # The tag's own commit: the pin of its Cargo.toml.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: refs/tags/${{ env.TAG }}
+      # The image's Xcode command line tools and rustup are used as they are; the script installs the
+      # toolchain lunepack pins and checks its dependency graph before it builds.
+      - name: Build the lunepack CLI
+        shell: bash
+        run: scripts/build-lunepack.sh macos-aarch64 "$RUNNER_TEMP/lunepack-mac"
+      - name: Its SHA-256
+        id: hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "cli_sha256=$(shasum -a 256 "$RUNNER_TEMP/lunepack-mac/lunepack" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lunepack-cli-macos
+          path: ${{ runner.temp }}/lunepack-mac/lunepack
+          retention-days: 14
 
   pack:
     if: vars.PUBLISH_READY == 'true' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish'))
@@ -172,12 +227,12 @@ jobs:
         with:
           name: release
           path: ${{ runner.temp }}/pack/release
-          retention-days: 90
+          retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: setup
           path: ${{ runner.temp }}/pack/setup
-          retention-days: 90
+          retention-days: 14
 
   push:
     if: vars.PUBLISH_READY == 'true' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish'))
@@ -276,6 +331,93 @@ jobs:
           set -euo pipefail
           python3 -I scripts/release-pack.py attach --tag "$TAG" --dir "$RUNNER_TEMP/setup" \
             --expect "linux-x86_64=$SHA_LINUX" "windows-x86_64=$SHA_WINDOWS" "macos-aarch64=$SHA_MACOS"
+
+  # The macOS installer, from the release that attach just completed. Idempotent: a re-run of this job
+  # finds the .dmg already attached and stops.
+  dmg:
+    if: vars.PUBLISH_READY == 'true' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && !inputs.dry_run))
+    needs: [tools-macos, attach]
+    runs-on: macos-14
+    timeout-minutes: 30
+    permissions:
+      contents: write              # the release's assets; no environment and no other secret
+    steps:
+      - name: Check the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "'$TAG' is not v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-rc.<N>" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: refs/tags/${{ env.TAG }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lunepack-cli-macos
+          path: ${{ runner.temp }}/lunepack-mac
+      - name: Check the CLI against tools-macos
+        shell: bash
+        env:
+          WANT: ${{ needs.tools-macos.outputs.cli_sha256 }}
+        run: |
+          set -euo pipefail
+          # The dir must hold the CLI alone (lunepack PUBLISHING.md: no planted file beside it).
+          shopt -s nullglob dotglob; FILES=("$RUNNER_TEMP"/lunepack-mac/*); shopt -u nullglob dotglob
+          if [ "${#FILES[@]}" -ne 1 ] || [ "${FILES[0]}" != "$RUNNER_TEMP/lunepack-mac/lunepack" ] || [ ! -f "${FILES[0]}" ] || [ -L "${FILES[0]}" ]; then echo "lunepack-cli-macos holds more than the CLI" >&2; exit 1; fi
+          GOT="$(shasum -a 256 "$RUNNER_TEMP/lunepack-mac/lunepack" | cut -d' ' -f1)"
+          if [ -z "$WANT" ] || [ "$GOT" != "$WANT" ]; then echo "the CLI is not the one tools-macos built" >&2; exit 1; fi
+          chmod +x "$RUNNER_TEMP/lunepack-mac/lunepack"
+      # The checkout of a tag ref normally leaves the local tag; the wrapper needs it to compare HEAD.
+      - name: Make sure the local tag exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify --quiet "refs/tags/$TAG^{commit}" > /dev/null; then
+            git fetch --no-tags --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+          fi
+      - name: Build the .dmg and attach it
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set +x
+          set -euo pipefail
+          scripts/package-macos-dmg.sh "$TAG" --lunepack "$RUNNER_TEMP/lunepack-mac/lunepack"
+
+  # The run's artifacts are not needed once every job that downloads one has succeeded. If one of those
+  # jobs failed or never started (dmg on a hosted runner that is unavailable), nothing is deleted: a re-run still finds them, and they expire after 14 days.
+  drop-artifacts:
+    if: vars.PUBLISH_READY == 'true' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && !inputs.dry_run))
+    needs: [attach, dmg]
+    runs-on: [self-hosted, linux, x64]
+    permissions:
+      actions: write               # delete this run's artifacts; no environment and no other secret
+      contents: read               # the checkout
+    steps:
+      - name: Check the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "'$TAG' is not v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-rc.<N>" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: refs/tags/${{ env.TAG }}
+      - name: Delete this run's artifacts
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +x
+          set -euo pipefail
+          python3 -I scripts/release-pack.py drop-artifacts --run-id "$GITHUB_RUN_ID"
 
   refresh:
     if: vars.PUBLISH_READY == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'refresh'))
