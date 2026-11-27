@@ -278,8 +278,8 @@ static TERMINAL: [Group; 3] = [
     },
 ];
 
-/// The About section's one group: the updates toggle, under the status row [`draw_group`] draws
-/// first for it (the state and its buttons, from the [`UpdatePanel`]).
+/// The About section's one group: the updates toggle (its status line and buttons are drawn under
+/// it by [`about`], from the [`UpdatePanel`]).
 static ABOUT: [Group; 1] = [Group {
     header: "settings.about.updates.header",
     rows: &[row(
@@ -674,20 +674,15 @@ pub fn required_keys() -> Vec<String> {
         "settings.about.updates.check",
         "settings.about.updates.download",
         "settings.about.updates.restart",
-        "settings.about.updates.status.idle.title",
-        "settings.about.updates.status.checking.title",
-        "settings.about.updates.status.upToDate.title",
-        "settings.about.updates.status.available.title",
-        "settings.about.updates.status.available.desc",
-        "settings.about.updates.status.downloading.title",
-        "settings.about.updates.status.ready.title",
-        "settings.about.updates.status.ready.desc",
-        "settings.about.updates.status.failed.title",
-        "settings.about.updates.status.failed.desc",
-        "settings.about.updates.status.notInstalled.title",
-        "settings.about.updates.status.notInstalled.desc",
-        "settings.about.updates.status.broken.title",
-        "settings.about.updates.status.broken.desc",
+        "settings.about.updates.status.idle",
+        "settings.about.updates.status.checking",
+        "settings.about.updates.status.upToDate",
+        "settings.about.updates.status.available",
+        "settings.about.updates.status.downloading",
+        "settings.about.updates.status.ready",
+        "settings.about.updates.status.failed",
+        "settings.about.updates.status.notInstalled",
+        "settings.about.updates.status.broken",
         "luneui.settings-page.restart-message",
         "luneui.settings-page.restart-action",
         "settings.terminal.appearance.font.group.builtin",
@@ -873,52 +868,27 @@ impl UpdatePanel {
     }
 }
 
-/// The texts of the updates card's status row: what the state is, and the detail under it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpdateText {
-    pub title: String,
-    pub desc: Option<String>,
-}
-
-/// The status row's texts for `state`.
-pub fn update_status(strings: &StringTable, state: &UpdateState) -> UpdateText {
-    let key = |k: &str, part: &str| format!("settings.about.updates.status.{k}.{part}");
-    let plain = |k: &str| UpdateText {
-        title: strings.tr(&key(k, "title")).to_owned(),
-        desc: None,
-    };
-    let with = |k: &str, arg: &dyn std::fmt::Display, in_title: bool| {
-        let args: [&dyn std::fmt::Display; 1] = [arg];
-        let fmt = |part: &str| strings.tr_fmt(&key(k, part), &args, &DisplayFormat);
-        let plain = |part: &str| strings.tr(&key(k, part)).to_owned();
-        if in_title {
-            UpdateText {
-                title: fmt("title"),
-                desc: Some(plain("desc")),
-            }
-        } else {
-            UpdateText {
-                title: plain("title"),
-                desc: Some(fmt("desc")),
-            }
-        }
-    };
+/// The status line under the updates toggle.
+pub fn update_status(strings: &StringTable, state: &UpdateState) -> String {
+    let key = |k: &str| format!("settings.about.updates.status.{k}");
     match state {
-        UpdateState::Unavailable(Unavailable::NotInstalled) => UpdateText {
-            title: strings.tr(&key("notInstalled", "title")).to_owned(),
-            desc: Some(strings.tr(&key("notInstalled", "desc")).to_owned()),
-        },
-        UpdateState::Unavailable(Unavailable::Broken(why)) => with("broken", why, false),
-        UpdateState::Idle => plain("idle"),
-        UpdateState::Checking => plain("checking"),
-        UpdateState::UpToDate => plain("upToDate"),
-        UpdateState::Available { version, .. } => with("available", version, true),
-        UpdateState::Downloading(pct) => UpdateText {
-            title: strings.tr_fmt(&key("downloading", "title"), &[pct], &DisplayFormat),
-            desc: None,
-        },
-        UpdateState::Ready(version) => with("ready", version, true),
-        UpdateState::Failed(why) => with("failed", why, false),
+        UpdateState::Unavailable(Unavailable::NotInstalled) => {
+            strings.tr(&key("notInstalled")).to_owned()
+        }
+        UpdateState::Unavailable(Unavailable::Broken(why)) => {
+            strings.tr_fmt(&key("broken"), &[why], &DisplayFormat)
+        }
+        UpdateState::Idle => strings.tr(&key("idle")).to_owned(),
+        UpdateState::Checking => strings.tr(&key("checking")).to_owned(),
+        UpdateState::UpToDate => strings.tr(&key("upToDate")).to_owned(),
+        UpdateState::Available { version, .. } => {
+            strings.tr_fmt(&key("available"), &[version], &DisplayFormat)
+        }
+        UpdateState::Downloading(pct) => {
+            strings.tr_fmt(&key("downloading"), &[pct], &DisplayFormat)
+        }
+        UpdateState::Ready(version) => strings.tr_fmt(&key("ready"), &[version], &DisplayFormat),
+        UpdateState::Failed(why) => strings.tr_fmt(&key("failed"), &[why], &DisplayFormat),
     }
 }
 
@@ -1078,10 +1048,6 @@ fn draw_group(
     let mut cy = y + 14.0;
     ui.painter().text(&header, x + 16.0, cy);
     cy += 30.0;
-    if state.section == Section::About {
-        // The About group's first row is the update status, with its buttons.
-        cy += update_row(ui, strings, &state.update, x, w, cy, out) + 2.0;
-    }
     for r in group.rows {
         let cw = r.control.width();
         let text_w = (w - 8.0 - 24.0 - cw - 24.0).max(40.0);
@@ -1232,7 +1198,7 @@ fn control(
     }
 }
 
-/// The About section: the app, its version, the updates group (status row with buttons, toggle) and
+/// The About section: the app, its version, the updates group (toggle, status line, buttons) and
 /// the notices. Returns the next y.
 #[allow(clippy::too_many_arguments)]
 fn about(
@@ -1264,8 +1230,9 @@ fn about(
     }
     y += 12.0;
     for group in groups(Section::About) {
-        y = draw_group(ui, strings, state, settings, system, vp, y, group, out) + 16.0;
+        y = draw_group(ui, strings, state, settings, system, vp, y, group, out) + 12.0;
     }
+    y = update_controls(ui, strings, &state.update, vp, y, out) + 16.0;
     let header = Spec::plain(
         strings.tr("settings.about.notices"),
         Style::ui(theme.font_m, theme.fg_primary).medium(),
@@ -1288,107 +1255,63 @@ fn about(
     y
 }
 
-/// The width the status row's text may take: the row (`w` - 8) minus its 12 px insets, the buttons
-/// (`cw`) and a 24 px gap, as `draw_group` does for its rows.
-fn status_text_w(w: f32, cw: f32) -> f32 {
-    (w - 8.0 - 24.0 - cw - 24.0).max(40.0)
-}
-
-/// The updates card's status row, laid out like a setting row: the state as the title, the detail
-/// (or the download's progress bar) under it, and the buttons as the control. Returns its height.
-fn update_row(
+/// The status line and the buttons under the updates group; returns the next y.
+fn update_controls(
     ui: &mut Ui<'_>,
     strings: &StringTable,
     update: &UpdateState,
-    x: f32,
-    w: f32,
-    cy: f32,
+    vp: Rect,
+    y: f32,
     out: &mut PageOut,
 ) -> f32 {
     let theme = *ui.theme();
     let panel = UpdatePanel::of(update);
-    let text = update_status(strings, update);
-    // Check is the row's one button unless there is an action; then the action leads (the dialog pair).
-    let check_kind = if panel.action.is_some() {
-        ButtonKind::Secondary
-    } else {
-        ButtonKind::Primary
-    };
-    let mut buttons = vec![(
-        UpdateAsk::Check,
-        "settings.about.updates.check",
-        panel.check_enabled,
-        check_kind,
-    )];
-    match panel.action {
-        Some(UpdateAsk::Download) => buttons.push((
-            UpdateAsk::Download,
-            "settings.about.updates.download",
-            true,
-            ButtonKind::Primary,
-        )),
-        Some(UpdateAsk::Restart) => buttons.push((
-            UpdateAsk::Restart,
-            "settings.about.updates.restart",
-            true,
-            ButtonKind::Primary,
-        )),
-        _ => {}
-    }
-    let widths: Vec<f32> = buttons
-        .iter()
-        .map(|(_, key, _, _)| {
-            ui.painter()
-                .measure(&spec(strings.tr(key), theme.font_base, theme.fg_primary))
-                .0
-                + 32.0
-        })
-        .collect();
-    let cw = widths.iter().sum::<f32>() + 8.0 * (widths.len() - 1) as f32;
-    let text_w = status_text_w(w, cw);
-    let title = spec(&text.title, theme.font_base, theme.fg_primary);
-    let desc = text
-        .desc
-        .as_deref()
-        .map(|d| spec(d, theme.font_s + 0.5, theme.fg_secondary).wrapped(text_w));
-    let (_, th) = ui.painter().measure(&title);
-    let below = match (&desc, update) {
-        (Some(d), _) => 4.0 + ui.painter().measure(d).1,
-        (None, UpdateState::Downloading(_)) => 8.0 + lune_ui::widgets::progress::HEIGHT,
-        (None, _) => 0.0,
-    };
-    let row_h = (th + below).max(CONTROL_H) + 20.0;
-    let rect = Rect::new(x + 4.0, cy, w - 8.0, row_h);
-    let top = rect.y + (row_h - (th + below)) / 2.0;
-    ui.painter().text(&title, rect.x + 12.0, top);
-    if let Some(d) = &desc {
-        ui.painter().text(d, rect.x + 12.0, top + th + 4.0);
-    }
-    if let UpdateState::Downloading(pct) = update {
-        let track = Rect::new(rect.x + 12.0, top + th + 8.0, text_w, 0.0);
-        ui.progress(
-            "update-progress",
-            track,
-            &lune_ui::widgets::progress::ProgressOptions {
-                value: Some(f32::from(*pct) / 100.0),
-                name: &text.title,
-                ..Default::default()
-            },
-        );
-    }
-    let mut bx = rect.right() - 12.0 - cw;
-    let by = rect.y + (row_h - CONTROL_H) / 2.0;
-    for ((ask, key, enabled, kind), bw) in buttons.into_iter().zip(widths) {
-        let r = Rect::new(bx, by, bw, CONTROL_H);
-        bx += bw + 8.0;
+    let status = update_status(strings, update);
+    let line = spec(&status, theme.font_base, theme.fg_secondary).wrapped(vp.w.min(560.0));
+    let mut y = y + ui.painter().text(&line, vp.x, y).1 + 12.0;
+    let mut x = vp.x;
+    let mut button = |ui: &mut Ui<'_>, ask: UpdateAsk, key: &str, enabled: bool, kind| {
+        let text = strings.tr(key);
+        let w = ui
+            .painter()
+            .measure(&spec(text, theme.font_base, theme.fg_primary))
+            .0
+            + 32.0;
+        let r = Rect::new(x, y, w, CONTROL_H);
+        x += w + 8.0;
         let resp = ui.with_enabled(enabled, |ui| {
-            ui.button(("update", ask as u8), r, strings.tr(key), kind)
+            ui.button(("update", ask as u8), r, text, kind)
         });
         if resp.clicked {
             out.update = Some(ask);
         }
+    };
+    button(
+        ui,
+        UpdateAsk::Check,
+        "settings.about.updates.check",
+        panel.check_enabled,
+        ButtonKind::Secondary,
+    );
+    match panel.action {
+        Some(UpdateAsk::Download) => button(
+            ui,
+            UpdateAsk::Download,
+            "settings.about.updates.download",
+            true,
+            ButtonKind::Primary,
+        ),
+        Some(UpdateAsk::Restart) => button(
+            ui,
+            UpdateAsk::Restart,
+            "settings.about.updates.restart",
+            true,
+            ButtonKind::Primary,
+        ),
+        _ => {}
     }
-    row_h
+    y += CONTROL_H;
+    y
 }
 
 #[cfg(test)]
@@ -1823,65 +1746,42 @@ mod tests {
     }
 
     #[test]
-    fn the_status_row_says_each_state_in_words() {
+    fn the_status_line_says_each_state_in_words() {
         let strings = crate::strings::english();
-        let line = |state: UpdateState| {
-            let t = update_status(&strings, &state);
-            (t.title, t.desc)
-        };
-        let some = |t: &str, d: &str| (t.to_owned(), Some(d.to_owned()));
-        let bare = |t: &str| (t.to_owned(), None);
-        assert_eq!(line(UpdateState::Idle), bare("Not checked yet"));
-        assert_eq!(line(UpdateState::Checking), bare("Checking for updates…"));
-        assert_eq!(line(UpdateState::UpToDate), bare("Luneterm is up to date"));
+        let line = |state: UpdateState| update_status(&strings, &state);
+        assert_eq!(line(UpdateState::Idle), "Not checked yet.");
+        assert_eq!(line(UpdateState::Checking), "Checking for updates…");
+        assert_eq!(line(UpdateState::UpToDate), "Luneterm is up to date.");
         assert_eq!(
             line(UpdateState::Available {
                 version: "0.9.0".into(),
                 auto: true
             }),
-            some(
-                "Luneterm 0.9.0 is available",
-                "Update downloads it. Luneterm keeps running until you restart."
-            )
+            "Luneterm 0.9.0 is available."
         );
         assert_eq!(
             line(UpdateState::Downloading(42)),
-            bare("Downloading the update: 42%")
+            "Downloading the update: 42%"
         );
         assert_eq!(
             line(UpdateState::Ready("0.9.0".into())),
-            some("Luneterm 0.9.0 is ready", "Restarting closes all shells.")
+            "Luneterm 0.9.0 is ready. Restarting closes all shells."
         );
         assert_eq!(
             line(UpdateState::Failed("no network".into())),
-            some("The update failed", "no network")
+            "The update failed: no network"
         );
         // The reasons a copy cannot update come from the string table too.
         assert_eq!(
             line(UpdateState::Unavailable(Unavailable::NotInstalled)),
-            some(
-                "Updates need the Luneterm installer",
-                "This copy was not installed with a Luneterm setup file, so it cannot update itself."
-            )
+            "Updates need the Luneterm installer"
         );
         assert_eq!(
             line(UpdateState::Unavailable(Unavailable::Broken(
                 "state".into()
             ))),
-            some("Updates are unavailable", "state")
+            "Updates are unavailable: state"
         );
-    }
-
-    /// The status text's right edge stays 24 px (logical) clear of the first button, for every
-    /// button set (Check alone; Check and Update; Check and Restart to update) at the page's width.
-    #[test]
-    fn the_status_text_keeps_clear_of_the_buttons() {
-        let w = group_width(Rect::new(0.0, 0.0, 560.0, 400.0));
-        for cw in [150.0, 150.0 + 8.0 + 80.0, 150.0 + 8.0 + 160.0] {
-            let text_right = 12.0 + status_text_w(w, cw);
-            let button_left = (w - 8.0) - 12.0 - cw;
-            assert!(text_right <= button_left - 24.0, "cw {cw}");
-        }
     }
 
     #[test]
