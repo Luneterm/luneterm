@@ -1908,7 +1908,7 @@ impl App {
             // A duplicate starts where the source tab is now (a new tab already does).
             MenuAction::Duplicate => self.new_tab_request(),
             MenuAction::CopyCwd => self.copy_cwd(),
-            MenuAction::Settings => self.open_page(Section::Appearance),
+            MenuAction::Settings => self.open_page(Section::General),
             MenuAction::About => self.open_page(Section::About),
             MenuAction::ShowSidePane => self.set_pane_shown(true),
             MenuAction::HideSidePane => self.set_pane_shown(false),
@@ -2738,7 +2738,7 @@ impl App {
                 if self.page.is_some() {
                     self.close_page();
                 } else {
-                    self.open_page(Section::Appearance);
+                    self.open_page(Section::General);
                 }
             }
             AppCommand::TogglePane => self.set_pane_shown(!self.settings.pane_wanted()),

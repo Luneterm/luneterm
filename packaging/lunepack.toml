@@ -16,7 +16,7 @@ app_id = "my.ijat.luneterm"
 version = 1
 threshold = 1
 keys = [
-    "7c4f44f54daf49ca873f3aac937f0f19e668364a01178aa339f64690f998e996",
+    "be97774df7b589ae858ab60f3f77d09112739fb6ce8150832cdf10867b6c40b2",
 ]
 
 # The release key is a GitHub secret (PKCS#8 PEM) of the release-pack, release-push and

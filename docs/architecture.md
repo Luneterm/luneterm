@@ -1188,7 +1188,7 @@ user acts on the tabs (a program tab's exit does not count).
 model; the closed URL grammar and the argv or `ShellExecuteW` open).
 
 **Efficiency mode (copy-select-efficiency, D4 to D12).** The setting "Efficiency mode in the
-background" (Terminal > Behavior, `efficiency_mode`, default on) throttles Luneterm itself while its
+background" (General > Background, `efficiency_mode`, default on) throttles Luneterm itself while its
 window is not focused or is minimized, and never the shells it starts. `efficiency::Controller<O>`
 is an `App` field used on the UI thread only (no global, no mutex); an `OsThrottle` backend does the
 OS calls, and only on a change of state. Inputs: the setting (`Effect::Efficiency`), window focus
@@ -1398,12 +1398,19 @@ cut to scheme, host and path, at most 240 chars). Restart runs `apply_and_restar
 for this process, then the normal quit path saves the workspace and settings. Restarting closes all
 shells, which the toast and About say.
 *Rules around it (`update::auto`, pure, tested without a window).* The setting "Check for updates
-automatically" (`auto_update_check`, on by default, a missing key reads on; Settings > About) runs a
+automatically" (`auto_update_check`, on by default, a missing key reads on; Settings > General > Updates) runs a
 timer: a check at launch (or when the setting is switched on) and every 24 h; switching it off drops
 the deadline. A check the timer started that finds a version raises the glass toast "Luneterm
 <version> is available" with Update and Dismiss (20 s; each version once per run); Update downloads and
 stages, then a second toast and About offer "Restart to update". A manual "Check for updates" never
 toasts: it shows its result in About. No request is made except by a check or a download.
+*Settings pages.* General is the first settings page and where Settings opens (`Section::ALL = [General,
+Appearance, Terminal, About]`; the Settings menu item and command open it). It holds the two app-wide rows, the
+update toggle (group Updates, disabled when `UpdatePanel::toggle_enabled` is false) and efficiency mode (group
+Background); About draws no group: its version line carries a Secondary "Check for updates" button, the status text and,
+when `UpdatePanel.action` is set, the Primary Update / Restart to update button, inline. General is a Luneterm-only
+deviation from Lunegit's settings layout; no settings.json key changed with the move (the file is flat, the open page is
+not persisted).
 *Channel.* A pack bakes a channel (`stable` for a stable tag, `beta` for a release candidate), and an update replaces the tree's update
 config with the new pack's, so a beta user who receives a stable pack would follow stable. The first
 run of an installed copy therefore records the tree's channel as `update_channel` in `settings.json`

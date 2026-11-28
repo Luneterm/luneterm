@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, "orch/**", "spike/**"]
+    branches: [main, develop, "orch/**", "spike/**"]
   workflow_dispatch:
 
 # Runners (2026-11-09: GitHub-hosted runners are blocked by account billing, so CI is self-hosted;
@@ -152,5 +152,5 @@ jobs:
         with:
           name: luneterm-windows-x64
           path: dist
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: error

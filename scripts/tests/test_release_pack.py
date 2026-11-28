@@ -30,6 +30,7 @@ _spec = importlib.util.spec_from_file_location("release_pack", SCRIPTS / "releas
 rp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rp)
 
+REAL_HTTP_GET = rp.http_get
 REAL_ROOT = "ab" * 32
 KEY = "-----BEGIN PRIVATE KEY-----KEYVALUE"
 TOKEN = "ghs_TOKENVALUE"
@@ -54,6 +55,14 @@ def run_quiet(fn, *args, **kwargs):
 # ---------------------------------------------------------------------------- the root and the config
 
 
+def repo_config_text(key):
+    """packaging/lunepack.toml with its single [root] key replaced by `key`."""
+    text = (REPO / "packaging" / "lunepack.toml").read_text()
+    out, n = re.subn(r'(\[root\][^\[]*?keys = \[\s*)"[0-9a-f]{64}"', lambda m: m.group(1) + '"%s"' % key, text, count=1)
+    assert n == 1
+    return out
+
+
 def read_config(path=None):
     with open(path or REPO / "packaging" / "lunepack.toml", "rb") as f:
         return tomllib.load(f)
@@ -61,15 +70,18 @@ def read_config(path=None):
 
 class CheckRoot(unittest.TestCase):
     def config_with(self, tmp, key):
-        text = (REPO / "packaging" / "lunepack.toml").read_text()
         out = pathlib.Path(tmp, "lunepack.toml")
-        out.write_text(text.replace(next(iter(rp.TEST_ROOT_KEYS)), key))
+        out.write_text(repo_config_text(key))
         return str(out)
 
-    def test_the_repo_config_is_the_test_root_and_is_refused(self):
-        with self.assertRaises(rp.Abort) as ctx:
-            rp.check_root(str(REPO / "packaging" / "lunepack.toml"))
+    def test_a_config_with_the_test_root_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(rp.Abort) as ctx:
+                rp.check_root(self.config_with(tmp, next(iter(rp.TEST_ROOT_KEYS))))
         self.assertIn("names the test root key; refusing to publish", str(ctx.exception))
+
+    def test_the_repo_config_holds_a_real_root(self):
+        rp.check_root(str(REPO / "packaging" / "lunepack.toml"))
 
     def test_a_real_root_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -106,7 +118,7 @@ class CheckRoot(unittest.TestCase):
             good = self.config_with(tmp, REAL_ROOT)
             code, out = run_quiet(rp.main, ["check-root", "--config", good])
             self.assertEqual(code, 0, out)
-            code, out = run_quiet(rp.main, ["check-root", "--config", str(REPO / "packaging" / "lunepack.toml")])
+            code, out = run_quiet(rp.main, ["check-root", "--config", self.config_with(tmp, next(iter(rp.TEST_ROOT_KEYS)))])
             self.assertEqual(code, 1)
             self.assertIn("test root", out)
 
@@ -275,10 +287,10 @@ class Secrets(unittest.TestCase):
         self.assertEqual(str(ctx.exception), "LUNEPACK_RELEASE_KEY is not set")
 
     def test_child_env_carries_no_secret(self):
-        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "x", "CF_API_TOKEN": "y", "R2_ACCESS_KEY_ID": "z",
-                                          "LUNEPACK_RELEASE_KEY": "k"}):
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "x", "GH_TOKEN": "g", "CF_API_TOKEN": "y",
+                                          "R2_ACCESS_KEY_ID": "z", "LUNEPACK_RELEASE_KEY": "k"}):
             env = rp.child_env({"SOURCE_DATE_EPOCH": "1"})
-        for name in ("GITHUB_TOKEN", "CF_API_TOKEN", "R2_ACCESS_KEY_ID", "LUNEPACK_RELEASE_KEY"):
+        for name in ("GITHUB_TOKEN", "GH_TOKEN", "CF_API_TOKEN", "R2_ACCESS_KEY_ID", "LUNEPACK_RELEASE_KEY"):
             self.assertNotIn(name, env)
         self.assertEqual(env["SOURCE_DATE_EPOCH"], "1")
 
@@ -363,9 +375,8 @@ class Pack(unittest.TestCase):
         self.cli = os.path.join(self.tmp, "lunepack")
         pathlib.Path(self.cli).write_text(FAKE_LUNEPACK % {"python": sys.executable})
         os.chmod(self.cli, 0o755)
-        text = (REPO / "packaging" / "lunepack.toml").read_text()
         self.config = os.path.join(self.tmp, "lunepack.toml")
-        pathlib.Path(self.config).write_text(text.replace(next(iter(rp.TEST_ROOT_KEYS)), REAL_ROOT))
+        pathlib.Path(self.config).write_text(repo_config_text(REAL_ROOT))
         self.inputs = os.path.join(self.tmp, "inputs")
         self.env = mock.patch.dict(os.environ, {"FAKE_LOG": self.log, "R2_SECRET_ACCESS_KEY": "r2value",
                                                 "GITHUB_TOKEN": "inherited"})
@@ -472,8 +483,10 @@ class Pack(unittest.TestCase):
 
     def test_the_test_root_refuses_before_anything_runs(self):
         build_inputs(self.inputs, "0.9.0")
+        test_config = os.path.join(self.tmp, "test-root.toml")
+        pathlib.Path(test_config).write_text(repo_config_text(next(iter(rp.TEST_ROOT_KEYS))))
         with self.assertRaises(rp.Abort) as ctx:
-            self.pack(config=str(REPO / "packaging" / "lunepack.toml"))
+            self.pack(config=test_config)
         self.assertIn("names the test root key; refusing to publish", str(ctx.exception))
         self.assertEqual(self.calls(), [])
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "work")))
@@ -667,6 +680,517 @@ class Attach(unittest.TestCase):
             with self.subTest(expect=expect[0]):
                 self.check_refusal_uploads_nothing(message, expect=expect)
         self.check_refusal_uploads_nothing("bad tag", tag="0.9.0")
+
+
+# ------------------------------------------------------------------------------------------ dmg
+
+BASE = "https://updates.izzat.dev/luneterm/"
+
+
+def envelope(payload):
+    return json.dumps({"payloadType": "application/vnd.lunepack.test+json",
+                       "payload": base64.b64encode(json.dumps(payload).encode()).decode(), "signatures": []}).encode()
+
+
+def published(version="0.9.0", pack=b"PACKBYTES", roots=2, app_id="my.ijat.luneterm"):
+    """A fake update store: {url: (status, bytes)} for one release, the way the real one lays it out."""
+    channel = rp.channel_of(version)
+    pack_path = "%s/macos-aarch64.pack" % version
+    manifest = envelope({"kind": "manifest", "app_id": app_id, "version": version, "target": "macos-aarch64",
+                         "pack": {"path": pack_path, "size": len(pack), "sha256": sha(pack)}})
+    m_path = "%s/macos-aarch64.manifest.json" % version
+    feed = envelope({"kind": "feed", "app_id": app_id, "channel": channel, "releases": [
+        {"version": version, "targets": {"macos-aarch64": {"path": m_path, "size": len(manifest),
+                                                            "sha256": sha(manifest)}}}]})
+    store = {BASE + "keys.json": (200, envelope({"kind": "keys"})),
+             BASE + "feed-%s.json" % channel: (200, feed),
+             BASE + m_path: (200, manifest), BASE + pack_path: (200, pack)}
+    for k in range(2, 2 + roots):
+        store[BASE + "root-%d.json" % k] = (200, envelope({"kind": "root", "version": k}))
+    store[BASE + "root-%d.json" % (2 + roots)] = (404, b"")
+    return store
+
+
+class Dmg(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.log = os.path.join(self.tmp, "calls.jsonl")
+        self.cli = os.path.join(self.tmp, "lunepack")
+        pathlib.Path(self.cli).write_text(FAKE_LUNEPACK % {"python": sys.executable})
+        os.chmod(self.cli, 0o755)
+        self.config = os.path.join(self.tmp, "lunepack.toml")
+        pathlib.Path(self.config).write_text(repo_config_text(REAL_ROOT))
+        env = mock.patch.dict(os.environ, {"FAKE_LOG": self.log})
+        env.start()
+        self.addCleanup(env.stop)
+        self.fetched = []
+        self.store = {}
+        self.caps = {}
+        for patch in (mock.patch.object(rp, "http_get", self.get),
+                      mock.patch.object(rp.platform, "system", lambda: "Darwin")):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def get(self, url, cap):
+        self.fetched.append(url)
+        self.caps[url] = cap
+        return self.store.get(url, (404, b""))
+
+    def args(self, tag="v0.9.0", work="work", **over):
+        base = dict(tag=tag, lunepack=self.cli, config=self.config, work=os.path.join(self.tmp, work))
+        base.update(over)
+        return argparse.Namespace(**base)
+
+    def dmg(self, **over):
+        return run_quiet(rp.cmd_dmg, self.args(**over), rp.Secrets({}))
+
+    def refused(self, message, **over):
+        with self.assertRaises(rp.Abort) as ctx:
+            self.dmg(**over)
+        self.assertIn(message, str(ctx.exception))
+        return str(ctx.exception)
+
+    def calls(self):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as f:
+            return [json.loads(line) for line in f]
+
+    def test_happy_path_fetches_in_order_runs_setup_without_zip_and_writes_the_sidecar(self):
+        self.store = published("0.9.0", roots=2)
+        _, out = self.dmg()
+        self.assertEqual([u[len(BASE):] for u in self.fetched],
+                         ["keys.json", "root-2.json", "root-3.json", "root-4.json", "feed-stable.json",
+                          "0.9.0/macos-aarch64.manifest.json", "0.9.0/macos-aarch64.pack"])
+        calls = self.calls()
+        self.assertEqual([c["sub"] for c in calls], ["setup"])
+        a = calls[0]["argv"]
+        self.assertNotIn("--zip", a)
+        self.assertIsNone(calls[0]["epoch"])
+        self.assertFalse(calls[0]["has_key"])
+        self.assertEqual(a[a.index("--target") + 1], "macos-aarch64")
+        self.assertEqual(a[a.index("--version") + 1], "0.9.0")
+        self.assertEqual(a[a.index("--config") + 1], self.config)
+        self.assertEqual(a[a.index("--out") + 1], os.path.join(self.tmp, "work", "setup", "luneterm-0.9.0-macos-arm64-setup.dmg"))
+        release = a[1]
+        self.assertEqual(release, os.path.join(self.tmp, "work", "release"))
+        for name in ("keys.json", "root-2.json", "root-3.json", "feed-stable.json", "0.9.0/macos-aarch64.pack"):
+            self.assertTrue(os.path.isfile(os.path.join(release, *name.split("/"))), name)
+        self.assertFalse(os.path.exists(os.path.join(release, "root-4.json")))
+        path = a[a.index("--out") + 1]
+        digest = sha(pathlib.Path(path).read_bytes())
+        self.assertEqual(pathlib.Path(path + ".sha256").read_text(), "%s  luneterm-0.9.0-macos-arm64-setup.dmg\n" % digest)
+        self.assertIn("dmg: " + path, out)
+        self.assertIn("dmg_sha256=" + digest, out)
+
+    def test_caps(self):
+        self.store = published("0.9.0")
+        self.dmg()
+        self.assertEqual(self.caps[BASE + "keys.json"], 1024 * 1024)
+        self.assertEqual(self.caps[BASE + "root-2.json"], 1024 * 1024)
+        self.assertEqual(self.caps[BASE + "feed-stable.json"], 1024 * 1024)
+        self.assertEqual(self.caps[BASE + "0.9.0/macos-aarch64.manifest.json"], 64 * 1024 * 1024)
+        self.assertEqual(self.caps[BASE + "0.9.0/macos-aarch64.pack"], len(b"PACKBYTES"))
+
+    def test_a_release_candidate_reads_the_beta_feed(self):
+        self.store = published("0.9.0-rc.1")
+        self.dmg(tag="v0.9.0-rc.1")
+        self.assertIn(BASE + "feed-beta.json", self.fetched)
+        self.assertNotIn(BASE + "feed-stable.json", self.fetched)
+        self.assertEqual(self.calls()[0]["argv"][self.calls()[0]["argv"].index("--version") + 1], "0.9.0-rc.1")
+
+    def test_stable_reads_the_stable_feed(self):
+        self.store = published("0.9.0")
+        self.dmg()
+        self.assertIn(BASE + "feed-stable.json", self.fetched)
+        self.assertNotIn(BASE + "feed-beta.json", self.fetched)
+
+    def test_the_root_walk_stops_on_404_410_and_403(self):
+        for status in (404, 410, 403):
+            with self.subTest(status=status):
+                self.fetched.clear()
+                self.store = published("0.9.0", roots=1)
+                self.store[BASE + "root-3.json"] = (status, b"")
+                self.dmg(work="work%d" % status)
+                self.assertIn(BASE + "root-3.json", self.fetched)
+                self.assertNotIn(BASE + "root-4.json", self.fetched)
+
+    def test_other_statuses_fail(self):
+        for status in (500, 301, 302, 401):
+            with self.subTest(status=status):
+                self.store = published("0.9.0", roots=1)
+                self.store[BASE + "root-3.json"] = (status, b"")
+                self.refused("root-3.json: HTTP %d" % status, work="w%d" % status)
+        self.store = published("0.9.0")
+        self.store[BASE + "keys.json"] = (302, b"")
+        self.refused("keys.json: HTTP 302", work="wk")
+        self.assertEqual(self.calls(), [])
+
+    def test_a_missing_required_object_fails(self):
+        for name in ("keys.json", "feed-stable.json", "0.9.0/macos-aarch64.manifest.json", "0.9.0/macos-aarch64.pack"):
+            with self.subTest(name=name):
+                self.store = published("0.9.0")
+                self.store[BASE + name] = (404, b"")
+                self.refused("%s: HTTP 404" % name, work="w" + name.replace("/", "_"))
+        self.assertEqual(self.calls(), [])
+
+    def test_a_runaway_root_walk_fails(self):
+        self.store = published("0.9.0", roots=0)
+        with mock.patch.object(rp, "MAX_ROOT_FILES", 3):
+            for k in range(2, 20):
+                self.store[BASE + "root-%d.json" % k] = (200, b"{}")
+            self.refused("more than 3 root files")
+
+    def test_a_version_not_in_the_feed_fails_and_setup_never_runs(self):
+        self.store = published("0.9.0")
+        self.store.update({k: v for k, v in published("0.8.0").items() if "feed" in k})
+        self.refused("0.9.0 is not listed in feed-stable.json")
+        self.assertEqual(self.calls(), [])
+        self.assertNotIn(BASE + "0.9.0/macos-aarch64.manifest.json", self.fetched)
+
+    def test_the_feed_must_be_the_feed_of_this_app_and_channel(self):
+        for bad in (dict(kind="manifest"), dict(app_id="other.app"), dict(channel="beta")):
+            with self.subTest(bad=bad):
+                self.store = published("0.9.0")
+                feed = json.loads(base64.b64decode(json.loads(self.store[BASE + "feed-stable.json"][1])["payload"]))
+                feed.update(bad)
+                self.store[BASE + "feed-stable.json"] = (200, envelope(feed))
+                self.refused("feed-stable.json", work="w%s" % "".join(bad))
+        self.assertEqual(self.calls(), [])
+
+    def test_a_feed_with_two_entries_or_a_wrong_manifest_path_or_bad_digest_fails(self):
+        def edit(fn):
+            store = published("0.9.0")
+            feed = json.loads(base64.b64decode(json.loads(store[BASE + "feed-stable.json"][1])["payload"]))
+            fn(feed)
+            store[BASE + "feed-stable.json"] = (200, envelope(feed))
+            return store
+
+        cases = {
+            "twice": lambda f: f["releases"].append(f["releases"][0]),
+            "path": lambda f: f["releases"][0]["targets"]["macos-aarch64"].update(path="0.9.0/../x.json"),
+            "notarget": lambda f: f["releases"][0]["targets"].pop("macos-aarch64"),
+            "size": lambda f: f["releases"][0]["targets"]["macos-aarch64"].update(size="9"),
+            "boolsize": lambda f: f["releases"][0]["targets"]["macos-aarch64"].update(size=True),
+            "negsize": lambda f: f["releases"][0]["targets"]["macos-aarch64"].update(size=-1),
+            "upper": lambda f: f["releases"][0]["targets"]["macos-aarch64"].update(
+                sha256=f["releases"][0]["targets"]["macos-aarch64"]["sha256"].upper()),
+            "releases": lambda f: f.update(releases={}),
+        }
+        for name, fn in cases.items():
+            with self.subTest(name):
+                self.store = edit(fn)
+                self.refused("feed-stable.json", work="w" + name)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_manifest_that_differs_from_the_feed_fails(self):
+        self.store = published("0.9.0")
+        key = BASE + "0.9.0/macos-aarch64.manifest.json"
+        status, data = self.store[key]
+        self.store[key] = (status, data + b" ")  # same JSON, other size and digest
+        self.refused("is not the manifest the feed lists")
+        self.assertNotIn(BASE + "0.9.0/macos-aarch64.pack", self.fetched)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_manifest_whose_digest_alone_differs_fails(self):
+        self.store = published("0.9.0")
+        key = BASE + "0.9.0/macos-aarch64.manifest.json"
+        status, data = self.store[key]
+        same_length = data.replace(b"vnd.lunepack.test", b"vnd.lunepack.best")
+        self.assertEqual(len(same_length), len(data))
+        self.assertNotEqual(same_length, data)
+        self.store[key] = (status, same_length)
+        self.refused("is not the manifest the feed lists")
+        self.assertEqual(self.calls(), [])
+
+    def test_a_pack_that_differs_from_the_manifest_fails(self):
+        self.store = published("0.9.0")
+        key = BASE + "0.9.0/macos-aarch64.pack"
+        self.store[key] = (200, b"PACKBYTEZ")  # same size, other digest
+        self.refused("is not the pack the manifest lists")
+        self.assertEqual(self.calls(), [])
+        self.store[key] = (200, b"PACKBYTE")
+        self.refused("is not the pack the manifest lists", work="w2")
+
+    def test_a_manifest_that_names_another_version_target_or_pack_path_fails(self):
+        def with_manifest(**change):
+            store = published("0.9.0")
+            m_key = BASE + "0.9.0/macos-aarch64.manifest.json"
+            manifest = json.loads(base64.b64decode(json.loads(store[m_key][1])["payload"]))
+            for k, v in change.items():
+                if isinstance(v, dict):
+                    manifest[k].update(v)
+                else:
+                    manifest[k] = v
+            data = envelope(manifest)
+            store[m_key] = (200, data)
+            feed_key = BASE + "feed-stable.json"
+            feed = json.loads(base64.b64decode(json.loads(store[feed_key][1])["payload"]))
+            ref = feed["releases"][0]["targets"]["macos-aarch64"]
+            ref.update(size=len(data), sha256=sha(data))
+            store[feed_key] = (200, envelope(feed))
+            return store
+
+        for name, change in {"version": dict(version="0.9.1"), "target": dict(target="linux-x86_64"),
+                             "path": dict(pack={"path": "0.9.0/other.pack"}), "kind": dict(kind="feed"),
+                             "size": dict(pack={"size": "x"}), "sha": dict(pack={"sha256": "AB"})}.items():
+            with self.subTest(name):
+                self.store = with_manifest(**change)
+                self.refused("macos-aarch64.manifest.json", work="w" + name)
+        self.assertEqual(self.calls(), [])
+
+    def test_an_oversized_document_fails(self):
+        self.store = published("0.9.0")
+        with mock.patch.object(rp, "http_get", lambda url, cap: (200, b"x" * (cap + 1))):
+            self.refused("larger than")
+        self.assertEqual(self.calls(), [])
+
+    def test_a_pack_larger_than_a_pack_may_be_fails(self):
+        self.store = published("0.9.0")
+        with mock.patch.object(rp, "MAX_INPUT_BYTES", 4):
+            self.refused("larger than a pack may be")
+        self.assertNotIn(BASE + "0.9.0/macos-aarch64.pack", self.fetched)
+
+    def test_unparsable_documents_fail_with_the_object_name_and_no_traceback(self):
+        for name, data in {"feed-stable.json": b"not json", "0.9.0/macos-aarch64.manifest.json": b"[1]"}.items():
+            for label, bad in {"json": data, "b64": json.dumps({"payload": "!!!"}).encode(),
+                               "payload-type": json.dumps({"payload": 5}).encode(),
+                               "payload-json": json.dumps({"payload": base64.b64encode(b"nope").decode()}).encode(),
+                               "payload-list": json.dumps({"payload": base64.b64encode(b"[]").decode()}).encode(),
+                               "deep": b"[" * 100000}.items():
+                with self.subTest(name=name, label=label):
+                    self.store = published("0.9.0")
+                    if name.startswith("0.9.0"):
+                        # keep the feed honest about the replaced manifest so the manifest check is reached
+                        feed_key = BASE + "feed-stable.json"
+                        feed = json.loads(base64.b64decode(json.loads(self.store[feed_key][1])["payload"]))
+                        feed["releases"][0]["targets"]["macos-aarch64"].update(size=len(bad), sha256=sha(bad))
+                        self.store[feed_key] = (200, envelope(feed))
+                    self.store[BASE + name] = (200, bad)
+                    self.refused(name, work="w-%s-%s" % (name.replace("/", "_"), label))
+        self.assertEqual(self.calls(), [])
+
+    def test_a_non_macos_host_fails_before_any_fetch(self):
+        self.store = published("0.9.0")
+        with mock.patch.object(rp.platform, "system", lambda: "Linux"):
+            self.refused("hdiutil")
+        self.assertEqual(self.fetched, [])
+
+    def test_the_test_root_fails_before_any_fetch(self):
+        self.store = published("0.9.0")
+        pathlib.Path(self.config).write_text(repo_config_text(next(iter(rp.TEST_ROOT_KEYS))))
+        self.refused("test root")
+        self.assertEqual(self.fetched, [])
+
+    def test_an_existing_work_dir_fails_before_any_fetch(self):
+        self.store = published("0.9.0")
+        os.makedirs(os.path.join(self.tmp, "work"))
+        self.refused("exists")
+        self.assertEqual(self.fetched, [])
+
+    def test_a_bad_tag_fails(self):
+        self.refused("bad tag", tag="0.9.0")
+
+    def test_the_feed_base_must_be_an_https_url_ending_in_a_slash(self):
+        self.store = published("0.9.0")
+        original = pathlib.Path(self.config).read_text()
+        for bad in ("http://updates.izzat.dev/luneterm/", "https://updates.izzat.dev/luneterm"):
+            with self.subTest(bad=bad):
+                pathlib.Path(self.config).write_text(original.replace("https://updates.izzat.dev/luneterm/", bad))
+                self.refused("must be an https URL", work="w" + str(len(bad)))
+        self.assertEqual(self.fetched, [])
+
+    def test_lunepack_failing_or_writing_nothing_fails(self):
+        self.store = published("0.9.0")
+        with mock.patch.dict(os.environ, {"FAKE_FAIL": "setup"}):
+            self.refused("lunepack setup failed")
+        self.store = published("0.9.0")
+        cli = os.path.join(self.tmp, "noop")
+        pathlib.Path(cli).write_text("#!%s\nimport sys\n" % sys.executable)
+        os.chmod(cli, 0o755)
+        self.refused("wrote no luneterm-0.9.0-macos-arm64-setup.dmg", work="w2", lunepack=cli)
+
+    def test_setup_argv_default_still_adds_zip_for_macos_only(self):
+        self.assertIn("--zip", rp.setup_argv("c", "r", "1.0.0", "macos-aarch64", "o"))
+        self.assertNotIn("--zip", rp.setup_argv("c", "r", "1.0.0", "macos-aarch64", "o", zip=False))
+        self.assertNotIn("--zip", rp.setup_argv("c", "r", "1.0.0", "linux-x86_64", "o"))
+        self.assertEqual(rp.TARGETS["macos-aarch64"]["dmg"].format(v="0.9.0"), "luneterm-0.9.0-macos-arm64-setup.dmg")
+
+    def test_the_real_getter_is_https_only_has_no_credentials_and_follows_no_redirect(self):
+        seen = {}
+
+        class Opener:
+            def open(self, request, timeout=None):
+                seen["request"], seen["timeout"] = request, timeout
+                raise rp.urllib.error.HTTPError(request.full_url, 302, "Found", {}, None)
+
+        def build_opener(*handlers):
+            seen["handlers"] = handlers
+            return Opener()
+
+        with self.assertRaises(rp.Abort):
+            REAL_HTTP_GET("http://updates.izzat.dev/luneterm/keys.json", 10)
+        with mock.patch.object(rp.urllib.request, "build_opener", build_opener):
+            status, data = REAL_HTTP_GET(BASE + "keys.json", 10)
+        self.assertEqual((status, data), (302, b""))
+        request = seen["request"]
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.full_url, BASE + "keys.json")
+        self.assertEqual(dict(request.header_items()), {"User-agent": "luneterm-release-pack"})
+        self.assertLessEqual(seen["timeout"], 60)
+        (handler,) = seen["handlers"]
+        self.assertIsNone(handler().redirect_request(request, None, 302, "Found", {}, "https://elsewhere/x"))
+
+    def test_the_real_getter_fails_above_the_cap(self):
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, n):
+                return b"x" * n
+
+        class Opener:
+            def open(self, request, timeout=None):
+                return Response()
+
+        with mock.patch.object(rp.urllib.request, "build_opener", lambda *h: Opener()):
+            with self.assertRaises(rp.Abort):
+                REAL_HTTP_GET(BASE + "keys.json", 10)
+
+    def test_a_truncated_body_is_an_abort_not_a_traceback(self):
+        class Opener:
+            def open(self, request, timeout=None):
+                raise rp.http.client.IncompleteRead(b"x")
+
+        with mock.patch.object(rp.urllib.request, "build_opener", lambda *h: Opener()):
+            with self.assertRaises(rp.Abort):
+                REAL_HTTP_GET(BASE + "keys.json", 10)
+
+    def test_main_runs_dmg_from_the_command_line(self):
+        self.store = published("0.9.0")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = rp.main(["dmg", "--tag", "v0.9.0", "--lunepack", self.cli, "--config", self.config,
+                            "--work", os.path.join(self.tmp, "viamain")])
+        self.assertEqual(code, 0)
+        self.assertIn("dmg_sha256=", out.getvalue())
+
+
+# ------------------------------------------------------------------------------- drop-artifacts
+
+
+class DropArtifacts(unittest.TestCase):
+    def setUp(self):
+        env = mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"})
+        env.start()
+        self.addCleanup(env.stop)
+        self.requests = []
+        self.artifacts = []
+        self.delete_status = 204
+
+    def send(self, method, url, headers, data):
+        self.requests.append((method, url, headers))
+        if method == "GET":
+            query = dict(p.split("=") for p in url.split("?")[1].split("&"))
+            page, per = int(query["page"]), int(query["per_page"])
+            chunk = self.artifacts[(page - 1) * per:page * per]
+            return 200, json.dumps({"total_count": len(self.artifacts), "artifacts": chunk}).encode()
+        return self.delete_status, b"" if self.delete_status == 204 else b"nope " + TOKEN.encode()
+
+    def drop(self, run_id="123"):
+        return run_quiet(rp.cmd_drop_artifacts, argparse.Namespace(run_id=run_id),
+                         rp.Secrets({"GITHUB_TOKEN": TOKEN}), self.send)
+
+    def deleted(self):
+        return [u.rsplit("/", 1)[1] for m, u, _ in self.requests if m == "DELETE"]
+
+    def test_it_deletes_exactly_the_four_names_and_leaves_the_others_and_expired(self):
+        self.artifacts = [{"id": 1, "name": "lunepack-cli"}, {"id": 2, "name": "lunepack-cli-macos"},
+                          {"id": 3, "name": "release"}, {"id": 4, "name": "setup"},
+                          {"id": 5, "name": "other"}, {"id": 6, "name": "setup", "expired": True},
+                          {"id": 7, "name": "luneterm-windows-x64"}, {"id": 8, "name": "release-2"}]
+        _, out = self.drop()
+        self.assertEqual(self.deleted(), ["1", "2", "3", "4"])
+        for name in ("lunepack-cli", "lunepack-cli-macos", "release", "setup"):
+            self.assertIn("deleted artifact %s" % name, out)
+        self.assertIn("keep other", out)
+        self.assertIn("keep setup (expired)", out)
+
+    def test_it_asks_only_for_this_run_on_the_api_host_with_the_token_in_the_header_only(self):
+        self.artifacts = [{"id": 9, "name": "setup"}]
+        _, out = self.drop("4242")
+        for method, url, headers in self.requests:
+            self.assertTrue(url.startswith("https://api.github.com/repos/owner/repo/actions/"), url)
+            self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
+            self.assertNotIn(TOKEN, url)
+        self.assertEqual(self.requests[0][1], "https://api.github.com/repos/owner/repo/actions/runs/4242/artifacts?per_page=100&page=1")
+        self.assertEqual(self.requests[1][:2], ("DELETE", "https://api.github.com/repos/owner/repo/actions/artifacts/9"))
+        self.assertNotIn(TOKEN, out)
+
+    def test_pagination_lists_every_page_before_deleting(self):
+        self.artifacts = [{"id": i, "name": "other"} for i in range(1, 101)] + [{"id": 101, "name": "setup"}]
+        self.drop()
+        methods = [m for m, _, _ in self.requests]
+        self.assertEqual(methods, ["GET", "GET", "DELETE"])
+        self.assertEqual(self.deleted(), ["101"])
+
+    def test_a_full_last_page_is_followed_by_one_empty_page(self):
+        self.artifacts = [{"id": i, "name": "other"} for i in range(1, 101)]
+        self.drop()
+        self.assertEqual([m for m, _, _ in self.requests], ["GET", "GET"])
+
+    def test_nothing_to_delete_is_fine(self):
+        self.artifacts = []
+        _, out = self.drop()
+        self.assertEqual(self.deleted(), [])
+        self.assertIn("no artifact of run 123 to delete", out)
+
+    def test_a_run_id_that_is_not_digits_fails_before_any_request(self):
+        for bad in ("", "12a", "1 2", "../1", "-1", "\u0661\u0662", "1" * 21, "12/artifacts"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(rp.Abort):
+                    self.drop(bad)
+        self.assertEqual(self.requests, [])
+
+    def test_a_failed_delete_fails(self):
+        self.artifacts = [{"id": 1, "name": "setup"}]
+        self.delete_status = 403
+        with self.assertRaises(rp.Abort) as ctx:
+            self.drop()
+        self.assertIn("HTTP 403", str(ctx.exception))
+
+    def test_a_failed_list_fails_and_a_malformed_list_fails(self):
+        with mock.patch.object(self, "send", lambda *a: (500, b"boom")):
+            with self.assertRaises(rp.Abort):
+                self.drop()
+        for body in (b"[]", b'{"artifacts": 5}', b'{"artifacts": [{"id": "x", "name": "setup"}]}',
+                     b'{"artifacts": [5]}', b'{"artifacts": [{"id": true, "name": "setup"}]}'):
+            with self.subTest(body=body):
+                with mock.patch.object(self, "send", lambda *a, b=body: (200, b)):
+                    with self.assertRaises(rp.Abort):
+                        self.drop()
+        self.assertEqual(self.deleted(), [])
+
+    def test_a_missing_token_or_bad_repository_fails(self):
+        with self.assertRaises(rp.Abort):
+            rp.cmd_drop_artifacts(argparse.Namespace(run_id="1"), rp.Secrets({}), self.send)
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "not a repo"}):
+            with self.assertRaises(rp.Abort):
+                self.drop()
+
+    def test_main_redacts_the_token_from_a_failure(self):
+        err = io.StringIO()
+        with mock.patch.object(rp.RunArtifacts, "__init__", lambda self, secrets, run_id, send=None: (_ for _ in ()).throw(rp.Abort("x " + TOKEN))), \
+                mock.patch.dict(os.environ, {"GITHUB_TOKEN": TOKEN}), contextlib.redirect_stderr(err):
+            code = rp.main(["drop-artifacts", "--run-id", "1"])
+        self.assertEqual(code, 1)
+        self.assertNotIn(TOKEN, err.getvalue())
 
 
 class Scope(unittest.TestCase):
