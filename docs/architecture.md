@@ -883,14 +883,16 @@ foreground process changes; serialize calls per handle.
 
 ## luneterm app
 
-`crates/luneterm` is lib + bin (`#![deny(unsafe_code)]`: `unsafe` only in the platform modules, each block with a `// SAFETY:` comment: `links/open.rs` and `efficiency/windows.rs` on Windows, `os_event.rs` and `efficiency/macos.rs` on macOS; the PTY calls live in `lune-pty`). The
-bin is `luneterm::app::run()` after `lune_pty::restrict_dll_search()`. One session per tab and no
+`crates/luneterm` is lib + bin (`#![deny(unsafe_code)]`: `unsafe` only in the platform modules, each block with a `// SAFETY:` comment: `links/open.rs`, `efficiency/windows.rs`, `ctl/endpoint/windows.rs` and `ctl/token.rs` on Windows, `os_event.rs` and `efficiency/macos.rs` on macOS, `shell_integration/mod.rs` and `ctl/endpoint/unix.rs` on Unix; the PTY calls live in `lune-pty`). The
+bin (`main.rs`) calls `lune_pty::restrict_dll_search()`, then hands `luneterm ctl ...` to
+`ctl::client` (see "Tab control (ctl)"), and otherwise starts the app: `update::startup()`, then
+`luneterm::app::run()`. One session per tab and no
 global state (M10: a `Tab` owns a session and everything that used to be per-session on `App`). Modules:
 
 | Module | Holds |
 |---|---|
 | `app` | winit event loop (user event = session wake), window, frame loop, session wiring, bell and program notifications (`hear`, the inbox list's open state), exit |
-| `shell` | Layout (34 px title band, card radius 8, margins 10, body padding 10), the Windows chrome (caption buttons, drag, edge resize), the band double press (Windows: maximize; macOS: the System Settings action via `double_click`; Linux: drag), scrollbar thumb geometry and drag, the inbox button and its list (`draw_inbox`, `inbox_rows`), the notification toast (`notice_toast`) |
+| `shell` | Layout of both views (the top bar's: 34 px title band, card radius 8, margins 10, body padding 10; the side pane's: the pane at the left, the title band and the card beside it, no strip), the Windows chrome (caption buttons, drag, edge resize: the 6 px resize zone of a borderless, non-maximized window takes the press before any widget under it, so a resize never clicks one), the band double press (Windows: maximize; macOS: the System Settings action via `double_click`; Linux: drag), scrollbar thumb geometry and drag, the inbox button and its list (`draw_inbox`, `inbox_rows`), the notification toast (`notice_toast`) |
 | `notices` | The notification model, pure: `Inbox` (rows, coalescing, `settle`), the D6 `route` table, `ToastSlots` (the live toasts, their arm delay), age labels |
 | `double_click` | What a double click on the title band does on macOS: the `AppleActionOnDoubleClick` setting (zoom, minimize or nothing) mapped to a `WindowCommand`; elsewhere maximize |
 | `render` | `Renderer`: one `Ui`, `TermView`, `FrameRenderer` and `TextCache`, shared by the window and by dump mode |
@@ -898,11 +900,14 @@ global state (M10: a `Tab` owns a session and everything that used to be per-ses
 | `input` | `keys` (winit `KeyEvent` to `KeyRoute`), `shortcuts`, `pointer` (mouse, wheel) |
 | `spawn` | Shell candidates, cwd, environment, `WindowsPty` |
 | `shell_integration` | The scripts the user's shell sources (OSC 7, OSC 133), their checked install under the config directory, and what they add to a spawn (see "Shell integration" above) |
-| `tabs` | `Tab` (one session plus its UI-side state), `TabSet` (order, active, next focus after a close: pure list logic), the close rules (`asks_on_close`, `ClosePlan`), tab names |
+| `tabs` | `Tab` (one session plus its UI-side state, origin, program flag), `TabSet` (order, active, next focus after a close, group membership and every move that keeps a group's tabs together: pure list logic), the close rules (`asks_on_close`, `ClosePlan`), tab names |
+| `groups` | What a tab group is: name, one of nine colours, collapsed flag; the colour a new group gets; the name rule. Pure data, no UI and no I/O |
+| `pane` | The side pane: which view a window shows, its rects and controls, the tab list (rows, group cards, scrolling) and its drag reorder |
+| `ctl` | `luneterm ctl`: words and limits, framing, replies, instance token, endpoint per OS, listener, client, request handler; see "Tab control (ctl)" below |
 | `update` | Self-update over lunepack: `startup`/`confirm_healthy`, the `Updater` worker thread and its state machine, the channel a copy follows (`channel`), the 24 h timer and the toast rule (`auto`); see "Updates" below |
 | `efficiency` | Efficiency mode in the background: the pure policy `wanted`, the `Controller` (UI thread only), and the OS backends (`windows.rs` EcoQoS + idle class, `macos.rs` utility QoS; none elsewhere); see "Efficiency mode" below |
 | `links` | `scan` (OSC 8 runs and bare `http(s)://` text), `open` (the closed URL grammar and the only code that opens anything), hover state |
-| `persist` | `settings.json` and `workspace.json`: bounded JSON reader and writer, atomic 0600 writes, versioned, `.bak` on a file it cannot read, `SaveGuard` (ledger 12) |
+| `persist` | `settings.json` and `workspace.json` (tab groups included): bounded JSON reader and writer, atomic 0600 writes, versioned, `.bak` on a file it cannot read, `SaveGuard` (ledger 12) |
 | `cwd` | The host's check of a directory a shell reported (`syntax`, `validated`) |
 | `outline`, `menus`, `palettes`, `settings_page` | The running-outline gate and command tracker; the app and terminal menus as data; the ten palettes (saved by name); the settings page model and its one draw function |
 | `title`, `settings`, `fonts`, `dump`, `demo` | Title sanitizer; the settings model (Lunegit's `TerminalSettings` defaults; every field has a `SettingId` and an `Effect`); the six bundled faces plus the detected system fonts; `LUNETERM_DUMP_FRAMES`; the dump mode's placeholder grid |
@@ -1005,7 +1010,9 @@ session does not clear the engine's mode on timeout, because that needs bytes in
 engine's input, which can land inside a PTY sequence. **Deviation:** after a timeout DECRQM 2026
 still reports "set" until the program resets the mode.
 
-**Input routing (D4 to D7).** The terminal owns the keyboard unless the app has opened a toolkit
+**Input routing (D4 to D7).** For 400 ms after a `ctl` request moved the active tab, typed, pasted
+and composed input is dropped (not queued) for every tab; mouse and wheel are not (see "Tab control
+(ctl)"). The terminal owns the keyboard unless the app has opened a toolkit
 text input or overlay (none in M9; M10 sets the flag). Ownership is app state, not
 `FrameOutput.focused`, so a click on a caption button cannot steal typing. A terminal-owned key goes
 to the app's shortcut table (matched at event time with `Chord::matches`: paste, and Shift+PageUp,
@@ -1044,11 +1051,13 @@ build comes from `RtlGetVersion`, `lune_pty::conpty_build()`). Window reports ar
 xterm.js's format, but window options stay at the xterm.js and Lunegit defaults (all off), so in M9
 they are never emitted; tools that want pixel sizes read `TIOCGWINSZ`, which the PTY size fills.
 
-**Tabs (M10 step 2, D1, D7, D13).** The strip is the toolkit's; the app decides cues and when to ask.
-New, close, close others, switch, rename, reorder and duplicate go through `TabSet`, which is tested
-without a window. Shortcuts (`input/shortcuts.rs`): macOS Cmd+T, Cmd+W, Cmd+Shift+[ and ], Cmd+1 to
-9, Cmd+C, Cmd+, ; elsewhere Ctrl+Shift+T, Ctrl+Shift+W, Ctrl+Tab, Ctrl+Shift+Tab, Alt+1 to 9,
-Ctrl+Shift+C, Ctrl+, . Closing a tab asks only when something would be lost (`tabs::asks_on_close`):
+**Tabs (M10 step 2, D1, D7, D13).** One ordered list (`TabSet`) behind two views: the top bar, whose
+strip is the toolkit's, and the side pane, which the app draws (next two parts). The app decides cues
+and when to ask. New, close, close others, switch, rename, reorder, duplicate and every group change
+go through `TabSet`, which is tested without a window. Shortcuts (`input/shortcuts.rs`): macOS Cmd+T,
+Cmd+W, Cmd+Shift+[ and ], Cmd+1 to 9, Cmd+C, Cmd+, , Cmd+B (side pane); elsewhere Ctrl+Shift+T,
+Ctrl+Shift+W, Ctrl+Tab, Ctrl+Shift+Tab, Alt+1 to 9, Ctrl+Shift+C, Ctrl+, , Ctrl+Shift+B (plain
+Ctrl+B is tmux's prefix). Closing a tab asks only when something would be lost (`tabs::asks_on_close`):
 when the foreground probe knows, if a program other than the shell runs; when it cannot (Windows),
 only if the shell-integration marks say a command runs (D7), so an idle tab never asks. The
 engine thread probes the foreground process and the line discipline (`raw_mode`) at most every
@@ -1059,6 +1068,93 @@ which follows the OSC 133 marks and whether the program consumes keystrokes; pro
 sets the cue's tone. `scripts/cpu-sample.sh` samples a process's CPU for the outline's budget
 (ledger 16).
 
+**Tab groups.** A group is a name, one of nine colours (grey, blue, red, yellow, green, pink, purple,
+cyan, orange; per-theme values in `groups.rs`, whose test holds card text to 4.5:1 over dark
+backdrops and the opaque theme; a light desktop behind the glass is not covered) and a collapsed
+flag. `TabSet` keeps each group's tabs next to one another, gives a group at least one member (the
+last one leaving or closing drops it), keeps names unique (compared exactly) and never reuses a tab
+or group id. A new group gets the first colour no open group uses, else the least used. A name typed
+by hand follows the rule `ctl` has (`label_ok`, at most 64 characters), must be free, and is never
+trimmed or cut; a name that fails it disables the editor's confirm.
+- *By hand.* Tab menu (strip tab or pane row): Add Tab to Group and, on a grouped tab, Remove from
+  Group, Edit Group and Close Group, so the top bar needs no pane. Add Tab to Group has a chevron
+  and opens a submenu, which the app builds (the toolkit has none): picking the row (a click, Enter
+  or Space; hovering opens nothing) opens it beside the tab menu, which stays open: flush against
+  the menu's right edge (its left where the window has no room on the right), the first row level
+  with the picked one, shifted up where it would cross the window's bottom. It lists the other open
+  groups in tab order, then New Group (the group editor), for the same tab and the groups as the
+  menu opened with them, and it lives in the tab menu's state, so whatever closes or replaces that
+  menu drops it. Escape and presses act one level at a time: Escape closes the submenu and then the
+  tab menu; a press on the tab menu closes the submenu alone and picks nothing; a press outside
+  both closes both. A pick in the submenu closes both, and a key still held from the pick that
+  opened it repeats into it without picking. The toolkit keeps no row of the lower menu lit and has
+  no Left or Right keys between the two. App menu: New Tab Group (a new shell tab in a new group)
+  and Show or Hide Side Pane. A card header's menu: Edit Group, Collapse or Expand, New Tab in
+  Group, Ungroup (keeps the tabs), Close Group. A colour picked in the editor of an open group
+  applies and is saved at once (Cancel keeps it).
+- *Close Group* asks every time, whatever its tabs run and whatever the close-confirmation setting
+  says, with one answer for all of them. It closes the tabs it asked about that are still members; a
+  tab a program adds while the question is open stays, with its group.
+- *Where a new tab goes (D22).* The new-tab shortcut, the strip's `+`, the app and terminal menus'
+  New Tab, and Duplicate Tab (relative to the menu's tab) put the tab after the last member of the
+  reference tab's group when it has one, else at the end. A card's `+` and New Tab in Group add to
+  that group's end; the pane's New Tab button adds an ungrouped tab at the end. A tab opened by hand
+  into a collapsed group expands it. `ctl tab new` goes by its own rule (Protocol 1).
+- *Collapse (D21)* is a flag only the pane draws: it never changes the active tab, is never refused,
+  and the bar view ignores it. Next, previous and the number shortcuts run over all tabs in order and
+  expand nothing. An action that sends the user to a tab expands its group: the toast's Go to tab,
+  an inbox entry, `ctl tab focus` and `tab new --focus`.
+- *Top bar drag (D25).* The bar does not show groups, so a drag there never changes membership
+  (`TabSet::reorder_bar`): a grouped tab stays inside its group's run, and an ungrouped tab dropped
+  inside a run goes to the nearer end of it (a tie: after).
+
+**Two views and the side pane (D20, D26 to D35).** The saved choice (`side_pane`, see "Persistence")
+is toggled by the shortcut, the app menu, the hide button in the pane's header and the show button
+in the bar's title band. The two buttons share one place (right of the traffic lights on macOS, at
+the left elsewhere), so toggling does not move the button. The pane shows only while the window is
+at least pane width + 490 px wide (the card keeps 480 plus its margin); narrower, the bar view
+shows, the choice stays and the show button is not drawn.
+- *Layout.* The pane takes the left column over the window's whole height, 248 px wide by default,
+  dragged within 200 to 420 by a 6 px zone on its right edge (a drag stops at window width - 490)
+  and saved once, at the release. Its 34 px header holds the traffic lights' room and the hide
+  button. On every OS a 34 px title band lies over the terminal column, with the terminal card (no
+  strip) under it. The band shows the title centred on the card, clipped 12 px inside the card's
+  edges and, where the app draws the caption buttons (Windows), short of them. The header's empty
+  part and the band drag the window, and a double press there does what it does on the bar view's
+  band. The body reaches the PTY size through the same `Renderer::place` to `Command::Resize` path a
+  window resize takes. The pane has no glass layer of its own (it sits on the window panel). The
+  Settings page draws in the card with the pane live; a press on a tab row, a New Tab action, an app
+  menu row other than Settings, About and the pane toggle, or opening the inbox leaves the page.
+- *Footer.* One row: New Tab at the left (a `+` and its label, no outline, as wide as that needs up
+  to the next button, the label cut short there), and at the right the bell (only while the inbox has
+  entries) beside the app menu. The inbox list and the app menu open upward, over the terminal.
+  Toasts stay at the card's bottom right in both views.
+- *List.* Loose tab rows and group cards (header with name and tab count, then the member rows unless
+  collapsed), scrolling between header and footer. While they overflow the list, rows and cards stop
+  3 px short of the scroll thumb's track; while they fit they use the full width. An activation change,
+  a go-to or the pane appearing scrolls the active row into view (the card header when the group is
+  collapsed). A row activates on the press, as on the strip; the active and the hovered row have a
+  close button; a header toggles collapse and has a `+`; secondary press opens the tab or the group
+  menu. A collapsed card holding the active tab draws its header selected, and shows one dot when any
+  member has an unread notice; an expanded card shows dots on its member rows only. A row has no
+  icon: a fixed column left of the title holds the unread dot, so a title does not move when the dot
+  comes or goes, and a header's dot and name share the left edges of its members'. Rows show the
+  progress (OSC 9;4) shine. Rows, headers and buttons are nodes of the accessibility tree
+  (checked against the toolkit's tree in a test, not with a screen reader).
+- *Running outline.* The bar view's outline is the strip's. The pane view draws the same cue on the
+  terminal card's outline (`shell::card_cue`, a copy of the toolkit's private drawing): the setting,
+  the full-screen rule, the tones and the motion level apply as on the strip (reduced motion
+  breathes, no motion leaves the still outline), and the settings page covers it.
+- *Pane drag (D24).* A tab row drags past the toolkit's threshold; the gaps of the flattened list are
+  the slots: inside an expanded card joins that group there, a collapsed card's header joins at its
+  end, between blocks makes the tab ungrouped. The last member leaving drops the group without a
+  question (nothing closes). A card header drags the whole group, between blocks only. A line (or a
+  highlighted collapsed card) marks the slot, the list scrolls near its edges, and Escape, a loss of
+  window focus or a release outside the pane cancels. The commit is `TabSet::move_tab` or
+  `move_group`; the active tab never changes (a dragged row became active at its press).
+- *Not run in a real window yet:* pane, menu and drag behaviour is covered by tests and offscreen
+  dumps; the Windows and Linux GUI has not been run with it.
+
 **Persistence (M10 step 5, D5, D17, ledger 12).** `~/.luneterm` (`dirs::home_dir()`, on every OS;
 `LUNETERM_CONFIG_DIR` overrides it, as the dump mode and the trial runs do) is created 0700 on
 Unix and holds `settings.json` and `workspace.json`, both `{"version": 1, ...}`. Both are read
@@ -1068,11 +1164,25 @@ file already at the temporary name is never followed. A missing file is the defa
 nothing; a file that is not JSON, over the limits, not an object or of an unknown version is copied
 to `<name>.bak` (a backup is never overwritten), the defaults run, and the file stays until the user
 changes something; a file over the size cap or not a regular file is not read and not saved over.
-Enums, the font and the palette are saved by name, never by index. Nothing read from either file is
-executed; the one value that names a program, `shell`, is the user's own setting, and the workspace
-holds directories and titles only (each directory goes through `cwd::validated` before a tab
-starts in it, at most 32 tabs). `SaveGuard` is ledger 12: no workspace write while any tab shows
-a failed start, nor after a tab that died within 3 s of its start until the user acts on the tabs.
+Enums, the font, the palette and group colours are saved by name, never by index. Nothing read from
+either file is executed; the one value that names a program, `shell`, is the user's own setting, and
+the workspace holds directories, titles and tab groups only (each directory goes through
+`cwd::validated` before a tab starts in it, at most 32 tabs). `SaveGuard` is ledger 12: no workspace
+write while any tab shows a failed start, nor after a tab that died within 3 s of its start until the
+user acts on the tabs (a program tab's exit does not count).
+- *Groups (D15)* are additions inside version 1: a tab's `"group": "<name>"` and a top-level
+  `"groups": [{"name", "color", "collapsed"}]`, written only when a saved tab is grouped. An older
+  build drops the per-tab key and keeps the top-level one. A bad name, a duplicate entry, an unknown
+  colour or members that are apart are repaired on read (gathered after the first member), never
+  refused. A restored active tab in a collapsed group stays active and the group stays collapsed.
+- *Program tabs* (`ctl tab new -- ...`) are never written; a shell tab opened through `ctl` is saved
+  like any tab and comes back with origin `user`.
+- *Settings keys* with no counterpart in Lunegit: `tab_control` (bool, default on), `side_pane`
+  (bool) and `side_pane_width` (read clamped to 200..=420, a non-number is 248); the last two have no
+  Settings page row. With no `side_pane` key the first start decides once and saves it: a new install
+  gets the side pane; a config directory that already holds `settings.json`, `workspace.json` or a
+  `shell-integration/` directory is an upgrade and keeps the top bar until the user opens the pane.
+  A rejected settings file is not saved over.
 
 **Selection and links** are described with the host duties above (engine-thread selection
 model; the closed URL grammar and the argv or `ShellExecuteW` open).
@@ -1105,7 +1215,8 @@ Update; hidden tabs publish at most every 100 ms, so any tab's output reaches it
   has no effect; the backend is never called.
 
 Every child creation runs inside `Controller::lifted`, which lifts the throttle first and re-evaluates
-after: `open_tab`'s spawn (conhost included) and `open_link`. `Session::start` needs no lift. On
+after: `new_tab`'s spawn (a user's or a `ctl` tab's, conhost included) and `open_link`.
+`Session::start` needs no lift. On
 macOS a thread starts at the default QoS, not its creator's (measured: threads made from a thread at
 user-initiated, utility and background all start at default), so the session threads are never
 throttled. On Windows the priority class is per process, so a lift around thread creation would
@@ -1130,8 +1241,25 @@ that is not found moves on to the next; any other error stops. cwd: the setting 
 directory, else home. Environment: Lunegit's overlay with `TERM_PROGRAM=Luneterm` (iTerm2 spoofing
 behind the setting), and when none of `LC_ALL`, `LC_CTYPE`, `LANG` is set (an empty value counts as
 unset) `LC_CTYPE=UTF-8` on macOS or `C.UTF-8` on Linux, because a Finder-launched shell would
-otherwise run in the C locale. When the child exits the window closes and the app quits; if no
-candidate spawns the grid shows "Failed to start terminal" with the error kind and stays open.
+otherwise run in the C locale. When a tab's child exits the tab closes and the others stay (the last
+tab takes the app with it); if no candidate spawns the grid shows "Failed to start terminal" with the
+error kind and stays open.
+
+**Program tabs** (`ctl tab new -- <program> <args...>`, `spawn::program_spawn`). Neither `shell_args`
+nor shell integration applies, and a program that cannot be started makes no tab (the caller hears
+it).
+- *Unix.* The shell is the `shell` setting, else an absolute `$SHELL`, else `/bin/sh`. zsh, bash, sh,
+  dash, ksh and fish run `<shell> -l -i -c <constant script> [luneterm] <cwd> <program> <args...>`
+  (fish takes no `$0`): the script changes to the directory (exit 127 if it cannot) and `exec`s the
+  program, so the program has the login environment and `PATH` of a new tab, after the user's rc
+  files ran. The directory and every word are separate arguments, never text in the script. A program
+  name starting with `-` is refused under such a shell (`exec` would read it as its option). Any
+  other shell is bypassed: the program starts directly with the app's environment plus the additions.
+- *Windows.* No login shell. The program is started directly: an absolute path as it is, a bare name
+  searched in the child's `PATH` (as it is, then with each `PATHEXT` extension); empty and relative
+  `PATH` entries, relative paths with a separator and a `:` in the file name are refused. A `.bat` or
+  `.cmd` file (in any case, trailing dots and spaces ignored) is refused: Windows would hand it to
+  `cmd.exe`, which parses the arguments again.
 
 **Shell integration (M10 step 7, D12).** With the `shell_integration` setting on (the default) and a
 config directory, `spawn::launch_with` writes `<config dir>/shell-integration` (scripts ported from
@@ -1146,13 +1274,21 @@ and each script are `lstat`-checked before use (real, owned by the effective use
 write); a failed check, or any error, skips integration for that spawn and the shell starts as
 without it. The directory is created 0700 and the scripts 0600, written through a temporary name and
 renamed. On Windows the directory is under `%USERPROFILE%`, whose user-only default ACL is assumed
-(plan assumption A3), and only PowerShell is integrated. `shell_integration = false` leaves the
-environment and argv exactly as before (a test pins it).
+(plan assumption A3), and only PowerShell is integrated. `shell_integration = false` leaves each
+candidate's argv alone and adds only the environment below (the `LUNETERM_*` tab variables included;
+a test pins the exact keys).
 
-**Environment (M10).** Read by the app: `LUNETERM_CONFIG_DIR` (replaces `~/.luneterm`; read once, in `app::run`), `LUNETERM_DUMP_FRAMES` (dump mode, no window) with
+**Environment (M10).** Read by the app: `LUNETERM_CONFIG_DIR` (replaces `~/.luneterm`;
+`ctl::client::config_dir` reads it for the app and for `ctl`, and a relative one is passed to
+children as an absolute path), `LUNETERM_DUMP_FRAMES` (dump mode, no window) with
 `LUNE_REQUIRE_GPU` (a missing adapter becomes a failure), `SHELL` (the login shell's name when
-integration needs one), `ZDOTDIR` and `HOME` (where the user's zsh files are), `LC_ALL`, `LC_CTYPE`
-and `LANG` (the locale fallback). Added to the child's inherited environment: `TERM=xterm-256color`,
+integration needs one, and the shell a program tab goes through), `PATH` and `PATHEXT` (finding a
+program tab's program on Windows), `ZDOTDIR` and `HOME` (where the user's zsh files are), `LC_ALL`,
+`LC_CTYPE` and `LANG` (the locale fallback). `luneterm ctl` also reads `LUNETERM_INSTANCE`. Every
+tab's child gets `LUNETERM_BIN` (this run's executable, canonical, resolved once at start; under a
+lunepack install the version's own copy), `LUNETERM_INSTANCE` (this run's token) and
+`LUNETERM_TAB_ID`, replacing any inherited values; an empty one reads as unset. Added to the child's
+inherited environment besides those: `TERM=xterm-256color`,
 `COLORTERM=truecolor`, `TERM_PROGRAM` and `TERM_PROGRAM_VERSION` (`Luneterm` and the crate version,
 or `iTerm.app` and `3.6.11` behind `report_iterm2`), `LC_CTYPE` when no locale variable is set, and,
 for zsh with shell integration on, `ZDOTDIR` (ours) and `LUNETERM_USER_ZDOTDIR` (the user's). The
@@ -1161,15 +1297,17 @@ Windows child gets the inherited environment plus these, not portable-pty's regi
 **Title and bell (D13, D14).** The engine keeps titles up to 10 MB; the app scans at most 4,096
 characters, drops Unicode Cc and the bidi controls (U+061C, U+200E, U+200F, U+202A to U+202E,
 U+2066 to U+2069), trims, caps at 80 characters, and uses "Luneterm" when empty; the result goes to
-the window title and the title band (a 10 MB title takes under 10 ms in the test). A bell in an
+the window title and, in the bar view, the title band (a 10 MB title takes under 10 ms in the test).
+A name given by hand (the rename dialog, the saved workspace, `ctl tab new --title`) is cleaned the
+same way but may be 128 characters (`title::MAX_NAME_CHARS`). A bell in an
 unfocused window asks for user attention (`Informational`), at most every 2 s (`BELL_INTERVAL`),
 and so does a program message in a background tab of one (the D6 table below); a bell in a
 background tab also leaves an inbox row (next part).
 
 **Bell and notifications (bell-notifications plan).** A bell in a background tab shows an amber dot
 on that tab; a program message (plain OSC 9, or `OSC 777;notify;<title>;<body>`) shows an in-app
-toast and is kept in a header inbox. Nothing goes to the OS but the attention request above (the
-bell's, and a message's in an unfocused window).
+toast and is kept in an inbox (the bell in the bar's header or the pane's footer). Nothing goes to
+the OS but the attention request above (the bell's, and a message's in an unfocused window).
 - *Path.* Bytes reach `lune-vt`: `ext/osc_notify.rs` turns a message into
   `HostEvent::Notification { title, body }`, only with `StandardExtensions::notifications` on (the
   app passes `true`; `luneterm-ffi` passes `false`, so through the C ABI `OSC 777` stays
@@ -1178,11 +1316,11 @@ bell's, and a message's in an unfocused window).
   `Tab::apply` is the one place program text becomes app text: `title::sanitize_text` makes
   `Effects.messages` (and the bell count becomes `Effects.bells`). `pump` hands both to `hear`,
   which asks the `route` table and fills the `Inbox` (`notices.rs`, in memory), the single store.
-  The tab dot (`StripTab.attention` = the tab has an unread row and is not the active one), the
-  header button's bell (yellow while any row is unread, plain once all are read; it rings for 1 s
-  when a new row arrives in a focused window, at most once per 3 s, under full motion only; the
-  count stays in its accessible name), the list (a luneui popover) and the toast
-  slots are all read from it.
+  The tab dot (`StripTab.attention` = the tab has an unread row and is not the active one; the
+  pane's rows use it too, and a collapsed card shows one dot), the inbox button's bell (yellow while
+  any row is unread, plain once all are read; it rings for 1 s when a new row arrives in a focused
+  window, at most once per 3 s, under full motion only; the count stays in its accessible name), the
+  list (a luneui popover) and the toast slots are all read from it.
 - *OSC 9 grammar (D4, D5).* The payload is a message unless its first field (up to the first `;`, or
   all of it) is only ASCII digits, which keeps every ConEmu form (`9;4;...` progress, `9;9;...`
   cwd, a bare `9;404`) out; `9;3 tests failed` is a message. `OSC 777` is `notify` only,
@@ -1237,7 +1375,8 @@ bell's, and a message's in an unfocused window).
 **Updates (auto-update plan; publishing and keys: `docs/updates.md`).** The app installs and updates
 through lunepack (`lune-rs/lunepack` at one pinned rev, facade crate `lunepack` with its `blocking`
 API; HTTPS by ureq and rustls inside lunepack, no new HTTP code in the app). `update::startup()` is
-the first thing `main` does after `restrict_dll_search` (lunepack's lifecycle: a version that was
+the first thing `main` does for an app start, after `restrict_dll_search` and the `ctl` dispatch,
+which never reaches it (lunepack's lifecycle: a version that was
 rolled back exits at once); `update::confirm_healthy()` runs once on the UI thread after the first
 frame is presented and a tab has a session (D8), and only when `startup` said a confirmation is
 pending. A copy lunepack did not install (a `cargo run`, an old portable zip, no
@@ -1363,6 +1502,122 @@ and the consumers of cwd, progress and marks, and the Windows GUI run (a Windows
 results are in `docs/luneui-rs-handoff.md`). Real IME typing is still verified only by hand (no
 input method was installed on the VM).
 
+## Tab control (ctl)
+
+`luneterm ctl` lets a program of the same user list, open, close, focus and group tabs of a running
+Luneterm. The contract is Protocol 1 (the orch side's) with its revision 3 amendment, `tab close
+<id> [--any-origin]` (task `tab-groups-and-control`); it is not restated here. The grammar and limits
+in code are `ctl/args.rs`, the exit codes `ctl::Code`. A request comes from any process of the user,
+so it is untrusted: lengths are checked before allocation, input over a limit is refused, never cut.
+
+**Client** (`ctl/client.rs`; `main` dispatches it before `update::startup()`, which reads the
+arguments itself). It opens no window, reads no settings, loads no fonts and never runs the updater.
+It parses the words (and checks that `--cwd` is a directory) before it connects, uses the instance
+`LUNETERM_INSTANCE` names, else the only reachable one (none or several: exit 4), and ends within
+2 s (exit 1). Success is the JSON line on stdout and exit 0; otherwise one `luneterm: <reason>` line
+on stderr, control characters removed. It is the app binary, a GUI-subsystem program in Windows
+release builds: callers that wait on the process (Git Bash, Python `subprocess`, checked on a Windows
+VM) get its output and exit code. PowerShell's `& luneterm.exe ctl` does not wait for a GUI program
+and shows nothing (probed); an interactive cmd prompt is expected to behave the same (not probed).
+
+**Endpoint** (`ctl/endpoint`). An instance is named by a token, 16 bytes from the OS (`/dev/urandom`,
+`BCryptGenRandom`) as 22 base64url characters, new for each run; it names, the OS authenticates.
+Without a token, a config directory or a passing check, control is off for that run: one stderr line
+(a reason, no path) and the app runs normally.
+- *Unix:* a stream socket at `<config dir>/run/<token>.sock`. The config directory must not be group
+  or other writable; `run` must be a real directory (not a link), owned by the effective user, with
+  no group or other bit; it is created 0700 when missing and never repaired. The socket is bound as
+  `.sock.tmp` and renamed, so a `.sock` name is a listening socket. A bind removes only the user's own
+  sockets that refuse a connect and temporary ones older than 60 s. The server asks the kernel for
+  the peer's uid (`getpeereid`, `SO_PEERCRED`) and drops another user's connection unanswered; the
+  client checks the directory and the socket's owner. A `sun_path` that does not fit is refused.
+- *Windows:* `\\.\pipe\luneterm-ctl-<token>`, owner = the user's own SID and a protected DACL with
+  one allow ACE for it, `FILE_FLAG_FIRST_PIPE_INSTANCE`, `PIPE_REJECT_REMOTE_CLIENTS`, one instance
+  reused (disconnected, never closed, so the name never lapses). The server refuses a client process
+  whose token user differs; the client opens at identification level and refuses a server whose token
+  user differs. Pipe names are the machine's, so a scan (no `LUNETERM_INSTANCE`) can list other
+  users' pipes: it tries each without waiting, then gives the busy ones turns of 250 ms each, for
+  the whole budget while none has answered and for one turn more once one has. A pipe still busy
+  after that turn may be a second Luneterm of this user (one serving another client holds its pipe
+  for up to 3.5 s: 1 s read, 1.5 s answer, 1 s write), so the scan fails closed: exit 4 "another
+  Luneterm may be running and is busy; set LUNETERM_INSTANCE", never a request to one of two. The
+  list stops at 4096 names; one with more is cut, and a cut list may hide one of this user's, so
+  the scan connects to none and exits 4 "too many candidate pipes; set LUNETERM_INSTANCE". What is
+  left to another user on a shared machine is availability: a busy pipe of theirs no longer holds
+  the run for 2 s nor hides a free pipe from the first try, but while it stays busy a scan exits 4
+  after that one turn, and more than 4096 pipes of theirs make every scan exit 4 at once, each
+  naming the remedy (a scan with no busy pipe and an uncut list still succeeds). Runs inside a
+  Luneterm tab carry `LUNETERM_INSTANCE` and never scan, so they are unaffected; it is the sure way
+  everywhere. Not tested: a non-elevated `ctl` against an
+  elevated Luneterm of the same user (if reading the other process's token is denied, the connection
+  is refused), and a pipe of another user on a real second account.
+- No network listener exists.
+
+**Wire** (`ctl/wire.rs`). Request: `LTC1`, a u32 little-endian word count, each word as u32 length and
+UTF-8; at most 300 words and 128 KiB for the whole frame. Reply: one status byte (the exit code; 4 is
+the client's alone), u32 length, UTF-8 body of at most 4 MiB (the JSON line or the reason). The server
+parses the words with the parser the client ran.
+
+**Threads and deadlines.** `ctl-listener` accepts one connection at a time (read 1 s, write 1 s) and
+hands the request to `ctl-handler` (1.5 s, else the reply is 1; while one is unanswered no other is
+handed over). The handler is a `Bridge`: it checks a `tab new`'s directory on its own thread (300 ms,
+no answer counts as no), posts `UserEvent::Control` to the UI thread and waits. The UI acts only if
+it takes the call within 1.2 s (`Call::take`), so a request given up on is never acted on later; for
+a taken one the bridge waits up to 1.45 s. One case remains: a request taken in time whose work (a
+slow spawn) outlasts the server's 1.5 s is carried out while its client is told 1.
+
+**Handler** (`ctl/handler.rs`, a pure function over `TabSet`, the setting and the clock). For a
+`tab new` the app starts the child before it answers; the other effects follow the answer.
+- With `tab_control` off, every request but `status` is refused (3) and nothing changes; the listener
+  runs either way, and the setting is read per request, so it needs no restart.
+- `tab new` (origin `control`): at the end, or after the group's last member; active, revealed and
+  raised only with `--focus`. At most 64 tabs of origin `control` are open at once (the next is 1).
+  No window yet, or a program not found or not started, is 1; a `--cwd` that is not an existing
+  directory and a refused batch file are 2.
+- `tab close`: unknown id 5, checked before origin; a `user` tab without `--any-origin` is 6;
+  otherwise it closes with no confirmation, and closing the last tab quits. Dialogs and menus about
+  only gone tabs close, as when a child exits.
+- `tab focus`: expands the group, activates, restores the window and asks the OS to focus it; on
+  macOS the app also unhides and activates itself (`raise.rs`: winit's calls do neither for a hidden
+  app), on this and `tab new --focus` only. Only the normal window and app calls: the OS may decline
+  to raise the window, and the call still exits 0. It does not close the Settings page.
+- `tab group`, `ungroup`: either origin.
+- `tab list`: every tab in order, collapsed members included; `title` and `cwd` have control
+  characters removed, and `cwd` is `null` unless absolute and at most 4096 bytes; `input_idle_ms`
+  counts keyboard, paste and IME input only.
+- *Input hold:* a `tab focus` or `tab new --focus` that changed the active tab drops keyboard, paste
+  and IME input for 400 ms, so a background program cannot redirect what the user is typing.
+
+**What `--any-origin` allows:** any program of the same user can close any tab, ending what runs in
+it with no question. Same-user code can already kill those processes; turning the setting off stops it.
+
+**N1 to N4** (fixed requirements):
+- *N1, no input.* The handler sees a tab only through `ControlTab` (origin, title, cwd, pid, last
+  input time), with no session; a test scans the module's code for session and content names. The one
+  data a caller hands a program is its argument vector at creation (above).
+- *N2, no content.* Replies carry only the fields above; nothing reads the grid, scrollback,
+  selection or clipboard.
+- *N3, local and same user.* The endpoint checks above; `UserEvent::Control` is made only by the
+  listener's bridge, so nothing a program prints (no escape sequence) can trigger an action.
+- *N4, the setting.* Terminal > Behavior, "Tab control from programs", on by default; off leaves
+  existing tabs and groups as they are.
+
+**Interpretations beyond Protocol 1** (as built; the numbering is the plan's CC list):
+- CC1: no separate console binary on Windows (see Client).
+- CC2: batch files are refused on Windows (see "Spawn", program tabs).
+- CC3: the login environment exists only for the sh family and fish; rc files run first.
+- CC4: "256 arguments after `--`" counts the program; "64 KiB" is the UTF-8 bytes of those words
+  summed. Every word is valid Unicode without NUL. Group names are at most 64 and `--title` at most
+  128 scalar values, with no control or bidi character, no U+2028 or U+2029 and no whitespace at an
+  end. Ids are plain decimals up to u64. A set `LUNETERM_INSTANCE` that is not 8 to 64 of
+  `A-Za-z0-9_-` is exit 4; an empty one counts as unset. Also exit 2: a `--cwd` with a control
+  character, over 4096 bytes or starting with two separators; an empty program word after `--`; an
+  option value that is exactly `--cwd`, `--group`, `--title`, `--focus` or `--`.
+- CC5: the 64-tab cap, the quit on closing the last tab and the best-effort raise.
+- CC6: the input hold.
+- CC7: a `ctl` shell tab is saved and restored as a user tab, a program tab is not saved;
+  `LUNETERM_BIN` is this run's executable.
+
 ## Extension points
 
 | Point | Mechanism | Example |
@@ -1420,9 +1675,13 @@ PTY threads (`lune-pty`):
 - **Drop** never blocks: an unfinished child is killed and everything is closed and reaped on a
   detached thread.
 
-The update worker (`luneterm-update`, "Updates" in "luneterm app") is the one thread outside the
-sessions: UI-side state is an atomic busy flag and a mutex-held cancel token, each held for a
-store or a clone only, and its results reach the UI as user events.
+Outside the sessions the app has threads for persistence, checks of directories and, per feature:
+the update worker (`luneterm-update`, "Updates" in "luneterm app"): UI-side state is an atomic busy
+flag and a mutex-held cancel token, each held for a store or a clone only, and its results reach the
+UI as user events. And the control listener (`ctl-listener` and `ctl-handler`, "Tab control (ctl)"):
+they share no tab state with the UI thread; a request crosses as `UserEvent::Control` with a one-shot
+reply channel and an atomic that settles whether the UI or the waiting thread owns it. Dropping the
+server at exit stops it without waiting for the handler.
 
 Efficiency mode (see "luneterm app") changes the UI thread's QoS class to utility on macOS while the
 window is in the background, and nothing else about threads there: on macOS the session threads are

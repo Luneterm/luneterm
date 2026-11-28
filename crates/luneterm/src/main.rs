@@ -13,6 +13,12 @@ fn main() -> std::process::ExitCode {
         eprintln!("luneterm: cannot restrict the DLL search path: {e}");
         return std::process::ExitCode::from(1);
     }
+    // `ctl` talks to a running Luneterm and exits. It comes before lunepack's start, which reads
+    // the arguments itself and may roll back and run another version.
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|first| first == "ctl") {
+        return luneterm::ctl::client::main(args);
+    }
     // Then lunepack's start (plan P7): a version that failed its health check is rolled back
     // here and the previous one runs instead. Local files only, never the network.
     let launch = luneterm::update::startup();

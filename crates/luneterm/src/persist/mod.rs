@@ -37,7 +37,7 @@ pub use json_write::{Json, WriteError};
 pub use settings_file::{SETTINGS_VERSION, SettingsDoc, parse_settings, render_settings};
 pub use workspace::{
     MAX_TABS, SaveGuard, TabInfo, TabState, WORKSPACE_VERSION, Workspace, parse_workspace,
-    render_workspace, restore_dirs, snapshot,
+    render_workspace, restore_dirs, restore_layout, snapshot,
 };
 
 pub const SETTINGS_FILE: &str = "settings.json";
@@ -423,6 +423,10 @@ pub struct Startup {
     pub settings: Settings,
     pub workspace: Option<Workspace>,
     pub notices: Vec<String>,
+    /// The view was decided by this start (D23) and no file says so yet: the app saves the
+    /// settings once, so a later start cannot decide differently. Never set for a settings file
+    /// that was rejected (it is left as it is).
+    pub save_view: bool,
 }
 
 use crate::settings::Settings;
@@ -452,9 +456,13 @@ impl Persist {
             workspace_blocked: false,
             workspace_armed: true,
         };
-        let settings = match store.load(SETTINGS_FILE, parse_settings) {
+        // Whether the directory holds a settings file, and whether it may be rewritten at start.
+        let mut settings_file = false;
+        let mut rejected = false;
+        let mut settings = match store.load(SETTINGS_FILE, parse_settings) {
             Loaded::Missing => Settings::default(),
             Loaded::Ok(doc) => {
+                settings_file = true;
                 persist.settings_unknown = doc.unknown;
                 doc.settings
             }
@@ -463,14 +471,18 @@ impl Persist {
                 save_blocked,
                 ..
             } => {
+                settings_file = true;
+                rejected = true;
                 persist.settings_blocked = save_blocked;
                 notices.push(rejected_notice("The settings file", backup.is_some()));
                 Settings::default()
             }
         };
+        let mut workspace_file = false;
         let workspace = match store.load(WORKSPACE_FILE, parse_workspace) {
             Loaded::Missing => None,
             Loaded::Ok(ws) => {
+                workspace_file = true;
                 persist.workspace_unknown.clone_from(&ws.unknown);
                 (!ws.tabs.is_empty()).then_some(ws)
             }
@@ -479,12 +491,23 @@ impl Persist {
                 save_blocked,
                 ..
             } => {
+                workspace_file = true;
                 persist.workspace_blocked = save_blocked;
                 persist.workspace_armed = false;
                 notices.push(rejected_notice("The saved tabs", backup.is_some()));
                 None
             }
         };
+        // D23: a settings file, a workspace file or the shell-integration scripts are what an
+        // earlier version left behind (a run with no settings change and no directory report
+        // leaves only the scripts), so a choice nobody saved yet keeps the top bar; with none of
+        // them this is a new install, which starts with the side pane. This runs before the
+        // first shell of this run, which is what writes the scripts.
+        let save_view = settings.side_pane.is_none() && !rejected;
+        if settings.side_pane.is_none() {
+            let scripts = store.path(crate::shell_integration::DIR_NAME).is_dir();
+            settings.side_pane = Some(!settings_file && !workspace_file && !scripts);
+        }
         persist.persister = match Persister::start(store) {
             Ok(p) => Some(p),
             Err(e) => {
@@ -498,6 +521,7 @@ impl Persist {
                 settings,
                 workspace,
                 notices,
+                save_view,
             },
         )
     }

@@ -13,7 +13,7 @@ mod threads;
 mod update;
 
 #[cfg(test)]
-mod fake_pty;
+pub(crate) mod fake_pty;
 #[cfg(test)]
 mod tests;
 
@@ -277,6 +277,12 @@ impl Session {
     /// While hidden, Updates come at most every 100 ms.
     pub fn set_visible(&self, visible: bool) {
         self.shared.set_visible(visible);
+    }
+
+    /// What [`Session::set_visible`] last said (a new session is visible).
+    #[cfg(test)]
+    pub(crate) fn is_visible(&self) -> bool {
+        threads::lock(&self.shared.inbox).visible
     }
 
     pub fn stats(&self) -> SessionStats {

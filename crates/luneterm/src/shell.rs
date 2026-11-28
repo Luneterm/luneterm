@@ -2,18 +2,22 @@
 //! scrollbar thumb, plus the borderless-window chrome Windows needs. Everything is drawn through
 //! the toolkit's `Ui`, one function for the window and for frame dumps.
 //!
-//! Layout, logical px: a 34 px title band, then the card inset 10 px from the left, right and
-//! bottom. The 32 px tab strip heads the card (the toolkit draws it and the outline around the
-//! card); the terminal's body sits under it, inset 10 px inside the card. The close-confirm and
+//! Layout, logical px, of the top bar view: a 34 px title band, then the card inset 10 px from
+//! the left, right and bottom. The 32 px tab strip heads the card (the toolkit draws it and the
+//! outline around the card); the terminal's body sits under it, inset 10 px inside the card. In
+//! the side pane view ([`crate::pane`]) the pane takes the left column, and the band and the card
+//! the rest: the band holds the title, centred on the card, and the card has no strip, so its
+//! outline and the running-command cue on it ([`card_cue`]) are drawn here. The close-confirm and
 //! rename dialogs are drawn here too, on the modal layer.
 
 use std::time::Duration;
 
 use lune_termview::{CellMetrics, GridLayout};
+use lune_ui::access::{Action, Node, Role, State};
 use lune_ui::chrome::CARD_RADIUS;
 use lune_ui::color::{Rgba, premul, with_alpha};
 use lune_ui::icon;
-use lune_ui::input::{CursorIcon, Event, PointerButton, WindowCommand};
+use lune_ui::input::{CursorIcon, Event, NamedKey, PointerButton, WindowCommand};
 use lune_ui::layout::Axis;
 use lune_ui::motion::MotionTier;
 use lune_ui::paint::Rect;
@@ -34,9 +38,12 @@ use lune_ui::widgets::toast::{
     ToastAction, ToastExtras, ToastKind, ToastResponse, ToastSpec, ToastStackOptions, Toasts,
 };
 use lune_ui::widgets::tone::Tone;
-use lune_ui::window::{ResizeEdge, edge_at};
+use lune_ui::window::{EDGE_BORDER, ResizeEdge, edge_at};
 
+use crate::groups::{self, GroupColor, NameProblem};
 use crate::notices::{self, Age, Inbox, NoticeKind};
+use crate::pane::{self, PaneEdge, PaneEvent, PaneList, PaneRects};
+use crate::settings::Theme as LookTheme;
 
 /// The title band's height.
 pub const TITLE_BAND: f32 = 34.0;
@@ -44,6 +51,13 @@ pub const TITLE_BAND: f32 = 34.0;
 pub const CARD_MARGIN: f32 = 10.0;
 /// The gap between the card and the terminal body.
 pub const BODY_PAD: f32 = 10.0;
+/// The title's line box stands this far under the band's top, which optically centres it.
+const TITLE_DROP: f32 = 2.0;
+/// The pane view's title keeps this far inside the card's edges.
+const TITLE_CARD_INSET: f32 = 12.0;
+/// How far from the window's right the title keeps clear of the drawn caption buttons: three
+/// 46 px buttons and a margin.
+const CAPTION_CLEAR: f32 = 3.0 * 46.0 + 8.0;
 /// The scrollbar thumb's opacity (accent colour).
 pub const THUMB_ALPHA: f32 = 0.55;
 /// The slot of the active tab's terminal in the frame's custom-draw list; grids fading out in a
@@ -95,31 +109,44 @@ pub struct Chrome {
     /// A double press on the band is the app's to answer (the OS never sees it): maximize on a
     /// borderless window, the System Settings choice on macOS ([`crate::double_click`]).
     pub band_double_click: bool,
+    /// The OS draws its window buttons over the band's left end (macOS): the app's own title-area
+    /// buttons keep clear of them and share their centre line.
+    pub native_lights: bool,
 }
 
-#[cfg(target_os = "windows")]
-pub const HOST: Chrome = Chrome {
+/// Windows: a borderless window with drawn caption buttons.
+pub const WINDOWS_CHROME: Chrome = Chrome {
     drawn_caption: true,
-    // Three 46 px buttons and a margin.
-    title_inset: 3.0 * 46.0 + 8.0,
+    title_inset: CAPTION_CLEAR,
     band_double_click: true,
+    native_lights: false,
 };
 
 /// macOS keeps its traffic lights (the band is drawn under them).
-#[cfg(target_os = "macos")]
-pub const HOST: Chrome = Chrome {
+pub const MACOS_CHROME: Chrome = Chrome {
     drawn_caption: false,
     title_inset: 90.0,
     band_double_click: true,
+    native_lights: true,
 };
 
 /// Linux keeps the native decorations.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub const HOST: Chrome = Chrome {
+pub const LINUX_CHROME: Chrome = Chrome {
     drawn_caption: false,
     title_inset: 90.0,
     band_double_click: false,
+    native_lights: false,
 };
+
+/// The chrome of this OS.
+#[cfg(target_os = "windows")]
+pub const HOST: Chrome = WINDOWS_CHROME;
+/// The chrome of this OS.
+#[cfg(target_os = "macos")]
+pub const HOST: Chrome = MACOS_CHROME;
+/// The chrome of this OS.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const HOST: Chrome = LINUX_CHROME;
 
 /// Whether this OS gets an OS glass material at all (Linux has none: an opaque theme instead).
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -127,30 +154,111 @@ pub const HOST_GLASS: bool = true;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub const HOST_GLASS: bool = false;
 
+/// Which of the two views a frame draws (D20): the top bar (today's band and tab strip) or the
+/// side pane.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum View {
+    #[default]
+    Bar,
+    /// The pane is `width` logical px wide. With `drawn_caption` the app draws the caption
+    /// buttons, over the title band's right end: the title keeps clear of them.
+    Pane { width: f32, drawn_caption: bool },
+}
+
 /// The rects of a window of a given size, logical px.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
     pub window: Rect,
+    /// The title band. In the pane view it is over the terminal column, right of the pane. A
+    /// press there drags the window.
     pub band: Rect,
+    /// The pane view's title: the rect it is centred in and clipped to, its middle the card's
+    /// (D27'). `None` in the bar view, which centres its title on the window.
+    pub title: Option<Rect>,
     pub card: Rect,
-    /// The tab strip, at the card's top (its right end stays free, see [`STRIP_RESERVE`]).
+    /// The tab strip, at the card's top (its right end stays free, see [`STRIP_RESERVE`]); empty
+    /// in the pane view.
     pub strip: Rect,
-    /// The `⋯` button in the strip's reserved right end.
+    /// The `⋯` button: in the strip's reserved right end, or at the pane's footer.
     pub overflow: Rect,
-    /// The inbox button, left of `⋯` ([`INBOX_GAP`] between them); drawn only while the inbox
-    /// has entries, and then the strip is narrower by its width plus the gap.
+    /// The inbox button; drawn only while the inbox has entries. It is left of `⋯`
+    /// ([`INBOX_GAP`] between them), in the pane view in the footer; in the bar view the strip is
+    /// narrower by its width plus the gap.
     pub inbox: Rect,
     pub body: Rect,
+    /// The side pane's rects; `None` in the bar view.
+    pub pane: Option<PaneRects>,
 }
 
 impl Layout {
-    /// The layout of the window `window` (its origin is the window's) with no inbox button.
+    /// The bar view's layout of the window `window` (its origin is the window's) with no inbox
+    /// button.
     pub fn new(window: Rect) -> Layout {
         Layout::with_inbox(window, false)
     }
 
-    /// The layout with the inbox button shown or not. Only the strip changes: the button sits in
-    /// the strip's right end and the body is the same, so the terminal never resizes for it.
+    /// The layout of `window` in `view`; `inbox_shown` is whether the inbox button is drawn.
+    pub fn for_view(window: Rect, inbox_shown: bool, view: View) -> Layout {
+        match view {
+            View::Bar => Layout::with_inbox(window, inbox_shown),
+            View::Pane {
+                width,
+                drawn_caption,
+            } => Layout::with_pane(window, width, drawn_caption),
+        }
+    }
+
+    /// The pane view's layout (D26', D27'): the pane at the left over the window's whole height;
+    /// from its right edge the title band, the card under it, no strip.
+    fn with_pane(window: Rect, width: f32, drawn_caption: bool) -> Layout {
+        let pane = PaneRects::new(window, width);
+        let left = pane.rect.right();
+        let card = Rect::new(
+            left,
+            window.y + TITLE_BAND,
+            (window.right() - left - CARD_MARGIN).max(0.0),
+            (window.h - TITLE_BAND - CARD_MARGIN).max(0.0),
+        );
+        // The title's room reaches the same distance either side of the card's middle.
+        let middle = card.x + card.w / 2.0;
+        let mut half = card.w / 2.0 - TITLE_CARD_INSET;
+        if drawn_caption {
+            half = half.min(window.right() - CAPTION_CLEAR - middle);
+        }
+        let half = half.max(0.0);
+        let title = Rect::new(
+            middle - half,
+            window.y,
+            2.0 * half,
+            TITLE_BAND.min(window.h),
+        );
+        let body = Rect::new(
+            card.x + BODY_PAD,
+            card.y + BODY_PAD,
+            (card.w - 2.0 * BODY_PAD).max(0.0),
+            (card.h - 2.0 * BODY_PAD).max(0.0),
+        );
+        Layout {
+            window,
+            band: Rect::new(
+                left,
+                window.y,
+                (window.right() - left).max(0.0),
+                TITLE_BAND.min(window.h),
+            ),
+            title: Some(title),
+            card,
+            strip: Rect::new(card.x, card.y, 0.0, 0.0),
+            overflow: pane.menu,
+            inbox: pane.bell,
+            body,
+            pane: Some(pane),
+        }
+    }
+
+    /// The bar view's layout with the inbox button shown or not. Only the strip changes: the
+    /// button sits in the strip's right end and the body is the same, so the terminal never
+    /// resizes for it.
     pub fn with_inbox(window: Rect, inbox_shown: bool) -> Layout {
         let card = Rect::new(
             window.x + CARD_MARGIN,
@@ -186,6 +294,7 @@ impl Layout {
         Layout {
             window,
             band: Rect::new(window.x, window.y, window.w, TITLE_BAND.min(window.h)),
+            title: None,
             card,
             strip,
             overflow,
@@ -196,6 +305,7 @@ impl Layout {
                 OVERFLOW_SIZE,
             ),
             body,
+            pane: None,
         }
     }
 }
@@ -315,18 +425,122 @@ pub struct StripTab<'a> {
     pub attention: bool,
 }
 
-/// The dialog the frame shows over everything, if any. The text is the app's state: the dialog
-/// edits it in place.
-#[derive(Debug)]
+/// The title of the question before a running session is closed (Lunegit's copy).
+pub const CLOSE_SESSION_TITLE: &str = "Close Terminal Session";
+
+/// The dialog the frame shows over everything, if any. The text and the colour are the app's
+/// state: the dialog edits them in place.
 pub enum Modal<'a> {
-    /// Close-confirm: the message, and the "Don't ask again" box.
+    /// A close question: its title and message, and the "Don't ask again" box when the answer may
+    /// be remembered.
     Confirm {
+        title: &'a str,
         message: &'a str,
-        dont_ask: &'a mut bool,
+        dont_ask: Option<&'a mut bool>,
     },
     /// Rename Tab: the field's text. `focus` asks to put the caret in the field (once, a frame
     /// after the dialog opened: the open focus goes to the confirm button).
     Rename { text: &'a mut String, focus: bool },
+    /// New Group (`editing` false) or Edit Group: the name's field and the nine colours.
+    GroupEditor {
+        editing: bool,
+        text: &'a mut String,
+        color: &'a mut GroupColor,
+        /// The names of the other open groups: the field's name may be none of them.
+        taken: &'a [String],
+        /// The look the colours are drawn for.
+        look: LookTheme,
+        focus: bool,
+    },
+}
+
+impl std::fmt::Debug for Modal<'_> {
+    /// The variant only: its texts hold tab and group names, which a program can choose.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Modal::Confirm { .. } => "Confirm",
+            Modal::Rename { .. } => "Rename",
+            Modal::GroupEditor { .. } => "GroupEditor",
+        })
+    }
+}
+
+/// A colour swatch of the group editor: its diameter, the gap between two, and how far the ring
+/// of the chosen one reaches outside it (a 2 px gap, then the 2 px ring).
+pub const SWATCH: f32 = 24.0;
+pub const SWATCH_GAP: f32 = 14.0;
+pub const SWATCH_RING: f32 = 4.0;
+/// The width of the chosen swatch's ring.
+const SWATCH_RING_WIDTH: f32 = 2.0;
+/// The editor's parts, below the body's top: the hint line under the field (its room is always
+/// kept), the colour label, and the top of the swatches.
+const EDITOR_HINT_Y: f32 = 74.0;
+const EDITOR_COLOR_LABEL_Y: f32 = 100.0;
+const EDITOR_SWATCH_Y: f32 = 122.0;
+/// The editor's body height: its footer gap under the swatches' rings is the rename dialog's
+/// under its field.
+const EDITOR_EXTRA_H: f32 = 142.0;
+
+/// The circle of the `i`-th swatch in a row whose left end and top are `x` and `y`.
+pub fn swatch_rect(i: usize, x: f32, y: f32) -> Rect {
+    Rect::new(x + i as f32 * (SWATCH + SWATCH_GAP), y, SWATCH, SWATCH)
+}
+
+/// The words under the editor's field for `problem`; `None` when there is nothing to say.
+fn name_hint(problem: Option<NameProblem>) -> Option<&'static str> {
+    match problem? {
+        NameProblem::Empty => None,
+        NameProblem::Taken => Some("group.editor.taken"),
+        NameProblem::TooLong => Some("group.editor.tooLong"),
+        NameProblem::EdgeSpace => Some("group.editor.edgeSpace"),
+        NameProblem::Control => Some("group.editor.control"),
+    }
+}
+
+/// The string key of a colour's accessible name.
+fn color_name_key(color: GroupColor) -> String {
+    format!("group.color.{}", color.as_str())
+}
+
+/// Every string key the group dialogs ask for.
+pub fn group_required_keys() -> Vec<String> {
+    [
+        "group.defaultName",
+        "group.editor.newTitle",
+        "group.editor.editTitle",
+        "group.editor.message",
+        "group.editor.nameLabel",
+        "group.editor.name",
+        "group.editor.colorLabel",
+        "group.editor.create",
+        "group.editor.save",
+        "group.editor.taken",
+        "group.editor.tooLong",
+        "group.editor.edgeSpace",
+        "group.editor.control",
+        "group.close.title",
+        "group.close.confirm",
+        "group.close.message",
+        "group.close.messageOne",
+    ]
+    .iter()
+    .map(|k| (*k).to_owned())
+    .chain(GroupColor::ALL.into_iter().map(color_name_key))
+    .collect()
+}
+
+/// The question before the group `name` and its `tabs` tabs are closed.
+pub fn close_group_message(
+    strings: &lune_ui::strings::StringTable,
+    name: &str,
+    tabs: usize,
+) -> String {
+    use lune_ui::strings::DisplayFormat;
+    if tabs == 1 {
+        strings.tr_fmt("group.close.messageOne", &[&name], &DisplayFormat)
+    } else {
+        strings.tr_fmt("group.close.message", &[&name, &tabs], &DisplayFormat)
+    }
 }
 
 /// A notification toast's `Go to tab` button: the number its action reports.
@@ -474,22 +688,32 @@ pub struct ShellView<'a> {
     /// One terminal line in logical px.
     pub cell_h: f32,
     pub chrome: Chrome,
+    /// The view the frame is laid out in.
+    pub view: View,
+    /// The top bar draws its show-pane button ([`crate::pane::offers_show_button`]).
+    pub show_pane_button: bool,
+    /// The accessible name of the button the view has: show the side pane, or hide it.
+    pub pane_button_name: &'a str,
     pub tabs: &'a [StripTab<'a>],
     pub active_tab: Option<u64>,
+    /// The side pane's tab list, drawn in the pane view; `None` draws no list.
+    pub pane_list: Option<PaneList<'a>>,
     pub modal: Option<Modal<'a>>,
     /// The app's toasts, drawn last, over the dialog.
     pub toasts: Option<&'a mut Toasts>,
     /// The settings page covers the card: no terminal, no thumb, no strip and no `⋯`.
     pub page_open: bool,
-    /// The cue the active tab's outline runs, `None` when nothing runs (plan M10 step 6: the
-    /// settings decide the cue, the tab decides whether it is busy).
+    /// The cue the outline runs (the strip's round the active tab and the card, or the pane
+    /// view's card's), `None` when nothing runs (plan M10 step 6: the settings decide the cue,
+    /// the tab decides whether it is busy).
     pub busy: Option<BusyCue>,
     /// The outline's colour while it runs: the active tab's progress tone (error, warning), else
     /// neutral.
     pub busy_tone: Tone,
     /// The accessible name of the `⋯` button.
     pub overflow_name: &'a str,
-    /// The inbox button, left of `⋯`: `Some` while the inbox has entries and no page is open.
+    /// The inbox button: `Some` while the inbox has entries. The bar view draws it left of `⋯`
+    /// and only while no page is open; the pane view always draws it, in the footer.
     pub inbox_button: Option<InboxButton<'a>>,
     /// The wash over the card that makes the tab header: the look's own (`render::header_tint`).
     pub header_tint: [u8; 4],
@@ -569,6 +793,12 @@ pub struct ShellOut {
     pub tab_context: Option<TabContext>,
     /// What the toasts reported: the button pressed (the toast leaves with it).
     pub toast: ToastResponse,
+    /// The show or hide button of the side pane was pressed.
+    pub pane_toggle: bool,
+    /// What the pane's edge zone saw; `None` in the bar view.
+    pub pane_edge: Option<PaneEdge>,
+    /// What the user asked of the pane's list this frame; a tab's menu is `tab_context`.
+    pub pane_events: Vec<PaneEvent>,
 }
 
 /// A tab's request for its context menu: the app opens the menu (the strip owns none).
@@ -605,6 +835,26 @@ pub fn edge_press(events: &[Event], size: (f32, f32)) -> Option<ResizeEdge> {
         } => edge_at(*pos, size.0, size.1),
         _ => None,
     })
+}
+
+/// The resize zone of a borderless window (D40): the four strips [`edge_at`] tests, as regions
+/// that take no click and block the widgets under them, so a press there only starts the resize.
+/// Register it after every other base-layer widget of the frame. Without it the press also presses
+/// the widget under it, and winit's Windows backend ends the OS resize loop with a synthetic release
+/// at the last known pointer position, which then clicks it: a corner drag closed the app (Q22).
+fn resize_zone(ui: &mut Ui<'_>, win: Rect) {
+    let b = EDGE_BORDER;
+    let strips = [
+        ("resize-west", Rect::new(win.x, win.y, b, win.h)),
+        ("resize-east", Rect::new(win.right() - b, win.y, b, win.h)),
+        ("resize-north", Rect::new(win.x, win.y, win.w, b)),
+        ("resize-south", Rect::new(win.x, win.bottom() - b, win.w, b)),
+    ];
+    ui.painter().on(LayerId::Base);
+    for (name, rect) in strips {
+        let id = ui.id(name);
+        ui.interact(id, rect, Sense::HOVER);
+    }
 }
 
 /// The window command of a caption button.
@@ -652,16 +902,124 @@ fn band_title(label: Option<&str>, theme: &lune_ui::theme::Theme) -> Spec {
     }
 }
 
+/// The treatment of the running-command cue on the pane view's card (D37) in this frame; `None`
+/// for a still outline, for the settings page (it covers the card) and in the bar view, whose
+/// strip draws its own.
+fn pane_cue(
+    layout: &Layout,
+    page_open: bool,
+    busy: Option<BusyCue>,
+    tier: MotionTier,
+) -> Option<BusyCue> {
+    if layout.pane.is_none() || page_open {
+        return None;
+    }
+    busy.and_then(|cue| tab_strip::busy_treatment(cue, tier))
+}
+
+/// The running-command cue on a card with no strip. `cue_color` and `paint_busy` are copied from
+/// luneui-rs 8177b9d `crates/lune-ui-core/src/widgets/tab_strip.rs:232-239` and `:253-281`,
+/// private there: drop the copy if luneui makes them public. The loop is the strip's
+/// ([`chrome::outline`]) with no tab's notch.
+mod card_cue {
+    use lune_ui::chrome;
+    use lune_ui::color::{Rgba, with_alpha};
+    use lune_ui::motion::Time;
+    use lune_ui::paint::{Painter, Rect, StrokeStyle};
+    use lune_ui::ui::WidgetId;
+    use lune_ui::widgets::progress::{breath_opacity, travel_phase};
+    use lune_ui::widgets::tab_strip::{BusyCue, COMET_FRACTION, SWEEP_PASSES};
+    use lune_ui::widgets::tone::Tone;
+
+    /// The closed loop round `card`, half a stroke inside its edges: a seam at the card's
+    /// bottom leaves a plain rounded rect.
+    pub(super) fn outline(card: Rect) -> Vec<[f32; 2]> {
+        chrome::outline(card.w, card.h, card.h, None)
+            .iter()
+            .map(|q| [q[0] + card.x, q[1] + card.y])
+            .collect()
+    }
+
+    /// Draws `treatment` in `tone` over the outline of `card` at time `t`.
+    pub(super) fn paint(
+        p: &mut Painter<'_, WidgetId>,
+        card: Rect,
+        treatment: BusyCue,
+        tone: Tone,
+        t: Time,
+    ) {
+        if card.w <= 0.0 || card.h <= 0.0 {
+            return;
+        }
+        let pts = outline(card);
+        let center = [card.x + card.w / 2.0, card.y + card.h / 2.0];
+        let color = cue_color(p, tone);
+        paint_busy(p, &pts, center, treatment, color, t);
+    }
+
+    /// `tone`'s colour for the busy cue: `Neutral` is `accent`, `Warn` and `Err` are the light
+    /// status brushes the source names for the cue (D132).
+    fn cue_color(p: &Painter<'_, WidgetId>, tone: Tone) -> Rgba {
+        match tone {
+            Tone::Neutral => p.theme.accent,
+            Tone::Warn => p.theme.status_warning_light,
+            Tone::Err => p.theme.status_error_light,
+            _ => tone.color(&p.theme),
+        }
+    }
+
+    /// Draws `treatment` over the loop `pts` around `center` at time `t`.
+    fn paint_busy(
+        p: &mut Painter<'_, WidgetId>,
+        pts: &[[f32; 2]],
+        center: [f32; 2],
+        treatment: BusyCue,
+        color: Rgba,
+        t: Time,
+    ) {
+        match treatment {
+            BusyCue::Sweep => {
+                for (width, opacity) in SWEEP_PASSES {
+                    p.stroke_sweep(
+                        pts,
+                        with_alpha(color, opacity),
+                        width,
+                        travel_phase(t),
+                        center,
+                    );
+                }
+            }
+            BusyCue::Comet => {
+                p.stroke_comet(pts, color, chrome::STROKE, COMET_FRACTION, travel_phase(t));
+            }
+            BusyCue::Breath => {
+                let style =
+                    StrokeStyle::solid(with_alpha(color, breath_opacity(t)), chrome::STROKE);
+                p.stroke(pts, true, style);
+            }
+        }
+    }
+}
+
 /// Draws the shell into `ui` and returns the terminal body, the chrome's window commands, the
 /// tab events and the dialog's answer.
 ///
 /// The glass layers go on the fixed base layer (panel over the window, card on top); the
-/// terminal's custom slot sits in the body, below the thumb. The strip heads the card and its
-/// outline wraps it; the dialogs come last, on the modal layer.
+/// terminal's custom slot sits in the body, below the thumb. In the bar view the strip heads the
+/// card and its outline wraps it; in the pane view the pane stands left of the card and its footer
+/// holds the New Tab, inbox and `⋯` buttons. The dialogs come last, on the modal layer.
 pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
     let theme = *ui.theme();
     let win = ui.painter().window;
-    let layout = Layout::with_inbox(win, view.inbox_button.is_some() && !view.page_open);
+    // The bar hides its strip buttons under a page; the pane's footer stays (D31).
+    let inbox_shown = view.inbox_button.is_some() && (!view.page_open || view.view != View::Bar);
+    let layout = Layout::for_view(win, inbox_shown, view.view);
+    let show_pane_button = layout.pane.is_none() && view.show_pane_button;
+    let cue = pane_cue(&layout, view.page_open, view.busy, ui.tier());
+    if cue.is_some() {
+        ui.request_busy_frame(layout.card);
+    }
+    let now = ui.time();
     {
         let p = ui.painter();
         p.on(LayerId::Base);
@@ -670,20 +1028,50 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         p.acrylic(win, 0.0, panel, [0.0; 4], true);
         p.acrylic(layout.card, CARD_RADIUS, card, panel, true);
 
-        // The title, centred in the band and kept clear of the window buttons.
-        let side = view.chrome.title_inset;
+        if let Some(pane) = &layout.pane {
+            pane::paint(p, pane, &theme);
+        }
+        // The title, centred in the band and kept clear of the window buttons: on the window in
+        // the bar view, on the card in the pane view.
+        let (clip, centre) = match layout.title {
+            Some(title) => (title, title),
+            None => {
+                let mut side = view.chrome.title_inset;
+                if show_pane_button {
+                    side = side.max(pane::show_button(win, view.chrome).right() + 4.0);
+                }
+                let clip = Rect::new(side, 0.0, (win.w - 2.0 * side).max(0.0), TITLE_BAND);
+                (clip, Rect::new(0.0, 0.0, win.w, TITLE_BAND))
+            }
+        };
         let spec = band_title(view.title, &theme);
-        p.set_clip(Some(Rect::new(
-            side,
-            0.0,
-            (win.w - 2.0 * side).max(0.0),
-            TITLE_BAND,
-        )));
+        p.set_clip(Some(clip));
         // Optically centred: the line box's centre is 2 pt above the cap block's (room for
-        // descenders), so the box moves down 2 pt. Measured on a 2x screenshot: caps 9 pt from the
-        // band's top and 13.5 pt from the card before; with descenders the lower gap filled in.
-        p.text_centered(&spec, Rect::new(0.0, 2.0, win.w, TITLE_BAND - 2.0));
+        // descenders), so the box moves down 2 pt. Measured on a 2x screenshot: caps 9 pt from
+        // the band's top and 13.5 pt from the card before; with descenders the lower gap filled
+        // in.
+        let line = Rect::new(
+            centre.x,
+            centre.y + TITLE_DROP,
+            centre.w,
+            TITLE_BAND - TITLE_DROP,
+        );
+        p.text_centered(&spec, line);
         p.set_clip(None);
+
+        // With no strip to draw it, the card's outline is the app's: the strip's colours (a
+        // dialog or an unfocused window takes the subtle one). The page draws its own.
+        if layout.pane.is_some() && !view.page_open {
+            let color = if view.focused && view.modal.is_none() {
+                theme.border
+            } else {
+                theme.border_subtle
+            };
+            p.ring(layout.card, CARD_RADIUS, 1.0, color, false);
+        }
+        if let Some(treatment) = cue {
+            card_cue::paint(p, layout.card, treatment, view.busy_tone, now);
+        }
 
         if !view.page_open {
             for slot in 1..=view.fading_slots {
@@ -701,8 +1089,12 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
     }
 
     let mut commands = Vec::new();
-    let pressed_edge = if view.chrome.drawn_caption && !view.maximized {
+    let mut window_edge = false;
+    // A borderless window that is not maximized is resized by its edges.
+    let resizable = view.chrome.drawn_caption && !view.maximized;
+    let pressed_edge = if resizable {
         if let Some(edge) = ui.pointer_pos().and_then(|p| edge_at(p, win.w, win.h)) {
+            window_edge = true;
             ui.set_cursor(resize_cursor(edge));
         }
         edge_press(&ui.input().events, (win.w, win.h))
@@ -713,17 +1105,24 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         commands.push(WindowCommand::DragResize(edge));
     }
 
-    // The band first, so the caption buttons registered after it sit on top.
-    let band_id = ui.id("title-band");
-    let band = ui.interact(band_id, layout.band, Sense::CLICK);
-    if band.press_started && pressed_edge.is_none() {
-        // A borderless window maximizes; a native one (macOS) does what the OS setting asks.
-        let double: fn() -> Option<WindowCommand> = if view.chrome.drawn_caption {
-            || Some(WindowCommand::ToggleMaximize)
-        } else {
-            crate::double_click::system_action
-        };
-        commands.extend(band_command(band.press_count, view.chrome, double));
+    // The drag regions first, so the buttons registered after them sit on top: the band, and in
+    // the pane view the pane's header.
+    let mut drag_regions = vec![("title-band", layout.band)];
+    if let Some(pane) = &layout.pane {
+        drag_regions.push(("pane-header", pane.header));
+    }
+    for (name, rect) in drag_regions {
+        let id = ui.id(name);
+        let region = ui.interact(id, rect, Sense::CLICK);
+        if region.press_started && pressed_edge.is_none() {
+            // A borderless window maximizes; a native one (macOS) does what the OS setting asks.
+            let double: fn() -> Option<WindowCommand> = if view.chrome.drawn_caption {
+                || Some(WindowCommand::ToggleMaximize)
+            } else {
+                crate::double_click::system_action
+            };
+            commands.extend(band_command(region.press_count, view.chrome, double));
+        }
     }
     if view.chrome.drawn_caption {
         let opts = CaptionOptions {
@@ -736,20 +1135,46 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         }
     }
 
-    // The header of the card drags the window where no tab or button is: its region goes in
-    // before the strip's, so what the strip registers sits on top of it.
-    let header = Rect::new(
-        layout.card.x,
-        layout.card.y,
-        layout.card.w,
-        STRIP_HEIGHT.min(layout.card.h),
-    );
-    let header_id = ui.id("strip-drag");
     let mut tab_events = Vec::new();
     let mut overflow = None;
     let mut inbox_clicked = false;
     let mut tab_context = None;
-    if !view.page_open {
+    let mut pane_toggle = false;
+    let mut pane_edge = None;
+    let mut pane_events = Vec::new();
+    if let Some(pane) = &layout.pane {
+        let out = pane::controls(
+            ui,
+            pane,
+            view.chrome,
+            view.pane_button_name,
+            window_edge,
+            pressed_edge.is_some(),
+        );
+        pane_toggle = out.toggle;
+        pane_edge = out.edge;
+        (overflow, inbox_clicked) =
+            header_buttons(ui, &layout, view.overflow_name, view.inbox_button);
+        if let Some(list) = &view.pane_list {
+            let out = pane::list(ui, pane, list);
+            pane_events = out.events;
+            tab_context = out.tab_context;
+        }
+        // After the list, which says whether a drag is under way.
+        let dragging = pane_events.contains(&PaneEvent::Dragging);
+        if pane::new_tab_button(ui, pane, view.inbox_button.is_some(), dragging) {
+            pane_events.push(PaneEvent::NewTab);
+        }
+    } else if !view.page_open {
+        // The header of the card drags the window where no tab or button is: its region goes in
+        // before the strip's, so what the strip registers sits on top of it.
+        let header = Rect::new(
+            layout.card.x,
+            layout.card.y,
+            layout.card.w,
+            STRIP_HEIGHT.min(layout.card.h),
+        );
+        let header_id = ui.id("strip-drag");
         // Since the luneui-rs pin 32d1904 (D290) the strip's viewport is as wide as its tabs and the
         // `+` follows the last tab, so the empty space is no region of the strip and a press there
         // reaches this one: no app-side detection of an "empty press" is needed. Each press drags
@@ -796,51 +1221,23 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
                 .filter(|q| rect.contains(*q))
                 .unwrap_or((rect.x, rect.bottom())),
         });
-
-        let more = IconButton {
-            glyph: icon::ELLIPSIS,
+        (overflow, inbox_clicked) =
+            header_buttons(ui, &layout, view.overflow_name, view.inbox_button);
+    }
+    if show_pane_button {
+        let button = IconButton {
+            glyph: pane::TOGGLE_GLYPH,
             glyph_size: 16.0,
             color: None,
             radius: theme.item_radius,
-            name: view.overflow_name,
+            name: view.pane_button_name,
         };
-        if ui.icon_button("overflow", layout.overflow, &more).clicked {
-            overflow = Some(layout.overflow);
-        }
-        if let Some(button) = view.inbox_button {
-            // Unread: the attention colour; all read: the `⋯` button's own (`color: None`).
-            let color = button.unread.then(|| theme.attention());
-            // The swing replaces the button's own glyph for its 1 s; the fill, hover, press, open
-            // state, focus ring and name stay the button's, and its rect never moves (D19).
-            let swing = button
-                .ring
-                .filter(|_| button.unread && ui.tier() == MotionTier::Full)
-                .and_then(|start| ring_angle(ui.time().saturating_sub(start)));
-            let bell = IconButton {
-                glyph: if swing.is_some() { "" } else { INBOX_GLYPH },
-                glyph_size: 16.0,
-                color,
-                radius: theme.item_radius,
-                name: button.name,
-            };
-            let extras = IconButtonExtras::new().with_open(button.open);
-            inbox_clicked = ui
-                .icon_button_with("inbox-button", layout.inbox, &bell, &extras)
-                .clicked;
-            if let (Some(theta), Some(color)) = (swing, color) {
-                let r = layout.inbox;
-                let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-                // Turned about the bell's top: the centre swings round the pivot above it.
-                let centre = (
-                    cx - RING_PIVOT * theta.sin(),
-                    cy - RING_PIVOT + RING_PIVOT * theta.cos(),
-                );
-                ui.painter()
-                    .text_rotated(&icon::glyph(INBOX_GLYPH, 16.0, color), centre, theta);
-                let next = ui.time() + Duration::from_millis(1);
-                ui.request_repaint_at(next);
-            }
-        }
+        pane_toggle = ui
+            .icon_button("pane-show", pane::show_button(win, view.chrome), &button)
+            .clicked;
+    }
+    if resizable {
+        resize_zone(ui, win);
     }
 
     let (modal, ime_area) = match view.modal {
@@ -871,7 +1268,68 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         inbox_clicked,
         tab_context,
         toast,
+        pane_toggle,
+        pane_edge,
+        pane_events,
     }
+}
+
+/// The `⋯` button and, with entries, the inbox button at the places the layout gives them:
+/// whether `⋯` was pressed (its rect) and whether the inbox button was.
+fn header_buttons(
+    ui: &mut Ui<'_>,
+    layout: &Layout,
+    overflow_name: &str,
+    inbox: Option<InboxButton<'_>>,
+) -> (Option<Rect>, bool) {
+    let theme = *ui.theme();
+    let more = IconButton {
+        glyph: icon::ELLIPSIS,
+        glyph_size: 16.0,
+        color: None,
+        radius: theme.item_radius,
+        name: overflow_name,
+    };
+    let overflow = ui
+        .icon_button("overflow", layout.overflow, &more)
+        .clicked
+        .then_some(layout.overflow);
+    let Some(button) = inbox else {
+        return (overflow, false);
+    };
+    // Unread: the attention colour; all read: the `⋯` button's own (`color: None`).
+    let color = button.unread.then(|| theme.attention());
+    // The swing replaces the button's own glyph for its 1 s; the fill, hover, press, open
+    // state, focus ring and name stay the button's, and its rect never moves (D19).
+    let swing = button
+        .ring
+        .filter(|_| button.unread && ui.tier() == MotionTier::Full)
+        .and_then(|start| ring_angle(ui.time().saturating_sub(start)));
+    let bell = IconButton {
+        glyph: if swing.is_some() { "" } else { INBOX_GLYPH },
+        glyph_size: 16.0,
+        color,
+        radius: theme.item_radius,
+        name: button.name,
+    };
+    let extras = IconButtonExtras::new().with_open(button.open);
+    let clicked = ui
+        .icon_button_with("inbox-button", layout.inbox, &bell, &extras)
+        .clicked;
+    if let (Some(theta), Some(color)) = (swing, color) {
+        let r = layout.inbox;
+        let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        // Turned about the bell's top: the centre swings round the pivot above it.
+        let centre = (
+            cx - RING_PIVOT * theta.sin(),
+            cy - RING_PIVOT + RING_PIVOT * theta.cos(),
+        );
+        ui.painter()
+            .text_rotated(&icon::glyph(INBOX_GLYPH, 16.0, color), centre, theta);
+        let next = ui.time() + Duration::from_millis(1);
+        ui.request_repaint_at(next);
+    }
+    (overflow, clicked)
 }
 
 /// What the inbox list shows: the words and the rows (D16 maps entries onto them).
@@ -900,18 +1358,21 @@ pub struct InboxOut {
     pub clear_all: bool,
 }
 
-/// The popover of the inbox: below the button, right edges aligned, [`INBOX_GAP`] between,
-/// [`INBOX_WIDTH`] wide, as tall as its content up to the smaller of [`INBOX_MAX_HEIGHT`] and the
-/// body's height, then it scrolls. `layout` is the frame's. Text is drawn as plain text by the
-/// toolkit's rows: never markup, never a link.
+/// The popover of the inbox: below the button, right edges aligned, in the bar view; above it,
+/// left edges aligned, from the pane's footer (D28). [`INBOX_GAP`] between, [`INBOX_WIDTH`] wide,
+/// as tall as its content up to the smaller of [`INBOX_MAX_HEIGHT`] and the body's height, then it
+/// scrolls. `layout` is the frame's. Text is drawn as plain text by the toolkit's rows: never
+/// markup, never a link.
 pub fn draw_inbox(ui: &mut Ui<'_>, layout: &Layout, list: &InboxList<'_>) -> InboxOut {
     let most = INBOX_MAX_HEIGHT.min(layout.body.h).max(HEADER_HEIGHT);
     let list_h = message_list::height(ui.painter(), list.rows, INBOX_WIDTH, most - HEADER_HEIGHT);
     let size = (INBOX_WIDTH, HEADER_HEIGHT + list_h);
     let mut options = PopoverOptions::new(layout.inbox, size);
     options.anchor_id = Some(ui.id("inbox-button"));
-    options.side = Side::Bottom;
-    options.align = PlaceAlign::End;
+    (options.side, options.align) = match layout.pane {
+        Some(_) => (Side::Top, PlaceAlign::Start),
+        None => (Side::Bottom, PlaceAlign::End),
+    };
     options.gap = INBOX_GAP;
     let (frame, placement, (clear_all, clicked)) =
         ui.popover("inbox-list", &options, |ui, rect| {
@@ -1042,7 +1503,8 @@ pub fn inbox_required_keys() -> Vec<String> {
     .collect()
 }
 
-/// The close-confirm or rename dialog (Lunegit's copy, `en.json`; layout as the spike's).
+/// The close-confirm or rename dialog (Lunegit's copy, `en.json`; layout as the spike's), or the
+/// group editor.
 fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
     // The card is the menus' glass (the theme's `menu_glass`, raised by Window opacity), frosted
     // over an unblurred scrim: the card blurs what is under it (luneui D411, since v0.7.3, under
@@ -1054,17 +1516,23 @@ fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
         ..DialogOptions::default()
     };
     match modal {
-        Modal::Confirm { message, dont_ask } => {
+        Modal::Confirm {
+            title,
+            message,
+            dont_ask,
+        } => {
             let dialog = Dialog {
-                title: "Close Terminal Session",
+                title,
                 message,
-                extra_h: 34.0,
+                extra_h: if dont_ask.is_some() { 34.0 } else { 0.0 },
                 confirm: "Close",
                 cancel: Cancel::Default,
             };
             let r = ui.dialog_with("confirm-close", &dialog, &options, &glass, |ui, x, y, w| {
-                let rect = Rect::new(x, y + 12.0, w, 22.0);
-                ui.checkbox("dont-ask", rect, dont_ask, "Don't ask again");
+                if let Some(dont_ask) = dont_ask {
+                    let rect = Rect::new(x, y + 12.0, w, 22.0);
+                    ui.checkbox("dont-ask", rect, dont_ask, "Don't ask again");
+                }
             });
             (
                 ModalOut {
@@ -1098,7 +1566,7 @@ fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
                 }
                 let opts = FieldOptions {
                     placeholder: "Tab name",
-                    max_chars: Some(crate::title::MAX_TITLE_CHARS),
+                    max_chars: Some(crate::title::MAX_NAME_CHARS),
                     label: Some("Tab name"),
                     ..FieldOptions::default()
                 };
@@ -1114,14 +1582,162 @@ fn draw_modal(ui: &mut Ui<'_>, modal: Modal<'_>) -> (ModalOut, Option<Rect>) {
                 ime,
             )
         }
+        Modal::GroupEditor {
+            editing,
+            text,
+            color,
+            taken,
+            look,
+            focus,
+        } => {
+            let (title, confirm, message) = {
+                let (title, confirm) = if editing {
+                    ("group.editor.editTitle", "group.editor.save")
+                } else {
+                    ("group.editor.newTitle", "group.editor.create")
+                };
+                (
+                    ui.tr(title).to_owned(),
+                    ui.tr(confirm).to_owned(),
+                    ui.tr("group.editor.message").to_owned(),
+                )
+            };
+            let dialog = Dialog {
+                title: &title,
+                message: &message,
+                extra_h: EDITOR_EXTRA_H,
+                confirm: &confirm,
+                cancel: Cancel::Default,
+            };
+            // The button is drawn from the text as the frame began.
+            let was_ok = groups::name_problem(text, taken).is_none();
+            let options = DialogOptions {
+                confirm_enabled: was_ok,
+                ..options
+            };
+            let mut submitted = false;
+            let mut ime = None;
+            let r = ui.dialog_with("group-editor", &dialog, &options, &glass, |ui, x, y, w| {
+                let theme = *ui.theme();
+                editor_label(ui, "group.editor.nameLabel", (x, y + 18.0));
+                let field = Rect::new(x, y + 36.0, w, 32.0);
+                let id = ui.id("group-field");
+                if focus {
+                    ui.request_focus(id);
+                }
+                let name = ui.tr("group.editor.name").to_owned();
+                let opts = FieldOptions {
+                    placeholder: &name,
+                    label: Some(&name),
+                    // No `max_chars`: it would cut a long paste without a word.
+                    ..FieldOptions::default()
+                };
+                let out = ui.text_field_with("group-field", field, text, &opts);
+                submitted = out.submitted;
+                ime = out.ime_area;
+                if let Some(key) = name_hint(groups::name_problem(text, taken)) {
+                    let spec = Spec::plain(
+                        ui.tr(key).to_owned(),
+                        Style::ui(theme.font_s, theme.status_error),
+                    );
+                    ui.painter().text(&spec, x, y + EDITOR_HINT_Y);
+                }
+                editor_label(ui, "group.editor.colorLabel", (x, y + EDITOR_COLOR_LABEL_Y));
+                swatches(ui, x, y + EDITOR_SWATCH_Y, color, look);
+            });
+            let ok = groups::name_problem(text, taken).is_none();
+            if ok != was_ok {
+                let now = ui.time();
+                ui.request_repaint_at(now + Duration::from_millis(1));
+            }
+            (
+                ModalOut {
+                    // Judged on the text as it is after this frame's typing.
+                    confirmed: ok && (r.confirmed || submitted),
+                    cancelled: r.cancelled && !submitted,
+                },
+                ime,
+            )
+        }
     }
+}
+
+/// A small label of the group editor, as the rename dialog's.
+fn editor_label(ui: &mut Ui<'_>, key: &str, (x, y): (f32, f32)) {
+    let theme = *ui.theme();
+    let style = Style::ui(theme.font_s, theme.fg_tertiary).medium();
+    let spec = Spec::plain(ui.tr(key).to_owned(), style);
+    ui.painter().text(&spec, x, y);
+}
+
+/// The nine colours in a row from `(x, y)`: filled circles, the chosen one ringed. A press, Space
+/// or Enter on one chooses it.
+fn swatches(ui: &mut Ui<'_>, x: f32, y: f32, chosen: &mut GroupColor, look: LookTheme) {
+    let theme = *ui.theme();
+    let group = ui.id("group-colors");
+    let row = Rect::new(
+        x,
+        y,
+        swatch_rect(GroupColor::ALL.len() - 1, x, y).right() - x,
+        SWATCH,
+    );
+    let name = ui.tr("group.editor.colorLabel").to_owned();
+    let node = Node::new(group, Role::RadioGroup, &name, row);
+    ui.node_container(node, |ui| {
+        // The input first, so every swatch is drawn knowing the choice of this frame.
+        let before = *chosen;
+        let at: Vec<_> = GroupColor::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(i, color)| {
+                let rect = swatch_rect(i, x, y);
+                let id = ui.id(("group-color", i));
+                let r = ui.interact(id, rect, Sense::CLICK_FOCUS);
+                // Both keys are taken whichever came: Enter must not also confirm the dialog.
+                let space = ui.consume_key(id, NamedKey::Space);
+                let enter = ui.consume_key(id, NamedKey::Enter);
+                if r.clicked || space || enter {
+                    *chosen = color;
+                }
+                (color, rect, id, r)
+            })
+            .collect();
+        if *chosen != before {
+            ui.request_repaint_at(ui.time() + Duration::from_millis(1));
+        }
+        for (color, rect, id, r) in at {
+            let outer = rect.inset(-SWATCH_RING, -SWATCH_RING);
+            let [red, green, blue] = color.tone(look).fill;
+            let fill = [red, green, blue, 0xFF];
+            let p = ui.painter();
+            p.fill(rect, SWATCH / 2.0, fill);
+            if *chosen == color {
+                p.ring(outer, outer.w / 2.0, SWATCH_RING_WIDTH, fill, true);
+            } else if r.hovered {
+                p.ring(outer, outer.w / 2.0, 1.0, theme.fg_tertiary, true);
+            }
+            if r.focus_visible {
+                let focus = outer.inset(-2.0, -2.0);
+                p.ring(focus, focus.w / 2.0, 1.5, theme.accent, true);
+            }
+            let name = ui.tr(&color_name_key(color)).to_owned();
+            let mut node = Node::new(id, Role::Radio, &name, rect);
+            if *chosen == color {
+                node.states.insert(State::Checked);
+            }
+            node.states.insert(State::Focusable);
+            node.actions.insert(Action::Default);
+            ui.node(node);
+        }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fonts;
-    use lune_ui::input::{Modifiers, RawInput, keymap};
+    use crate::pane::{DragItem, PaneRow, TabRow};
+    use lune_ui::input::{Modifiers, RawInput, Repaint, keymap};
     use lune_ui::lunegit_dark::THEME;
     use lune_ui::motion::{Cadence, MotionTier};
     use lune_ui::shortcuts::Shortcuts;
@@ -1192,6 +1808,110 @@ mod tests {
         assert_eq!((l.strip.w, l.strip.h), (0.0, 0.0));
         assert_eq!((l.body.w, l.body.h), (0.0, 0.0));
         assert_eq!(l.band.h, 20.0);
+    }
+
+    /// The pane view at 1040 x 660 and width 248: the same on every chrome, the card under a title
+    /// band over the terminal column.
+    #[test]
+    fn layout_pins_the_pane_view() {
+        let win = Rect::new(0.0, 0.0, 1040.0, 660.0);
+        for chrome in [MACOS_CHROME, LINUX_CHROME, WINDOWS_CHROME] {
+            let view = pane::resolve(true, 248, win.w, chrome);
+            let l = Layout::for_view(win, true, view);
+            assert_eq!(l.card, Rect::new(248.0, 34.0, 782.0, 616.0));
+            assert_eq!(l.body, Rect::new(258.0, 44.0, 762.0, 596.0));
+            assert_eq!(l.band, Rect::new(248.0, 0.0, 792.0, 34.0));
+            assert_eq!((l.strip.w, l.strip.h), (0.0, 0.0), "no strip");
+            let pane = l.pane.expect("the pane");
+            assert_eq!(pane.rect, Rect::new(0.0, 0.0, 248.0, 660.0));
+            assert_eq!((l.overflow, l.inbox), (pane.menu, pane.bell));
+            // The inbox button changes no rect of the pane view.
+            assert_eq!(l, Layout::for_view(win, false, view));
+        }
+    }
+
+    /// The pane view's title is centred on the card, never over the pane, 12 inside the card's
+    /// edges, and where the app draws the caption buttons short of them.
+    #[test]
+    fn the_pane_views_title_is_centred_on_the_card() {
+        let title = |window_w: f32, width: u32, chrome: Chrome| {
+            let win = Rect::new(0.0, 0.0, window_w, 660.0);
+            let l = Layout::for_view(win, false, pane::resolve(true, width, window_w, chrome));
+            let title = l.title.expect("the pane view's title");
+            assert_eq!(title.x + title.w / 2.0, l.card.x + l.card.w / 2.0);
+            assert_eq!((title.y, title.h), (l.band.y, l.band.h));
+            assert!(title.x >= l.card.x + 12.0, "{title:?}");
+            assert!(title.right() <= l.card.right() - 12.0, "{title:?}");
+            if chrome.drawn_caption {
+                // The caption buttons are three of 46 at the window's right.
+                assert!(title.right() < window_w - 3.0 * 46.0, "{title:?}");
+            }
+            assert!(title.w > 0.0, "{title:?}");
+            title
+        };
+        for chrome in [MACOS_CHROME, LINUX_CHROME] {
+            assert_eq!(
+                title(1040.0, 248, chrome),
+                Rect::new(260.0, 0.0, 758.0, 34.0)
+            );
+        }
+        assert_eq!(
+            title(1040.0, 248, WINDOWS_CHROME),
+            Rect::new(384.0, 0.0, 510.0, 34.0)
+        );
+        // The widest pane in the narrowest window that shows it, and a wide window.
+        for chrome in [MACOS_CHROME, LINUX_CHROME, WINDOWS_CHROME] {
+            for (window_w, width) in [(910.0, 420), (690.0, 200), (3840.0, 248), (911.0, 248)] {
+                title(window_w, width, chrome);
+            }
+        }
+        // The bar view centres its title on the window.
+        assert_eq!(Layout::new(Rect::new(0.0, 0.0, 1040.0, 660.0)).title, None);
+        // A window with no room for a card has an empty title, not a negative one.
+        let tiny = Layout::for_view(
+            Rect::new(0.0, 0.0, 20.0, 20.0),
+            false,
+            View::Pane {
+                width: 248.0,
+                drawn_caption: true,
+            },
+        );
+        assert_eq!(tiny.title.map(|t| t.w), Some(0.0));
+    }
+
+    #[test]
+    fn the_bar_view_is_todays_layout() {
+        let win = Rect::new(0.0, 0.0, 1040.0, 660.0);
+        for inbox in [false, true] {
+            assert_eq!(
+                Layout::for_view(win, inbox, View::Bar),
+                Layout::with_inbox(win, inbox)
+            );
+        }
+        assert_eq!(Layout::new(win).pane, None);
+    }
+
+    /// The grid `place()` sends to a session follows the view's body (D26): the pane takes columns
+    /// and gives the strip's rows back.
+    #[test]
+    fn each_views_body_gives_the_grid_its_own_size() {
+        let win = Rect::new(0.0, 0.0, 1040.0, 660.0);
+        let grid = |view| {
+            let body = Layout::for_view(win, false, view).body;
+            let g = place_grid(body, metrics(8, 17, 1.0));
+            (g.origin, g.cols, g.rows)
+        };
+        assert_eq!(grid(View::Bar), ((20.0, 76.0), 125, 33));
+        for chrome in [MACOS_CHROME, WINDOWS_CHROME] {
+            assert_eq!(
+                grid(pane::resolve(true, 248, win.w, chrome)),
+                ((258.0, 44.0), 95, 35)
+            );
+        }
+        assert_eq!(
+            grid(pane::resolve(true, 420, win.w, MACOS_CHROME)),
+            ((430.0, 44.0), 73, 35)
+        );
     }
 
     #[test]
@@ -1292,6 +2012,7 @@ mod tests {
             drawn_caption: true,
             title_inset: 146.0,
             band_double_click: true,
+            native_lights: false,
         };
         let native = Chrome {
             drawn_caption: false,
@@ -1382,6 +2103,10 @@ mod tests {
             scroll: None,
             cell_h: 17.0,
             chrome,
+            view: View::Bar,
+            show_pane_button: false,
+            pane_button_name: "Pane",
+            pane_list: None,
             tabs,
             active_tab: tabs.first().map(|t| t.id),
             modal: None,
@@ -1432,6 +2157,10 @@ mod tests {
             scroll: None,
             cell_h: 17.0,
             chrome: HOST,
+            view: View::Bar,
+            show_pane_button: false,
+            pane_button_name: "Pane",
+            pane_list: None,
             tabs: &tabs,
             active_tab: Some(1),
             modal: None,
@@ -1606,6 +2335,7 @@ mod tests {
         drawn_caption: true,
         title_inset: 146.0,
         band_double_click: true,
+        native_lights: false,
     };
 
     /// The chrome through a real `Ui` frame: the first frame registers the hit regions, later
@@ -1722,6 +2452,726 @@ mod tests {
         }
         assert_eq!(resize_cursor(ResizeEdge::NorthWest), CursorIcon::NwseResize);
         assert_eq!(resize_cursor(ResizeEdge::South), CursorIcon::NsResize);
+    }
+
+    /// One frame of the shell at 1040 x 660 in `view`, with the inbox button and the page as
+    /// given.
+    #[derive(Clone, Copy)]
+    struct PaneShell {
+        chrome: Chrome,
+        view: View,
+        show_pane_button: bool,
+        inbox: bool,
+        page_open: bool,
+        list: Option<&'static [PaneRow<'static>]>,
+        busy: Option<BusyCue>,
+        tier: MotionTier,
+        maximized: bool,
+        size: (f32, f32),
+    }
+
+    impl PaneShell {
+        fn pane(chrome: Chrome) -> PaneShell {
+            PaneShell {
+                chrome,
+                view: pane::resolve(true, 248, 1040.0, chrome),
+                show_pane_button: false,
+                inbox: true,
+                page_open: false,
+                list: None,
+                busy: None,
+                tier: MotionTier::Off,
+                maximized: false,
+                size: (1040.0, 660.0),
+            }
+        }
+
+        fn run(self, store: &mut UiStore, text: &mut TextCache, events: Vec<Event>) -> ShellOut {
+            self.frame(store, text, events).0
+        }
+
+        /// A frame: what the shell reported and when it asks for the next one.
+        fn frame(
+            self,
+            store: &mut UiStore,
+            text: &mut TextCache,
+            events: Vec<Event>,
+        ) -> (ShellOut, Repaint) {
+            let input = RawInput {
+                size: self.size,
+                scale: 1.0,
+                time: Duration::ZERO,
+                focused: true,
+                events,
+            };
+            let (strings, shortcuts) = (StringTable::default(), Shortcuts::default());
+            let config = FrameConfig {
+                theme: THEME,
+                tier: self.tier,
+                busy_cadence: Cadence::BUSY,
+                strings: &strings,
+                arg_format: &DisplayFormat,
+                keymap: keymap(),
+                shortcuts: &shortcuts,
+            };
+            let tabs = [TAB_A, TAB_B];
+            let view = ShellView {
+                title: None,
+                maximized: self.maximized,
+                focused: true,
+                scroll: None,
+                cell_h: 17.0,
+                chrome: self.chrome,
+                view: self.view,
+                show_pane_button: self.show_pane_button,
+                pane_button_name: "Pane",
+                pane_list: self.list.map(|rows| PaneList {
+                    rows,
+                    look: LookTheme::Luneterm,
+                    reveal: false,
+                }),
+                tabs: &tabs,
+                active_tab: Some(1),
+                modal: None,
+                toasts: None,
+                page_open: self.page_open,
+                busy: self.busy,
+                busy_tone: Tone::Neutral,
+                overflow_name: "More",
+                inbox_button: self.inbox.then_some(InboxButton {
+                    name: "Notifications",
+                    unread: true,
+                    ring: None,
+                    open: false,
+                }),
+                header_tint: HEADER_TINT,
+                fading_slots: 0,
+            };
+            let mut ui = Ui::begin(store, &input, config, text);
+            let out = draw(&mut ui, view);
+            let (_, output) = ui.finish();
+            (out, output.repaint)
+        }
+
+        /// A press and a release at `at` after the pointer got there: what each reported.
+        fn press(
+            self,
+            store: &mut UiStore,
+            text: &mut TextCache,
+            at: (f32, f32),
+        ) -> (ShellOut, ShellOut) {
+            self.run(store, text, vec![]);
+            self.run(store, text, vec![Event::PointerMoved { pos: at }]);
+            self.run(store, text, vec![]);
+            let down = self.run(store, text, vec![button(at, true)]);
+            let up = self.run(store, text, vec![button(at, false)]);
+            (down, up)
+        }
+    }
+
+    fn centre(r: Rect) -> (f32, f32) {
+        (r.x + r.w / 2.0, r.y + r.h / 2.0)
+    }
+
+    /// The pane view's drag regions: the header's empty part and the title band over the terminal
+    /// column drag; no button and no edge zone does.
+    #[test]
+    fn the_pane_header_and_the_title_band_drag_the_window() {
+        for chrome in [MACOS_CHROME, LINUX_CHROME, WINDOWS_CHROME] {
+            let layout = Layout::for_view(
+                Rect::new(0.0, 0.0, 1040.0, 660.0),
+                true,
+                PaneShell::pane(chrome).view,
+            );
+            let pane = layout.pane.expect("pane");
+            let hide = pane::hide_button(&pane, chrome);
+            // The header right of the hide button (to where that button once stood) and the band,
+            // the title's place included.
+            for at in [
+                (hide.right() + 8.0, 17.0),
+                (150.0, 17.0),
+                (228.0, 17.0),
+                (300.0, 17.0),
+                (639.0, 17.0),
+                (600.0, 31.0),
+            ] {
+                let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+                let (down, _) = PaneShell::pane(chrome).press(&mut store, &mut text, at);
+                assert_eq!(down.commands, vec![WindowCommand::DragMove], "{at:?}");
+                // The second press does what the band's double press does on this chrome.
+                let again =
+                    PaneShell::pane(chrome).run(&mut store, &mut text, vec![button(at, true)]);
+                let double = if chrome.drawn_caption {
+                    Some(WindowCommand::ToggleMaximize)
+                } else {
+                    crate::double_click::system_action()
+                };
+                let want: Vec<_> = band_command(2, chrome, || double).into_iter().collect();
+                assert_eq!(again.commands, want, "{at:?}");
+            }
+            for at in [
+                centre(hide),
+                centre(layout.overflow),
+                centre(layout.inbox),
+                NEW_TAB_POINT,
+                (245.0, 17.0),
+                (245.0, 300.0),
+                // The list area, the card and the body are no drag regions either.
+                (100.0, 50.0),
+                (100.0, 300.0),
+                (600.0, 36.0),
+                (600.0, 300.0),
+            ] {
+                let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+                let scene = PaneShell {
+                    list: Some(TWO_ROWS),
+                    ..PaneShell::pane(chrome)
+                };
+                let (down, up) = scene.press(&mut store, &mut text, at);
+                assert!(
+                    down.commands.is_empty() && up.commands.is_empty(),
+                    "{at:?}: {:?} {:?}",
+                    down.commands,
+                    up.commands
+                );
+            }
+        }
+    }
+
+    /// A point on the footer's New Tab button, with the bell or without it.
+    const NEW_TAB_POINT: (f32, f32) = (24.0, 638.0);
+
+    /// A list of two loose tabs.
+    const TWO_ROWS: &[PaneRow<'static>] = &[
+        PaneRow::Tab(TabRow {
+            id: 7,
+            title: "zsh",
+            progress: None,
+            unread: false,
+            active: false,
+            group: None,
+        }),
+        PaneRow::Tab(TabRow {
+            id: 8,
+            title: "logs",
+            progress: None,
+            unread: false,
+            active: false,
+            group: None,
+        }),
+    ];
+
+    /// The footer's New Tab button asks for a tab, beside the bell or without it and over the
+    /// settings page too (D31).
+    #[test]
+    fn the_panes_new_tab_button_asks_for_a_tab() {
+        for chrome in [MACOS_CHROME, LINUX_CHROME, WINDOWS_CHROME] {
+            for (inbox, page_open) in [(false, false), (true, false), (false, true), (true, true)] {
+                let scene = PaneShell {
+                    inbox,
+                    page_open,
+                    list: Some(TWO_ROWS),
+                    ..PaneShell::pane(chrome)
+                };
+                let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+                let (down, up) = scene.press(&mut store, &mut text, NEW_TAB_POINT);
+                assert!(down.pane_events.is_empty(), "{:?}", down.pane_events);
+                assert_eq!(up.pane_events, [PaneEvent::NewTab], "{inbox} {page_open}");
+                assert!(!up.pane_toggle && up.overflow.is_none() && !up.inbox_clicked);
+                assert!(down.commands.is_empty() && up.commands.is_empty());
+            }
+        }
+    }
+
+    /// A row dragged onto the footer's New Tab button and released there makes no tab: it drops at
+    /// the end of the list, as anywhere on the footer.
+    #[test]
+    fn a_drag_released_on_the_new_tab_button_makes_no_tab() {
+        let scene = PaneShell {
+            list: Some(TWO_ROWS),
+            ..PaneShell::pane(MACOS_CHROME)
+        };
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let mut go = |events| scene.run(&mut store, &mut text, events).pane_events;
+        let moved = |pos| Event::PointerMoved { pos };
+        let row = (100.0, 50.0);
+        go(vec![]);
+        go(vec![moved(row)]);
+        go(vec![]);
+        assert_eq!(go(vec![button(row, true)]), [PaneEvent::Activate(7)]);
+        assert_eq!(go(vec![moved(NEW_TAB_POINT)]), [PaneEvent::Dragging]);
+        assert_eq!(go(vec![]), [PaneEvent::Dragging]);
+        assert_eq!(
+            go(vec![button(NEW_TAB_POINT, false)]),
+            [PaneEvent::Drop {
+                item: DragItem::Tab(7),
+                index: 1,
+                group: None,
+            }]
+        );
+        assert!(go(vec![]).is_empty());
+    }
+
+    /// A list of one loose tab.
+    const ONE_ROW: &[PaneRow<'static>] = &[PaneRow::Tab(TabRow {
+        id: 7,
+        title: "zsh",
+        progress: None,
+        unread: false,
+        active: false,
+        group: None,
+    })];
+
+    /// The tab list is the pane view's: in it a row reports itself, over the settings page too
+    /// (D31), and the bar view draws none of it.
+    #[test]
+    fn the_tab_list_is_drawn_in_the_pane_view_only() {
+        let at = (100.0, 50.0);
+        for page_open in [false, true] {
+            let scene = PaneShell {
+                page_open,
+                list: Some(ONE_ROW),
+                ..PaneShell::pane(MACOS_CHROME)
+            };
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            let (down, up) = scene.press(&mut store, &mut text, at);
+            assert_eq!(down.pane_events, [PaneEvent::Activate(7)], "{page_open}");
+            assert!(up.pane_events.is_empty() && down.commands.is_empty());
+            assert!(down.tab_events.is_empty());
+        }
+        let bar = PaneShell {
+            view: View::Bar,
+            list: Some(ONE_ROW),
+            ..PaneShell::pane(MACOS_CHROME)
+        };
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let (down, up) = bar.press(&mut store, &mut text, at);
+        assert!(down.pane_events.is_empty() && up.pane_events.is_empty());
+    }
+
+    #[test]
+    fn the_panes_buttons_report_what_they_are() {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        for (chrome, page_open) in [MACOS_CHROME, LINUX_CHROME, WINDOWS_CHROME]
+            .into_iter()
+            .flat_map(|c| [(c, false), (c, true)])
+        {
+            let scene = PaneShell {
+                page_open,
+                ..PaneShell::pane(chrome)
+            };
+            let layout = Layout::for_view(Rect::new(0.0, 0.0, 1040.0, 660.0), true, scene.view);
+            let pane = layout.pane.expect("pane");
+            let (down, up) = scene.press(
+                &mut store,
+                &mut text,
+                centre(pane::hide_button(&pane, chrome)),
+            );
+            assert!(up.pane_toggle && up.overflow.is_none() && !up.inbox_clicked);
+            assert!(down.commands.is_empty() && up.commands.is_empty());
+            let (_, up) = scene.press(&mut store, &mut text, centre(layout.overflow));
+            assert_eq!(up.overflow, Some(layout.overflow), "page {page_open}");
+            assert!(!up.pane_toggle);
+            // The footer's bell works over the page too (D31).
+            let (_, up) = scene.press(&mut store, &mut text, centre(layout.inbox));
+            assert!(up.inbox_clicked && !up.pane_toggle, "page {page_open}");
+            assert!(up.tab_events.is_empty() && up.tab_context.is_none());
+        }
+    }
+
+    /// With the drawn caption buttons the band over the terminal column maximizes on a double
+    /// press, the buttons work, and the window's edges resize as in the bar view.
+    #[test]
+    fn a_borderless_pane_view_keeps_the_caption_buttons_and_the_resize_edges() {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let scene = PaneShell::pane(WINDOWS_CHROME);
+        let go = |store: &mut UiStore, text: &mut TextCache, events| {
+            scene.run(store, text, events).commands
+        };
+        go(&mut store, &mut text, vec![]);
+        for at in [(600.0, 17.0), (150.0, 17.0)] {
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            go(&mut store, &mut text, vec![]);
+            assert_eq!(
+                go(&mut store, &mut text, vec![button(at, true)]),
+                vec![WindowCommand::DragMove]
+            );
+            go(&mut store, &mut text, vec![button(at, false)]);
+            assert_eq!(
+                go(&mut store, &mut text, vec![button(at, true)]),
+                vec![WindowCommand::ToggleMaximize],
+                "{at:?}"
+            );
+        }
+        for (x, want) in [
+            (925.0, WindowCommand::Minimize),
+            (971.0, WindowCommand::ToggleMaximize),
+            (1017.0, WindowCommand::Close),
+        ] {
+            let (down, up) = scene.press(&mut store, &mut text, (x, 17.0));
+            assert!(!down.commands.contains(&WindowCommand::DragMove));
+            assert_eq!(up.commands, vec![want]);
+        }
+        for (at, edge) in [
+            ((2.0, 300.0), ResizeEdge::West),
+            ((100.0, 2.0), ResizeEdge::North),
+            ((245.0, 658.0), ResizeEdge::South),
+        ] {
+            let (down, _) = scene.press(&mut store, &mut text, at);
+            assert_eq!(down.commands, vec![WindowCommand::DragResize(edge)]);
+            let held = down.pane_edge.is_some_and(|e| e.held || e.started);
+            assert!(!held, "{at:?}: the window's edge, not the pane's");
+        }
+    }
+
+    /// Winit 0.30.13's Windows resize: the press at `at`; the OS loop, in which the app sees no
+    /// pointer move; a frame at the window's new size; then the synthetic release at the last
+    /// known position (or at where a late move put it). The press frame and the later ones.
+    fn os_resize(
+        scene: PaneShell,
+        at: (f32, f32),
+        size: (f32, f32),
+        moved: Option<(f32, f32)>,
+    ) -> (ShellOut, Vec<ShellOut>) {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        scene.run(&mut store, &mut text, vec![]);
+        scene.run(&mut store, &mut text, vec![Event::PointerMoved { pos: at }]);
+        scene.run(&mut store, &mut text, vec![]);
+        let down = scene.run(&mut store, &mut text, vec![button(at, true)]);
+        let resized = PaneShell { size, ..scene };
+        let mut later = vec![resized.run(&mut store, &mut text, vec![])];
+        let mut release = Vec::new();
+        if let Some(to) = moved {
+            release.push(Event::PointerMoved { pos: to });
+        }
+        release.push(button(moved.unwrap_or(at), false));
+        later.push(resized.run(&mut store, &mut text, release));
+        later.push(resized.run(&mut store, &mut text, vec![]));
+        (down, later)
+    }
+
+    /// Nothing a widget of the shell reports.
+    fn assert_no_widget_acted(out: &ShellOut, context: &str) {
+        assert!(!out.pane_toggle, "{context}: pane toggle");
+        assert_eq!(out.overflow, None, "{context}: overflow");
+        assert!(!out.inbox_clicked, "{context}: inbox");
+        assert!(out.tab_events.is_empty(), "{context}: {:?}", out.tab_events);
+        assert!(out.tab_context.is_none(), "{context}: tab menu");
+        assert!(
+            out.pane_events.is_empty(),
+            "{context}: {:?}",
+            out.pane_events
+        );
+    }
+
+    /// The press is the resize and nothing else, and no later release clicks anything.
+    fn assert_only_resizes(
+        scene: PaneShell,
+        at: (f32, f32),
+        edge: ResizeEdge,
+        size: (f32, f32),
+        moved: Option<(f32, f32)>,
+    ) {
+        let context = format!("{:?} press {at:?} moved {moved:?}", scene.view);
+        let (down, later) = os_resize(scene, at, size, moved);
+        assert_eq!(
+            down.commands,
+            vec![WindowCommand::DragResize(edge)],
+            "{context}"
+        );
+        assert_no_widget_acted(&down, &context);
+        for out in &later {
+            assert_eq!(out.commands, vec![], "{context}");
+            assert_no_widget_acted(out, &context);
+        }
+    }
+
+    /// The borderless window in the bar view (with its show button) and in the pane view.
+    fn borderless_views() -> [PaneShell; 2] {
+        let pane = PaneShell::pane(WINDOWS_CHROME);
+        let bar = PaneShell {
+            view: View::Bar,
+            show_pane_button: true,
+            ..pane
+        };
+        [bar, pane]
+    }
+
+    /// Q22: a resize that starts over a widget in the window's edge zone clicks nothing when
+    /// Windows ends its resize loop, the close button's corner included.
+    #[test]
+    fn a_resize_that_starts_over_a_widget_clicks_nothing() {
+        use ResizeEdge::{East, North, NorthEast};
+        let same = (1040.0, 660.0);
+        for scene in borderless_views() {
+            // The corner on Close, the window grown: with and without a move before the release.
+            for moved in [None, Some((1059.0, 1.0))] {
+                assert_only_resizes(scene, (1039.0, 1.0), NorthEast, (1060.0, 680.0), moved);
+            }
+            // Minimize and Maximize from the top edge, Close from the right one.
+            for at in [(925.0, 2.0), (971.0, 2.0)] {
+                assert_only_resizes(scene, at, North, (1040.0, 680.0), None);
+            }
+            assert_only_resizes(scene, (1037.0, 17.0), East, same, None);
+            // The pane's hide button and the bar's show button (they share a place, from y = 5).
+            let show = pane::show_button(Rect::new(0.0, 0.0, 1040.0, 660.0), WINDOWS_CHROME);
+            for y in [2.0, 5.5] {
+                assert_only_resizes(scene, (centre(show).0, y), North, (1040.0, 680.0), None);
+            }
+        }
+    }
+
+    /// Anywhere in the 6 px zone, in both views and with the settings page open.
+    #[test]
+    fn no_press_in_the_resize_zone_reaches_a_widget() {
+        let size = (1040.0, 660.0);
+        for scene in borderless_views() {
+            for page_open in [false, true] {
+                let scene = PaneShell { page_open, ..scene };
+                let along = |len: u32| (0..len).step_by(13).map(|v| v as f32 + 0.5);
+                let points = along(1040)
+                    .flat_map(|x| [(x, 5.5), (x, 654.0)])
+                    .chain(along(660).flat_map(|y| [(5.5, y), (1034.0, y)]))
+                    .chain([(0.0, 0.0), (1039.5, 0.0), (0.0, 659.5), (1039.5, 659.5)]);
+                for at in points {
+                    let edge = edge_at(at, size.0, size.1).expect("in the zone");
+                    assert_only_resizes(scene, at, edge, size, None);
+                }
+            }
+        }
+    }
+
+    /// Outside the zone the widgets act as before; maximized or with native chrome there is no
+    /// zone.
+    #[test]
+    fn the_resize_zone_ends_at_its_border_and_is_off_when_maximized_or_native() {
+        for scene in borderless_views() {
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            // One px below the zone, and one left of it.
+            for at in [(1017.0, 6.0), (1033.5, 17.0)] {
+                let (down, up) = scene.press(&mut store, &mut text, at);
+                assert_eq!(down.commands, vec![], "{at:?}");
+                assert_eq!(up.commands, vec![WindowCommand::Close], "{at:?}");
+            }
+            let maximized = PaneShell {
+                maximized: true,
+                ..scene
+            };
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            let (down, up) = maximized.press(&mut store, &mut text, (1039.0, 1.0));
+            assert_eq!(down.commands, vec![]);
+            assert_eq!(up.commands, vec![WindowCommand::Close]);
+        }
+        // macOS: the pane's hide button still answers where a borderless window has its zone.
+        let mac = PaneShell::pane(MACOS_CHROME);
+        let hide = pane::show_button(Rect::new(0.0, 0.0, 1040.0, 660.0), MACOS_CHROME);
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let (_, up) = mac.press(&mut store, &mut text, (centre(hide).0, 5.5));
+        assert!(up.pane_toggle);
+    }
+
+    /// A drag of the pane's edge through real frames: the width follows the pointer, and the end
+    /// of the drag asks for one save. A drag that wanders over the window's resize edge goes on.
+    #[test]
+    fn dragging_the_panes_edge_widens_it_and_saves_once() {
+        for (chrome, y) in [(MACOS_CHROME, 300.0), (WINDOWS_CHROME, 659.0)] {
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            let scene = PaneShell::pane(chrome);
+            let mut drag = None;
+            let (mut width, mut saves) = (248u32, 0);
+            let moved = |x, y| Event::PointerMoved { pos: (x, y) };
+            let frames = [
+                vec![],
+                vec![moved(245.0, 300.0)],
+                vec![],
+                vec![button((245.0, 300.0), true)],
+                vec![moved(275.0, 300.0)],
+                vec![moved(345.0, y)],
+                vec![],
+                vec![button((345.0, y), false)],
+                vec![],
+            ];
+            for events in frames {
+                // The pane is where the width so far puts it.
+                let scene = PaneShell {
+                    view: pane::resolve(true, width, 1040.0, chrome),
+                    ..scene
+                };
+                let out = scene.run(&mut store, &mut text, events);
+                assert!(out.commands.is_empty(), "{:?}", out.commands);
+                let step = pane::drag_step(&mut drag, out.pane_edge, width, 1040.0);
+                width = step.width.unwrap_or(width);
+                saves += usize::from(step.save);
+            }
+            assert_eq!((width, saves), (348, 1), "{chrome:?}");
+            assert!(drag.is_none());
+        }
+    }
+
+    /// The pane view asks for busy frames exactly while its card's cue runs: not with motion off,
+    /// with nothing running or under the settings page.
+    #[test]
+    fn the_pane_view_asks_for_a_busy_frame_exactly_while_its_cue_runs() {
+        let layout = Layout::for_view(
+            Rect::new(0.0, 0.0, 1040.0, 660.0),
+            false,
+            PaneShell::pane(MACOS_CHROME).view,
+        );
+        let bar = Layout::new(Rect::new(0.0, 0.0, 1040.0, 660.0));
+        let cues = [BusyCue::Sweep, BusyCue::Comet, BusyCue::Breath];
+        for tier in [MotionTier::Full, MotionTier::Reduced, MotionTier::Off] {
+            for busy in cues.map(Some).into_iter().chain([None]) {
+                for page_open in [false, true] {
+                    let treatment = match (busy, tier, page_open) {
+                        (Some(cue), MotionTier::Full, false) => Some(cue),
+                        (Some(_), MotionTier::Reduced, false) => Some(BusyCue::Breath),
+                        _ => None,
+                    };
+                    let case = format!("{tier:?} {busy:?} page={page_open}");
+                    assert_eq!(
+                        pane_cue(&layout, page_open, busy, tier),
+                        treatment,
+                        "{case}"
+                    );
+                    // The bar view's strip draws its own.
+                    assert_eq!(pane_cue(&bar, page_open, busy, tier), None, "{case}");
+                    let scene = PaneShell {
+                        busy,
+                        tier,
+                        page_open,
+                        inbox: false,
+                        ..PaneShell::pane(MACOS_CHROME)
+                    };
+                    let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+                    scene.frame(&mut store, &mut text, vec![]);
+                    scene.frame(&mut store, &mut text, vec![]);
+                    let (_, repaint) = scene.frame(&mut store, &mut text, vec![]);
+                    if treatment.is_some() {
+                        assert!(matches!(repaint, Repaint::At(_)), "{case}: {repaint:?}");
+                    } else {
+                        assert_eq!(repaint, Repaint::Idle, "{case}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The cue runs on the card's own rounded rect: a closed loop, half a stroke inside it.
+    #[test]
+    fn the_card_cues_loop_is_closed_and_just_inside_the_card() {
+        for width in [200, 248, 420] {
+            let win = Rect::new(0.0, 0.0, 1040.0, 660.0);
+            let view = pane::resolve(true, width, win.w, MACOS_CHROME);
+            let card = Layout::for_view(win, false, view).card;
+            let pts = card_cue::outline(card);
+            assert!(pts.len() > 8, "{}", pts.len());
+            let ends = |axis: usize| {
+                pts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                    (lo.min(p[axis]), hi.max(p[axis]))
+                })
+            };
+            let ((left, right), (top, bottom)) = (ends(0), ends(1));
+            for (got, want) in [
+                (left, card.x + 0.5),
+                (right, card.right() - 0.5),
+                (top, card.y + 0.5),
+                (bottom, card.bottom() - 0.5),
+            ] {
+                assert!((got - want).abs() < 0.01, "{width}: {got} {want}");
+            }
+            // It ends where it began.
+            let (first, last) = (pts[0], pts[pts.len() - 1]);
+            let gap = (first[0] - last[0]).hypot(first[1] - last[1]);
+            assert!(gap < 0.01, "{width}: {first:?} {last:?}");
+        }
+    }
+
+    #[test]
+    fn the_bar_views_show_button_toggles_and_does_not_drag() {
+        for chrome in [MACOS_CHROME, WINDOWS_CHROME, LINUX_CHROME] {
+            let at = centre(pane::show_button(
+                Rect::new(0.0, 0.0, 1040.0, 660.0),
+                chrome,
+            ));
+            let scene = PaneShell {
+                chrome,
+                view: View::Bar,
+                show_pane_button: true,
+                inbox: false,
+                page_open: false,
+                list: None,
+                busy: None,
+                tier: MotionTier::Off,
+                maximized: false,
+                size: (1040.0, 660.0),
+            };
+            for page_open in [false, true] {
+                let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+                let scene = PaneShell { page_open, ..scene };
+                let (down, up) = scene.press(&mut store, &mut text, at);
+                assert!(down.commands.is_empty(), "{:?}", down.commands);
+                assert!(up.pane_toggle);
+                assert_eq!(up.pane_edge, None);
+            }
+            // Without the button (a narrow window) the same place is the band.
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            let none = PaneShell {
+                show_pane_button: false,
+                ..scene
+            };
+            let (down, up) = none.press(&mut store, &mut text, at);
+            assert_eq!(down.commands, vec![WindowCommand::DragMove]);
+            assert!(!up.pane_toggle);
+        }
+    }
+
+    /// From the pane's footer the inbox list opens upward, left edges aligned, over the terminal.
+    #[test]
+    fn the_inbox_list_opens_upward_from_the_panes_footer() {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let layout = Layout::for_view(
+            Rect::new(0.0, 0.0, 1040.0, 660.0),
+            true,
+            PaneShell::pane(MACOS_CHROME).view,
+        );
+        let input = RawInput {
+            size: (1040.0, 660.0),
+            scale: 1.0,
+            time: Duration::ZERO,
+            focused: true,
+            events: vec![],
+        };
+        let (strings, shortcuts) = (StringTable::default(), Shortcuts::default());
+        let config = FrameConfig {
+            theme: THEME,
+            tier: MotionTier::Off,
+            busy_cadence: Cadence::BUSY,
+            strings: &strings,
+            arg_format: &DisplayFormat,
+            keymap: keymap(),
+            shortcuts: &shortcuts,
+        };
+        let rows = some_rows(3);
+        let rows: Vec<_> = rows.iter().map(RowText::row).collect();
+        let mut ui = Ui::begin(&mut store, &input, config, &mut text);
+        let list = draw_inbox(
+            &mut ui,
+            &layout,
+            &InboxList {
+                name: "Notifications",
+                title: "Notifications",
+                clear_all: "Clear all",
+                rows: &rows,
+            },
+        );
+        let _ = ui.finish();
+        assert_eq!(list.rect.x, layout.inbox.x);
+        assert_eq!(layout.inbox.y - list.rect.bottom(), INBOX_GAP);
+        assert!(
+            list.rect.right() > layout.card.x,
+            "over the terminal column"
+        );
+        assert!(list.rect.y >= 0.0);
     }
 
     /// The strip's header: a press on empty space drags the window, a press on a tab activates it
@@ -2087,6 +3537,10 @@ mod tests {
             scroll: None,
             cell_h: 17.0,
             chrome: HOST,
+            view: View::Bar,
+            show_pane_button: false,
+            pane_button_name: "Pane",
+            pane_list: None,
             tabs: &tabs,
             active_tab: Some(1),
             modal: None,
@@ -2302,5 +3756,281 @@ mod tests {
                 "{button:?} {tier:?} {at}"
             );
         }
+    }
+
+    // --------------------------------------------------------------------- the group dialogs
+
+    /// One frame of the shell with `modal` over it, with the app's strings: its answer and tree.
+    fn modal_frame(
+        store: &mut UiStore,
+        text: &mut TextCache,
+        events: Vec<Event>,
+        modal: Modal<'_>,
+    ) -> (ModalOut, lune_ui::access::SemanticTree) {
+        let input = RawInput {
+            size: (1040.0, 660.0),
+            scale: 1.0,
+            time: Duration::ZERO,
+            focused: true,
+            events,
+        };
+        let (strings, shortcuts) = (crate::strings::english(), Shortcuts::default());
+        let config = FrameConfig {
+            theme: THEME,
+            tier: MotionTier::Off,
+            busy_cadence: Cadence::BUSY,
+            strings: &strings,
+            arg_format: &DisplayFormat,
+            keymap: keymap(),
+            shortcuts: &shortcuts,
+        };
+        let tabs = [TAB_A];
+        let view = ShellView {
+            title: None,
+            maximized: false,
+            focused: true,
+            scroll: None,
+            cell_h: 17.0,
+            chrome: HOST,
+            view: View::Bar,
+            show_pane_button: false,
+            pane_button_name: "Pane",
+            pane_list: None,
+            tabs: &tabs,
+            active_tab: Some(1),
+            modal: Some(modal),
+            toasts: None,
+            page_open: false,
+            busy: None,
+            busy_tone: Tone::Neutral,
+            overflow_name: "More",
+            inbox_button: None,
+            header_tint: HEADER_TINT,
+            fading_slots: 0,
+        };
+        let mut ui = Ui::begin(store, &input, config, text);
+        let out = draw(&mut ui, view);
+        let (_, frame) = ui.finish();
+        (out.modal.expect("a dialog is drawn"), frame.tree)
+    }
+
+    /// The group editor held open over frames, as the app holds it.
+    struct Editor {
+        store: UiStore,
+        text: TextCache,
+        name: String,
+        color: GroupColor,
+        taken: Vec<String>,
+        editing: bool,
+    }
+
+    impl Editor {
+        fn new(editing: bool, name: &str, taken: &[&str]) -> Editor {
+            let mut e = Editor {
+                store: UiStore::default(),
+                text: fonts::bundled_text_cache(),
+                name: name.to_owned(),
+                color: GroupColor::Grey,
+                taken: taken.iter().map(|t| (*t).to_owned()).collect(),
+                editing,
+            };
+            // As the app: the open focus, then the caret into the field.
+            e.go(vec![], false);
+            e.go(vec![], true);
+            e.go(vec![], false);
+            e
+        }
+
+        fn go(
+            &mut self,
+            events: Vec<Event>,
+            focus: bool,
+        ) -> (ModalOut, lune_ui::access::SemanticTree) {
+            let modal = Modal::GroupEditor {
+                editing: self.editing,
+                text: &mut self.name,
+                color: &mut self.color,
+                taken: &self.taken,
+                look: LookTheme::Luneterm,
+                focus,
+            };
+            modal_frame(&mut self.store, &mut self.text, events, modal)
+        }
+
+        /// A click at the middle of the node called `name`, and the answer of the release.
+        fn click(&mut self, name: &str) -> ModalOut {
+            let (_, tree) = self.go(vec![], false);
+            let b = tree
+                .nodes
+                .iter()
+                .find(|n| n.name == name)
+                .unwrap_or_else(|| panic!("no node {name}"))
+                .bounds;
+            let at = (b.x + b.w / 2.0, b.y + b.h / 2.0);
+            self.go(vec![Event::PointerMoved { pos: at }], false);
+            self.go(vec![button(at, true)], false);
+            let out = self.go(vec![button(at, false)], false).0;
+            self.go(vec![], false);
+            out
+        }
+
+        fn key(&mut self, key: NamedKey) -> ModalOut {
+            let events = [true, false]
+                .map(|pressed| Event::Key {
+                    key: lune_ui::input::Key::Named(key),
+                    pressed,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                })
+                .to_vec();
+            self.go(events, false).0
+        }
+    }
+
+    const NOTHING: ModalOut = ModalOut {
+        confirmed: false,
+        cancelled: false,
+    };
+
+    #[test]
+    fn the_editor_confirms_a_free_name_by_button_and_by_enter() {
+        for (editing, label) in [(false, "Create"), (true, "Save")] {
+            let mut e = Editor::new(editing, "api", &["infra"]);
+            assert!(e.click(label).confirmed, "{label}");
+            let mut e = Editor::new(editing, "api", &["infra"]);
+            assert!(e.key(NamedKey::Enter).confirmed, "Enter, {label}");
+            assert!(e.click("Cancel").cancelled);
+        }
+    }
+
+    #[test]
+    fn the_editor_takes_no_name_it_cannot_use() {
+        let long = "x".repeat(crate::ctl::MAX_GROUP_CHARS + 1);
+        for bad in ["", "infra", " api", "api ", "a\u{202e}b", &long] {
+            let mut e = Editor::new(false, bad, &["infra"]);
+            assert_eq!(e.click("Create"), NOTHING, "{bad:?}");
+            assert_eq!(e.key(NamedKey::Enter), NOTHING, "Enter, {bad:?}");
+            assert_eq!(e.name, bad, "never trimmed or cut");
+            assert!(e.click("Cancel").cancelled, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn typing_makes_the_name_usable_and_the_confirm_button_follows() {
+        let mut e = Editor::new(false, "infr", &["infra"]);
+        let (out, _) = e.go(vec![Event::Text("a".to_owned())], false);
+        assert_eq!((e.name.as_str(), out), ("infra", NOTHING));
+        let (_, tree) = e.go(vec![], false);
+        let create = tree
+            .nodes
+            .iter()
+            .find(|n| n.name == "Create")
+            .expect("button");
+        assert!(create.states.contains(State::Disabled), "taken");
+        e.go(vec![Event::Text("2".to_owned())], false);
+        assert!(e.click("Create").confirmed);
+        assert_eq!(e.name, "infra2");
+    }
+
+    #[test]
+    fn the_hint_says_why_the_name_cannot_be_used_and_nothing_for_an_empty_one() {
+        for (problem, key) in [
+            (Some(NameProblem::Taken), Some("group.editor.taken")),
+            (Some(NameProblem::TooLong), Some("group.editor.tooLong")),
+            (Some(NameProblem::EdgeSpace), Some("group.editor.edgeSpace")),
+            (Some(NameProblem::Control), Some("group.editor.control")),
+            (Some(NameProblem::Empty), None),
+            (None, None),
+        ] {
+            assert_eq!(name_hint(problem), key, "{problem:?}");
+        }
+        let table = english();
+        assert!(
+            table
+                .tr("group.editor.tooLong")
+                .contains(&crate::ctl::MAX_GROUP_CHARS.to_string())
+        );
+        for key in group_required_keys() {
+            assert_ne!(table.tr(&key), key, "{key} has no text");
+        }
+    }
+
+    #[test]
+    fn the_swatches_are_nine_radios_and_a_press_or_a_key_picks_one() {
+        let mut e = Editor::new(false, "api", &[]);
+        let (_, tree) = e.go(vec![], false);
+        let names: Vec<(&str, bool)> = tree
+            .nodes
+            .iter()
+            .filter(|n| n.role == Role::Radio)
+            .map(|n| (n.name.as_str(), n.states.contains(State::Checked)))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("Grey", true),
+                ("Blue", false),
+                ("Red", false),
+                ("Yellow", false),
+                ("Green", false),
+                ("Pink", false),
+                ("Purple", false),
+                ("Cyan", false),
+                ("Orange", false),
+            ]
+        );
+        assert_eq!(e.click("Purple"), NOTHING, "a colour is no answer");
+        assert_eq!(e.color, GroupColor::Purple);
+        // Space and Enter on the focused swatch choose it and do not answer the dialog.
+        assert_eq!(e.click("Red"), NOTHING);
+        for key in [NamedKey::Space, NamedKey::Enter] {
+            e.color = GroupColor::Grey;
+            assert_eq!(e.key(key), NOTHING, "{key:?}");
+            assert_eq!(e.color, GroupColor::Red, "{key:?}");
+        }
+        assert_eq!(e.name, "api", "the keys went to the swatch, not the field");
+    }
+
+    #[test]
+    fn the_swatch_row_is_as_wide_as_nine_circles_and_eight_gaps() {
+        let first = swatch_rect(0, 100.0, 10.0);
+        let last = swatch_rect(8, 100.0, 10.0);
+        assert_eq!(first, Rect::new(100.0, 10.0, SWATCH, SWATCH));
+        assert_eq!(last.right() - first.x, 9.0 * SWATCH + 8.0 * SWATCH_GAP);
+        // The rings of neighbours do not touch.
+        const { assert!(2.0 * SWATCH_RING < SWATCH_GAP) };
+    }
+
+    #[test]
+    fn the_close_question_has_the_checkbox_only_when_the_answer_may_be_remembered() {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let mut remember = false;
+        let mut count = |dont_ask: Option<&mut bool>| {
+            let modal = Modal::Confirm {
+                title: "Close Group",
+                message: "m",
+                dont_ask,
+            };
+            let (_, tree) = modal_frame(&mut store, &mut text, vec![], modal);
+            tree.nodes
+                .iter()
+                .filter(|n| n.role == Role::Checkbox)
+                .count()
+        };
+        assert_eq!(count(Some(&mut remember)), 1);
+        assert_eq!(count(None), 0);
+    }
+
+    #[test]
+    fn the_close_group_message_counts_the_tabs_and_names_the_group() {
+        let t = english();
+        assert_eq!(
+            close_group_message(&t, "api", 3),
+            "Close the group \u{201c}api\u{201d} and its 3 tabs?"
+        );
+        assert_eq!(
+            close_group_message(&t, "{1}", 1),
+            "Close the group \u{201c}{1}\u{201d} and its tab?"
+        );
     }
 }

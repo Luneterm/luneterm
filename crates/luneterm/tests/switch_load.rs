@@ -259,6 +259,7 @@ fn draw(
         title: None,
         tabs: &strip,
         active_tab: Some(active as TabId),
+        pane_list: None,
         modal: None,
         maximized: false,
         grid: grid.expect("active tab"),

@@ -16,6 +16,10 @@ use crate::session::MAX_SCROLLBACK;
 pub const MIN_FONT_SIZE: u32 = 8;
 pub const MAX_FONT_SIZE: u32 = 32;
 pub const DEFAULT_FONT_SIZE: u32 = 14;
+/// The side pane's width, logical px, and the range a drag or the file may give (plan D26).
+pub const DEFAULT_PANE_WIDTH: u32 = 248;
+pub const MIN_PANE_WIDTH: u32 = 200;
+pub const MAX_PANE_WIDTH: u32 = 420;
 
 /// The look: which layers and header tint the window is drawn with (Lunegit's `lunegit_dark` ones
 /// or the near-black ones), under every [`GlassStyle`]. The persisted names are `luneterm` (the
@@ -205,6 +209,10 @@ pub struct Settings {
     /// their tab is in the background and an entry in the notification list. Off: such messages
     /// are dropped (the bell is not affected). A Luneterm-only setting: Lunegit has none.
     pub osc_notifications: bool,
+    /// Let command-line programs list, open, close, focus and group tabs through `luneterm ctl`.
+    /// Off: every request but `ctl status` is refused (the control listener reads it per
+    /// request). A Luneterm-only setting: Lunegit has none.
+    pub tab_control: bool,
     /// Throttle Luneterm itself while its window is unfocused or minimized and no tab prints
     /// output; shells keep normal priority. Linux has no mechanism, so it has no effect there. A
     /// Luneterm-only setting: Lunegit has none.
@@ -220,6 +228,15 @@ pub struct Settings {
     /// recorded (and for a copy that is not installed). No row in the page: a Luneterm-only
     /// bookkeeping field.
     pub update_channel: String,
+    /// The saved choice between the two views (file key `side_pane`): the side pane, or the top
+    /// bar. `None` is not decided yet: a file that has no key (and no file at all) reads so, and
+    /// [`crate::persist::Persist::load`] decides it once (D23: the pane on a new install, the top
+    /// bar on an upgraded one) and the app saves it. No row in the page: the toggle, the shortcut
+    /// and the app menu are its controls.
+    pub side_pane: Option<bool>,
+    /// The side pane's width, logical px (file key `side_pane_width`), within
+    /// [`MIN_PANE_WIDTH`]`..=`[`MAX_PANE_WIDTH`]; dragged at its right edge. No row in the page.
+    pub side_pane_width: u32,
 }
 
 impl Default for Settings {
@@ -249,9 +266,12 @@ impl Default for Settings {
             option_as_meta: false,
             copy_on_select: true,
             osc_notifications: true,
+            tab_control: true,
             efficiency_mode: true,
             auto_update_check: true,
             update_channel: String::new(),
+            side_pane: None,
+            side_pane_width: DEFAULT_PANE_WIDTH,
         }
     }
 }
@@ -289,7 +309,13 @@ impl Settings {
         fit(&mut self.shell, MAX_SHELL_BYTES, "");
         fit(&mut self.shell_args, MAX_SHELL_BYTES, "");
         fit(&mut self.default_cwd, crate::cwd::MAX_CWD_BYTES, "");
+        self.side_pane_width = self.side_pane_width.clamp(MIN_PANE_WIDTH, MAX_PANE_WIDTH);
         self
+    }
+
+    /// Whether the saved choice is the side pane (D23). A choice nobody made yet is the top bar.
+    pub fn pane_wanted(&self) -> bool {
+        self.side_pane.unwrap_or(false)
     }
 
     /// The OS material the glass style asks for; the default style takes the theme's: the
@@ -378,10 +404,13 @@ impl Settings {
             option_as_meta,
             copy_on_select,
             osc_notifications,
+            tab_control,
             efficiency_mode,
             auto_update_check,
-            // Bookkeeping, not a row of the page: it never counts as a change.
+            // Bookkeeping, not rows of the page: they never count as a change.
             update_channel: _,
+            side_pane: _,
+            side_pane_width: _,
         } = self;
         let flags = [
             (SettingId::Theme, *theme != other.theme),
@@ -441,6 +470,7 @@ impl Settings {
                 SettingId::OscNotifications,
                 *osc_notifications != other.osc_notifications,
             ),
+            (SettingId::TabControl, *tab_control != other.tab_control),
             (
                 SettingId::EfficiencyMode,
                 *efficiency_mode != other.efficiency_mode,
@@ -484,13 +514,14 @@ pub enum SettingId {
     OptionAsMeta,
     CopyOnSelect,
     OscNotifications,
+    TabControl,
     EfficiencyMode,
     AutoUpdateCheck,
 }
 
 impl SettingId {
     /// Every setting, in the order of the [`Settings`] fields.
-    pub const ALL: [SettingId; 26] = [
+    pub const ALL: [SettingId; 27] = [
         SettingId::Theme,
         SettingId::Glass,
         SettingId::MenuBlur,
@@ -515,6 +546,7 @@ impl SettingId {
         SettingId::OptionAsMeta,
         SettingId::CopyOnSelect,
         SettingId::OscNotifications,
+        SettingId::TabControl,
         SettingId::EfficiencyMode,
         SettingId::AutoUpdateCheck,
     ];
@@ -537,6 +569,7 @@ impl SettingId {
             SettingId::OptionAsMeta => Effect::OptionAsMeta,
             SettingId::CopyOnSelect => Effect::CopyOnSelect,
             SettingId::OscNotifications => Effect::OscNotifications,
+            SettingId::TabControl => Effect::TabControl,
             SettingId::EfficiencyMode => Effect::Efficiency,
             SettingId::AutoUpdateCheck => Effect::AutoUpdateCheck,
             SettingId::ConfirmClose => Effect::ConfirmClose,
@@ -582,6 +615,8 @@ pub enum Effect {
     CopyOnSelect,
     /// Nothing to do live: `pump` reads the field each time it handles a notification.
     OscNotifications,
+    /// Nothing to do live: the UI thread reads the field for each control request.
+    TabControl,
     /// The efficiency controller re-evaluates now (step 3).
     Efficiency,
     /// The app starts or stops its 24 h update timer (a check runs at once when it is switched
@@ -835,6 +870,7 @@ mod tests {
             (S::OptionAsMeta, E::OptionAsMeta),
             (S::CopyOnSelect, E::CopyOnSelect),
             (S::OscNotifications, E::OscNotifications),
+            (S::TabControl, E::TabControl),
             (S::EfficiencyMode, E::Efficiency),
             (S::AutoUpdateCheck, E::AutoUpdateCheck),
         ];
@@ -849,7 +885,7 @@ mod tests {
     #[test]
     fn changing_one_field_changes_exactly_its_id() {
         let d = Settings::default();
-        let cases: [(SettingId, Settings); 26] = [
+        let cases: [(SettingId, Settings); 27] = [
             (
                 SettingId::Theme,
                 Settings {
@@ -1015,6 +1051,13 @@ mod tests {
                 SettingId::OscNotifications,
                 Settings {
                     osc_notifications: false,
+                    ..d.clone()
+                },
+            ),
+            (
+                SettingId::TabControl,
+                Settings {
+                    tab_control: false,
                     ..d.clone()
                 },
             ),

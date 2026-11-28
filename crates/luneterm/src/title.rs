@@ -4,14 +4,17 @@
 
 /// The title when the child set none or nothing printable.
 pub const DEFAULT_TITLE: &str = "Luneterm";
-/// Lunegit's `ClampTitle` cap, in chars.
+/// Lunegit's `ClampTitle` cap, in chars: titles set by programs.
 pub const MAX_TITLE_CHARS: usize = 80;
+/// The longest tab name given by hand (the rename dialog, the saved workspace, `ctl --title`),
+/// in chars.
+pub const MAX_NAME_CHARS: usize = 128;
 /// At most this many input chars are looked at, whatever the title's length.
 pub const MAX_SCAN_CHARS: usize = 4096;
 
 /// A Unicode bidi control that can reorder the text around it: ALM, LRM, RLM, the embeddings and
 /// overrides (U+202A to U+202E) and the isolates (U+2066 to U+2069).
-fn is_bidi_control(c: char) -> bool {
+pub(crate) fn is_bidi_control(c: char) -> bool {
     matches!(
         c,
         '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
@@ -22,18 +25,24 @@ fn is_bidi_control(c: char) -> bool {
 /// trimmed, at most 80 chars, from at most the first 4,096 chars of `raw`; "Luneterm" when
 /// nothing is left.
 pub fn sanitize(raw: &str) -> String {
+    cleaned(raw, MAX_TITLE_CHARS).unwrap_or_else(|| DEFAULT_TITLE.to_owned())
+}
+
+/// A tab name given by hand: cleaned as [`sanitize`] does, at most [`MAX_NAME_CHARS`] chars;
+/// `None` when nothing is left. "Luneterm" is a name like any other.
+pub fn sanitize_name(raw: &str) -> Option<String> {
+    cleaned(raw, MAX_NAME_CHARS)
+}
+
+fn cleaned(raw: &str, max_chars: usize) -> Option<String> {
     let kept: String = raw
         .chars()
         .take(MAX_SCAN_CHARS)
         .filter(|c| !c.is_control() && !is_bidi_control(*c))
         .collect();
-    let capped: String = kept.trim().chars().take(MAX_TITLE_CHARS).collect();
-    let title = capped.trim_end();
-    if title.is_empty() {
-        DEFAULT_TITLE.to_owned()
-    } else {
-        title.to_owned()
-    }
+    let capped: String = kept.trim().chars().take(max_chars).collect();
+    let text = capped.trim_end();
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 /// The longest notification title kept, in chars (OSC 777 `notify` title).
@@ -128,6 +137,22 @@ mod tests {
         for raw in ["", "   ", "\u{1b}\u{7}", "\u{202E}\u{200F}", " \t\n "] {
             assert_eq!(sanitize(raw), DEFAULT_TITLE, "{raw:?}");
         }
+    }
+
+    #[test]
+    fn a_name_is_cleaned_like_a_title_and_capped_at_128_chars() {
+        assert_eq!(sanitize_name("  a\u{202E}b\nc "), Some("abc".to_owned()));
+        assert_eq!(sanitize_name(&"é".repeat(128)), Some("é".repeat(128)));
+        assert_eq!(sanitize_name(&"é".repeat(129)), Some("é".repeat(128)));
+        // The cap does not leave a trailing space.
+        let spaced = format!("{} {}", "a".repeat(127), "b".repeat(10));
+        assert_eq!(sanitize_name(&spaced), Some("a".repeat(127)));
+        for raw in ["", "   ", "\u{1b}\u{7}", "\u{202E}\u{200F}"] {
+            assert_eq!(sanitize_name(raw), None, "{raw:?}");
+        }
+        assert_eq!(sanitize_name(DEFAULT_TITLE), Some(DEFAULT_TITLE.to_owned()));
+        let past_the_scan = format!("{}visible", "\u{7}".repeat(MAX_SCAN_CHARS));
+        assert_eq!(sanitize_name(&past_the_scan), None);
     }
 
     #[test]

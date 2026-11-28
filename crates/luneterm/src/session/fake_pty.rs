@@ -40,6 +40,11 @@ pub(crate) struct Probe {
     release: (Mutex<bool>, Condvar),
 }
 
+/// A copy of what the child was sent.
+pub(crate) fn written(probe: &Probe) -> Vec<u8> {
+    lock(&probe.written).clone()
+}
+
 impl Probe {
     pub(crate) fn written_len(&self) -> usize {
         lock(&self.written).len()

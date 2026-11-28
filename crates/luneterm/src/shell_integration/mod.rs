@@ -39,7 +39,8 @@ use std::path::{Path, PathBuf};
 
 use crate::spawn::Os;
 
-const DIR_NAME: &str = "shell-integration";
+/// The directory of the scripts, in the config directory (a run that spawned a shell leaves it).
+pub(crate) const DIR_NAME: &str = "shell-integration";
 
 const ZSHENV: &str = include_str!("scripts/zshenv");
 const ZPROFILE: &str = include_str!("scripts/zprofile");

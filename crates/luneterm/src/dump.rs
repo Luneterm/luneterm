@@ -5,8 +5,12 @@
 //!
 //! The scenes are the shell with one default tab, and the tab strip, the close-confirm and rename
 //! dialogs and a failed start (M10 step 2), then the settings page in its sections, the menus, a
-//! palette switch and the opaque look Linux gets (step 6); a dialog or menu is drawn after its
-//! entry animation, and a menu or scroll the toolkit owns is driven with scripted input.
+//! palette switch and the opaque look Linux gets (step 6), and the tab menus with groups, the group
+//! editor and the close-group question in both looks, and the side pane: its frame and its tab list
+//! (groups, collapsed cards, unread marks, progress, a running command's cue on the card, a long
+//! list, the menus asked from it, and drags of its rows and cards held in mid-air). A dialog or
+//! menu is drawn after its entry animation, and a menu, scroll or drag the toolkit owns is driven
+//! with scripted input.
 //!
 //! The fonts are the window's, system fonts included (the demo has an emoji), so the PNGs are
 //! reproducible on one machine and may differ between machines.
@@ -23,24 +27,28 @@ use lune_ui::paint::Rect;
 use lune_ui::text::TextRendering;
 use lune_ui::widgets::menu::MenuPlace;
 use lune_ui::widgets::popover::{PlaceAlign, Side};
+use lune_ui::widgets::tab_strip::BusyCue;
 use lune_ui::widgets::toast::Toasts;
 use lune_ui::widgets::tone::Tone;
 
 use crate::app::failure_grid;
 use crate::demo::{demo_cursor, demo_grid};
 use crate::fonts;
+use crate::groups::{GroupColor, GroupId};
 use crate::links;
-use crate::menus::{MenuKind, MenuModel};
+use crate::menus::{self, MenuGroups, MenuKind, MenuModel, MenuStep};
 use crate::notices::{Admit, Inbox, TOAST_LIFE, ToastSlots};
-use crate::render::{Content, InboxDraw, LinkTip, MenuDraw, Renderer};
+use crate::pane::{self, PaneEvent, PaneList};
+use crate::render::{Content, InboxDraw, LinkTip, MenuDraw, MenusDraw, Renderer};
+use crate::settings::{DEFAULT_PANE_WIDTH, MAX_PANE_WIDTH, MIN_PANE_WIDTH};
 use crate::settings::{Settings, Theme};
 use crate::settings_page::{PageState, PageView, Section};
 use crate::shell::{
-    HOST, InboxButton, InboxList, Layout, Modal, NoticeTexts, ScrollView, StripTab, TAB_CLOSABLE,
-    notice_toast,
+    CLOSE_SESSION_TITLE, Chrome, HOST, InboxButton, InboxList, Layout, Modal, NoticeTexts,
+    ScrollView, StripTab, TAB_CLOSABLE, WINDOWS_CHROME, close_group_message, notice_toast,
 };
 use crate::spawn::SpawnFailure;
-use crate::tabs::confirm_message;
+use crate::tabs::{TabSet, confirm_message};
 use crate::update::{Unavailable, UpdateState};
 
 /// The offscreen colour format (the surface's preferred one).
@@ -56,6 +64,19 @@ enum Overlay {
     Confirm(usize),
     /// The rename dialog with this text in its field.
     Rename(&'static str),
+    /// The group editor, new or editing, with this name and colour among the other groups
+    /// `taken`.
+    GroupEditor {
+        editing: bool,
+        name: &'static str,
+        color: GroupColor,
+        taken: &'static [&'static str],
+    },
+    /// The question before the group `name` and its `tabs` tabs are closed.
+    CloseGroup {
+        name: &'static str,
+        tabs: usize,
+    },
 }
 
 /// One notice a scene's inbox receives, for the tab at this index (the real `Inbox` calls, so the
@@ -225,7 +246,11 @@ const LINK_TEXT: &str = "see https://example.com/docs/getting-started?lang=en fo
 #[derive(Debug, Clone, Copy)]
 enum Input {
     Move(f32, f32),
+    /// The pointer comes to the point and the primary button goes down, and stays down.
+    Press(f32, f32),
     SecondaryClick(f32, f32),
+    /// The pointer comes to the point and the primary button goes down and up.
+    Click(f32, f32),
     /// A wheel of `y` lines with the pointer at the point.
     Wheel(f32, f32, f32),
 }
@@ -235,6 +260,15 @@ impl Input {
         let mods = Modifiers::default();
         match self {
             Input::Move(x, y) => vec![Event::PointerMoved { pos: (x, y) }],
+            Input::Press(x, y) => vec![
+                Event::PointerMoved { pos: (x, y) },
+                Event::PointerButton {
+                    pos: (x, y),
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: mods,
+                },
+            ],
             Input::SecondaryClick(x, y) => ["press", "release"]
                 .iter()
                 .map(|k| Event::PointerButton {
@@ -244,12 +278,46 @@ impl Input {
                     modifiers: mods,
                 })
                 .collect(),
+            Input::Click(x, y) => std::iter::once(Event::PointerMoved { pos: (x, y) })
+                .chain([true, false].map(|pressed| Event::PointerButton {
+                    pos: (x, y),
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: mods,
+                }))
+                .collect(),
             Input::Wheel(x, y, lines) => vec![Event::Scroll {
                 pos: (x, y),
                 delta: ScrollDelta::Lines { x: 0.0, y: lines },
                 modifiers: mods,
             }],
         }
+    }
+}
+
+/// A group of a pane list scene: its name, colour and collapsed flag, and its tabs (the index of
+/// the first and how many).
+#[derive(Debug, Clone, Copy)]
+struct DumpGroup {
+    name: &'static str,
+    color: GroupColor,
+    collapsed: bool,
+    tabs: (usize, usize),
+}
+
+/// A group of a list scene.
+const fn dump_group(
+    name: &'static str,
+    color: GroupColor,
+    collapsed: bool,
+    first: usize,
+    count: usize,
+) -> DumpGroup {
+    DumpGroup {
+        name,
+        color,
+        collapsed,
+        tabs: (first, count),
     }
 }
 
@@ -272,6 +340,8 @@ struct Scene {
     look: Theme,
     page: Option<PageScene>,
     menu: MenuScene,
+    /// The open groups a tab menu shows, and the index of the group of the menu's tab.
+    menu_groups: (&'static [&'static str], Option<usize>),
     /// The terminal palette, by name.
     palette: &'static str,
     /// Input at the start of frame `.0`.
@@ -286,11 +356,40 @@ struct Scene {
     /// Each message of `notices` also earns a notification toast, pushed through the app's own
     /// path (the slots, then `notice_toast`).
     toasts: bool,
-    /// The tab (index) that shows an OSC 9;4 progress report, if any.
-    progress: Option<usize>,
+    /// The tabs (by index) that show an OSC 9;4 progress report, with its tone.
+    progress: &'static [(usize, Tone)],
+    /// The cue the outline runs, as for an active tab with a running command.
+    busy: Option<BusyCue>,
     /// A full inbox (the header button, and the list when open); the clock is [`INBOX_NOW`].
     inbox: Option<InboxScene>,
+    /// The saved choice is the side pane, this wide; `None` is the top bar.
+    pane: Option<u32>,
+    /// The pane's tab list and the groups in it; `None` draws the pane's frame with no list.
+    list: Option<&'static [DumpGroup]>,
+    /// The chrome the frame is drawn with.
+    chrome: Chrome,
+    /// The window's width, logical px (its height is [`SIZE`]'s).
+    width: u32,
 }
+
+/// The pane at its default width.
+const PANE: Option<u32> = Some(DEFAULT_PANE_WIDTH);
+
+/// The inbox with what the scene's notices put in it: the footer bell, the list closed.
+const NOTICE_BELL: Option<InboxScene> = Some(InboxScene {
+    fill: |_| {},
+    open: false,
+    scroll: 0.0,
+    ring_ago_ms: None,
+});
+
+/// The mockup's four rows, the list open.
+const FOUR_OPEN: Option<InboxScene> = Some(InboxScene {
+    fill: fill_four,
+    open: true,
+    scroll: 0.0,
+    ring_ago_ms: None,
+});
 
 /// 200 lines of history above a 35-line screen, scrolled to the middle: the thumb shows.
 const SCROLLED: ScrollView = ScrollView {
@@ -307,6 +406,15 @@ const MANY: &[&str] = &[
 const LONG: &[&str] =
     &["A tab title far longer than the widest tab the strip will ever draw for it, 80 chars!!"];
 
+/// Open groups of a menu scene, one with a name past what a menu row shows.
+const MENU_GROUPS: &[&str] = &[
+    "api",
+    "orch: a very long group name that runs well past sixty chars!!!",
+    "infra",
+];
+/// A group's name at its longest, with no space to break at.
+const LONGEST_NAME: &str = "orchestration-worktree-tab-groups-and-control-implementer-batch1";
+
 const ATTENTION: &[SceneNotice] = &[
     SceneNotice::Bell(1),
     SceneNotice::Message(2, "Claude Code", "Claude needs your permission to use Bash"),
@@ -318,6 +426,166 @@ const TOAST: &[SceneNotice] = &[SceneNotice::Message(
     "Claude needs your permission to use Bash",
 )];
 const TOAST_PLAIN: &[SceneNotice] = &[SceneNotice::Message(2, "", "Build finished: 1342 passed")];
+
+/// The tabs of the pane list scenes, mock F's: a loose tab, then three groups.
+const MOCK_TABS: &[&str] = &["zsh", "server", "logs", "claude", "web", "worker", "deploy"];
+const MOCK_GROUPS: &[DumpGroup] = &[
+    dump_group("api", GroupColor::Blue, false, 1, 3),
+    dump_group("orch: shop", GroupColor::Pink, false, 4, 2),
+    dump_group("infra", GroupColor::Yellow, true, 6, 1),
+];
+/// An unread member of an expanded card (`claude`) and of the collapsed one (`deploy`).
+const MOCK_NOTICES: &[SceneNotice] = &[SceneNotice::Bell(3), SceneNotice::Bell(6)];
+/// The scene of mock F: `server` active.
+const MOCK: Scene = Scene {
+    tabs: MOCK_TABS,
+    active: 1,
+    notices: MOCK_NOTICES,
+    inbox: NOTICE_BELL,
+    pane: PANE,
+    list: Some(MOCK_GROUPS),
+    ..BASE
+};
+/// Two loose tabs (the second's title 80 chars long), then one collapsed card of each colour, each
+/// with an unread member; the first card's name is 64 chars long.
+const COLOR_TABS: &[&str] = &[
+    "zsh",
+    "cargo test --workspace --all-features -- --nocapture 2>&1 | tee target/run.log &",
+    "build",
+    "server",
+    "publish",
+    "deploy",
+    "watch",
+    "web",
+    "notes",
+    "etl",
+    "rollout",
+];
+const COLOR_GROUPS: &[DumpGroup] = &[
+    dump_group(LONGEST_NAME, GroupColor::Grey, true, 2, 1),
+    dump_group("api", GroupColor::Blue, true, 3, 1),
+    dump_group("release", GroupColor::Red, true, 4, 1),
+    dump_group("infra", GroupColor::Yellow, true, 5, 1),
+    dump_group("tests", GroupColor::Green, true, 6, 1),
+    dump_group("orch: shop", GroupColor::Pink, true, 7, 1),
+    dump_group("docs", GroupColor::Purple, true, 8, 1),
+    dump_group("data", GroupColor::Cyan, true, 9, 1),
+    dump_group("deploy", GroupColor::Orange, true, 10, 1),
+];
+const COLOR_NOTICES: &[SceneNotice] = &[
+    SceneNotice::Bell(2),
+    SceneNotice::Bell(3),
+    SceneNotice::Bell(4),
+    SceneNotice::Bell(5),
+    SceneNotice::Bell(6),
+    SceneNotice::Bell(7),
+    SceneNotice::Bell(8),
+    SceneNotice::Bell(9),
+    SceneNotice::Bell(10),
+];
+const COLORS: Scene = Scene {
+    tabs: COLOR_TABS,
+    notices: COLOR_NOTICES,
+    inbox: NOTICE_BELL,
+    pane: PANE,
+    list: Some(COLOR_GROUPS),
+    ..BASE
+};
+/// Sixty tabs in ten expanded groups, the active one deep in the list.
+const SIXTY_TABS: &[&str] = &[
+    "tab 1", "tab 2", "tab 3", "tab 4", "tab 5", "tab 6", "tab 7", "tab 8", "tab 9", "tab 10",
+    "tab 11", "tab 12", "tab 13", "tab 14", "tab 15", "tab 16", "tab 17", "tab 18", "tab 19",
+    "tab 20", "tab 21", "tab 22", "tab 23", "tab 24", "tab 25", "tab 26", "tab 27", "tab 28",
+    "tab 29", "tab 30", "tab 31", "tab 32", "tab 33", "tab 34", "tab 35", "tab 36", "tab 37",
+    "tab 38", "tab 39", "tab 40", "tab 41", "tab 42", "tab 43", "tab 44", "tab 45", "tab 46",
+    "tab 47", "tab 48", "tab 49", "tab 50", "tab 51", "tab 52", "tab 53", "tab 54", "tab 55",
+    "tab 56", "tab 57", "tab 58", "tab 59", "tab 60",
+];
+const SIXTY_GROUPS: &[DumpGroup] = &[
+    dump_group("area 1", GroupColor::Grey, false, 0, 6),
+    dump_group("area 2", GroupColor::Blue, false, 6, 6),
+    dump_group("area 3", GroupColor::Red, false, 12, 6),
+    dump_group("area 4", GroupColor::Yellow, false, 18, 6),
+    dump_group("area 5", GroupColor::Green, false, 24, 6),
+    dump_group("area 6", GroupColor::Pink, false, 30, 6),
+    dump_group("area 7", GroupColor::Purple, false, 36, 6),
+    dump_group("area 8", GroupColor::Cyan, false, 42, 6),
+    dump_group("area 9", GroupColor::Orange, false, 48, 6),
+    dump_group("area 10", GroupColor::Blue, false, 54, 6),
+];
+/// A progress report in a loose tab and in two members, one tone each.
+const SHINES: &[(usize, Tone)] = &[(0, Tone::Neutral), (4, Tone::Warn), (5, Tone::Err)];
+/// Three cards over a run of loose tabs that reaches the bottom of the list.
+const LOW_TABS: &[&str] = &[
+    "zsh", "server", "logs", "claude", "web", "worker", "deploy", "notes", "build", "db", "docs",
+    "ssh", "htop", "vim", "tail",
+];
+const LOW_GROUPS: &[DumpGroup] = &[
+    dump_group("api", GroupColor::Blue, false, 1, 3),
+    dump_group("orch: shop", GroupColor::Pink, true, 4, 2),
+    dump_group("infra", GroupColor::Yellow, true, 6, 1),
+];
+/// The tab menu of the last loose tab (`tail`), which flips above the pointer, then its `Add Tab
+/// to Group` row: the submenu would cross the window's bottom, so it is shifted up beside it.
+const OPEN_PANE_SUBMENU: &[(usize, Input)] = &[
+    (1, Input::Move(110.0, 579.0)),
+    (1, Input::SecondaryClick(110.0, 579.0)),
+    (2, Input::Move(210.0, 559.0)),
+    (3, Input::Click(210.0, 559.0)),
+];
+
+/// Points of mock F's list: over the `logs` row, and over the `api` card's header.
+const OVER_LOGS_ROW: (f32, f32) = (110.0, 155.0);
+const OVER_API_HEADER: (f32, f32) = (110.0, 90.0);
+
+/// Drags of mock F's list: the press in the second frame, the pointer held where the third
+/// takes it. `logs` to the end of its card; `zsh` between the `orch: shop` and `infra` cards;
+/// `logs` over the collapsed `infra` header; the `orch: shop` card by its header to above `api`,
+/// and over `api`'s rows, where nothing may drop; and `logs` into the gap under its card.
+const DRAG_WITHIN: &[(usize, Input)] = &drag((110.0, 155.0), (110.0, 196.0));
+const DRAG_LOOSE: &[(usize, Input)] = &drag((110.0, 50.0), (110.0, 318.0));
+const DRAG_INTO: &[(usize, Input)] = &drag((110.0, 155.0), (110.0, 339.0));
+const DRAG_CARD: &[(usize, Input)] = &drag((110.0, 231.0), (110.0, 80.0));
+const DRAG_REFUSED: &[(usize, Input)] = &drag((110.0, 231.0), (110.0, 155.0));
+const DRAG_OUT: &[(usize, Input)] = &drag((110.0, 155.0), (110.0, 210.0));
+
+const fn drag(from: (f32, f32), to: (f32, f32)) -> [(usize, Input); 2] {
+    [
+        (1, Input::Press(from.0, from.1)),
+        (2, Input::Move(to.0, to.1)),
+    ]
+}
+
+/// A press on a row activates its tab, so a dragged tab is the active one; a press on a header
+/// activates nothing (mock F's `server` stays).
+const D1: Scene = Scene {
+    active: 2,
+    script: DRAG_WITHIN,
+    ..MOCK
+};
+const D2: Scene = Scene {
+    active: 0,
+    script: DRAG_LOOSE,
+    ..MOCK
+};
+const D3: Scene = Scene {
+    active: 2,
+    script: DRAG_INTO,
+    ..MOCK
+};
+const D4: Scene = Scene {
+    script: DRAG_CARD,
+    ..MOCK
+};
+const D5: Scene = Scene {
+    script: DRAG_REFUSED,
+    ..MOCK
+};
+const D6: Scene = Scene {
+    active: 2,
+    script: DRAG_OUT,
+    ..MOCK
+};
 
 const BASE: Scene = Scene {
     name: "",
@@ -332,14 +600,20 @@ const BASE: Scene = Scene {
     look: Theme::Luneterm,
     page: None,
     menu: MenuScene::None,
+    menu_groups: (&[], None),
     palette: "One Dark",
     script: &[],
     selected: false,
     link: None,
     notices: &[],
     toasts: false,
-    progress: None,
+    progress: &[],
+    busy: None,
     inbox: None,
+    pane: None,
+    list: None,
+    chrome: HOST,
+    width: SIZE.0 as u32,
 };
 
 const fn page(section: Section) -> Option<PageScene> {
@@ -367,8 +641,24 @@ const DUMP_SYSTEM_FONTS: [&str; 3] = ["Cascadia Code", "JetBrains Mono", "Menlo"
 const OVER_PAGE: (f32, f32) = (600.0, 300.0);
 /// The second tab (`cargo build`, index 1) of the strip.
 const OVER_TAB: (f32, f32) = (170.0, 50.0);
+/// The tab menu opened at [`OVER_TAB`], its `Add Tab to Group` row clicked once it is there.
+const OPEN_SUBMENU: &[(usize, Input)] = &[
+    (1, Input::Move(OVER_TAB.0, OVER_TAB.1)),
+    (1, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
+    (2, Input::Move(OVER_TAB.0 + 100.0, 249.0)),
+    (3, Input::Click(OVER_TAB.0 + 100.0, 249.0)),
+];
+/// The same on the last tab of a window of the least width, where the submenu has no room on the
+/// right of its row.
+const NARROW: u32 = 560;
+const OPEN_SUBMENU_FLIPPED: &[(usize, Input)] = &[
+    (1, Input::Move(400.0, OVER_TAB.1)),
+    (1, Input::SecondaryClick(400.0, OVER_TAB.1)),
+    (2, Input::Move(450.0, 249.0)),
+    (3, Input::Click(450.0, 249.0)),
+];
 
-const SCENES: [Scene; 62] = [
+const SCENES: &[Scene] = &[
     Scene {
         name: "shell@1x.png",
         scale: 1,
@@ -702,7 +992,7 @@ const SCENES: [Scene; 62] = [
         name: "tabs-attention@2x.png",
         tabs: FOUR,
         notices: ATTENTION,
-        progress: Some(2),
+        progress: &[(2, Tone::Neutral)],
         ..BASE
     },
     Scene {
@@ -710,7 +1000,7 @@ const SCENES: [Scene; 62] = [
         tabs: FOUR,
         look: Theme::Lunegit,
         notices: ATTENTION,
-        progress: Some(2),
+        progress: &[(2, Tone::Neutral)],
         ..BASE
     },
     // The notification toast: a message from the third tab while the first is in view (the
@@ -828,6 +1118,547 @@ const SCENES: [Scene; 62] = [
         }),
         ..BASE
     },
+    Scene {
+        name: "menu-tab-ungrouped@2x.png",
+        tabs: FOUR,
+        menu_groups: (MENU_GROUPS, None),
+        script: &[
+            (1, Input::Move(OVER_TAB.0, OVER_TAB.1)),
+            (1, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
+        ],
+        ..BASE
+    },
+    Scene {
+        name: "menu-tab-grouped@2x.png",
+        tabs: FOUR,
+        menu_groups: (MENU_GROUPS, Some(0)),
+        script: &[
+            (1, Input::Move(OVER_TAB.0, OVER_TAB.1)),
+            (1, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
+        ],
+        ..BASE
+    },
+    // The tab menu with its submenu of groups beside it and, with no room there, on its left.
+    Scene {
+        name: "menu-tab-submenu@2x.png",
+        tabs: FOUR,
+        menu_groups: (MENU_GROUPS, Some(0)),
+        script: OPEN_SUBMENU,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-menu-tab-submenu@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        menu_groups: (MENU_GROUPS, Some(0)),
+        script: OPEN_SUBMENU,
+        ..BASE
+    },
+    Scene {
+        name: "menu-tab-submenu-flipped@2x.png",
+        tabs: FOUR,
+        menu_groups: (MENU_GROUPS, Some(0)),
+        script: OPEN_SUBMENU_FLIPPED,
+        width: NARROW,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-menu-tab-submenu-flipped@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        menu_groups: (MENU_GROUPS, Some(0)),
+        script: OPEN_SUBMENU_FLIPPED,
+        width: NARROW,
+        ..BASE
+    },
+    Scene {
+        name: "group-new@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::GroupEditor {
+            editing: false,
+            name: "Group 1",
+            color: GroupColor::Grey,
+            taken: &[],
+        },
+        ..BASE
+    },
+    Scene {
+        name: "group-edit@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::GroupEditor {
+            editing: true,
+            name: "api",
+            color: GroupColor::Purple,
+            taken: &["orch: shop"],
+        },
+        ..BASE
+    },
+    Scene {
+        name: "group-invalid@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::GroupEditor {
+            editing: false,
+            name: "api",
+            color: GroupColor::Blue,
+            taken: &["api"],
+        },
+        ..BASE
+    },
+    Scene {
+        name: "group-close@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::CloseGroup {
+            name: "api",
+            tabs: 3,
+        },
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-menu-tab-ungrouped@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        menu_groups: (MENU_GROUPS, None),
+        script: &[
+            (1, Input::Move(OVER_TAB.0, OVER_TAB.1)),
+            (1, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
+        ],
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-menu-tab-grouped@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        menu_groups: (MENU_GROUPS, Some(0)),
+        script: &[
+            (1, Input::Move(OVER_TAB.0, OVER_TAB.1)),
+            (1, Input::SecondaryClick(OVER_TAB.0, OVER_TAB.1)),
+        ],
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-group-new@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        overlay: Overlay::GroupEditor {
+            editing: false,
+            name: "Group 1",
+            color: GroupColor::Grey,
+            taken: &[],
+        },
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-group-edit@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        overlay: Overlay::GroupEditor {
+            editing: true,
+            name: "api",
+            color: GroupColor::Purple,
+            taken: &["orch: shop"],
+        },
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-group-invalid@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        overlay: Overlay::GroupEditor {
+            editing: false,
+            name: "api",
+            color: GroupColor::Blue,
+            taken: &["api"],
+        },
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-group-close@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        overlay: Overlay::CloseGroup {
+            name: "api",
+            tabs: 3,
+        },
+        ..BASE
+    },
+    Scene {
+        name: "group-close-long@2x.png",
+        tabs: FOUR,
+        overlay: Overlay::CloseGroup {
+            name: LONGEST_NAME,
+            tabs: 1,
+        },
+        ..BASE
+    },
+    // The side pane view (the frame: header, footer, the empty list): both looks, the footer with
+    // and without the bell, the menus opening upward from it, Windows chrome, opaque, the settings
+    // page in the card, and the width's two limits.
+    Scene {
+        name: "pane@2x.png",
+        tabs: FOUR,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-pane@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "pane-inbox@2x.png",
+        tabs: FOUR,
+        notices: ATTENTION,
+        inbox: NOTICE_BELL,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-pane-inbox@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        notices: ATTENTION,
+        inbox: NOTICE_BELL,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "pane-menu-app@2x.png",
+        tabs: FOUR,
+        menu: MenuScene::App,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "pane-inbox-open@2x.png",
+        tabs: FOUR,
+        inbox: FOUR_OPEN,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "pane-windows@2x.png",
+        tabs: FOUR,
+        pane: PANE,
+        chrome: WINDOWS_CHROME,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-pane-windows@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        pane: PANE,
+        chrome: WINDOWS_CHROME,
+        ..BASE
+    },
+    Scene {
+        name: "pane-opaque@2x.png",
+        tabs: FOUR,
+        glass: false,
+        notices: ATTENTION,
+        inbox: NOTICE_BELL,
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "pane-settings@2x.png",
+        tabs: FOUR,
+        notices: ATTENTION,
+        inbox: NOTICE_BELL,
+        page: page(Section::Appearance),
+        pane: PANE,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-pane-200@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        notices: ATTENTION,
+        inbox: NOTICE_BELL,
+        pane: Some(MIN_PANE_WIDTH),
+        ..BASE
+    },
+    Scene {
+        name: "pane-420@2x.png",
+        tabs: FOUR,
+        notices: ATTENTION,
+        inbox: NOTICE_BELL,
+        pane: Some(MAX_PANE_WIDTH),
+        ..BASE
+    },
+    // The top bar with the drawn caption buttons, its show button at the band's left, and the
+    // window one pixel too narrow for the pane that is the saved choice (no show button).
+    Scene {
+        name: "bar-windows@2x.png",
+        tabs: FOUR,
+        notices: ATTENTION,
+        progress: &[(2, Tone::Neutral)],
+        chrome: WINDOWS_CHROME,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-bar-windows@2x.png",
+        tabs: FOUR,
+        look: Theme::Lunegit,
+        notices: ATTENTION,
+        progress: &[(2, Tone::Neutral)],
+        chrome: WINDOWS_CHROME,
+        ..BASE
+    },
+    Scene {
+        name: "bar-narrow@2x.png",
+        tabs: FOUR,
+        notices: ATTENTION,
+        progress: &[(2, Tone::Neutral)],
+        pane: PANE,
+        width: 737,
+        ..BASE
+    },
+    // The side pane's tab list: mock F in both looks, opaque and at 1x, the active tab in a
+    // collapsed card, a hovered row, every colour collapsed with unread members, a long scrolled
+    // list, progress shines, and the card's and a row's menus.
+    Scene {
+        name: "pane-list@2x.png",
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list@1x.png",
+        scale: 1,
+        ..MOCK
+    },
+    Scene {
+        name: "lunegit-pane-list@2x.png",
+        look: Theme::Lunegit,
+        ..MOCK
+    },
+    Scene {
+        name: "lunegit-pane-list@1x.png",
+        scale: 1,
+        look: Theme::Lunegit,
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list-opaque@2x.png",
+        glass: false,
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list-collapsed-active@2x.png",
+        active: 6,
+        notices: &[SceneNotice::Bell(3)],
+        ..MOCK
+    },
+    Scene {
+        name: "lunegit-pane-list-collapsed-active@2x.png",
+        active: 6,
+        notices: &[SceneNotice::Bell(3)],
+        look: Theme::Lunegit,
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list-hover@2x.png",
+        script: &[(1, Input::Move(OVER_LOGS_ROW.0, OVER_LOGS_ROW.1))],
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list-colors@2x.png",
+        ..COLORS
+    },
+    Scene {
+        name: "lunegit-pane-list-colors@2x.png",
+        look: Theme::Lunegit,
+        ..COLORS
+    },
+    Scene {
+        name: "pane-list-colors-opaque@2x.png",
+        glass: false,
+        ..COLORS
+    },
+    Scene {
+        name: "pane-list-long@2x.png",
+        tabs: SIXTY_TABS,
+        active: 45,
+        notices: &[SceneNotice::Bell(43)],
+        inbox: NOTICE_BELL,
+        pane: PANE,
+        list: Some(SIXTY_GROUPS),
+        ..BASE
+    },
+    // The same list under the pointer: the scroll thumb in its gutter.
+    Scene {
+        name: "pane-list-long-hover@2x.png",
+        tabs: SIXTY_TABS,
+        active: 45,
+        notices: &[SceneNotice::Bell(43)],
+        inbox: NOTICE_BELL,
+        pane: PANE,
+        list: Some(SIXTY_GROUPS),
+        script: &[(1, Input::Move(OVER_LOGS_ROW.0, OVER_LOGS_ROW.1))],
+        ..BASE
+    },
+    Scene {
+        name: "pane-list-shine@2x.png",
+        progress: SHINES,
+        ..MOCK
+    },
+    Scene {
+        name: "lunegit-pane-list-shine@2x.png",
+        progress: SHINES,
+        look: Theme::Lunegit,
+        ..MOCK
+    },
+    // The pane view with a running command in the active tab: the cue on the card's outline
+    // (D37), the sweep and the breath, at the last frame's time.
+    Scene {
+        name: "pane-busy-sweep@2x.png",
+        busy: Some(BusyCue::Sweep),
+        ..MOCK
+    },
+    Scene {
+        name: "lunegit-pane-busy-sweep@2x.png",
+        busy: Some(BusyCue::Sweep),
+        look: Theme::Lunegit,
+        ..MOCK
+    },
+    Scene {
+        name: "pane-busy-breath@2x.png",
+        busy: Some(BusyCue::Breath),
+        ..MOCK
+    },
+    Scene {
+        name: "lunegit-pane-busy-breath@2x.png",
+        busy: Some(BusyCue::Breath),
+        look: Theme::Lunegit,
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list-menu-group@2x.png",
+        script: &[
+            (1, Input::Move(OVER_API_HEADER.0, OVER_API_HEADER.1)),
+            (
+                1,
+                Input::SecondaryClick(OVER_API_HEADER.0, OVER_API_HEADER.1),
+            ),
+        ],
+        ..MOCK
+    },
+    Scene {
+        name: "pane-list-menu-tab@2x.png",
+        script: &[
+            (1, Input::Move(OVER_LOGS_ROW.0, OVER_LOGS_ROW.1)),
+            (1, Input::SecondaryClick(OVER_LOGS_ROW.0, OVER_LOGS_ROW.1)),
+        ],
+        ..MOCK
+    },
+    // A pane row's tab menu low in the window, its submenu open beside it.
+    Scene {
+        name: "pane-menu-tab-submenu@2x.png",
+        tabs: LOW_TABS,
+        pane: PANE,
+        list: Some(LOW_GROUPS),
+        script: OPEN_PANE_SUBMENU,
+        active: 1,
+        ..BASE
+    },
+    Scene {
+        name: "lunegit-pane-menu-tab-submenu@2x.png",
+        tabs: LOW_TABS,
+        pane: PANE,
+        list: Some(LOW_GROUPS),
+        script: OPEN_PANE_SUBMENU,
+        active: 1,
+        look: Theme::Lunegit,
+        ..BASE
+    },
+    // Drags held in mid-air (D24), at 2x and 1x.
+    Scene {
+        name: "pane-drag-d1@2x.png",
+        ..D1
+    },
+    Scene {
+        name: "lunegit-pane-drag-d1@2x.png",
+        look: Theme::Lunegit,
+        ..D1
+    },
+    Scene {
+        name: "pane-drag-d1@1x.png",
+        scale: 1,
+        ..D1
+    },
+    Scene {
+        name: "lunegit-pane-drag-d1@1x.png",
+        scale: 1,
+        look: Theme::Lunegit,
+        ..D1
+    },
+    Scene {
+        name: "pane-drag-d2@2x.png",
+        ..D2
+    },
+    Scene {
+        name: "pane-drag-d2@1x.png",
+        scale: 1,
+        ..D2
+    },
+    Scene {
+        name: "pane-drag-d3@2x.png",
+        ..D3
+    },
+    Scene {
+        name: "lunegit-pane-drag-d3@2x.png",
+        look: Theme::Lunegit,
+        ..D3
+    },
+    Scene {
+        name: "pane-drag-d3@1x.png",
+        scale: 1,
+        ..D3
+    },
+    Scene {
+        name: "lunegit-pane-drag-d3@1x.png",
+        scale: 1,
+        look: Theme::Lunegit,
+        ..D3
+    },
+    Scene {
+        name: "pane-drag-d4@2x.png",
+        ..D4
+    },
+    Scene {
+        name: "lunegit-pane-drag-d4@2x.png",
+        look: Theme::Lunegit,
+        ..D4
+    },
+    Scene {
+        name: "pane-drag-d4@1x.png",
+        scale: 1,
+        ..D4
+    },
+    Scene {
+        name: "lunegit-pane-drag-d4@1x.png",
+        scale: 1,
+        look: Theme::Lunegit,
+        ..D4
+    },
+    Scene {
+        name: "pane-drag-d5@2x.png",
+        ..D5
+    },
+    Scene {
+        name: "pane-drag-d5@1x.png",
+        scale: 1,
+        ..D5
+    },
+    Scene {
+        name: "pane-drag-d6@2x.png",
+        ..D6
+    },
+    Scene {
+        name: "pane-drag-d6@1x.png",
+        scale: 1,
+        ..D6
+    },
 ];
 
 /// How long before the last frame the ring scene's ring started: the first peak of the swing.
@@ -890,7 +1721,7 @@ pub fn dump_frames_gated_text(
     let mut written = Vec::new();
     for scene in SCENES {
         let path = dir.join(scene.name);
-        let alpha = dump_scene(&mut renderer, &scene, &path)
+        let alpha = dump_scene(&mut renderer, scene, &path)
             .map_err(|e| DumpError::Failed(format!("{}: {e}", scene.name)))?;
         eprintln!("dumped {}", scene.name);
         written.push((path, alpha));
@@ -902,6 +1733,20 @@ pub fn dump_frames_gated_text(
 /// the last, after the focus animations, is the picture. A scene's clock starts at zero on a fresh UI
 /// state, so a scene cannot show what an earlier one left behind.
 const FRAME_TIMES_MS: [u64; 4] = [0, 800, 1600, 2400];
+/// The frames of a scene that clicks a menu's row: two more, one in which what the pick opens
+/// starts (and the picked menu starts to leave), one with it settled.
+const CLICK_FRAME_TIMES_MS: [u64; 6] = [0, 800, 1600, 2400, 3200, 4000];
+
+/// The groups a menu about group `own` shows, from a scene's set.
+fn set_groups(set: &TabSet<()>, own: Option<GroupId>) -> MenuGroups {
+    MenuGroups {
+        own,
+        open: set
+            .groups()
+            .map(|(g, group)| (g, group.name.clone()))
+            .collect(),
+    }
+}
 
 /// Draws `scene` into a fresh target, warming up first as the toolkit's own dump does, and writes
 /// the last frame.
@@ -910,8 +1755,14 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     r.set_glass(scene.glass, scene.look);
     r.set_term_theme(crate::palettes::theme_of(scene.palette));
     let scale = scene.scale as f32;
-    let size = (SIZE.0 as u32 * scene.scale, SIZE.1 as u32 * scene.scale);
-    let (cols, rows) = r.grid_size(SIZE, scale);
+    let window = (scene.width as f32, SIZE.1);
+    let size = (scene.width * scene.scale, SIZE.1 as u32 * scene.scale);
+    let pane_width = scene.pane.unwrap_or(DEFAULT_PANE_WIDTH);
+    r.set_pane(scene.pane.is_some(), pane_width);
+    let placement = r.place_for(window, scale, scene.chrome).placement;
+    let (cols, rows) = (placement.cols, placement.rows);
+    let view_kind = pane::resolve(scene.pane.is_some(), pane_width, window.0, scene.chrome);
+    let layout = Layout::for_view(Rect::new(0.0, 0.0, window.0, window.1), false, view_kind);
     let failure = SpawnFailure {
         kind: std::io::ErrorKind::NotFound,
         program: "pwsh.exe".to_owned(),
@@ -936,11 +1787,10 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         let uris = links::UriTable::new();
         let span = links::link_at(&grid, LINK_ROW, LINK_COL + 8, &uris)
             .ok_or("the demo URL is not a link")?;
-        let rect = r.place(SIZE, scale).grid_layout().cell_rect(
-            span.row,
-            span.start,
-            span.end + 1 - span.start,
-        );
+        let rect = r
+            .place_for(window, scale, scene.chrome)
+            .grid_layout()
+            .cell_rect(span.row, span.start, span.end + 1 - span.start);
         let url = links::tip_url(&span.uri).ok_or("the demo URL does not pass the check")?;
         let (hover, id) = links::Hover::show(span, &mut grid);
         link_hover = Some((hover, id));
@@ -974,10 +1824,32 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         .map(|(i, title)| StripTab {
             id: i as u64 + 1,
             title,
-            progress: (scene.progress == Some(i)).then_some(Tone::Neutral),
+            progress: scene
+                .progress
+                .iter()
+                .find(|(tab, _)| *tab == i)
+                .map(|(_, tone)| *tone),
             attention: inbox.tab_unread(i as u64 + 1) > 0 && i != active,
         })
         .collect();
+    // The pane list's rows, through the app's own set and row builder: the set gives the same
+    // tabs the ids of the strip.
+    let mut set: TabSet<()> = TabSet::new();
+    for _ in titles {
+        set.push(());
+    }
+    for group in scene.list.unwrap_or_default() {
+        for i in group.tabs.0..group.tabs.0 + group.tabs.1 {
+            set.set_group(i as u64 + 1, group.name);
+        }
+        let id = set
+            .group_named(group.name)
+            .ok_or("a scene's group has no tab")?;
+        set.recolor_group(id, group.color);
+        set.set_collapsed(id, group.collapsed);
+    }
+    set.activate(active as u64 + 1);
+    let rows = pane::rows(&set, &strip);
     // The toasts, through the app's path: the slots admit, `notice_toast` builds, the slots are told.
     let strings = crate::strings::english();
     let inbox_rows = crate::shell::inbox_rows(&inbox, INBOX_NOW, &strings, |id| {
@@ -1008,10 +1880,28 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     let label = labelled.then(|| titles[active]);
     let message = match scene.overlay {
         Overlay::Confirm(n) => confirm_message(n),
+        Overlay::CloseGroup { name, tabs } => close_group_message(&strings, name, tabs),
         _ => String::new(),
     };
+    let close_group_title = strings.tr("group.close.title").to_owned();
     let mut dont_ask = false;
     let mut name = String::new();
+    // Set in each frame that draws the editor.
+    let mut color;
+    let taken: Vec<String> = match scene.overlay {
+        Overlay::GroupEditor { taken, .. } => taken.iter().map(|t| (*t).to_owned()).collect(),
+        _ => Vec::new(),
+    };
+    let menu_groups = MenuGroups {
+        own: scene.menu_groups.1.map(|i| GroupId(i as u64 + 1)),
+        open: scene
+            .menu_groups
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (GroupId(i as u64 + 1), (*n).to_owned()))
+            .collect(),
+    };
     let page_settings = Settings::default().clamped();
     let mut edited = page_settings.clone();
     let mut page_state = scene.page.map(|p| {
@@ -1028,7 +1918,9 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
     let mut model = match scene.menu {
         MenuScene::None => None,
         MenuScene::App => Some(MenuModel::new(
-            MenuKind::App,
+            MenuKind::App {
+                pane: scene.pane.is_some(),
+            },
             &strings,
             cfg!(target_os = "macos"),
         )),
@@ -1039,16 +1931,36 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         )),
     };
     let mut place = match scene.menu {
-        MenuScene::App => MenuPlace::Anchor {
-            rect: Layout::new(Rect::new(0.0, 0.0, SIZE.0, SIZE.1)).overflow,
-            side: Side::Bottom,
-            align: PlaceAlign::End,
-            gap: 4.0,
-        },
+        MenuScene::App => {
+            // As the app: below the strip's button, above the pane's.
+            let (side, align) = if layout.pane.is_some() {
+                (Side::Top, PlaceAlign::Start)
+            } else {
+                (Side::Bottom, PlaceAlign::End)
+            };
+            MenuPlace::Anchor {
+                rect: layout.overflow,
+                side,
+                align,
+                gap: 4.0,
+            }
+        }
         _ => MenuPlace::At(TERMINAL_MENU_AT),
     };
 
-    for (k, ms) in FRAME_TIMES_MS.iter().enumerate() {
+    let clicks = scene
+        .script
+        .iter()
+        .any(|(_, input)| matches!(input, Input::Click(..)));
+    let frames: &[u64] = if clicks {
+        &CLICK_FRAME_TIMES_MS
+    } else {
+        &FRAME_TIMES_MS
+    };
+    // The groups of the menu that is open, for the submenu opened from it, and that submenu.
+    let mut open_groups = MenuGroups::default();
+    let mut submenu: Option<(MenuModel, MenuPlace)> = None;
+    for (k, ms) in frames.iter().enumerate() {
         let mut events: Vec<Event> = scene
             .script
             .iter()
@@ -1075,7 +1987,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             );
         }
         let input = RawInput {
-            size: SIZE,
+            size: window,
             scale,
             time: Duration::from_millis(*ms),
             focused: scene.focused,
@@ -1084,9 +1996,32 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
         let modal = match scene.overlay {
             Overlay::None => None,
             Overlay::Confirm(_) => Some(Modal::Confirm {
+                title: CLOSE_SESSION_TITLE,
                 message: &message,
-                dont_ask: &mut dont_ask,
+                dont_ask: Some(&mut dont_ask),
             }),
+            Overlay::CloseGroup { .. } => Some(Modal::Confirm {
+                title: &close_group_title,
+                message: &message,
+                dont_ask: None,
+            }),
+            Overlay::GroupEditor {
+                editing,
+                name: text,
+                color: picked,
+                ..
+            } => {
+                text.clone_into(&mut name);
+                color = picked;
+                Some(Modal::GroupEditor {
+                    editing,
+                    text: &mut name,
+                    color: &mut color,
+                    taken: &taken,
+                    look: scene.look,
+                    focus: k == 1,
+                })
+            }
             Overlay::Rename(text) => {
                 text.clone_into(&mut name);
                 Some(Modal::Rename {
@@ -1100,6 +2035,12 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             title: label,
             tabs: &strip,
             active_tab: Some(active as u64 + 1),
+            pane_list: scene.list.map(|_| PaneList {
+                rows: &rows,
+                look: scene.look,
+                // As the app's first frame.
+                reveal: k == 0,
+            }),
             modal,
             maximized: false,
             grid: &mut grid,
@@ -1118,7 +2059,7 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
             cursor,
             blink_on: true,
             scroll: scene.scroll,
-            chrome: HOST,
+            chrome: scene.chrome,
             ime: false,
             preedit: None,
             clipboard_write: None,
@@ -1130,10 +2071,11 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
                 focused: scene.focused,
                 system_fonts: &DUMP_SYSTEM_FONTS,
             }),
-            menu: model.as_ref().map(|m| MenuDraw {
-                rows: m.rows(),
-                place,
-                name: strings.tr(m.name_key()),
+            menu: model.as_ref().map(|m| MenusDraw {
+                menu: MenuDraw::of(m, place, strings.tr(m.name_key())),
+                submenu: submenu
+                    .as_ref()
+                    .map(|(m, beside)| MenuDraw::of(m, *beside, strings.tr(m.name_key()))),
             }),
             inbox: scene.inbox.map(|_| InboxDraw {
                 button: InboxButton {
@@ -1154,28 +2096,68 @@ fn dump_scene(r: &mut Renderer, scene: &Scene, path: &Path) -> Result<u8, String
                     rows: &inbox_message_rows,
                 }),
             }),
-            busy: None,
+            busy: scene.busy,
             busy_tone: Tone::Neutral,
             grid_alpha: 1.0,
             fading: Vec::new(),
         };
         let drawn = r.draw(&input, content, &view, size)?;
-        // The app opens the tab menu from the request the strip reports (the next frame shows it).
+        // As the app: a pick of the tab menu's group row opens the submenu beside it.
+        if let Some((out, m)) = drawn.menus.zip(model.as_ref())
+            && menus::menu_step((m, &out.menu), None, false) == MenuStep::OpenSubmenu
+            && let Some(row) = out.at.row
+        {
+            let beside = menus::submenu_place(out.at.panel, row, out.at.pad);
+            let groups = MenuModel::with_groups(
+                MenuKind::AddToGroup,
+                &open_groups,
+                &strings,
+                cfg!(target_os = "macos"),
+            );
+            submenu = Some((groups, beside));
+        }
+        // The app opens the tab menu from the request the strip or a pane row reports, and a
+        // card's menu from its header (the next frame shows it).
+        let mut asked = None;
         if let Some(ctx) = drawn.tab_context {
-            model = Some(MenuModel::new(
+            let groups = match scene.list {
+                Some(_) => set_groups(&set, set.group_of(ctx.id)),
+                None => menu_groups.clone(),
+            };
+            asked = Some((
                 MenuKind::Tab {
                     closable: TAB_CLOSABLE,
                 },
+                groups,
+                ctx.at,
+            ));
+        }
+        for event in &drawn.pane_events {
+            if let PaneEvent::GroupMenu { id, at } = *event {
+                let collapsed = set.group(id).is_some_and(|g| g.collapsed);
+                let kind = MenuKind::Group { collapsed };
+                asked = Some((kind, set_groups(&set, Some(id)), at));
+            }
+        }
+        if let Some((kind, groups, at)) = asked {
+            model = Some(MenuModel::with_groups(
+                kind,
+                &groups,
                 &strings,
                 cfg!(target_os = "macos"),
             ));
-            place = MenuPlace::At(ctx.at);
+            open_groups = groups;
+            place = MenuPlace::At(at);
         }
         if let Some(out) = drawn.inbox {
             inbox_rect = Some(out.rect);
         }
         slots.sync(toasts.live(), input.time, |id| toasts.is_live(id));
         r.gpu.end_frame(&mut r.text);
+    }
+    // A click that missed its row would leave a picture of something else.
+    if clicks && submenu.is_none() {
+        return Err("the scene's click opened no submenu".to_owned());
     }
     let rgba = read_rgba(&r.gpu.device, &r.gpu.queue, &texture)?;
     let min_alpha = rgba.chunks_exact(4).map(|px| px[3]).min().unwrap_or(0);
@@ -1326,7 +2308,7 @@ mod tests {
                 .iter()
                 .filter(|(p, _)| p.to_string_lossy().contains("opaque"))
                 .count(),
-            8
+            11
         );
         let first: Vec<PathBuf> = gated.into_iter().map(|(p, _)| p).collect();
         let second = dump_frames(&b).expect("second dump");
@@ -1386,6 +2368,53 @@ mod tests {
             named("settings-terminal@2x.png"),
             named("settings-font-combo@2x.png")
         );
+        // The group scenes: a menu with groups differs from the plain tab menu, the editor's
+        // three states from each other, and the close-group question from the close-session one.
+        for pre in ["", "lunegit-"] {
+            let of = |n: &str| named(&format!("{pre}{n}@2x.png"));
+            assert_ne!(of("menu-tab-ungrouped"), of("menu-tab-grouped"), "{pre}");
+            assert_ne!(of("menu-tab-submenu"), of("menu-tab-grouped"), "{pre}");
+            assert_ne!(
+                of("menu-tab-submenu"),
+                of("menu-tab-submenu-flipped"),
+                "{pre}"
+            );
+            assert_ne!(of("group-new"), of("group-edit"), "{pre}");
+            assert_ne!(of("group-new"), of("group-invalid"), "{pre}");
+            assert_ne!(of("group-close"), named("confirm-one@2x.png"), "{pre}");
+        }
+        // Open groups add no row to the tab menu: they are in its submenu.
+        assert_eq!(named("menu-tab-ungrouped@2x.png"), named("menu-tab@2x.png"));
+        // The pane's tab menu with its submenu is its own picture in each look.
+        assert_ne!(
+            named("pane-menu-tab-submenu@2x.png"),
+            named("lunegit-pane-menu-tab-submenu@2x.png")
+        );
+        // A running cue shows on the pane view's card, each treatment its own.
+        for pre in ["", "lunegit-"] {
+            let of = |n: &str| named(&format!("{pre}{n}@2x.png"));
+            assert_ne!(of("pane-busy-sweep"), of("pane-list"), "{pre}");
+            assert_ne!(of("pane-busy-breath"), of("pane-list"), "{pre}");
+            assert_ne!(of("pane-busy-breath"), of("pane-busy-sweep"), "{pre}");
+        }
+        // The pane view differs from the bar view, and its states from each other.
+        assert_ne!(named("pane@2x.png"), tabs);
+        assert_ne!(named("pane@2x.png"), named("pane-inbox@2x.png"));
+        assert_ne!(named("pane@2x.png"), named("pane-menu-app@2x.png"));
+        assert_ne!(named("pane-inbox@2x.png"), named("pane-inbox-open@2x.png"));
+        assert_ne!(named("pane-inbox@2x.png"), named("pane-settings@2x.png"));
+        // `pane` and `tabs-attention` are drawn with this OS's chrome, which on Windows is the
+        // Windows one: there each is the same picture as its Windows-chrome scene.
+        for (host, windows) in [
+            ("pane@2x.png", "pane-windows@2x.png"),
+            ("tabs-attention@2x.png", "bar-windows@2x.png"),
+        ] {
+            if HOST == WINDOWS_CHROME {
+                assert_eq!(named(host), named(windows), "{host}");
+            } else {
+                assert_ne!(named(host), named(windows), "{host}");
+            }
+        }
         // The tooltip is not there at the first dwell and is there after the delay.
         assert_ne!(named("link-hover@2x.png"), named("link-tip@2x.png"));
         assert_ne!(named("link-hover@2x.png"), tabs);
