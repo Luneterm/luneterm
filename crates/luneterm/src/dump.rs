@@ -2400,7 +2400,12 @@ mod tests {
         // The pane view differs from the bar view, and its states from each other.
         assert_ne!(named("pane@2x.png"), tabs);
         assert_ne!(named("pane@2x.png"), named("pane-inbox@2x.png"));
-        assert_ne!(named("pane@2x.png"), named("pane-windows@2x.png"));
+        // `pane` is drawn with this OS's chrome, which on Windows is the Windows one.
+        if HOST == WINDOWS_CHROME {
+            assert_eq!(named("pane@2x.png"), named("pane-windows@2x.png"));
+        } else {
+            assert_ne!(named("pane@2x.png"), named("pane-windows@2x.png"));
+        }
         assert_ne!(named("pane@2x.png"), named("pane-menu-app@2x.png"));
         assert_ne!(named("pane-inbox@2x.png"), named("pane-inbox-open@2x.png"));
         assert_ne!(named("pane-inbox@2x.png"), named("pane-settings@2x.png"));
