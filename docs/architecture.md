@@ -1535,9 +1535,14 @@ Without a token, a config directory or a passing check, control is off for that 
   one allow ACE for it, `FILE_FLAG_FIRST_PIPE_INSTANCE`, `PIPE_REJECT_REMOTE_CLIENTS`, one instance
   reused (disconnected, never closed, so the name never lapses). The server refuses a client process
   whose token user differs; the client opens at identification level and refuses a server whose token
-  user differs. Not tested: a non-elevated `ctl` against an elevated Luneterm of the same user (if
-  reading the other process's token is denied, the connection is refused), and another user's busy
-  pipe (the client may wait out its 2 s instead of skipping it).
+  user differs. Pipe names are the machine's, so a scan (no `LUNETERM_INSTANCE`) can list other
+  users' pipes: it tries each without waiting, then gives the busy ones turns of 250 ms each, for
+  the whole budget while none has answered and for one turn more once one has. So another user's
+  busy pipe does not end the run, and a second Luneterm of this user that stays busy longer than
+  that turn is not counted. The list stops at 4096 names: someone who makes more can still crowd the
+  scan, and `LUNETERM_INSTANCE` is the sure way. Not tested: a non-elevated `ctl` against an
+  elevated Luneterm of the same user (if reading the other process's token is denied, the connection
+  is refused), and a pipe of another user on a real second account.
 - No network listener exists.
 
 **Wire** (`ctl/wire.rs`). Request: `LTC1`, a u32 little-endian word count, each word as u32 length and

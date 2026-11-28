@@ -68,8 +68,11 @@ const PREFIX: &str = "luneterm-ctl-";
 /// The size of each of the pipe's two buffers. A request is at most 128 KiB; a write larger
 /// than this waits for the reader, within its deadline.
 const BUFFER: u32 = 64 * 1024;
-/// The most instances a scan lists.
-const SCAN_ENTRIES: usize = 256;
+/// The most instances a scan lists. The pipe namespace is the machine's, so other users' pipes of
+/// these names count too: this bounds the list, the run's budget bounds the work.
+const SCAN_ENTRIES: usize = 4096;
+/// A scan's longest wait for one busy pipe before the others have their turn.
+const SCAN_SLICE: Duration = Duration::from_millis(250);
 
 /// The endpoint of Windows.
 #[derive(Debug)]
@@ -100,6 +103,8 @@ fn os_error(code: u32) -> io::Error {
 impl Endpoint for PipeEndpoint {
     type Listener = PipeListener;
     type Connection = PipeConnection;
+
+    const SCAN_SLICE: Option<Duration> = Some(SCAN_SLICE);
 
     fn bind(_config_dir: &Path, token: &str) -> Result<PipeListener, BindError> {
         if !token_ok(token) {
@@ -155,10 +160,6 @@ impl Endpoint for PipeEndpoint {
         let user = own_user()?;
         let name = pipe_name(token);
         let pipe = loop {
-            let left = millis_left(deadline);
-            if left == 0 {
-                return Err(io::ErrorKind::TimedOut.into());
-            }
             // SAFETY: `name` is a NUL-terminated UTF-16 string; no security attributes and no
             // template. `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION` lets the server learn
             // who the client is but never act as it.
@@ -180,9 +181,14 @@ impl Endpoint for PipeEndpoint {
             match last_error() {
                 // Another client has the one instance (`PIPE_BUSY`), or the server has just
                 // disconnected the last one and not yet listens again (`PIPE_NOT_CONNECTED`):
-                // wait for it to be free, within the deadline. A wait that fails (time out, the
-                // pipe went) is tried again above.
+                // wait for it to be free, within the deadline (looked at only after a try, so a
+                // try with no time to wait is still made). A wait that fails (time out, the pipe
+                // went) is tried again above.
                 ERROR_PIPE_BUSY | ERROR_PIPE_NOT_CONNECTED => {
+                    let left = millis_left(deadline);
+                    if left == 0 {
+                        return Err(io::ErrorKind::TimedOut.into());
+                    }
                     // SAFETY: `name` is a NUL-terminated UTF-16 string; `left` is at least 1,
                     // so it is never the "default time-out" 0 nor `INFINITE`.
                     let free = unsafe { WaitNamedPipeW(name.as_ptr(), left) } != 0;
@@ -982,6 +988,17 @@ mod tests {
             assert!(listener.accept(soon()).expect("accepts").is_some());
             second.join().expect("join");
         });
+    }
+
+    /// A scan's first try: no time to wait, still one look at the pipe.
+    #[test]
+    fn a_try_without_a_wait_takes_a_free_pipe_and_leaves_a_busy_one_at_once() {
+        let (token, _listener) = bound();
+        let now = || PipeEndpoint::connect(Path::new("unused"), &token, Instant::now());
+        let _first = now().expect("free");
+        let start = Instant::now();
+        assert_eq!(now().err().map(|e| e.kind()), Some(io::ErrorKind::TimedOut));
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

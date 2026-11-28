@@ -132,19 +132,60 @@ fn reach<E: Endpoint>(
             _ => unreachable("the Luneterm that LUNETERM_INSTANCE names cannot be reached"),
         });
     }
+    scan::<E>(config_dir, deadline)
+}
+
+/// A connection to the only instance running.
+///
+/// Where every endpoint is this user's, each is waited for until `deadline`, and one that has not
+/// accepted by then ends the run. Where other users' endpoints can be among them
+/// ([`Endpoint::SCAN_SLICE`]), those cannot hold the run: first each is tried without a wait, so a
+/// free one is found however many are busy; then the busy ones take turns of a slice each, for the
+/// rest of the budget while none has answered, and once one has, for one slice more, which finds a
+/// second Luneterm of this user that was busy for a moment. One busy for longer is not counted.
+fn scan<E: Endpoint>(config_dir: &Path, deadline: Instant) -> Result<E::Connection, Failure> {
+    let unreachable = |reason: &str| failure(Code::Unreachable, reason);
     let mut live = None;
-    for token in E::instances(config_dir) {
-        match E::connect(config_dir, &token, deadline) {
-            Ok(_) if live.is_some() => {
-                return Err(unreachable(
-                    "more than one Luneterm is running; set LUNETERM_INSTANCE",
-                ));
+    // When the turns end, once one has answered.
+    let mut turns_end: Option<Instant> = None;
+    let mut wait = Duration::ZERO;
+    let mut pending = E::instances(config_dir);
+    loop {
+        let mut busy = Vec::new();
+        for token in pending {
+            let by = match E::SCAN_SLICE {
+                None => deadline,
+                Some(_) => (Instant::now() + wait).min(turns_end.unwrap_or(deadline).min(deadline)),
+            };
+            match E::connect(config_dir, &token, by) {
+                Ok(_) if live.is_some() => {
+                    return Err(unreachable(
+                        "more than one Luneterm is running; set LUNETERM_INSTANCE",
+                    ));
+                }
+                Ok(connection) => {
+                    live = Some(connection);
+                    if !wait.is_zero() {
+                        turns_end = E::SCAN_SLICE.map(|slice| Instant::now() + slice);
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::TimedOut => busy.push(token),
+                // Left over from an instance that is gone, or not this user's.
+                Err(_) => {}
             }
-            Ok(connection) => live = Some(connection),
-            Err(e) if e.kind() == io::ErrorKind::TimedOut => return Err(timed_out()),
-            // Left over from an instance that is gone.
-            Err(_) => {}
         }
+        if busy.is_empty() {
+            break;
+        }
+        let now = Instant::now();
+        let Some(slice) = E::SCAN_SLICE.filter(|_| now < deadline) else {
+            return Err(timed_out());
+        };
+        if live.is_some() && now >= *turns_end.get_or_insert(now + slice) {
+            break;
+        }
+        pending = busy;
+        wait = slice;
     }
     live.ok_or_else(|| unreachable("no running Luneterm"))
 }
@@ -173,7 +214,202 @@ fn one_line(reason: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::io::Read;
+
+    use super::super::endpoint::{BindError, Interrupt, Listener};
     use super::*;
+
+    thread_local! {
+        /// The candidates a [`Fake`] scan lists, and when they were set up.
+        static SCENE: RefCell<(Vec<String>, Instant)> = RefCell::new((Vec::new(), Instant::now()));
+    }
+
+    /// The slice of the fake shared namespace.
+    const SLICE: Duration = Duration::from_millis(200);
+
+    /// An endpoint of scripted candidates, told apart by their names: `free…` accepts;
+    /// `busy…` never does; `later<ms>` does from that long after the scene was set; `alien…` is
+    /// another user's; anything else is gone. As the real ones, it waits until its deadline and
+    /// looks once whatever the deadline. `SHARED`: others' endpoints can be listed (Windows).
+    struct Fake<const SHARED: bool>;
+
+    /// The name of the candidate connected to.
+    #[derive(Debug)]
+    struct Connected(String);
+
+    impl Read for Connected {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for Connected {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Connection for Connected {
+        fn set_deadline(&mut self, _deadline: Instant) {}
+    }
+
+    /// The fake never listens.
+    struct Deaf;
+
+    impl Interrupt for Deaf {
+        fn interrupt(&self) {}
+    }
+
+    impl Listener for Deaf {
+        type Connection = Connected;
+        type Interrupt = Deaf;
+
+        fn interrupter(&self) -> io::Result<Deaf> {
+            Ok(Deaf)
+        }
+
+        fn accept(&mut self, _deadline: Instant) -> io::Result<Option<Connected>> {
+            Ok(None)
+        }
+    }
+
+    impl<const SHARED: bool> Endpoint for Fake<SHARED> {
+        type Listener = Deaf;
+        type Connection = Connected;
+
+        const SCAN_SLICE: Option<Duration> = if SHARED { Some(SLICE) } else { None };
+
+        fn bind(_config_dir: &Path, _token: &str) -> Result<Deaf, BindError> {
+            Ok(Deaf)
+        }
+
+        fn connect(_config_dir: &Path, token: &str, deadline: Instant) -> io::Result<Connected> {
+            let set_up = SCENE.with_borrow(|scene| scene.1);
+            let free_from = if token.starts_with("free") {
+                Some(set_up)
+            } else if let Some(ms) = token.strip_prefix("later") {
+                Some(set_up + Duration::from_millis(ms.parse().expect("milliseconds")))
+            } else if token.starts_with("busy") {
+                None
+            } else if token.starts_with("alien") {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            } else {
+                return Err(io::ErrorKind::NotFound.into());
+            };
+            loop {
+                if free_from.is_some_and(|from| Instant::now() >= from) {
+                    return Ok(Connected(token.to_owned()));
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::ErrorKind::TimedOut.into());
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        fn instances(_config_dir: &Path) -> Vec<String> {
+            SCENE.with_borrow(|scene| scene.0.clone())
+        }
+    }
+
+    /// A scan of `candidates` with `budget` to do it in: whom it reached, or why not, and how
+    /// long it took.
+    fn scanned<const SHARED: bool>(
+        candidates: &[&str],
+        budget: Duration,
+    ) -> (Result<String, Failure>, Duration) {
+        let start = Instant::now();
+        SCENE.set((candidates.iter().map(|c| (*c).to_owned()).collect(), start));
+        let reached = reach::<Fake<SHARED>>(Path::new("unused"), None, start + budget);
+        (reached.map(|c| c.0), start.elapsed())
+    }
+
+    fn two() -> Failure {
+        failure(
+            Code::Unreachable,
+            "more than one Luneterm is running; set LUNETERM_INSTANCE",
+        )
+    }
+
+    fn none() -> Failure {
+        failure(Code::Unreachable, "no running Luneterm")
+    }
+
+    /// Where others' endpoints are listed, busy ones of theirs, however many, do not keep a free
+    /// one of ours from being reached, nor cost more than the one extra slice.
+    #[test]
+    fn busy_candidates_of_others_do_not_hold_a_shared_scan() {
+        let long = Duration::from_secs(10);
+        let mut many: Vec<String> = (0..2000).map(|n| format!("busy{n}")).collect();
+        many.push("free".to_owned());
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        for candidates in [&["busy1", "alien", "busy2", "gone", "free"][..], &many] {
+            let (reached, took) = scanned::<true>(candidates, long);
+            assert_eq!(reached, Ok("free".to_owned()));
+            assert!(took >= SLICE && took < long / 2, "{took:?}");
+        }
+        // Ours is busy as well, for longer than a slice: its turns come until it is free.
+        let (reached, took) = scanned::<true>(&["busy", "later500"], long);
+        assert_eq!(reached, Ok("later500".to_owned()));
+        assert!(
+            took >= Duration::from_millis(500) && took < long / 2,
+            "{took:?}"
+        );
+    }
+
+    /// A second instance is told of when it is free, or becomes free within the extra slice.
+    #[test]
+    fn a_shared_scan_still_finds_a_second_instance() {
+        let long = Duration::from_secs(10);
+        for candidates in [
+            &["free1", "busy", "free2"][..],
+            &["free", "later20"],
+            &["later20", "free"],
+        ] {
+            assert_eq!(
+                scanned::<true>(candidates, long).0,
+                Err(two()),
+                "{candidates:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shared_scan_with_nobody_to_reach_says_which_way() {
+        let budget = Duration::from_millis(500);
+        let (reached, took) = scanned::<true>(&["busy1", "alien", "gone", "busy2"], budget);
+        assert_eq!(reached, Err(timed_out()));
+        assert!(took >= budget, "{took:?}");
+        assert_eq!(scanned::<true>(&["alien", "gone"], budget).0, Err(none()));
+        assert_eq!(scanned::<true>(&[], budget).0, Err(none()));
+    }
+
+    /// Where every endpoint is the user's, one that does not accept ends the run at the deadline,
+    /// also when another answered.
+    #[test]
+    fn an_own_scan_waits_for_every_candidate() {
+        let budget = Duration::from_millis(300);
+        for candidates in [&["free", "busy"][..], &["busy", "free"], &["busy"]] {
+            let (reached, took) = scanned::<false>(candidates, budget);
+            assert_eq!(reached, Err(timed_out()), "{candidates:?}");
+            assert!(took >= budget, "{took:?}");
+        }
+        let long = Duration::from_secs(10);
+        assert_eq!(
+            scanned::<false>(&["gone", "free"], long).0,
+            Ok("free".to_owned())
+        );
+        assert_eq!(scanned::<false>(&["free1", "free2"], long).0, Err(two()));
+        assert_eq!(
+            scanned::<false>(&["later50"], long).0,
+            Ok("later50".to_owned())
+        );
+        assert_eq!(scanned::<false>(&["gone"], long).0, Err(none()));
+    }
 
     #[test]
     fn a_reason_is_printed_without_control_characters() {

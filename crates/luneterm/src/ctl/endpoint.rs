@@ -8,7 +8,7 @@
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 mod unix;
@@ -71,10 +71,17 @@ pub trait Endpoint {
     type Listener: Listener<Connection = Self::Connection>;
     type Connection: Connection;
 
+    /// `None` where every endpoint [`Endpoint::instances`] lists is this user's: a scan waits for
+    /// each until its deadline. `Some` where other users' endpoints can be among them: a scan
+    /// does not wait on one for longer than this before the others have their turn.
+    const SCAN_SLICE: Option<Duration> = None;
+
     /// Opens the endpoint of the instance `token`.
     fn bind(config_dir: &Path, token: &str) -> Result<Self::Listener, BindError>;
 
     /// Connects to the instance `token`, failing with [`io::ErrorKind::TimedOut`] at `deadline`.
+    /// With a [`Endpoint::SCAN_SLICE`], an endpoint that is free is connected to even when
+    /// `deadline` has just passed: a scan's first try waits for none.
     fn connect(config_dir: &Path, token: &str, deadline: Instant) -> io::Result<Self::Connection>;
 
     /// The tokens of the endpoints there are to try. Some may be left over from an instance that
