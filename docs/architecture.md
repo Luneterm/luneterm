@@ -1539,13 +1539,16 @@ Without a token, a config directory or a passing check, control is off for that 
   users' pipes: it tries each without waiting, then gives the busy ones turns of 250 ms each, for
   the whole budget while none has answered and for one turn more once one has. A pipe still busy
   after that turn may be a second Luneterm of this user (one serving another client holds its pipe
-  for up to 2.5 s), so the scan fails closed: exit 4 "another Luneterm may be running and is busy;
-  set LUNETERM_INSTANCE", never a request to one of two. What remains of another user's busy pipe
-  is that: it no longer holds the run for 2 s nor hides a free pipe from the first try, but while it
-  stays busy a scan exits 4 after that one turn, naming the remedy (a scan with no busy pipe still succeeds).
-  Runs inside a Luneterm tab carry `LUNETERM_INSTANCE` and never scan, so they are unaffected. The
-  list stops at 4096 names: someone who makes more can still crowd the scan, and
-  `LUNETERM_INSTANCE` is the sure way. Not tested: a non-elevated `ctl` against an
+  for up to 3.5 s: 1 s read, 1.5 s answer, 1 s write), so the scan fails closed: exit 4 "another
+  Luneterm may be running and is busy; set LUNETERM_INSTANCE", never a request to one of two. The
+  list stops at 4096 names; one with more is cut, and a cut list may hide one of this user's, so
+  the scan connects to none and exits 4 "too many candidate pipes; set LUNETERM_INSTANCE". What is
+  left to another user on a shared machine is availability: a busy pipe of theirs no longer holds
+  the run for 2 s nor hides a free pipe from the first try, but while it stays busy a scan exits 4
+  after that one turn, and more than 4096 pipes of theirs make every scan exit 4 at once, each
+  naming the remedy (a scan with no busy pipe and an uncut list still succeeds). Runs inside a
+  Luneterm tab carry `LUNETERM_INSTANCE` and never scan, so they are unaffected; it is the sure way
+  everywhere. Not tested: a non-elevated `ctl` against an
   elevated Luneterm of the same user (if reading the other process's token is denied, the connection
   is refused), and a pipe of another user on a real second account.
 - No network listener exists.

@@ -69,7 +69,8 @@ const PREFIX: &str = "luneterm-ctl-";
 /// than this waits for the reader, within its deadline.
 const BUFFER: u32 = 64 * 1024;
 /// The most instances a scan lists. The pipe namespace is the machine's, so other users' pipes of
-/// these names count too: this bounds the list, the run's budget bounds the work.
+/// these names count too: this bounds the list, the run's budget bounds the work. A list with
+/// more is cut, and a scan of it refuses ([`Endpoint::SCAN_CUT_AT`]).
 const SCAN_ENTRIES: usize = 4096;
 /// A scan's longest wait for one busy pipe before the others have their turn.
 const SCAN_SLICE: Duration = Duration::from_millis(250);
@@ -105,6 +106,7 @@ impl Endpoint for PipeEndpoint {
     type Connection = PipeConnection;
 
     const SCAN_SLICE: Option<Duration> = Some(SCAN_SLICE);
+    const SCAN_CUT_AT: Option<usize> = Some(SCAN_ENTRIES);
 
     fn bind(_config_dir: &Path, token: &str) -> Result<PipeListener, BindError> {
         if !token_ok(token) {
@@ -233,7 +235,8 @@ impl Endpoint for PipeEndpoint {
                 && token_ok(token)
             {
                 found.push(token.to_owned());
-                if found.len() == SCAN_ENTRIES {
+                // One past the cap tells the scan that the list was cut.
+                if found.len() > SCAN_ENTRIES {
                     break;
                 }
             }

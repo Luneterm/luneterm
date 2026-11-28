@@ -143,7 +143,8 @@ fn reach<E: Endpoint>(
 /// free one is found however many are busy; then the busy ones take turns of a slice each, for the
 /// rest of the budget while none has answered, and once one has, for one slice more, which finds a
 /// second Luneterm of this user that was busy for a moment. One still busy after that may be a
-/// second Luneterm of this user, so the scan fails closed: it never acts on one of two.
+/// second Luneterm of this user, so the scan fails closed: it never acts on one of two. So does a
+/// list that was cut ([`Endpoint::SCAN_CUT_AT`]): one of this user's may be past the cut.
 fn scan<E: Endpoint>(config_dir: &Path, deadline: Instant) -> Result<E::Connection, Failure> {
     let unreachable = |reason: &str| failure(Code::Unreachable, reason);
     let mut live = None;
@@ -151,6 +152,11 @@ fn scan<E: Endpoint>(config_dir: &Path, deadline: Instant) -> Result<E::Connecti
     let mut turns_end: Option<Instant> = None;
     let mut wait = Duration::ZERO;
     let mut pending = E::instances(config_dir);
+    if E::SCAN_CUT_AT.is_some_and(|cap| pending.len() > cap) {
+        return Err(unreachable(
+            "too many candidate pipes; set LUNETERM_INSTANCE",
+        ));
+    }
     loop {
         let mut busy = Vec::new();
         for token in pending {
@@ -226,7 +232,12 @@ mod tests {
     thread_local! {
         /// The candidates a [`Fake`] scan lists, and when they were set up.
         static SCENE: RefCell<(Vec<String>, Instant)> = RefCell::new((Vec::new(), Instant::now()));
+        /// How many connects a [`Fake`] scan made since its scene was set.
+        static CONNECTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
+
+    /// Where a list of the fake shared namespace is cut.
+    const CUT_AT: usize = 4096;
 
     /// The slice of the fake shared namespace.
     const SLICE: Duration = Duration::from_millis(200);
@@ -285,12 +296,14 @@ mod tests {
         type Connection = Connected;
 
         const SCAN_SLICE: Option<Duration> = if SHARED { Some(SLICE) } else { None };
+        const SCAN_CUT_AT: Option<usize> = if SHARED { Some(CUT_AT) } else { None };
 
         fn bind(_config_dir: &Path, _token: &str) -> Result<Deaf, BindError> {
             Ok(Deaf)
         }
 
         fn connect(_config_dir: &Path, token: &str, deadline: Instant) -> io::Result<Connected> {
+            CONNECTS.set(CONNECTS.get() + 1);
             let set_up = SCENE.with_borrow(|scene| scene.1);
             let free_from = if token.starts_with("free") {
                 Some(set_up)
@@ -327,6 +340,7 @@ mod tests {
     ) -> (Result<String, Failure>, Duration) {
         let start = Instant::now();
         SCENE.set((candidates.iter().map(|c| (*c).to_owned()).collect(), start));
+        CONNECTS.set(0);
         let reached = reach::<Fake<SHARED>>(Path::new("unused"), None, start + budget);
         (reached.map(|c| c.0), start.elapsed())
     }
@@ -421,6 +435,34 @@ mod tests {
         assert!(took >= budget, "{took:?}");
         assert_eq!(scanned::<true>(&["alien", "gone"], budget).0, Err(none()));
         assert_eq!(scanned::<true>(&[], budget).0, Err(none()));
+    }
+
+    /// A shared list longer than the cut may hide a second instance of ours: the scan connects to
+    /// none and names the remedy. A list of exactly the cut is whole.
+    #[test]
+    fn a_shared_scan_of_a_cut_list_fails_closed() {
+        let long = Duration::from_secs(10);
+        let list = |len: usize| -> Vec<String> {
+            let mut list = vec!["free".to_owned()];
+            list.extend((1..len).map(|n| format!("gone{n}")));
+            list
+        };
+        let cut = list(CUT_AT + 1);
+        let cut: Vec<&str> = cut.iter().map(String::as_str).collect();
+        assert_eq!(
+            scanned::<true>(&cut, long).0,
+            Err(failure(
+                Code::Unreachable,
+                "too many candidate pipes; set LUNETERM_INSTANCE"
+            ))
+        );
+        assert_eq!(CONNECTS.get(), 0);
+        let whole = list(CUT_AT);
+        let whole: Vec<&str> = whole.iter().map(String::as_str).collect();
+        assert_eq!(scanned::<true>(&whole, long).0, Ok("free".to_owned()));
+        assert_eq!(CONNECTS.get(), CUT_AT);
+        // Where no list is cut, a long one is scanned as any other.
+        assert_eq!(scanned::<false>(&cut, long).0, Ok("free".to_owned()));
     }
 
     /// Where every endpoint is the user's, one that does not accept ends the run at the deadline,

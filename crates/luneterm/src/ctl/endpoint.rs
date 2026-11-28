@@ -76,6 +76,11 @@ pub trait Endpoint {
     /// does not wait on one for longer than this before the others have their turn.
     const SCAN_SLICE: Option<Duration> = None;
 
+    /// `Some(n)` where [`Endpoint::instances`] lists at most `n + 1` tokens and `n + 1` means
+    /// that the list was cut (others' endpoints can fill it): a scan of such a list sends no
+    /// request, as one of this user's instances may be past the cut. `None`: no list is refused.
+    const SCAN_CUT_AT: Option<usize> = None;
+
     /// Opens the endpoint of the instance `token`.
     fn bind(config_dir: &Path, token: &str) -> Result<Self::Listener, BindError>;
 
