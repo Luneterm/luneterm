@@ -208,12 +208,20 @@ impl Worker {
 mod tests {
     use std::io::{Read, Write};
     use std::sync::atomic::AtomicUsize;
-    use std::sync::mpsc::Receiver;
+    use std::sync::mpsc::{Receiver, TryRecvError};
 
     use super::*;
     use crate::ctl::endpoint::scratch::Scratch;
     use crate::ctl::token;
     use crate::ctl::wire::{decode_reply, encode_request};
+
+    // The tests run beside others on loaded machines (the Windows gate, with the GPU dump tests:
+    // one round trip took 5 s), so none of their upper time limits is near what the code takes.
+
+    /// How long a test waits for what must come: running out means it never does.
+    const PATIENCE: Duration = Duration::from_secs(60);
+    /// The longest a test's repeated quick operations may take together.
+    const TOGETHER: Duration = Duration::from_secs(30);
 
     /// A config directory and a token of the test's own (pipe names on Windows are
     /// machine-wide).
@@ -263,7 +271,7 @@ mod tests {
     }
 
     fn connect(scratch: &Place) -> impl Connection {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + PATIENCE;
         let mut connection =
             Native::connect(scratch.path(), &scratch.token, deadline).expect("connects");
         connection.set_deadline(deadline);
@@ -323,6 +331,76 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+    /// A connection that hands out its request a byte per read and notes each deadline set on
+    /// it: the deadline, when it was set, and how much had been read by then.
+    struct Noted {
+        request: Vec<u8>,
+        read: usize,
+        deadlines: Vec<(Instant, Instant, usize)>,
+    }
+
+    impl Read for Noted {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match (self.request.get(self.read), buf.first_mut()) {
+                (Some(&byte), Some(into)) => {
+                    *into = byte;
+                    self.read += 1;
+                    Ok(1)
+                }
+                _ => Ok(0),
+            }
+        }
+    }
+
+    impl Write for Noted {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Connection for Noted {
+        fn set_deadline(&mut self, deadline: Instant) {
+            self.deadlines.push((deadline, Instant::now(), self.read));
+        }
+    }
+
+    // How far away the read deadline is, which the two tests after this one cannot show without
+    // timing the machine. Here no load can make a right deadline look wrong.
+    #[test]
+    fn the_whole_request_is_read_under_one_deadline_a_read_deadline_away() {
+        let worker = Worker::start(Counts {
+            calls: Arc::new(AtomicUsize::new(0)),
+            code: Code::Done,
+        })
+        .expect("starts");
+        let request = encode_request(&["shutdown".to_owned()]).expect("encodes");
+        let length = request.len();
+        let mut connection = Noted {
+            request,
+            read: 0,
+            deadlines: Vec::new(),
+        };
+        let before = Instant::now();
+        answer(&mut connection, &worker, &AtomicBool::new(false));
+        assert_eq!(connection.read, length);
+        let (deadline, set, read) = connection.deadlines[0];
+        assert_eq!(read, 0, "set before anything is read");
+        assert!(deadline >= before + READ_DEADLINE, "too short");
+        assert!(deadline <= set + READ_DEADLINE, "too long");
+        // Any later one is for the reply: none gives a read more time.
+        assert!(
+            connection.deadlines[1..]
+                .iter()
+                .all(|&(_, _, read)| read == length)
+        );
+    }
+
+    // No upper time limit: a server that never drops the client runs into the client's own
+    // deadline, PATIENCE away, and `read_to_end` fails.
     #[test]
     fn a_silent_client_is_dropped_after_a_second_and_the_next_is_served() {
         let scratch = Place::new();
@@ -337,23 +415,24 @@ mod tests {
         });
         let took = start.elapsed();
         assert!(got.is_empty(), "no reply to nothing");
-        assert!(
-            took >= READ_DEADLINE && took < READ_DEADLINE + Duration::from_secs(1),
-            "{took:?}"
-        );
+        assert!(took >= READ_DEADLINE, "{took:?}");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+    // No upper time limit: a server that gave the request more time with each byte would read
+    // all of this drip, which is over 40 s long.
     #[test]
     fn a_client_that_drips_its_request_gets_one_second_in_all() {
         let scratch = Place::new();
         let (_server, calls) = serving(&scratch, Code::Done);
-        let frame = encode_request(&["a".repeat(200)]).expect("encodes");
+        let frame = encode_request(&["a".repeat(800)]).expect("encodes");
         let start = Instant::now();
         let mut connection = connect(&scratch);
         let mut sent = 0;
+        let mut failed = None;
         for byte in &frame {
-            if connection.write_all(&[*byte]).is_err() {
+            if let Err(e) = connection.write_all(&[*byte]) {
+                failed = Some(e.kind());
                 break;
             }
             sent += 1;
@@ -361,42 +440,43 @@ mod tests {
         }
         let took = start.elapsed();
         assert!(sent < frame.len(), "the server read the whole drip");
-        assert!(
-            took >= READ_DEADLINE && took < READ_DEADLINE + Duration::from_secs(1),
-            "{took:?}"
+        assert_ne!(
+            failed,
+            Some(io::ErrorKind::TimedOut),
+            "the client's own deadline ended it, not the server"
         );
+        assert!(took >= READ_DEADLINE, "{took:?}");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
-    /// Holds its first request until it is let go; answers later ones at once. Each reply says
-    /// how often it was asked.
-    struct HoldsFirst {
-        calls: Arc<AtomicUsize>,
+    /// Says what it is asked, then waits to be let go: until the sender of `release` is
+    /// dropped, which lets every later request through at once.
+    struct Stuck {
+        asked: Sender<Request>,
         release: Receiver<()>,
     }
 
-    impl Handler for HoldsFirst {
-        fn handle(&self, _: Request) -> Reply {
-            let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-            if n == 1 {
-                let _ = self.release.recv_timeout(Duration::from_secs(30));
-            }
-            Reply::new(Code::Done, format!("call {n}"))
+    impl Handler for Stuck {
+        fn handle(&self, request: Request) -> Reply {
+            let _ = self.asked.send(request);
+            let _ = self.release.recv_timeout(PATIENCE);
+            Reply::new(Code::Done, "")
         }
     }
 
-    // No upper bound on how long an answer takes: on a loaded machine (the Windows gate, with the
-    // GPU dump tests beside it) a round trip took 4 s. That the answer is the deadline's is shown
-    // by the handler still holding the request when it comes.
+    /// A [`Stuck`], what it was asked, and what lets it go.
+    fn stuck() -> (Stuck, Receiver<Request>, Sender<()>) {
+        let (asked, was_asked) = mpsc::channel();
+        let (let_go, release) = mpsc::channel();
+        (Stuck { asked, release }, was_asked, let_go)
+    }
+
+    // That the first answer is the deadline's is shown by the handler holding the request until
+    // after it, not by an upper time limit.
     #[test]
     fn a_late_handler_is_answered_for_and_nothing_queues_behind_it() {
         let scratch = Place::new();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let (let_go, release) = mpsc::channel();
-        let handler = HoldsFirst {
-            calls: Arc::clone(&calls),
-            release,
-        };
+        let (handler, was_asked, let_go) = stuck();
         let _server = Server::start(scratch.path(), &scratch.token, handler).expect("starts");
         let start = Instant::now();
         assert_eq!(
@@ -405,82 +485,96 @@ mod tests {
         );
         let took = start.elapsed();
         assert!(took >= ANSWER_DEADLINE, "{took:?}");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        // Refused, not waited for, and never handed over: the handler still holds the first.
-        let start = Instant::now();
+        // Its thread may get to run only after the answer has come.
+        assert_eq!(was_asked.recv_timeout(PATIENCE), Ok(Request::Status));
+        // Refused and not handed over: the handler still holds the first.
         assert_eq!(
-            ask(&scratch, &["status"]),
+            ask(&scratch, &["tab", "list"]),
             (Code::Failed, NO_ANSWER.to_owned())
         );
-        let took = start.elapsed();
-        assert!(took < ANSWER_DEADLINE, "{took:?}");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        // Once the handler is back, requests reach it again; the refused ones never did. It is
-        // back a moment after it is let go, so asked until it answers: every answer before that
-        // is the refusal.
-        let_go.send(()).expect("the handler waits");
-        let back = Instant::now() + Duration::from_secs(30);
+        assert_eq!(was_asked.try_recv(), Err(TryRecvError::Empty));
+        // Once the handler is back, requests reach it again. It is back a moment after it is
+        // let go, so asked until it answers.
+        drop(let_go);
+        let back = Instant::now() + PATIENCE;
         let answered = loop {
             match ask(&scratch, &["status"]) {
                 (Code::Failed, reason) if reason == NO_ANSWER && Instant::now() < back => {
-                    assert_eq!(
-                        calls.load(Ordering::SeqCst),
-                        1,
-                        "a refused one was handed over"
-                    );
                     thread::sleep(Duration::from_millis(50));
                 }
                 other => break other,
             }
         };
-        assert_eq!(answered, (Code::Done, "call 2".to_owned()));
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(answered, (Code::Done, String::new()));
+        // A refused request that had queued would have reached the handler before this one.
+        let later: Vec<Request> = was_asked.try_iter().collect();
+        assert!(
+            !later.is_empty() && later.iter().all(|r| *r == Request::Status),
+            "{later:?}"
+        );
     }
 
-    /// Says it was asked, then waits to be let go.
-    struct Stuck {
-        asked: SyncSender<()>,
-        release: Receiver<()>,
-    }
-
-    impl Handler for Stuck {
-        fn handle(&self, _: Request) -> Reply {
-            let _ = self.asked.send(());
-            let _ = self.release.recv_timeout(Duration::from_secs(30));
-            Reply::new(Code::Done, "")
-        }
-    }
-
+    // Only the clock tells a refusal at once from one that waits. One that waited out the answer
+    // deadline would take 150 s for these hundred; a stall of a loaded machine stays far under
+    // the limit.
     #[test]
-    fn dropping_the_server_takes_the_endpoint_away_without_waiting_for_the_handler() {
-        let scratch = Place::new();
-        let (asked, was_asked) = mpsc::sync_channel(1);
-        let (let_go, release) = mpsc::channel();
-        let server = Server::start(scratch.path(), &scratch.token, Stuck { asked, release })
-            .expect("starts");
-        assert!(scratch.listed());
-        let mut connection = connect(&scratch);
-        let status = encode_request(&["status".to_owned()]).expect("encodes");
-        connection.write_all(&status).expect("sends");
-        was_asked
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the handler has it");
+    fn a_busy_handler_has_further_requests_refused_without_a_wait() {
+        let (handler, was_asked, let_go) = stuck();
+        let worker = Worker::start(handler).expect("starts");
+        let stop = AtomicBool::new(false);
+        assert_eq!(worker.ask(Request::Status, &stop), None);
+        assert_eq!(was_asked.recv_timeout(PATIENCE), Ok(Request::Status));
         let start = Instant::now();
-        drop(server);
-        let took = start.elapsed();
-        assert!(took < Duration::from_millis(500), "{took:?}");
-        assert!(!scratch.listed());
+        for n in 1..=100 {
+            assert_eq!(worker.ask(Request::TabList, &stop), None);
+            let spent = start.elapsed();
+            assert!(spent < TOGETHER, "{n} refusals took {spent:?}");
+        }
+        assert_eq!(was_asked.try_recv(), Err(TryRecvError::Empty));
         drop(let_go);
     }
 
+    // A drop that waited out the answer deadline is within what a loaded machine may take for a
+    // quick one, so the drop is tried 60 times: such a drop takes 90 s for them, against a limit
+    // of 30 s (half a second each, on average). One that waits for the handler takes PATIENCE.
+    #[test]
+    fn dropping_the_server_takes_the_endpoint_away_without_waiting_for_the_handler() {
+        let mut spent = Duration::ZERO;
+        for n in 1..=60 {
+            let scratch = Place::new();
+            let (handler, was_asked, let_go) = stuck();
+            let server = Server::start(scratch.path(), &scratch.token, handler).expect("starts");
+            assert!(scratch.listed());
+            let mut connection = connect(&scratch);
+            let status = encode_request(&["status".to_owned()]).expect("encodes");
+            connection.write_all(&status).expect("sends");
+            was_asked
+                .recv_timeout(PATIENCE)
+                .expect("the handler has it");
+            let start = Instant::now();
+            drop(server);
+            spent += start.elapsed();
+            assert!(spent < TOGETHER, "{n} drops took {spent:?}");
+            assert!(!scratch.listed());
+            drop(let_go);
+        }
+    }
+
+    // Without the interrupt the listener sits in its accept for IDLE, an hour: the drop is made
+    // on a thread of its own, so that this fails instead of hanging.
     #[test]
     fn dropping_an_idle_server_is_immediate() {
         let scratch = Place::new();
         let (server, _) = serving(&scratch, Code::Done);
         assert_eq!(ask(&scratch, &["status"]).0, Code::Done);
-        let start = Instant::now();
-        drop(server);
-        assert!(start.elapsed() < Duration::from_millis(500));
+        let (dropped, was_dropped) = mpsc::channel();
+        thread::spawn(move || {
+            drop(server);
+            let _ = dropped.send(());
+        });
+        was_dropped
+            .recv_timeout(TOGETHER)
+            .expect("the drop returns");
         assert!(!scratch.listed());
     }
 
