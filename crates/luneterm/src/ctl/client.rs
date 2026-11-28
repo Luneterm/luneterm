@@ -142,7 +142,8 @@ fn reach<E: Endpoint>(
 /// ([`Endpoint::SCAN_SLICE`]), those cannot hold the run: first each is tried without a wait, so a
 /// free one is found however many are busy; then the busy ones take turns of a slice each, for the
 /// rest of the budget while none has answered, and once one has, for one slice more, which finds a
-/// second Luneterm of this user that was busy for a moment. One busy for longer is not counted.
+/// second Luneterm of this user that was busy for a moment. One still busy after that may be a
+/// second Luneterm of this user, so the scan fails closed: it never acts on one of two.
 fn scan<E: Endpoint>(config_dir: &Path, deadline: Instant) -> Result<E::Connection, Failure> {
     let unreachable = |reason: &str| failure(Code::Unreachable, reason);
     let mut live = None;
@@ -182,7 +183,9 @@ fn scan<E: Endpoint>(config_dir: &Path, deadline: Instant) -> Result<E::Connecti
             return Err(timed_out());
         };
         if live.is_some() && now >= *turns_end.get_or_insert(now + slice) {
-            break;
+            return Err(unreachable(
+                "another Luneterm may be running and is busy; set LUNETERM_INSTANCE",
+            ));
         }
         pending = busy;
         wait = slice;
@@ -339,21 +342,53 @@ mod tests {
         failure(Code::Unreachable, "no running Luneterm")
     }
 
-    /// Where others' endpoints are listed, busy ones of theirs, however many, do not keep a free
-    /// one of ours from being reached, nor cost more than the one extra slice.
+    fn maybe_two() -> Failure {
+        failure(
+            Code::Unreachable,
+            "another Luneterm may be running and is busy; set LUNETERM_INSTANCE",
+        )
+    }
+
+    /// Where others' endpoints are listed, one still busy after the extra slice may be a second
+    /// Luneterm of this user: the scan fails closed with the remedy, without waiting out its
+    /// budget, however many are busy.
     #[test]
-    fn busy_candidates_of_others_do_not_hold_a_shared_scan() {
+    fn a_shared_scan_with_a_busy_candidate_besides_a_live_one_fails_closed() {
         let long = Duration::from_secs(10);
         let mut many: Vec<String> = (0..2000).map(|n| format!("busy{n}")).collect();
         many.push("free".to_owned());
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
-        for candidates in [&["busy1", "alien", "busy2", "gone", "free"][..], &many] {
+        for candidates in [
+            &["free", "busy"][..],
+            &["busy", "free"],
+            &["busy1", "alien", "busy2", "gone", "free"],
+            &many,
+        ] {
             let (reached, took) = scanned::<true>(candidates, long);
-            assert_eq!(reached, Ok("free".to_owned()));
+            assert_eq!(reached, Err(maybe_two()), "{candidates:?}");
             assert!(took >= SLICE && took < long / 2, "{took:?}");
         }
-        // Ours is busy as well, for longer than a slice: its turns come until it is free.
+        // One busy for longer than a slice answers in its turns; the other still busy one slice
+        // after that is not passed over.
         let (reached, took) = scanned::<true>(&["busy", "later500"], long);
+        assert_eq!(reached, Err(maybe_two()));
+        assert!(
+            took >= Duration::from_millis(500) + SLICE && took < long / 2,
+            "{took:?}"
+        );
+    }
+
+    /// With no candidate busy, a shared scan reaches the only live one; one busy for longer than a
+    /// slice and then free is waited for in its turns.
+    #[test]
+    fn a_shared_scan_reaches_the_only_instance() {
+        let long = Duration::from_secs(10);
+        for candidates in [&["alien", "gone", "free"][..], &["free"]] {
+            let (reached, took) = scanned::<true>(candidates, long);
+            assert_eq!(reached, Ok("free".to_owned()), "{candidates:?}");
+            assert!(took < SLICE, "{took:?}");
+        }
+        let (reached, took) = scanned::<true>(&["alien", "later500", "gone"], long);
         assert_eq!(reached, Ok("later500".to_owned()));
         assert!(
             took >= Duration::from_millis(500) && took < long / 2,

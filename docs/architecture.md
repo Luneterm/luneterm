@@ -1537,10 +1537,15 @@ Without a token, a config directory or a passing check, control is off for that 
   whose token user differs; the client opens at identification level and refuses a server whose token
   user differs. Pipe names are the machine's, so a scan (no `LUNETERM_INSTANCE`) can list other
   users' pipes: it tries each without waiting, then gives the busy ones turns of 250 ms each, for
-  the whole budget while none has answered and for one turn more once one has. So another user's
-  busy pipe does not end the run, and a second Luneterm of this user that stays busy longer than
-  that turn is not counted. The list stops at 4096 names: someone who makes more can still crowd the
-  scan, and `LUNETERM_INSTANCE` is the sure way. Not tested: a non-elevated `ctl` against an
+  the whole budget while none has answered and for one turn more once one has. A pipe still busy
+  after that turn may be a second Luneterm of this user (one serving another client holds its pipe
+  for up to 2.5 s), so the scan fails closed: exit 4 "another Luneterm may be running and is busy;
+  set LUNETERM_INSTANCE", never a request to one of two. What remains of another user's busy pipe
+  is that: it no longer holds the run for 2 s nor hides a free pipe from the first try, but while it
+  stays busy a scan exits 4 after that one turn, naming the remedy (a scan with no busy pipe still succeeds).
+  Runs inside a Luneterm tab carry `LUNETERM_INSTANCE` and never scan, so they are unaffected. The
+  list stops at 4096 names: someone who makes more can still crowd the scan, and
+  `LUNETERM_INSTANCE` is the sure way. Not tested: a non-elevated `ctl` against an
   elevated Luneterm of the same user (if reading the other process's token is denied, the connection
   is refused), and a pipe of another user on a real second account.
 - No network listener exists.
