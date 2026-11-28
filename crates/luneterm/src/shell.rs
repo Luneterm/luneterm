@@ -38,7 +38,7 @@ use lune_ui::widgets::toast::{
     ToastAction, ToastExtras, ToastKind, ToastResponse, ToastSpec, ToastStackOptions, Toasts,
 };
 use lune_ui::widgets::tone::Tone;
-use lune_ui::window::{ResizeEdge, edge_at};
+use lune_ui::window::{EDGE_BORDER, ResizeEdge, edge_at};
 
 use crate::groups::{self, GroupColor, NameProblem};
 use crate::notices::{self, Age, Inbox, NoticeKind};
@@ -837,6 +837,26 @@ pub fn edge_press(events: &[Event], size: (f32, f32)) -> Option<ResizeEdge> {
     })
 }
 
+/// The resize zone of a borderless window (D40): the four strips [`edge_at`] tests, as regions
+/// that take no click and block the widgets under them, so a press there only starts the resize.
+/// Register it after every other base-layer widget of the frame. Without it the press also presses
+/// the widget under it, and winit's Windows backend ends the OS resize loop with a synthetic release
+/// at the last known pointer position, which then clicks it: a corner drag closed the app (Q22).
+fn resize_zone(ui: &mut Ui<'_>, win: Rect) {
+    let b = EDGE_BORDER;
+    let strips = [
+        ("resize-west", Rect::new(win.x, win.y, b, win.h)),
+        ("resize-east", Rect::new(win.right() - b, win.y, b, win.h)),
+        ("resize-north", Rect::new(win.x, win.y, win.w, b)),
+        ("resize-south", Rect::new(win.x, win.bottom() - b, win.w, b)),
+    ];
+    ui.painter().on(LayerId::Base);
+    for (name, rect) in strips {
+        let id = ui.id(name);
+        ui.interact(id, rect, Sense::HOVER);
+    }
+}
+
 /// The window command of a caption button.
 pub fn caption_command(button: CaptionButton) -> WindowCommand {
     match button {
@@ -1070,7 +1090,9 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
 
     let mut commands = Vec::new();
     let mut window_edge = false;
-    let pressed_edge = if view.chrome.drawn_caption && !view.maximized {
+    // A borderless window that is not maximized is resized by its edges.
+    let resizable = view.chrome.drawn_caption && !view.maximized;
+    let pressed_edge = if resizable {
         if let Some(edge) = ui.pointer_pos().and_then(|p| edge_at(p, win.w, win.h)) {
             window_edge = true;
             ui.set_cursor(resize_cursor(edge));
@@ -1213,6 +1235,9 @@ pub fn draw(ui: &mut Ui<'_>, view: ShellView<'_>) -> ShellOut {
         pane_toggle = ui
             .icon_button("pane-show", pane::show_button(win, view.chrome), &button)
             .clicked;
+    }
+    if resizable {
+        resize_zone(ui, win);
     }
 
     let (modal, ime_area) = match view.modal {
@@ -2441,6 +2466,8 @@ mod tests {
         list: Option<&'static [PaneRow<'static>]>,
         busy: Option<BusyCue>,
         tier: MotionTier,
+        maximized: bool,
+        size: (f32, f32),
     }
 
     impl PaneShell {
@@ -2454,6 +2481,8 @@ mod tests {
                 list: None,
                 busy: None,
                 tier: MotionTier::Off,
+                maximized: false,
+                size: (1040.0, 660.0),
             }
         }
 
@@ -2469,7 +2498,7 @@ mod tests {
             events: Vec<Event>,
         ) -> (ShellOut, Repaint) {
             let input = RawInput {
-                size: (1040.0, 660.0),
+                size: self.size,
                 scale: 1.0,
                 time: Duration::ZERO,
                 focused: true,
@@ -2488,7 +2517,7 @@ mod tests {
             let tabs = [TAB_A, TAB_B];
             let view = ShellView {
                 title: None,
-                maximized: false,
+                maximized: self.maximized,
                 focused: true,
                 scroll: None,
                 cell_h: 17.0,
@@ -2795,6 +2824,152 @@ mod tests {
         }
     }
 
+    /// Winit 0.30.13's Windows resize: the press at `at`; the OS loop, in which the app sees no
+    /// pointer move; a frame at the window's new size; then the synthetic release at the last
+    /// known position (or at where a late move put it). The press frame and the later ones.
+    fn os_resize(
+        scene: PaneShell,
+        at: (f32, f32),
+        size: (f32, f32),
+        moved: Option<(f32, f32)>,
+    ) -> (ShellOut, Vec<ShellOut>) {
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        scene.run(&mut store, &mut text, vec![]);
+        scene.run(&mut store, &mut text, vec![Event::PointerMoved { pos: at }]);
+        scene.run(&mut store, &mut text, vec![]);
+        let down = scene.run(&mut store, &mut text, vec![button(at, true)]);
+        let resized = PaneShell { size, ..scene };
+        let mut later = vec![resized.run(&mut store, &mut text, vec![])];
+        let mut release = Vec::new();
+        if let Some(to) = moved {
+            release.push(Event::PointerMoved { pos: to });
+        }
+        release.push(button(moved.unwrap_or(at), false));
+        later.push(resized.run(&mut store, &mut text, release));
+        later.push(resized.run(&mut store, &mut text, vec![]));
+        (down, later)
+    }
+
+    /// Nothing a widget of the shell reports.
+    fn assert_no_widget_acted(out: &ShellOut, context: &str) {
+        assert!(!out.pane_toggle, "{context}: pane toggle");
+        assert_eq!(out.overflow, None, "{context}: overflow");
+        assert!(!out.inbox_clicked, "{context}: inbox");
+        assert!(out.tab_events.is_empty(), "{context}: {:?}", out.tab_events);
+        assert!(out.tab_context.is_none(), "{context}: tab menu");
+        assert!(
+            out.pane_events.is_empty(),
+            "{context}: {:?}",
+            out.pane_events
+        );
+    }
+
+    /// The press is the resize and nothing else, and no later release clicks anything.
+    fn assert_only_resizes(
+        scene: PaneShell,
+        at: (f32, f32),
+        edge: ResizeEdge,
+        size: (f32, f32),
+        moved: Option<(f32, f32)>,
+    ) {
+        let context = format!("{:?} press {at:?} moved {moved:?}", scene.view);
+        let (down, later) = os_resize(scene, at, size, moved);
+        assert_eq!(
+            down.commands,
+            vec![WindowCommand::DragResize(edge)],
+            "{context}"
+        );
+        assert_no_widget_acted(&down, &context);
+        for out in &later {
+            assert_eq!(out.commands, vec![], "{context}");
+            assert_no_widget_acted(out, &context);
+        }
+    }
+
+    /// The borderless window in the bar view (with its show button) and in the pane view.
+    fn borderless_views() -> [PaneShell; 2] {
+        let pane = PaneShell::pane(WINDOWS_CHROME);
+        let bar = PaneShell {
+            view: View::Bar,
+            show_pane_button: true,
+            ..pane
+        };
+        [bar, pane]
+    }
+
+    /// Q22: a resize that starts over a widget in the window's edge zone clicks nothing when
+    /// Windows ends its resize loop, the close button's corner included.
+    #[test]
+    fn a_resize_that_starts_over_a_widget_clicks_nothing() {
+        use ResizeEdge::{East, North, NorthEast};
+        let same = (1040.0, 660.0);
+        for scene in borderless_views() {
+            // The corner on Close, the window grown: with and without a move before the release.
+            for moved in [None, Some((1059.0, 1.0))] {
+                assert_only_resizes(scene, (1039.0, 1.0), NorthEast, (1060.0, 680.0), moved);
+            }
+            // Minimize and Maximize from the top edge, Close from the right one.
+            for at in [(925.0, 2.0), (971.0, 2.0)] {
+                assert_only_resizes(scene, at, North, (1040.0, 680.0), None);
+            }
+            assert_only_resizes(scene, (1037.0, 17.0), East, same, None);
+            // The pane's hide button and the bar's show button (they share a place, from y = 5).
+            let show = pane::show_button(Rect::new(0.0, 0.0, 1040.0, 660.0), WINDOWS_CHROME);
+            for y in [2.0, 5.5] {
+                assert_only_resizes(scene, (centre(show).0, y), North, (1040.0, 680.0), None);
+            }
+        }
+    }
+
+    /// Anywhere in the 6 px zone, in both views and with the settings page open.
+    #[test]
+    fn no_press_in_the_resize_zone_reaches_a_widget() {
+        let size = (1040.0, 660.0);
+        for scene in borderless_views() {
+            for page_open in [false, true] {
+                let scene = PaneShell { page_open, ..scene };
+                let along = |len: u32| (0..len).step_by(13).map(|v| v as f32 + 0.5);
+                let points = along(1040)
+                    .flat_map(|x| [(x, 5.5), (x, 654.0)])
+                    .chain(along(660).flat_map(|y| [(5.5, y), (1034.0, y)]))
+                    .chain([(0.0, 0.0), (1039.5, 0.0), (0.0, 659.5), (1039.5, 659.5)]);
+                for at in points {
+                    let edge = edge_at(at, size.0, size.1).expect("in the zone");
+                    assert_only_resizes(scene, at, edge, size, None);
+                }
+            }
+        }
+    }
+
+    /// Outside the zone the widgets act as before; maximized or with native chrome there is no
+    /// zone.
+    #[test]
+    fn the_resize_zone_ends_at_its_border_and_is_off_when_maximized_or_native() {
+        for scene in borderless_views() {
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            // One px below the zone, and one left of it.
+            for at in [(1017.0, 6.0), (1033.5, 17.0)] {
+                let (down, up) = scene.press(&mut store, &mut text, at);
+                assert_eq!(down.commands, vec![], "{at:?}");
+                assert_eq!(up.commands, vec![WindowCommand::Close], "{at:?}");
+            }
+            let maximized = PaneShell {
+                maximized: true,
+                ..scene
+            };
+            let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+            let (down, up) = maximized.press(&mut store, &mut text, (1039.0, 1.0));
+            assert_eq!(down.commands, vec![]);
+            assert_eq!(up.commands, vec![WindowCommand::Close]);
+        }
+        // macOS: the pane's hide button still answers where a borderless window has its zone.
+        let mac = PaneShell::pane(MACOS_CHROME);
+        let hide = pane::show_button(Rect::new(0.0, 0.0, 1040.0, 660.0), MACOS_CHROME);
+        let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
+        let (_, up) = mac.press(&mut store, &mut text, (centre(hide).0, 5.5));
+        assert!(up.pane_toggle);
+    }
+
     /// A drag of the pane's edge through real frames: the width follows the pointer, and the end
     /// of the drag asks for one save. A drag that wanders over the window's resize edge goes on.
     #[test]
@@ -2927,6 +3102,8 @@ mod tests {
                 list: None,
                 busy: None,
                 tier: MotionTier::Off,
+                maximized: false,
+                size: (1040.0, 660.0),
             };
             for page_open in [false, true] {
                 let (mut store, mut text) = (UiStore::default(), fonts::bundled_text_cache());
