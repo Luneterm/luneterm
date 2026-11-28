@@ -25,9 +25,10 @@ dirs = "6"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# The tab-switch trace's OS event timestamps (os_event.rs, trace-only); the same versions and
-# features the toolkit's own AppKit code already builds, plus `NSGraphicsContext` for
-# `mouseEventWithType:` (the trace's synthetic clicks). No new package in the lock.
+# The tab-switch trace's OS event timestamps (os_event.rs, trace-only) and bringing the app forward
+# for `ctl tab focus` (raise.rs); the same versions and features the toolkit's own AppKit code
+# already builds, plus `NSGraphicsContext` for `mouseEventWithType:` (the trace's synthetic
+# clicks). No new package in the lock.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDate", "NSGeometry", "NSProcessInfo", "NSString", "NSUserDefaults"] }

@@ -79,6 +79,7 @@ use crate::persist::{
     Persist, SaveGuard, Startup, Store, TabInfo, TabState, Workspace, restore_dirs, restore_layout,
     snapshot,
 };
+use crate::raise;
 use crate::render::{
     Content, FadingGrid, InboxDraw, LinkTip, MenuDraw, MenusDraw, Placed, Renderer,
 };
@@ -2549,11 +2550,12 @@ impl App {
         for effect in effects {
             match effect {
                 ControlEffect::Close(ids) => self.close_tabs(&ids, event_loop, false),
+                // Only a `tab focus` or a `tab new --focus` asks for this. The OS may still
+                // decline to bring the app to the front (CC5).
                 ControlEffect::Raise => {
-                    // The normal window calls only: the OS may decline to bring the app to the
-                    // front (CC5).
                     if let Some(win) = &self.win {
                         win.window.set_minimized(false);
+                        raise::app_to_front();
                         win.window.focus_window();
                     }
                 }

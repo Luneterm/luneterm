@@ -1564,9 +1564,10 @@ slow spawn) outlasts the server's 1.5 s is carried out while its client is told 
 - `tab close`: unknown id 5, checked before origin; a `user` tab without `--any-origin` is 6;
   otherwise it closes with no confirmation, and closing the last tab quits. Dialogs and menus about
   only gone tabs close, as when a child exits.
-- `tab focus`: expands the group, activates, restores the window and asks the OS to focus it. Only
-  the normal window calls: the OS may decline to raise the window, and the call still exits 0. It does
-  not close the Settings page.
+- `tab focus`: expands the group, activates, restores the window and asks the OS to focus it; on
+  macOS the app also unhides and activates itself (`raise.rs`: winit's calls do neither for a hidden
+  app), on this and `tab new --focus` only. Only the normal window and app calls: the OS may decline
+  to raise the window, and the call still exits 0. It does not close the Settings page.
 - `tab group`, `ungroup`: either origin.
 - `tab list`: every tab in order, collapsed members included; `title` and `cwd` have control
   characters removed, and `cwd` is `null` unless absolute and at most 4096 bytes; `input_idle_ms`

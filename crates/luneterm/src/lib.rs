@@ -26,6 +26,7 @@ pub mod pacing;
 pub mod palettes;
 pub mod pane;
 pub mod persist;
+mod raise;
 pub mod render;
 pub mod session;
 pub mod settings;
