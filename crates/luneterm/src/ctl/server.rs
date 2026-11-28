@@ -239,28 +239,23 @@ mod tests {
         }
     }
 
-    /// Answers `status` at once with how often it was asked, after `slow_first` the first time.
+    /// Answers at once with how often it was asked.
     struct Counts {
         calls: Arc<AtomicUsize>,
-        slow_first: Duration,
         code: Code,
     }
 
     impl Handler for Counts {
         fn handle(&self, _: Request) -> Reply {
             let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-            if n == 1 {
-                thread::sleep(self.slow_first);
-            }
             Reply::new(self.code, format!("call {n}"))
         }
     }
 
-    fn serving(scratch: &Place, slow_first: Duration, code: Code) -> (Server, Arc<AtomicUsize>) {
+    fn serving(scratch: &Place, code: Code) -> (Server, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let handler = Counts {
             calls: Arc::clone(&calls),
-            slow_first,
             code,
         };
         let server = Server::start(scratch.path(), &scratch.token, handler).expect("starts");
@@ -289,7 +284,7 @@ mod tests {
     #[test]
     fn a_request_is_handed_over_and_its_reply_sent_back() {
         let scratch = Place::new();
-        let (_server, calls) = serving(&scratch, Duration::ZERO, Code::NoSuchTab);
+        let (_server, calls) = serving(&scratch, Code::NoSuchTab);
         for n in 1..=50 {
             assert_eq!(
                 ask(&scratch, &["status"]),
@@ -302,7 +297,7 @@ mod tests {
     #[test]
     fn what_is_no_request_is_answered_2_and_never_reaches_the_handler() {
         let scratch = Place::new();
-        let (_server, calls) = serving(&scratch, Duration::ZERO, Code::Done);
+        let (_server, calls) = serving(&scratch, Code::Done);
         for frame in [
             &b"GET / HTTP/1.1\r\n\r\n"[..],
             // 301 words; one word longer than a frame may be; a word that is not UTF-8.
@@ -331,7 +326,7 @@ mod tests {
     #[test]
     fn a_silent_client_is_dropped_after_a_second_and_the_next_is_served() {
         let scratch = Place::new();
-        let (_server, calls) = serving(&scratch, Duration::ZERO, Code::Done);
+        let (_server, calls) = serving(&scratch, Code::Done);
         let start = Instant::now();
         let mut silent = connect(&scratch);
         let mut got = Vec::new();
@@ -352,7 +347,7 @@ mod tests {
     #[test]
     fn a_client_that_drips_its_request_gets_one_second_in_all() {
         let scratch = Place::new();
-        let (_server, calls) = serving(&scratch, Duration::ZERO, Code::Done);
+        let (_server, calls) = serving(&scratch, Code::Done);
         let frame = encode_request(&["a".repeat(200)]).expect("encodes");
         let start = Instant::now();
         let mut connection = connect(&scratch);
@@ -373,31 +368,72 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
+    /// Holds its first request until it is let go; answers later ones at once. Each reply says
+    /// how often it was asked.
+    struct HoldsFirst {
+        calls: Arc<AtomicUsize>,
+        release: Receiver<()>,
+    }
+
+    impl Handler for HoldsFirst {
+        fn handle(&self, _: Request) -> Reply {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 1 {
+                let _ = self.release.recv_timeout(Duration::from_secs(30));
+            }
+            Reply::new(Code::Done, format!("call {n}"))
+        }
+    }
+
+    // No upper bound on how long an answer takes: on a loaded machine (the Windows gate, with the
+    // GPU dump tests beside it) a round trip took 4 s. That the answer is the deadline's is shown
+    // by the handler still holding the request when it comes.
     #[test]
     fn a_late_handler_is_answered_for_and_nothing_queues_behind_it() {
         let scratch = Place::new();
-        let slow = ANSWER_DEADLINE + Duration::from_secs(1);
-        let (_server, calls) = serving(&scratch, slow, Code::Done);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (let_go, release) = mpsc::channel();
+        let handler = HoldsFirst {
+            calls: Arc::clone(&calls),
+            release,
+        };
+        let _server = Server::start(scratch.path(), &scratch.token, handler).expect("starts");
         let start = Instant::now();
         assert_eq!(
             ask(&scratch, &["status"]),
             (Code::Failed, NO_ANSWER.to_owned())
         );
         let took = start.elapsed();
-        assert!(took >= ANSWER_DEADLINE && took < slow, "{took:?}");
-        // Refused at once, and never handed over.
+        assert!(took >= ANSWER_DEADLINE, "{took:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // Refused, not waited for, and never handed over: the handler still holds the first.
         let start = Instant::now();
         assert_eq!(
             ask(&scratch, &["status"]),
             (Code::Failed, NO_ANSWER.to_owned())
         );
-        assert!(start.elapsed() < Duration::from_millis(500));
-        // Once the handler is back, requests reach it again; the refused one never did.
-        thread::sleep(Duration::from_millis(1500));
-        assert_eq!(
-            ask(&scratch, &["status"]),
-            (Code::Done, "call 2".to_owned())
-        );
+        let took = start.elapsed();
+        assert!(took < ANSWER_DEADLINE, "{took:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // Once the handler is back, requests reach it again; the refused ones never did. It is
+        // back a moment after it is let go, so asked until it answers: every answer before that
+        // is the refusal.
+        let_go.send(()).expect("the handler waits");
+        let back = Instant::now() + Duration::from_secs(30);
+        let answered = loop {
+            match ask(&scratch, &["status"]) {
+                (Code::Failed, reason) if reason == NO_ANSWER && Instant::now() < back => {
+                    assert_eq!(
+                        calls.load(Ordering::SeqCst),
+                        1,
+                        "a refused one was handed over"
+                    );
+                    thread::sleep(Duration::from_millis(50));
+                }
+                other => break other,
+            }
+        };
+        assert_eq!(answered, (Code::Done, "call 2".to_owned()));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
@@ -440,7 +476,7 @@ mod tests {
     #[test]
     fn dropping_an_idle_server_is_immediate() {
         let scratch = Place::new();
-        let (server, _) = serving(&scratch, Duration::ZERO, Code::Done);
+        let (server, _) = serving(&scratch, Code::Done);
         assert_eq!(ask(&scratch, &["status"]).0, Code::Done);
         let start = Instant::now();
         drop(server);
@@ -451,7 +487,7 @@ mod tests {
     #[test]
     fn a_reply_that_cannot_be_sent_becomes_a_failure() {
         let scratch = Place::new();
-        let (_server, _) = serving(&scratch, Duration::ZERO, Code::Unreachable);
+        let (_server, _) = serving(&scratch, Code::Unreachable);
         assert_eq!(
             ask(&scratch, &["status"]),
             (Code::Failed, UNSENDABLE.to_owned())
