@@ -2400,16 +2400,21 @@ mod tests {
         // The pane view differs from the bar view, and its states from each other.
         assert_ne!(named("pane@2x.png"), tabs);
         assert_ne!(named("pane@2x.png"), named("pane-inbox@2x.png"));
-        // `pane` is drawn with this OS's chrome, which on Windows is the Windows one.
-        if HOST == WINDOWS_CHROME {
-            assert_eq!(named("pane@2x.png"), named("pane-windows@2x.png"));
-        } else {
-            assert_ne!(named("pane@2x.png"), named("pane-windows@2x.png"));
-        }
         assert_ne!(named("pane@2x.png"), named("pane-menu-app@2x.png"));
         assert_ne!(named("pane-inbox@2x.png"), named("pane-inbox-open@2x.png"));
         assert_ne!(named("pane-inbox@2x.png"), named("pane-settings@2x.png"));
-        assert_ne!(named("tabs-attention@2x.png"), named("bar-windows@2x.png"));
+        // `pane` and `tabs-attention` are drawn with this OS's chrome, which on Windows is the
+        // Windows one: there each is the same picture as its Windows-chrome scene.
+        for (host, windows) in [
+            ("pane@2x.png", "pane-windows@2x.png"),
+            ("tabs-attention@2x.png", "bar-windows@2x.png"),
+        ] {
+            if HOST == WINDOWS_CHROME {
+                assert_eq!(named(host), named(windows), "{host}");
+            } else {
+                assert_ne!(named(host), named(windows), "{host}");
+            }
+        }
         // The tooltip is not there at the first dwell and is there after the delay.
         assert_ne!(named("link-hover@2x.png"), named("link-tip@2x.png"));
         assert_ne!(named("link-hover@2x.png"), tabs);
