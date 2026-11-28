@@ -605,6 +605,46 @@ fn admit_input(hold_until: Option<Instant>, tab: Option<&mut Tab>, now: Instant)
     true
 }
 
+/// Takes tab `id` out of the list. Whoever closes it (the user, its child's exit, `ctl`), a tab
+/// that is gone shows no failed start any more, so it holds back no save (ledger 12).
+fn take_tab(tabs: &mut TabSet<Tab>, guard: &mut SaveGuard, id: TabId) -> Option<Tab> {
+    let tab = tabs.close(id)?;
+    guard.tab_closed(id);
+    Some(tab)
+}
+
+/// Only the active tab of a shown window is visible; a hidden session's Updates come at most
+/// every 100 ms.
+fn show_only_active(tabs: &mut TabSet<Tab>, occluded: bool) {
+    let active = tabs.active();
+    for (id, tab) in tabs.iter_mut() {
+        if let Some(session) = &tab.session {
+            session.set_visible(!occluded && Some(id) == active);
+        }
+    }
+}
+
+/// Adds the tab a `tab new` started, where [`control::place`] puts it, and tells its session what
+/// its place means: a new session starts visible and, in a focused window, focused, which a tab
+/// added behind the active one is not.
+fn place_control_tab(
+    tabs: &mut TabSet<Tab>,
+    tab: Tab,
+    spec: &OpenSpec,
+    occluded: bool,
+) -> (Reply, Vec<ControlEffect>) {
+    let id = tabs.next_id();
+    let placed = control::place(tabs, tab, spec);
+    debug_assert!(tabs.get(id).is_some(), "the id its child was told");
+    if tabs.active() != Some(id)
+        && let Some(tab) = tabs.get_mut(id)
+    {
+        tab.set_focus(false);
+    }
+    show_only_active(tabs, occluded);
+    placed
+}
+
 /// What a save keeps of each tab, in order ([`snapshot`] decides which are written).
 fn tab_infos(tabs: &TabSet<Tab>) -> Vec<TabInfo> {
     tabs.iter()
@@ -2402,16 +2442,9 @@ impl App {
         self.request_redraw();
     }
 
-    /// Only the active tab of a shown window is visible; a hidden session's Updates come at most
-    /// every 100 ms.
+    /// [`show_only_active`] for the window as it is.
     fn refresh_visibility(&mut self) {
-        let active = self.tabs.active();
-        let occluded = self.occluded;
-        for (id, tab) in self.tabs.iter_mut() {
-            if let Some(session) = &tab.session {
-                session.set_visible(!occluded && Some(id) == active);
-            }
-        }
+        show_only_active(&mut self.tabs, self.occluded);
     }
 
     /// Closes the tabs `ids` that are open, asking first when the setting and the tabs say so.
@@ -2439,12 +2472,9 @@ impl App {
             self.freeze_workspace();
         }
         for id in ids {
-            let Some(tab) = self.tabs.close(*id) else {
+            let Some(tab) = take_tab(&mut self.tabs, &mut self.guard, *id) else {
                 continue;
             };
-            if user {
-                self.guard.tab_closed(*id);
-            }
             if let Some(session) = tab.session {
                 if self.tabs.is_empty() {
                     // The app is leaving: `shutdown` closes it with a wait.
@@ -2505,9 +2535,7 @@ impl App {
                 Outcome::Answer(reply, effects) => (reply, effects),
                 Outcome::Spawn(spec) => match self.control_tab(&spec) {
                     Ok(tab) => {
-                        let id = self.tabs.next_id();
-                        let placed = control::place(&mut self.tabs, tab, &spec);
-                        debug_assert!(self.tabs.get(id).is_some(), "the id its child was told");
+                        let placed = place_control_tab(&mut self.tabs, tab, &spec, self.occluded);
                         // A shell tab is saved like any tab; a program tab is not (D15).
                         self.workspace_changed(false);
                         placed
@@ -5683,6 +5711,104 @@ mod tests {
         assert!(b.due(t0 + ms(2000), false));
         assert!(!b.due(t0 + ms(3999), false));
         assert!(b.due(t0 + ms(4000), false));
+    }
+
+    /// A user's tab that shows a failed start, closed through `ctl`, holds back no save of the
+    /// workspace any more (ledger 12).
+    #[test]
+    fn a_failed_tab_closed_through_ctl_leaves_the_save_free() {
+        let tab = || Tab::empty(palettes::theme_of(&Settings::default().palette));
+        let mut tabs: TabSet<Tab> = TabSet::new();
+        let mut broken = tab();
+        broken.failure = Some(SpawnFailure {
+            kind: std::io::ErrorKind::NotFound,
+            program: "zsh".to_owned(),
+        });
+        let failed = tabs.push(broken);
+        tabs.push(tab());
+        let mut guard = SaveGuard::new();
+        guard.spawn_failed(failed);
+        assert!(!guard.may_write());
+
+        let ctx = Ctx {
+            control_on: true,
+            window: true,
+            version: "0",
+            instance: "instance",
+            now: Instant::now(),
+        };
+        let close = crate::ctl::Request::TabClose {
+            id: failed,
+            any_origin: true,
+        };
+        let Outcome::Answer(_, effects) = control::handle(&mut tabs, close, false, &ctx) else {
+            panic!("a close spawns nothing");
+        };
+        assert_eq!(effects, [ControlEffect::Close(vec![failed])]);
+        assert!(take_tab(&mut tabs, &mut guard, failed).is_some());
+        assert!(guard.may_write());
+        assert!(take_tab(&mut tabs, &mut guard, failed).is_none());
+    }
+
+    /// A `tab new` without `--focus` adds a tab that is not shown and whose program, asking for
+    /// focus reports, hears it has no focus, whatever a new session starts as; with `--focus` it
+    /// is the shown, focused one.
+    #[test]
+    fn a_control_tab_behind_the_active_one_is_hidden_and_unfocused() {
+        use crate::session::Geometry;
+        use crate::session::fake_pty::{FakePty, Gate, Script, written};
+
+        let tab = || Tab::empty(palettes::theme_of(&Settings::default().palette));
+        for (focus, report) in [(false, b"\x1b[O"), (true, b"\x1b[I")] {
+            let mut tabs: TabSet<Tab> = TabSet::new();
+            tabs.push(tab());
+            // The tab as `new_tab` makes it in a focused window.
+            let (pty, child, output) = FakePty::scripted(Gate::Open);
+            let config = SessionConfig {
+                geometry: Geometry {
+                    cols: 80,
+                    rows: 24,
+                    cell_px: (10.0, 20.0),
+                    pixel_size: (800, 480),
+                },
+                scrollback: 100,
+                xtversion: "Luneterm(0)".to_owned(),
+                clipboard_write: false,
+                windows_pty: None,
+                palette: HostPalette::from_theme(&tab().theme),
+                focused: true,
+            };
+            let mut new = tab();
+            new.session = Some(Session::start(pty, config, Box::new(|| {})).expect("a session"));
+            new.focused = true;
+            let spec = OpenSpec {
+                cwd: PathBuf::from("/"),
+                group: None,
+                title: None,
+                focus,
+                argv: Vec::new(),
+            };
+            let id = tabs.next_id();
+            place_control_tab(&mut tabs, new, &spec, false);
+            let added = tabs.get(id).expect("added");
+            assert_eq!(added.focused, focus);
+            let session = added.session.as_ref().expect("running");
+            assert_eq!(session.is_visible(), focus);
+
+            // The program turns focus reports on and is told where it stands.
+            output
+                .send(Script::Data(b"\x1b[?1004h".to_vec()))
+                .expect("the child writes");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !written(&child).ends_with(report) {
+                assert!(
+                    Instant::now() < deadline,
+                    "focus {focus}: the child heard {:?}",
+                    written(&child)
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
     }
 
     #[test]
